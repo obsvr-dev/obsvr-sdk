@@ -1,0 +1,56 @@
+name: Publish obsvr-sdk to PyPI
+
+# Publishing is MANUAL ONLY. No tag or push can trigger this workflow.
+# To release: Actions tab -> this workflow -> Run workflow -> type "publish"
+# in the confirm box. Requires PyPI Trusted Publishing to be configured for
+# this repo + workflow in the PyPI project settings (owner-only action).
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "publish" to confirm you want to publish to PyPI'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    if: ${{ inputs.confirm == 'publish' }}
+    # PyPI Trusted Publishing (OIDC): no long-lived token needed.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[dev]" build
+        working-directory: sdk-python
+
+      - name: Test
+        run: python -m pytest tests/ -q
+        working-directory: sdk-python
+
+      # refuse to publish a self-contradictory version (package.json vs
+      # constants.ts vs _version.py vs server.json vs the tag). Node is
+      # preinstalled on ubuntu-latest runners.
+      - name: Verify version consistency
+        run: node scripts/check-version-consistency.mjs
+        env:
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Build sdist + wheel
+        run: python -m build
+        working-directory: sdk-python
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk-python/dist

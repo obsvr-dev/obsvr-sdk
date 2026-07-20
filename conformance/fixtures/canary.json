@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "name": "canary",
+  "description": "Cross-SDK canary-leak detection fixtures (honeytoken tripwire). hash_cases pin sha256_hex(canonical token) \u2014 the canonical token is the raw token lower-cased. candidate_cases pin canaryCandidates/canary_candidates: registry-INDEPENDENT extraction of every obsvr-cnry-<32hex> from the raw text AND each de-obfuscation view, each reduced to its canonical-token sha256 and de-duped by hash (first via wins; raw before views). via is one of raw|deobfuscated|percent|hex|base64. The raw token never appears in any output \u2014 only hashes. Both SDK harnesses (sdk/tests/unit/canary-conformance.test.ts, sdk-python/tests/test_canary_conformance.py) must agree; divergence is a release blocker unless recorded in conformance/known-divergences.md. Minting is CSPRNG (not fixture-pinned); these vectors use fixed tokens.",
+  "hash_cases": [
+    {
+      "id": "token_a",
+      "token": "obsvr-cnry-0123456789abcdef0123456789abcdef",
+      "expect": {
+        "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe"
+      }
+    },
+    {
+      "id": "token_b",
+      "token": "obsvr-cnry-fedcba9876543210fedcba9876543210",
+      "expect": {
+        "hash": "a20fb8f4ad13c344e5ff38df6b324f61ec986b047a78b4e2a71017988166f9a4"
+      }
+    },
+    {
+      "id": "uppercase_canonicalizes",
+      "token": "OBSVR-CNRY-0123456789ABCDEF0123456789ABCDEF",
+      "expect": {
+        "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe"
+      }
+    }
+  ],
+  "candidate_cases": [
+    {
+      "id": "clean_no_canary",
+      "input": "the quick brown fox jumps",
+      "expect": []
+    },
+    {
+      "id": "raw_in_output",
+      "input": "the assistant replied: obsvr-cnry-0123456789abcdef0123456789abcdef oops",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "raw"
+        }
+      ]
+    },
+    {
+      "id": "two_distinct_tokens",
+      "input": "obsvr-cnry-0123456789abcdef0123456789abcdef and obsvr-cnry-fedcba9876543210fedcba9876543210",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "raw"
+        },
+        {
+          "hash": "a20fb8f4ad13c344e5ff38df6b324f61ec986b047a78b4e2a71017988166f9a4",
+          "via": "raw"
+        }
+      ]
+    },
+    {
+      "id": "duplicate_token_deduped",
+      "input": "obsvr-cnry-0123456789abcdef0123456789abcdef obsvr-cnry-0123456789abcdef0123456789abcdef",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "raw"
+        }
+      ]
+    },
+    {
+      "id": "uppercase_token",
+      "input": "LEAK: OBSVR-CNRY-0123456789ABCDEF0123456789ABCDEF",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "raw"
+        }
+      ]
+    },
+    {
+      "id": "base64_encoded_exfil",
+      "input": "exfil payload: b2JzdnItY25yeS0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "base64"
+        }
+      ]
+    },
+    {
+      "id": "hex_encoded_exfil",
+      "input": "0x 6f627376722d636e72792d3031323334353637383961626364656630313233343536373839616263646566",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "hex"
+        }
+      ]
+    },
+    {
+      "id": "zero_width_split",
+      "input": "obsvr-cnry-0123\u200b456789abcdef0123456789abcdef",
+      "expect": [
+        {
+          "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe",
+          "via": "deobfuscated"
+        }
+      ]
+    },
+    {
+      "id": "prefix_only_no_match",
+      "input": "obsvr-cnry-nothex",
+      "expect": []
+    }
+  ]
+}

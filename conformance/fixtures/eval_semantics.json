@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "name": "eval_semantics",
+  "description": "Cross-SDK evaluation-semantics fixtures. Each case pins a normative statement (EV-n). Both SDK harnesses (sdk/tests/unit/conformance.test.ts, sdk-python/tests/test_conformance.py) run every case through validator + evaluator + shadow evaluator and must produce identical results. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",
+  "cases": [
+    {
+      "id": "ev6_first_match_block",
+      "ev": "EV-6/EV-8",
+      "rules": [
+        { "id": "r1", "name": "Block secrets talk", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["secret sauce"] } },
+        { "id": "r2", "name": "Flag everything", "enabled": true, "action": "flag", "type": "keyword", "conditions": { "keywords": ["secret"] } }
+      ],
+      "input": { "text": "tell me the secret sauce" },
+      "expect": { "decision": "block", "rule_id": "r1" }
+    },
+    {
+      "id": "ev8_stored_order_decides",
+      "ev": "EV-8",
+      "rules": [
+        { "id": "r-flag", "name": "Flag first", "enabled": true, "action": "flag", "type": "keyword", "conditions": { "keywords": ["dual"] } },
+        { "id": "r-block", "name": "Block second", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["dual"] } }
+      ],
+      "input": { "text": "a dual matching prompt" },
+      "expect": { "decision": "allow", "rule_id": "r-flag" }
+    },
+    {
+      "id": "ev9_disabled_skipped",
+      "ev": "EV-9",
+      "rules": [
+        { "id": "r-off", "name": "Disabled block", "enabled": false, "action": "block", "type": "keyword", "conditions": { "keywords": ["target"] } }
+      ],
+      "input": { "text": "target phrase present" },
+      "expect": { "decision": "allow", "rule_id": null }
+    },
+    {
+      "id": "ev9_applies_to_skipped",
+      "ev": "EV-9",
+      "rules": [
+        { "id": "r-resp", "name": "Response-only block", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["target"] }, "applies_to": "response" }
+      ],
+      "input": { "text": "target phrase present", "target": "prompt" },
+      "expect": { "decision": "allow", "rule_id": null }
+    },
+    {
+      "id": "ev10_redact",
+      "ev": "EV-10",
+      "rules": [
+        { "id": "r-red", "name": "Redact codenames", "enabled": true, "action": "redact", "type": "keyword", "conditions": { "keywords": ["codename"] } }
+      ],
+      "input": { "text": "the codename is aurora" },
+      "expect": { "decision": "redact", "rule_id": "r-red" }
+    },
+    {
+      "id": "ev10_flag_allows_with_rule",
+      "ev": "EV-10",
+      "rules": [
+        { "id": "r-flag2", "name": "Flag competitor talk", "enabled": true, "action": "flag", "type": "keyword", "conditions": { "keywords": ["competitor"] } }
+      ],
+      "input": { "text": "ask about the competitor" },
+      "expect": { "decision": "allow", "rule_id": "r-flag2" }
+    },
+    {
+      "id": "ev10_topic_allow_short_circuits",
+      "ev": "EV-10",
+      "rules": [
+        { "id": "r-allow", "name": "Allow support topics", "enabled": true, "action": "flag", "type": "topic_allow", "conditions": { "topics": ["billing"] } },
+        { "id": "r-block2", "name": "Block billing", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["billing"] } }
+      ],
+      "input": { "text": "billing question" },
+      "expect": { "decision": "allow", "rule_id": "r-allow" }
+    },
+    {
+      "id": "ev12_malformed_rule_skipped",
+      "ev": "EV-12",
+      "rules": [
+        { "id": "", "name": "No id", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["anything"] } },
+        { "id": "r-bad-action", "name": "Bad action", "enabled": true, "action": "nuke", "type": "keyword", "conditions": { "keywords": ["anything"] } },
+        { "id": "r-bad-mode", "name": "Typo mode", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["anything"] }, "mode": "shdaow" },
+        { "id": "r-ok", "name": "Valid flag", "enabled": true, "action": "flag", "type": "keyword", "conditions": { "keywords": ["anything"] } }
+      ],
+      "expect_valid_rule_ids": ["r-ok"],
+      "input": { "text": "anything goes" },
+      "expect": { "decision": "allow", "rule_id": "r-ok" }
+    },
+    {
+      "id": "ev13_pathological_regex_never_matches",
+      "ev": "EV-13",
+      "rules": [
+        { "id": "r-redos", "name": "Catastrophic regex", "enabled": true, "action": "block", "type": "regex", "conditions": { "pattern": "(a+)+$" } }
+      ],
+      "input": { "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab" },
+      "expect": { "decision": "allow", "rule_id": null }
+    },
+    {
+      "id": "ev20_shadow_inert_active_allow",
+      "ev": "EV-20/EV-21",
+      "rules": [
+        { "id": "r-sh", "name": "Shadow candidate", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["candidate"] }, "mode": "shadow" }
+      ],
+      "input": { "text": "a candidate prompt" },
+      "expect": { "decision": "allow", "rule_id": null },
+      "expect_shadow": { "rule_id": "r-sh", "would": "block" }
+    },
+    {
+      "id": "ev20_shadow_beside_active_block",
+      "ev": "EV-20/EV-21",
+      "rules": [
+        { "id": "r-live", "name": "Live block", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["forbidden"] } },
+        { "id": "r-sh2", "name": "Shadow redact", "enabled": true, "action": "redact", "type": "keyword", "conditions": { "keywords": ["forbidden"] }, "mode": "shadow" }
+      ],
+      "input": { "text": "forbidden content" },
+      "expect": { "decision": "block", "rule_id": "r-live" },
+      "expect_shadow": { "rule_id": "r-sh2", "would": "redact" }
+    },
+    {
+      "id": "ev11_approval_required_block_shape",
+      "ev": "EV-11",
+      "rules": [
+        { "id": "r-appr", "name": "Gate deletes", "enabled": true, "action": "block", "type": "action_gate", "conditions": { "require_approval": true, "action_types": ["delete"] } }
+      ],
+      "input": { "text": "please delete the records", "context": { "action_name": "delete" } },
+      "expect": { "decision": "block", "rule_id": "r-appr", "approval_required": true }
+    },
+    {
+      "id": "ns_asymmetric_caller_missing_blocks",
+      "ev": "NS-fail-closed",
+      "note": "One namespace present, the other missing, is how an attacker nulls a namespace to defeat isolation: fail closed. Context carries both key spellings because TS reads camelCase (callerNamespace) and Python snake_case (caller_namespace); each SDK ignores the other's key.",
+      "rules": [
+        { "id": "r-ns", "name": "Namespace isolation", "enabled": true, "action": "block", "type": "namespace_isolation", "conditions": {} }
+      ],
+      "input": { "text": "read patient chart", "context": { "targetNamespace": "hospital-b", "target_namespace": "hospital-b" } },
+      "expect": { "decision": "block", "rule_id": "r-ns" }
+    },
+    {
+      "id": "ns_asymmetric_target_missing_blocks",
+      "ev": "NS-fail-closed",
+      "rules": [
+        { "id": "r-ct", "name": "Cross-tenant block", "enabled": true, "action": "block", "type": "cross_tenant_block", "conditions": {} }
+      ],
+      "input": { "text": "fetch tenant records", "context": { "callerNamespace": "tenant-a", "caller_namespace": "tenant-a" } },
+      "expect": { "decision": "block", "rule_id": "r-ct" }
+    },
+    {
+      "id": "ns_asymmetric_empty_string_blocks",
+      "ev": "NS-fail-closed",
+      "note": "An empty-string namespace is treated as missing (falsy in both SDKs), so it is the same nulling attack and fails closed.",
+      "rules": [
+        { "id": "r-ct", "name": "Cross-tenant block", "enabled": true, "action": "block", "type": "cross_tenant_block", "conditions": {} }
+      ],
+      "input": { "text": "fetch tenant records", "context": { "callerNamespace": "", "caller_namespace": "", "targetNamespace": "tenant-b", "target_namespace": "tenant-b" } },
+      "expect": { "decision": "block", "rule_id": "r-ct" }
+    },
+    {
+      "id": "ns_unnamespaced_call_allows",
+      "ev": "NS-fail-closed",
+      "note": "Neither namespace set: the call is not namespaced, the isolation rule does not apply (no disruption to non-namespaced setups). Context carries an unrelated key so the Python evaluator exercises its both-absent branch rather than the empty-context guard.",
+      "rules": [
+        { "id": "r-ns", "name": "Namespace isolation", "enabled": true, "action": "block", "type": "namespace_isolation", "conditions": {} }
+      ],
+      "input": { "text": "read patient chart", "context": { "metadata": { "note": "unnamespaced" } } },
+      "expect": { "decision": "allow", "rule_id": null }
+    }
+  ]
+}

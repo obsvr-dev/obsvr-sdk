@@ -1,0 +1,6 @@
+# Default owner for everything in this repository.
+* @obsvr-code
+
+# Cross-language behavior contract: changes here require extra scrutiny —
+# a fixture change must land with matching updates in BOTH SDKs.
+/conformance/ @obsvr-code

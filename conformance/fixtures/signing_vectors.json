@@ -1,0 +1,23 @@
+{
+  "api_key": "test-api-key",
+  "session_id": "11111111-1111-1111-1111-111111111111",
+  "signing_key_hex": "82063a1c5c8964553bf0ff6f9957e7b8063424a0d8aaaa09299a1ffd7ed468fd",
+  "events": [
+    {
+      "seq_no": 1,
+      "timestamp_sdk": 1700000000000,
+      "prompt": "hello",
+      "response": "world",
+      "prev_sig": "",
+      "sdk_sig": "f76990f9a01d464615b4c93027d37c30bb1d4c30446cd8196664b0977bb1f9db"
+    },
+    {
+      "seq_no": 2,
+      "timestamp_sdk": 1700000000001,
+      "prompt": "foo",
+      "response": "bar",
+      "prev_sig": "f76990f9a01d464615b4c93027d37c30bb1d4c30446cd8196664b0977bb1f9db",
+      "sdk_sig": "51e518bf37ae7b92ed15099d4a164d091837aa5698e4ed10e9328514dd438e19"
+    }
+  ]
+}

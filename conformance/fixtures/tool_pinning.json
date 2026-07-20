@@ -1,0 +1,500 @@
+{
+  "schema_version": 1,
+  "name": "tool_pinning",
+  "description": "Cross-SDK MCP tool-descriptor content-hash pinning fixtures (rug-pull defense). hash_cases pin canonicalToolDescriptor/canonical_tool_descriptor (fixed-key projection {annotations, description, input_schema, name, output_schema, title}, absent/null fields omitted, arrays NOT re-ordered) serialized with the rules-hash canonicalization (stableStringify == _canonical_json, pinned by rules_hash.json) and hashed with FULL SHA-256 (lowercase 64-hex, never truncated) \u2014 expect.canonical pins the exact serialized bytes, expect.hash the digest. decision_cases pin evaluateToolPin/evaluate_tool_pin: config pin beats TOFU pin; pin comparison is case-insensitive on the pin side; a hashing failure (observed_hash null) fails CLOSED as a mismatch; an unpinned tool passes unless require_pin; mode 'block' vs 'warn' selects enforcement block/flag. Absent verdict keys are encoded as null (harnesses adapt: TS undefined, Python missing key). Both SDK harnesses (sdk/tests/unit/tool-pinning-conformance.test.ts, sdk-python/tests/test_tool_pinning_conformance.py) must produce identical results; a divergence is a release blocker unless recorded in conformance/known-divergences.md. hash_error_cases pin descriptors whose numbers are not representable identically across JS/Python (exponent-notation extremes, integers past 2^53): tool_descriptor_hash MUST raise so the caller fails closed. requirePin decision cases pin that a TOFU pin does NOT satisfy strict mode (only a config pin does).",
+  "hash_cases": [
+    {
+      "id": "name_description_only",
+      "descriptor": {
+        "name": "read_file",
+        "description": "Reads a file at a path."
+      },
+      "expect": {
+        "canonical": "{\"description\":\"Reads a file at a path.\",\"name\":\"read_file\"}",
+        "hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221"
+      }
+    },
+    {
+      "id": "nested_unsorted_schema",
+      "descriptor": {
+        "name": "query_db",
+        "description": "Run a query.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sql": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "sql"
+          ]
+        }
+      },
+      "expect": {
+        "canonical": "{\"description\":\"Run a query.\",\"input_schema\":{\"properties\":{\"limit\":{\"type\":\"integer\"},\"sql\":{\"type\":\"string\"}},\"required\":[\"sql\"],\"type\":\"object\"},\"name\":\"query_db\"}",
+        "hash": "854f58c2bd2f8fefaa5ba19b6fef2aea29ad4522c42dbfe41d35956d9e3ad7e5"
+      }
+    },
+    {
+      "id": "unicode_description",
+      "descriptor": {
+        "name": "\u00fcbersetzen",
+        "description": "\u00dcbersetzt Text \u2014 \u7ffb\u8a33\u3057\u307e\u3059."
+      },
+      "expect": {
+        "canonical": "{\"description\":\"\u00dcbersetzt Text \u2014 \u7ffb\u8a33\u3057\u307e\u3059.\",\"name\":\"\u00fcbersetzen\"}",
+        "hash": "536e60dc3786a30ceb2364506b171b7769f0093128ff2d254fb4f3a8e886682d"
+      }
+    },
+    {
+      "id": "null_fields_omitted",
+      "descriptor": {
+        "name": "ping",
+        "description": null,
+        "inputSchema": null
+      },
+      "expect": {
+        "canonical": "{\"name\":\"ping\"}",
+        "hash": "3f1b5ce7170804143ea6c840825f11e1fce1aed30dba5b7f0d83220f84066889"
+      }
+    },
+    {
+      "id": "empty_descriptor",
+      "descriptor": {},
+      "expect": {
+        "canonical": "{}",
+        "hash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+      }
+    },
+    {
+      "id": "full_descriptor",
+      "descriptor": {
+        "name": "delete_row",
+        "title": "Delete Row",
+        "description": "Deletes a row.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object"
+        },
+        "annotations": {
+          "destructiveHint": true,
+          "readOnlyHint": false
+        }
+      },
+      "expect": {
+        "canonical": "{\"annotations\":{\"destructiveHint\":true,\"readOnlyHint\":false},\"description\":\"Deletes a row.\",\"input_schema\":{\"properties\":{\"id\":{\"type\":\"string\"}},\"type\":\"object\"},\"name\":\"delete_row\",\"output_schema\":{\"type\":\"object\"},\"title\":\"Delete Row\"}",
+        "hash": "1caf7cca6788a7fe01ff1405ecb903764d2c3634ba38c75731fdd56106e9bccd"
+      }
+    },
+    {
+      "id": "array_order_preserved",
+      "descriptor": {
+        "name": "t",
+        "inputSchema": {
+          "required": [
+            "b",
+            "a"
+          ],
+          "enum": [
+            "z",
+            "y"
+          ]
+        }
+      },
+      "expect": {
+        "canonical": "{\"input_schema\":{\"enum\":[\"z\",\"y\"],\"required\":[\"b\",\"a\"]},\"name\":\"t\"}",
+        "hash": "756ae6e8f3232d0ec102d51dcb35f664caeef738de0bcc1dce9cdddc4cd3f8b5"
+      }
+    },
+    {
+      "id": "integer_schema_constraints",
+      "descriptor": {
+        "name": "q",
+        "description": "d",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "n": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "multipleOf": 5
+            }
+          },
+          "maxProperties": 10
+        }
+      },
+      "expect": {
+        "canonical": "{\"description\":\"d\",\"input_schema\":{\"maxProperties\":10,\"properties\":{\"n\":{\"maximum\":100,\"minimum\":0,\"multipleOf\":5,\"type\":\"integer\"}},\"type\":\"object\"},\"name\":\"q\"}",
+        "hash": "6989b15ab1e177c8ed41cbea10f85c1ad19b8151cf0c04f37f4c1d6145bedc5a"
+      }
+    },
+    {
+      "id": "whole_valued_float_normalizes",
+      "descriptor": {
+        "name": "q",
+        "inputSchema": {
+          "multipleOf": 1.0,
+          "scale": 1000.0,
+          "neg": -0.0
+        }
+      },
+      "expect": {
+        "canonical": "{\"input_schema\":{\"multipleOf\":1,\"neg\":0,\"scale\":1000},\"name\":\"q\"}",
+        "hash": "3ebfe4873f056cbddc4558a6732a564d0085b50ccdc0e2e74414f5521fd22be1"
+      }
+    },
+    {
+      "id": "decimal_money_constraints",
+      "descriptor": {
+        "name": "pay",
+        "inputSchema": {
+          "multipleOf": 0.01,
+          "minimum": 0.5,
+          "maximum": 9999.99
+        }
+      },
+      "expect": {
+        "canonical": "{\"input_schema\":{\"maximum\":9999.99,\"minimum\":0.5,\"multipleOf\":0.01},\"name\":\"pay\"}",
+        "hash": "f90369c8c54891b1cab11722a0b666261d108629eb5964162882e69ce78acf9a"
+      }
+    },
+    {
+      "id": "nested_explicit_null_kept",
+      "descriptor": {
+        "name": "t",
+        "annotations": {
+          "readOnlyHint": true,
+          "idempotentHint": null,
+          "destructiveHint": false
+        }
+      },
+      "expect": {
+        "canonical": "{\"annotations\":{\"destructiveHint\":false,\"idempotentHint\":null,\"readOnlyHint\":true},\"name\":\"t\"}",
+        "hash": "d348ed5e9134bc9a3a8c5388749594523c02a3dddd7e0f7245a6babf728fee21"
+      }
+    },
+    {
+      "id": "array_of_numbers_order_kept",
+      "descriptor": {
+        "name": "t",
+        "inputSchema": {
+          "enum": [
+            3,
+            1,
+            2
+          ],
+          "examples": [
+            1.5,
+            2.5
+          ]
+        }
+      },
+      "expect": {
+        "canonical": "{\"input_schema\":{\"enum\":[3,1,2],\"examples\":[1.5,2.5]},\"name\":\"t\"}",
+        "hash": "bc2446fd4619ca1f70afbdb8538637c6c7b412eb10aed05dc228f78d8f430c95"
+      }
+    },
+    {
+      "id": "bool_and_int_distinct",
+      "descriptor": {
+        "name": "t",
+        "inputSchema": {
+          "a": true,
+          "b": 1,
+          "c": false,
+          "d": 0
+        }
+      },
+      "expect": {
+        "canonical": "{\"input_schema\":{\"a\":true,\"b\":1,\"c\":false,\"d\":0},\"name\":\"t\"}",
+        "hash": "6968d926d324c0e2bff2120afc3249d7423390308f9065d4a02a6e2c6468f8ca"
+      }
+    }
+  ],
+  "decision_cases": [
+    {
+      "id": "config_pin_match",
+      "input": {
+        "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "tofu_pin": null,
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "warn",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "ok",
+        "enforcement": "none",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": "config",
+        "reason": null
+      }
+    },
+    {
+      "id": "config_pin_match_case_insensitive",
+      "input": {
+        "config_pin": "0C8B57CD8C5F64C98CE35D38FE748BF4B7030D56806FC3BCA779B8FD696C9221",
+        "tofu_pin": null,
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "ok",
+        "enforcement": "none",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": "config",
+        "reason": null
+      }
+    },
+    {
+      "id": "config_pin_mismatch_warn",
+      "input": {
+        "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "tofu_pin": null,
+        "observed_hash": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "mode": "warn",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "mismatch",
+        "enforcement": "flag",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "source": "config",
+        "reason": "descriptor_hash_mismatch"
+      }
+    },
+    {
+      "id": "config_pin_mismatch_block",
+      "input": {
+        "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "tofu_pin": null,
+        "observed_hash": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "mismatch",
+        "enforcement": "block",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "source": "config",
+        "reason": "descriptor_hash_mismatch"
+      }
+    },
+    {
+      "id": "config_beats_tofu",
+      "input": {
+        "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "tofu_pin": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "observed_hash": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "mismatch",
+        "enforcement": "block",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "source": "config",
+        "reason": "descriptor_hash_mismatch"
+      }
+    },
+    {
+      "id": "tofu_match",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "ok",
+        "enforcement": "none",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": "tofu",
+        "reason": null
+      }
+    },
+    {
+      "id": "tofu_mismatch_swap_detected",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed_hash": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "mismatch",
+        "enforcement": "block",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
+        "source": "tofu",
+        "reason": "descriptor_hash_mismatch"
+      }
+    },
+    {
+      "id": "unpinned_lenient_passes",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": null,
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "unpinned",
+        "enforcement": "none",
+        "expected": null,
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": null,
+        "reason": null
+      }
+    },
+    {
+      "id": "unpinned_strict_warn",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": null,
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "warn",
+        "require_pin": true
+      },
+      "expect": {
+        "status": "unpinned",
+        "enforcement": "flag",
+        "expected": null,
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": null,
+        "reason": "pin_required"
+      }
+    },
+    {
+      "id": "unpinned_strict_block",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": null,
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "block",
+        "require_pin": true
+      },
+      "expect": {
+        "status": "unpinned",
+        "enforcement": "block",
+        "expected": null,
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": null,
+        "reason": "pin_required"
+      }
+    },
+    {
+      "id": "hash_error_fails_closed",
+      "input": {
+        "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "tofu_pin": null,
+        "observed_hash": null,
+        "mode": "block",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "mismatch",
+        "enforcement": "block",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": null,
+        "source": "config",
+        "reason": "hash_error"
+      }
+    },
+    {
+      "id": "hash_error_fails_closed_warn_nopin",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": null,
+        "observed_hash": null,
+        "mode": "warn",
+        "require_pin": false
+      },
+      "expect": {
+        "status": "mismatch",
+        "enforcement": "flag",
+        "expected": null,
+        "observed": null,
+        "source": null,
+        "reason": "hash_error"
+      }
+    },
+    {
+      "id": "requirePin_tofu_does_not_satisfy",
+      "input": {
+        "config_pin": null,
+        "tofu_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "block",
+        "require_pin": true
+      },
+      "expect": {
+        "status": "unpinned",
+        "enforcement": "block",
+        "expected": null,
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": null,
+        "reason": "pin_required"
+      }
+    },
+    {
+      "id": "requirePin_config_pin_still_satisfies",
+      "input": {
+        "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "tofu_pin": null,
+        "observed_hash": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "mode": "block",
+        "require_pin": true
+      },
+      "expect": {
+        "status": "ok",
+        "enforcement": "none",
+        "expected": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "observed": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
+        "source": "config",
+        "reason": null
+      }
+    }
+  ],
+  "hash_error_cases": [
+    {
+      "id": "tiny_exponent_number",
+      "descriptor": {
+        "name": "t",
+        "inputSchema": {
+          "multipleOf": 1e-07
+        }
+      }
+    },
+    {
+      "id": "huge_integer_past_2p53",
+      "descriptor": {
+        "name": "t",
+        "inputSchema": {
+          "maximum": 9007199254740993
+        }
+      }
+    }
+  ]
+}

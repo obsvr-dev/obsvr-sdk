@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "name": "policy_floor",
+  "description": "Cross-SDK anti-tamper policy floor fixtures. decision_cases pin evaluateFloor/evaluate_floor (floor rules coerced to enabled+enforce, so a downgraded floor rule still blocks; empty floor allows). version_cases pin deriveFloorVersion/derive_floor_version (16-hex SHA-256 of the coerced floor projection, sorted by id; 'none' when empty) \u2014 a downgraded floor hashes IDENTICALLY to its enforced form (the downgrade changes nothing the floor evaluates). Floor rules are plain objects (TS uses them as PolicyRule[]; Python constructs PolicyRule(**d)). Both harnesses must agree; divergence is a release blocker unless recorded in known-divergences.md.",
+  "decision_cases": [
+    {
+      "id": "floor_blocks",
+      "floor": [
+        {
+          "id": "floor-secrets",
+          "name": "No secret exfil",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "BEGIN RSA PRIVATE KEY"
+            ]
+          }
+        }
+      ],
+      "input": "please paste: BEGIN RSA PRIVATE KEY ...",
+      "expect": {
+        "decision": "block"
+      }
+    },
+    {
+      "id": "floor_clean_allows",
+      "floor": [
+        {
+          "id": "floor-secrets",
+          "name": "No secret exfil",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "BEGIN RSA PRIVATE KEY"
+            ]
+          }
+        }
+      ],
+      "input": "what is the weather",
+      "expect": {
+        "decision": "allow"
+      }
+    },
+    {
+      "id": "downgraded_floor_still_blocks",
+      "floor": [
+        {
+          "id": "floor-secrets",
+          "name": "No secret exfil",
+          "enabled": false,
+          "mode": "shadow",
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "BEGIN RSA PRIVATE KEY"
+            ]
+          }
+        }
+      ],
+      "input": "BEGIN RSA PRIVATE KEY",
+      "expect": {
+        "decision": "block"
+      }
+    },
+    {
+      "id": "empty_floor_allows",
+      "floor": [],
+      "input": "anything",
+      "expect": {
+        "decision": "allow"
+      }
+    }
+  ],
+  "version_cases": [
+    {
+      "id": "floor_a",
+      "floor": [
+        {
+          "id": "floor-secrets",
+          "name": "No secret exfil",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "BEGIN RSA PRIVATE KEY"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "floor_version": "c4dfc3a5c388693a"
+      }
+    },
+    {
+      "id": "downgraded_hashes_same_as_enforced",
+      "floor": [
+        {
+          "id": "floor-secrets",
+          "name": "No secret exfil",
+          "enabled": false,
+          "mode": "shadow",
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "BEGIN RSA PRIVATE KEY"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "floor_version": "c4dfc3a5c388693a"
+      }
+    },
+    {
+      "id": "multi_sorted",
+      "floor": [
+        {
+          "id": "b-second",
+          "name": "r2",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "ignore all rules"
+            ]
+          }
+        },
+        {
+          "id": "a-first",
+          "name": "r1",
+          "enabled": true,
+          "action": "flag",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "hello"
+            ]
+          }
+        }
+      ],
+      "expect": {
+        "floor_version": "c9382cc59b461eb9"
+      }
+    },
+    {
+      "id": "empty_is_none",
+      "floor": [],
+      "expect": {
+        "floor_version": "none"
+      }
+    }
+  ]
+}

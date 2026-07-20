@@ -1,0 +1,60 @@
+name: Publish @obsvr/sdk to npm
+
+# Publishing is MANUAL ONLY. No tag or push can trigger this workflow.
+# To release: Actions tab -> this workflow -> Run workflow -> type "publish"
+# in the confirm box. Requires the NPM_TOKEN secret to be configured.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "publish" to confirm you want to publish to npm'
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    if: ${{ inputs.confirm == 'publish' }}
+    # npm provenance (attestation) requires OIDC
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: sdk
+
+      - name: Build
+        run: npm run build
+        working-directory: sdk
+
+      - name: Test
+        run: npm test
+        working-directory: sdk
+        env:
+          NODE_ENV: test
+
+      # refuse to publish a self-contradictory version (package.json vs
+      # constants.ts vs _version.py vs server.json vs the tag).
+      - name: Verify version consistency
+        run: node scripts/check-version-consistency.mjs
+        env:
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        working-directory: sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

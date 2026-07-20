@@ -1,0 +1,116 @@
+{
+  "description": "Fleet-quota escrow (ADR-7) client decision semantics. Pins the allow/block decision at each governed call and the consumption report so the escrow client is behavior-identical in the TypeScript SDK (sdk/src/governance/escrow.ts, driven by sdk/tests/unit/escrow-conformance.test.ts) and the Python SDK (sdk-python/obsvr/escrow.py, driven by sdk-python/tests/test_escrow_conformance.py).",
+  "authoritative_source": "This repo. The client decision cases here must stay identical across TS and Python.",
+  "ops": {
+    "grant": "apply one escrow grant for rule_id with {share, epoch}; a non-strictly-increasing epoch is ignored (stale/replayed)",
+    "poll_response": "apply the full quota_escrow map from a /policies response (escrow: object of grants, or null = absent field => clear all escrow); rules present are granted, rules absent lose escrow",
+    "spend": "consume one unit of rule_id's local share; expect {escrow, allowed, remaining}",
+    "peek": "check-only (shadow/explain) read of rule_id's share, no consumption; expect {escrow, allowed, remaining}",
+    "has_escrow": "whether escrow is in effect for rule_id; expect bool",
+    "report": "snapshot quota_consumed for the next poll; expect {rule_id: {consumed, epoch}}"
+  },
+  "cases": [
+    {
+      "id": "grant-spend-exhaust-report",
+      "desc": "A grant is spent one unit per call; the call after exhaustion blocks (quota_exceeded); the report tallies units actually consumed under the grant's epoch.",
+      "steps": [
+        { "op": "grant", "rule_id": "r1", "share": 2, "epoch": 1 },
+        { "op": "has_escrow", "rule_id": "r1", "expect": true },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 1 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "report", "expect": { "r1": { "consumed": 2, "epoch": 1 } } }
+      ]
+    },
+    {
+      "id": "re-grant-resets-share-and-consumption",
+      "desc": "A fresh grant (new epoch) refills remaining and resets the per-epoch consumption counter; the next report is tagged with the new epoch.",
+      "steps": [
+        { "op": "grant", "rule_id": "r1", "share": 2, "epoch": 1 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 1 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "report", "expect": { "r1": { "consumed": 2, "epoch": 1 } } },
+        { "op": "grant", "rule_id": "r1", "share": 3, "epoch": 2 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 2 } },
+        { "op": "report", "expect": { "r1": { "consumed": 1, "epoch": 2 } } }
+      ]
+    },
+    {
+      "id": "zero-share-fails-closed",
+      "desc": "When the global budget is fully committed the allocator grants share 0; the instance blocks immediately (fail-closed) rather than overspending, and reports zero consumption so the whole grant is reclaimable.",
+      "steps": [
+        { "op": "grant", "rule_id": "r1", "share": 0, "epoch": 7 },
+        { "op": "has_escrow", "rule_id": "r1", "expect": true },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "report", "expect": { "r1": { "consumed": 0, "epoch": 7 } } }
+      ]
+    },
+    {
+      "id": "partition-spends-residual-then-blocks",
+      "desc": "On a poll failure no fresh grant arrives; the instance spends only its residual share and then blocks — it never fabricates share. The eventual successful poll reports what it used.",
+      "steps": [
+        { "op": "grant", "rule_id": "r1", "share": 2, "epoch": 3 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 1 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "report", "expect": { "r1": { "consumed": 2, "epoch": 3 } } }
+      ]
+    },
+    {
+      "id": "multi-rule-independent-shares",
+      "desc": "A poll_response grants shares for several rules at once; each rule's share depletes independently and both are reported.",
+      "steps": [
+        { "op": "poll_response", "escrow": { "r1": { "share": 1, "epoch": 1 }, "r2": { "share": 2, "epoch": 1 } } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r2", "expect": { "escrow": true, "allowed": true, "remaining": 1 } },
+        { "op": "spend", "rule_id": "r2", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r2", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "report", "expect": { "r1": { "consumed": 1, "epoch": 1 }, "r2": { "consumed": 2, "epoch": 1 } } }
+      ]
+    },
+    {
+      "id": "absent-rule-falls-back-to-per-process",
+      "desc": "A rule absent from quota_escrow has no escrow in effect (spend signals escrow=false so the caller uses the per-process meter). An absent quota_escrow field (null) clears all escrow — backward compatible with servers that never send it.",
+      "steps": [
+        { "op": "poll_response", "escrow": { "r1": { "share": 1, "epoch": 1 } } },
+        { "op": "has_escrow", "rule_id": "r1", "expect": true },
+        { "op": "has_escrow", "rule_id": "r2", "expect": false },
+        { "op": "spend", "rule_id": "r2", "expect": { "escrow": false, "allowed": false, "remaining": 0 } },
+        { "op": "poll_response", "escrow": null },
+        { "op": "has_escrow", "rule_id": "r1", "expect": false },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": false, "allowed": false, "remaining": 0 } }
+      ]
+    },
+    {
+      "id": "stale-grant-ignored",
+      "desc": "A grant whose epoch is not strictly greater than the current epoch (lower OR equal) is ignored, so a reordered or duplicated response can never resurrect a spent share; only a strictly newer epoch refills.",
+      "steps": [
+        { "op": "grant", "rule_id": "r1", "share": 3, "epoch": 5 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 2 } },
+        { "op": "grant", "rule_id": "r1", "share": 9, "epoch": 4 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 1 } },
+        { "op": "grant", "rule_id": "r1", "share": 9, "epoch": 5 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "report", "expect": { "r1": { "consumed": 3, "epoch": 5 } } },
+        { "op": "grant", "rule_id": "r1", "share": 4, "epoch": 6 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 3 } },
+        { "op": "report", "expect": { "r1": { "consumed": 1, "epoch": 6 } } }
+      ]
+    },
+    {
+      "id": "poll-refills-after-exhaustion",
+      "desc": "After a rule's share is exhausted and blocking, a later poll_response with a strictly newer epoch refills the share and unblocks; consumption is reported under the new epoch.",
+      "steps": [
+        { "op": "grant", "rule_id": "r1", "share": 1, "epoch": 1 },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 0 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": false, "remaining": 0 } },
+        { "op": "poll_response", "escrow": { "r1": { "share": 2, "epoch": 2 } } },
+        { "op": "peek", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 2 } },
+        { "op": "spend", "rule_id": "r1", "expect": { "escrow": true, "allowed": true, "remaining": 1 } },
+        { "op": "report", "expect": { "r1": { "consumed": 1, "epoch": 2 } } }
+      ]
+    }
+  ]
+}

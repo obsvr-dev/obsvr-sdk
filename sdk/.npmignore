@@ -1,0 +1,21 @@
+# Development files
+tests/
+*.test.ts
+*.spec.ts
+*.test.js
+*.spec.js
+
+# Source TypeScript (only publish compiled dist/)
+src/
+
+# Config files
+tsconfig.json
+jest.config.*
+.eslintrc*
+.prettierrc*
+
+# Misc
+*.log
+.env*
+node_modules/
+coverage/

@@ -1,0 +1,70 @@
+name: 'Obsvr Evidence Verification'
+description: >-
+  Verify an exported Obsvr evidence bundle as a CI/PR check. Runs the shipped
+  obsvr-verify CLI and fails the job if the audit chain does not verify.
+author: 'Obsvr'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  bundle:
+    description: >-
+      Path to the exported Obsvr evidence file to verify: an incident evidence
+      bundle (trace.steps), a trace evidence bundle, or a plain JSON array of
+      audit events. Relative to the repository root.
+    required: true
+  api-key:
+    description: >-
+      Obsvr signing/API key. When set, obsvr-verify recomputes every HMAC
+      signature (full re-verification) so any content tamper breaks the check.
+      When empty (default), only keyless structural verification runs (prev_sig
+      linkage, seq_no continuity, session consistency, timestamp monotonicity).
+      Always pass this via a repository/organization secret, never inline.
+    required: false
+    default: ''
+  version:
+    description: >-
+      Version of @obsvr/sdk to install. The obsvr-verify CLI ships inside this
+      package; pin an exact version for reproducible CI checks.
+    required: false
+    default: '0.9.0'
+  node-version:
+    description: 'Node.js version used to run obsvr-verify.'
+    required: false
+    default: '20'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Verify Obsvr evidence bundle
+      shell: bash
+      env:
+        OBSVR_BUNDLE: ${{ inputs.bundle }}
+        OBSVR_API_KEY: ${{ inputs.api-key }}
+        OBSVR_SDK_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -f "${OBSVR_BUNDLE}" ]; then
+          echo "::error::Evidence bundle not found: ${OBSVR_BUNDLE}"
+          exit 2
+        fi
+
+        # obsvr-verify exit codes: 0 = verified, 1 = chain broken, 2 = usage error.
+        args=("${OBSVR_BUNDLE}")
+        if [ -n "${OBSVR_API_KEY}" ]; then
+          echo "Running FULL HMAC re-verification (api-key provided)."
+          args+=("--api-key" "${OBSVR_API_KEY}")
+        else
+          echo "Running STRUCTURAL verification (no api-key)."
+          echo "::notice::No api-key supplied - signatures are not recomputed. Pass a secret to api-key for full HMAC re-verification."
+        fi
+
+        # Installs the pinned SDK on demand and runs its obsvr-verify bin.
+        npx -y -p "@obsvr/sdk@${OBSVR_SDK_VERSION}" obsvr-verify "${args[@]}"

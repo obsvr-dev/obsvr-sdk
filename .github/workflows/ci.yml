@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  ts-test:
+    name: TypeScript SDK (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18.x, 20.x, 22.x]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: sdk
+
+      - name: Build
+        run: npm run build
+        working-directory: sdk
+
+      - name: Test
+        run: npm test
+        working-directory: sdk
+        env:
+          NODE_ENV: test
+
+  py-test:
+    name: Python SDK (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e ".[dev]"
+        working-directory: sdk-python
+
+      - name: Test
+        run: python -m pytest tests/ -q
+        working-directory: sdk-python
+
+      - name: Build distribution (sdist + wheel)
+        run: |
+          pip install build
+          python -m build
+        working-directory: sdk-python
+
+  conformance:
+    name: Cross-language conformance fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert both suites reference the shared fixtures
+        run: |
+          set -euo pipefail
+          test -f conformance/fixtures/signing_vectors.json
+          test -f conformance/fixtures/eval_semantics.json
+          test -f conformance/fixtures/reason_codes.json
+          test -f conformance/fixtures/pii_scan.json
+          grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/signing-vectors.test.ts
+          grep -q "conformance/fixtures/eval_semantics.json" sdk/tests/unit/conformance.test.ts
+          grep -q "conformance/fixtures/reason_codes.json" sdk/tests/unit/reason-codes.test.ts
+          grep -q "conformance/fixtures/pii_scan.json" sdk/tests/unit/pii-scan-conformance.test.ts
+          grep -q "conformance/fixtures/signing_vectors.json" sdk-python/tests/test_signing.py
+          grep -q "conformance/fixtures/eval_semantics.json" sdk-python/tests/test_conformance.py
+          grep -q "conformance/fixtures/reason_codes.json" sdk-python/tests/test_reason_codes.py
+          grep -q "conformance/fixtures/pii_scan.json" sdk-python/tests/test_pii_scan_conformance.py
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install TypeScript SDK deps
+        run: npm ci
+        working-directory: sdk
+
+      - name: TypeScript fixture suites (signing vectors + eval semantics + reason codes + pii scan)
+        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts
+        working-directory: sdk
+        env:
+          NODE_ENV: test
+
+      - name: Install Python SDK
+        run: pip install -e ".[dev]"
+        working-directory: sdk-python
+
+      - name: Python fixture suites (signing vectors + eval semantics + reason codes + pii scan)
+        run: python -m pytest tests/test_signing.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py -q
+        working-directory: sdk-python
+
+  lint:
+    name: Lint (ESLint + Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install TypeScript SDK deps
+        run: npm ci
+        working-directory: sdk
+
+      - name: ESLint (correctness rules)
+        run: npm run lint
+        working-directory: sdk
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ruff (default E/F rules)
+        run: |
+          pip install ruff
+          ruff check .
+        working-directory: sdk-python
+
+  version-consistency:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # catch a self-contradictory version early (package.json vs
+      # constants.ts vs _version.py vs server.json). Node is preinstalled.
+      - name: Check versions agree
+        run: node scripts/check-version-consistency.mjs
+
+  ci-complete:
+    name: CI complete
+    runs-on: ubuntu-latest
+    needs: [ts-test, py-test, conformance, lint, version-consistency]
+    steps:
+      - run: echo "ok"

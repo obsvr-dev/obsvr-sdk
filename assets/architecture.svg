@@ -1,0 +1,152 @@
+<svg width="1400" height="760" viewBox="0 0 1400 760" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif">
+  <defs>
+    <radialGradient id="glow" cx="700" cy="230" r="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6" stop-opacity="0.16"/>
+      <stop offset="0.55" stop-color="#6d4aff" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#08080f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="obsvrMark" x1="79.5" y1="152" x2="79.5" y2="7" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2563EB"/><stop offset="0.5" stop-color="#3B82F6"/><stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+    <linearGradient id="seal" x1="120" y1="0" x2="1280" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3b82f6"/><stop offset="1" stop-color="#6d4aff"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0 1 L9 5 L0 9" fill="none" stroke="#4b4e63" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <rect width="1400" height="760" fill="#08080f"/>
+  <rect width="1400" height="760" fill="url(#glow)"/>
+
+  <!-- faint orbital rings, background texture only, no diagram function -->
+  <circle cx="700" cy="230" r="210" fill="none" stroke="#3b82f6" stroke-opacity="0.10" stroke-width="1.2" stroke-dasharray="2 9"/>
+  <circle cx="700" cy="230" r="300" fill="none" stroke="#6d4aff" stroke-opacity="0.07" stroke-width="1.2" stroke-dasharray="2 11"/>
+
+  <!-- ================= ROW 1: enforcement flow ================= -->
+
+  <!-- user/agent -->
+  <g stroke="#c8cad8" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="115" cy="205" r="21"/>
+    <path d="M85 260 c0-21 14-33 30-33 s30 12 30 33"/>
+    <rect x="155" y="197" width="50" height="44" rx="9"/>
+    <circle cx="169" cy="215" r="3.6" fill="#c8cad8"/><circle cx="191" cy="215" r="3.6" fill="#c8cad8"/>
+    <path d="M170 227 h18" stroke-width="1.8"/>
+  </g>
+  <text x="140" y="300" text-anchor="middle" fill="#7c7f95" font-size="14" letter-spacing="1.5" font-weight="600">USER / AGENT</text>
+
+  <path d="M225 218 h95" stroke="#4b4e63" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- obsvr node -->
+  <rect x="352" y="140" width="180" height="156" rx="20" fill="#0e0e18" stroke="#3b82f6" stroke-opacity="0.5" stroke-width="1.6"/>
+  <g transform="translate(408,168) scale(0.46)">
+    <g transform="translate(80 80) scale(1.06) translate(-80 -80)">
+      <path d="M80 38L45 78" stroke="#7C5CFF" stroke-width="5.4"/>
+      <path d="M80 38L97 58L114 78" stroke="#7C5CFF" stroke-width="5.4"/>
+      <path d="M79.5 52C73.1487 52 68 46.6274 68 40C68 33.3726 73.1487 28 79.5 28C85.8513 28 91 33.3726 91 40C91 46.6274 85.8513 52 79.5 52Z" fill="#7C5CFF"/>
+      <path d="M114.5 92C108.149 92 103 86.6274 103 80C103 73.3726 108.149 68 114.5 68C120.851 68 126 73.3726 126 80C126 86.6274 120.851 92 114.5 92Z" fill="#7C5CFF"/>
+      <path d="M45.5 92C39.1487 92 34 86.6274 34 80C34 73.3726 39.1487 68 45.5 68C51.8513 68 57 73.3726 57 80C57 86.6274 51.8513 92 45.5 92Z" fill="#7C5CFF"/>
+      <path d="M80 122L46 82" stroke="#7C5CFF" stroke-width="5.4"/>
+      <path d="M80 122L97.5 102L115 82" stroke="#7C5CFF" stroke-width="5.4"/>
+      <path d="M79.5 108C73.1487 108 68 113.373 68 120C68 126.627 73.1487 132 79.5 132C85.8513 132 91 126.627 91 120C91 113.373 85.8513 108 79.5 108Z" fill="#7C5CFF"/>
+      <path d="M114.5 68C108.149 68 103 73.3726 103 80C103 86.6274 108.149 92 114.5 92C120.851 92 126 86.6274 126 80C126 73.3726 120.851 68 114.5 68Z" fill="#7C5CFF"/>
+      <path d="M45.5 68C39.1487 68 34 73.3726 34 80C34 86.6274 39.1487 92 45.5 92C51.8513 92 57 86.6274 57 80C57 73.3726 51.8513 68 45.5 68Z" fill="#7C5CFF"/>
+    </g>
+    <path d="M79.5 152L7 115.209V43.791L79.5 7L152 43.791V79.5V97.3545V115.209L79.5 152Z" stroke="url(#obsvrMark)" stroke-width="6.4"/>
+  </g>
+  <text x="442" y="252" text-anchor="middle" fill="#f4f4fb" font-size="21" font-weight="700">obsvr</text>
+  <text x="442" y="274" text-anchor="middle" fill="#7c7f95" font-size="13" letter-spacing="0.5">in-process, zero-code</text>
+
+  <path d="M532 218 h70" stroke="#4b4e63" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- 4 checks, stacked, connecting-bracket style (not boxes-in-a-row) -->
+  <path d="M602 218 h30 v-84 h34 M602 218 h30 v-28 h34 M602 218 h30 v28 h34 M602 218 h30 v84 h34"
+        stroke="#3b82f6" stroke-opacity="0.45" stroke-width="1.4" fill="none"/>
+
+  <g>
+    <circle cx="670" cy="106" r="6" fill="#3b82f6"/>
+    <text x="686" y="98" fill="#e6e7ee" font-size="16" font-weight="700">Policy</text>
+    <text x="686" y="117" fill="#7c7f95" font-size="13">13 rule types, deterministic</text>
+  </g>
+  <g>
+    <circle cx="670" cy="190" r="6" fill="#3b82f6"/>
+    <text x="686" y="182" fill="#e6e7ee" font-size="16" font-weight="700">PII &amp; injection</text>
+    <text x="686" y="201" fill="#7c7f95" font-size="13">redact/block PII · pattern-based injection</text>
+  </g>
+  <g>
+    <circle cx="670" cy="246" r="6" fill="#3b82f6"/>
+    <text x="686" y="238" fill="#e6e7ee" font-size="16" font-weight="700">Agent &amp; budget</text>
+    <text x="686" y="257" fill="#7c7f95" font-size="13">tool limits, cost caps, kill switch</text>
+  </g>
+  <g>
+    <circle cx="670" cy="330" r="6" fill="#f59e0b"/>
+    <text x="686" y="322" fill="#e6e7ee" font-size="16" font-weight="700">Verdict</text>
+    <text x="686" y="341" fill="#7c7f95" font-size="13">allow · block · redact · review</text>
+  </g>
+
+  <path d="M950 218 h70" stroke="#4b4e63" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- back to user/app -->
+  <g stroke="#c8cad8" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="1032" y="182" width="150" height="72" rx="12"/>
+  </g>
+  <text x="1107" y="212" text-anchor="middle" fill="#e6e7ee" font-size="15" font-weight="600">your app</text>
+  <text x="1107" y="232" text-anchor="middle" fill="#7c7f95" font-size="12">gets the verdict</text>
+
+  <!-- ================= ROW 2: the sealed record, timeline style ================= -->
+
+  <line x1="700" y1="380" x2="700" y2="440" stroke="#4b4e63" stroke-width="1.6"/>
+  <text x="700" y="410" text-anchor="middle" fill="#5b5e72" font-size="13" letter-spacing="2">EVERY DECISION, SEALED</text>
+
+  <line x1="120" y1="470" x2="1280" y2="470" stroke="url(#seal)" stroke-opacity="0.4" stroke-width="1.6" stroke-dasharray="2 8"/>
+
+  <!-- SDK / service boundary: only the HMAC chain is the SDK; the rest is the ingest service -->
+  <line x1="376" y1="440" x2="376" y2="500" stroke="#4b4e63" stroke-opacity="0.45" stroke-width="1.2" stroke-dasharray="2 6"/>
+  <text x="220" y="430" text-anchor="middle" fill="#5b5e72" font-size="10.5" letter-spacing="1.2" font-weight="600">SDK · IN-PROCESS</text>
+  <text x="846" y="430" text-anchor="middle" fill="#5b5e72" font-size="10.5" letter-spacing="1.2" font-weight="600">OBSVR INGEST SERVICE</text>
+
+  <!-- 4 seal-chain nodes on the line -->
+  <g>
+    <circle cx="220" cy="470" r="7" fill="#3b82f6"/>
+    <text x="220" y="452" text-anchor="middle" fill="#e6e7ee" font-size="15" font-weight="700">HMAC chain</text>
+    <text x="220" y="500" text-anchor="middle" fill="#7c7f95" font-size="12">signed at capture</text>
+  </g>
+  <g>
+    <circle cx="533" cy="470" r="7" fill="#3b82f6"/>
+    <text x="533" y="452" text-anchor="middle" fill="#e6e7ee" font-size="15" font-weight="700">Countersign</text>
+    <text x="533" y="500" text-anchor="middle" fill="#7c7f95" font-size="12">server-held key</text>
+  </g>
+  <g>
+    <circle cx="846" cy="470" r="7" fill="#6d4aff"/>
+    <text x="846" y="452" text-anchor="middle" fill="#e6e7ee" font-size="15" font-weight="700">Merkle → Ed25519</text>
+    <text x="846" y="500" text-anchor="middle" fill="#7c7f95" font-size="12">public key, published</text>
+  </g>
+  <g>
+    <circle cx="1160" cy="470" r="9" fill="none" stroke="#10b981" stroke-width="2.4"/>
+    <circle cx="1160" cy="470" r="3.5" fill="#10b981"/>
+    <text x="1160" y="452" text-anchor="middle" fill="#e6e7ee" font-size="15" font-weight="700">Off-host anchor</text>
+    <text x="1160" y="500" text-anchor="middle" fill="#7c7f95" font-size="12">survives a host breach</text>
+  </g>
+
+  <!-- ================= ROW 3: payoff ================= -->
+
+  <line x1="700" y1="530" x2="700" y2="576" stroke="#4b4e63" stroke-width="1.6"/>
+
+  <rect x="330" y="586" width="380" height="108" rx="18" fill="#0e0e18" stroke="#2a2c3d" stroke-width="1.4"/>
+  <g transform="translate(360,620)" stroke="#9d86ff" stroke-width="2.2" fill="none" stroke-linecap="round">
+    <path d="M6 16 v-6 a9 9 0 0 1 18 0 v6"/><rect x="0" y="16" width="30" height="22" rx="4" fill="#9d86ff" stroke="none"/>
+    <rect x="13" y="24" width="4" height="8" rx="2" fill="#0e0e18" stroke="none"/>
+  </g>
+  <text x="410" y="630" fill="#f4f4fb" font-size="17" font-weight="700">Temporal provenance</text>
+  <text x="410" y="653" fill="#9aa0b4" font-size="13">Exact model + policy behind any decision,</text>
+  <text x="410" y="673" fill="#9aa0b4" font-size="13">reconstructed months or years later.</text>
+
+  <path d="M710 640 h90" stroke="#4b4e63" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <g transform="translate(824,610)">
+    <circle cx="26" cy="26" r="24" fill="none" stroke="#10b981" stroke-width="2.4"/>
+    <path d="M15 26 l8 8 l16-16" stroke="#10b981" stroke-width="2.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="66" y="21" fill="#e6e7ee" font-size="16" font-weight="700">Verify offline</text>
+    <text x="66" y="41" fill="#7c7f95" font-size="13">public key only, no account</text>
+  </g>
+</svg>

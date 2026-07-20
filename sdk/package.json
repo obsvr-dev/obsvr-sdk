@@ -1,0 +1,208 @@
+{
+  "name": "@obsvr/sdk",
+  "version": "0.10.0",
+  "description": "Obsvr SDK - LLM governance and audit tracking with auto-instrumentation",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./register": {
+      "import": {
+        "types": "./dist/register.d.ts",
+        "default": "./dist/register.js"
+      }
+    },
+    "./mcp": {
+      "import": {
+        "types": "./dist/mcp.d.ts",
+        "default": "./dist/mcp.js"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/client.d.ts",
+        "default": "./dist/client.js"
+      }
+    },
+    "./proxy": {
+      "import": {
+        "types": "./dist/proxy/index.d.ts",
+        "default": "./dist/proxy/index.js"
+      }
+    },
+    "./bedrock": {
+      "import": {
+        "types": "./dist/bedrock.d.ts",
+        "default": "./dist/bedrock.js"
+      }
+    },
+    "./azure-openai": {
+      "import": {
+        "types": "./dist/azure-openai.d.ts",
+        "default": "./dist/azure-openai.js"
+      }
+    },
+    "./together": {
+      "import": {
+        "types": "./dist/together.d.ts",
+        "default": "./dist/together.js"
+      }
+    },
+    "./vertex": {
+      "import": {
+        "types": "./dist/vertex.d.ts",
+        "default": "./dist/vertex.js"
+      }
+    },
+    "./cloudflare": {
+      "import": {
+        "types": "./dist/cloudflare.d.ts",
+        "default": "./dist/cloudflare.js"
+      }
+    },
+    "./langchain": {
+      "import": {
+        "types": "./dist/langchain.d.ts",
+        "default": "./dist/langchain.js"
+      }
+    },
+    "./openai-agents": {
+      "import": {
+        "types": "./dist/openai-agents.d.ts",
+        "default": "./dist/openai-agents.js"
+      }
+    },
+    "./llamaindex": {
+      "import": {
+        "types": "./dist/llamaindex.d.ts",
+        "default": "./dist/llamaindex.js"
+      }
+    },
+    "./vercel-ai": {
+      "import": {
+        "types": "./dist/vercel-ai.d.ts",
+        "default": "./dist/vercel-ai.js"
+      }
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.d.ts.map",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "prebuild": "rm -rf dist",
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build && npm test",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:unit": "npm test -- --testPathPattern=unit",
+    "test:stress": "node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.stress.config.js --runInBand",
+    "test:all": "npm test && npm run test:stress",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "llm",
+    "governance",
+    "audit",
+    "compliance",
+    "ai-governance",
+    "openai",
+    "anthropic",
+    "mcp",
+    "pii",
+    "policy"
+  ],
+  "author": "obsvr",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/obsvr-dev/obsvr-sdk#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/obsvr-dev/obsvr-sdk.git",
+    "directory": "sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/obsvr-dev/obsvr-sdk/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "typescript-eslint": "^8.0.0",
+    "@google/generative-ai": "^0.24.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@openai/agents": "^0.13.4",
+    "zod": "^4.2.0",
+    "@modelcontextprotocol/server-filesystem": "^2026.1.14",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.0",
+    "jest": "^29.7.0",
+    "msw": "^2.0.0",
+    "openai": "^6.0.0",
+    "ts-jest": "^29.4.11",
+    "tsx": "^4.22.4",
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.20.0",
+    "@aws-sdk/client-bedrock-runtime": ">=3.0.0",
+    "@google-cloud/vertexai": ">=1.0.0",
+    "@langchain/core": ">=0.2.0",
+    "@modelcontextprotocol/sdk": ">=1.0.0",
+    "@openai/agents": ">=0.1.0",
+    "ai": ">=3.0.0",
+    "llamaindex": ">=0.5.0",
+    "openai": ">=4.0.0",
+    "@opentelemetry/api": ">=1.4.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "llamaindex": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "@aws-sdk/client-bedrock-runtime": {
+      "optional": true
+    },
+    "@google-cloud/vertexai": {
+      "optional": true
+    },
+    "@openai/agents": {
+      "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "obsvr-verify": "dist/cli-verify.js",
+    "obsvr-export-rego": "dist/rego-export-bin.js"
+  }
+}
