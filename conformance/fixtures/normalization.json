@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "name": "normalization",
+  "description": "Cross-SDK matching-time normalization (§6). Each case pins the exact output of normalizeForMatching / normalize_for_matching (NFKC + zero-width strip + curated confusable fold) for a given input. Both SDK harnesses (sdk/tests/unit/normalization.test.ts, sdk-python/tests/test_normalization.py) feed every `input` through their normalizer and must produce the pinned `normalized` string byte-for-byte. `matches_override` additionally pins that a keyword rule for \"override\" fires on the normalized copy while the raw input would have dodged it. A divergence is a release blocker unless recorded in conformance/known-divergences.md. This is a MATCHING-only transform: it never mutates stored/forwarded content.",
+  "cases": [
+    {
+      "id": "ascii_identity",
+      "note": "Plain ASCII is unchanged — normalization never perturbs existing behavior.",
+      "input": "override the system instructions",
+      "normalized": "override the system instructions",
+      "matches_override": true
+    },
+    {
+      "id": "zero_width_joiner",
+      "note": "U+200D ZERO WIDTH JOINER spliced into the keyword is stripped.",
+      "input": "over‍ride the system",
+      "normalized": "override the system",
+      "matches_override": true
+    },
+    {
+      "id": "zero_width_space_and_variants",
+      "note": "ZWSP, soft hyphen, BOM, word joiner all stripped.",
+      "input": "o​v­e﻿r⁠ride",
+      "normalized": "override",
+      "matches_override": true
+    },
+    {
+      "id": "fullwidth_nfkc",
+      "note": "Fullwidth Latin letters fold to ASCII under NFKC.",
+      "input": "ｏｖｅｒｒｉｄｅ",
+      "normalized": "override",
+      "matches_override": true
+    },
+    {
+      "id": "cyrillic_confusable",
+      "note": "Cyrillic small o (U+043E) folds to Latin o; NFKC alone would not.",
+      "input": "оverride",
+      "normalized": "override",
+      "matches_override": true
+    },
+    {
+      "id": "greek_confusable",
+      "note": "Greek small omicron (U+03BF) folds to Latin o.",
+      "input": "οverride",
+      "normalized": "override",
+      "matches_override": true
+    },
+    {
+      "id": "mixed_cyrillic_and_zero_width",
+      "note": "Confusable + zero-width combined still collapses to the keyword.",
+      "input": "о​v‍erride",
+      "normalized": "override",
+      "matches_override": true
+    },
+    {
+      "id": "bidi_controls_stripped",
+      "note": "Bidirectional format controls (LRM/RLM, embeddings/overrides, isolates) are invisible and must be stripped before matching.",
+      "input": "o‭v‎e⁩r‮ride",
+      "normalized": "override",
+      "matches_override": true
+    },
+    {
+      "id": "astral_passthrough",
+      "note": "Non-confusable characters (incl. astral/emoji) pass through unchanged.",
+      "input": "ship it 🚀 now",
+      "normalized": "ship it 🚀 now",
+      "matches_override": false
+    },
+    {
+      "id": "clean_no_keyword",
+      "note": "No keyword present after normalization — must not falsely match.",
+      "input": "please summarize the meeting notes",
+      "normalized": "please summarize the meeting notes",
+      "matches_override": false
+    }
+  ]
+}

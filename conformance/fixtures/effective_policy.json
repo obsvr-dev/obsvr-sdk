@@ -1,0 +1,146 @@
+{
+  "description": "Effective-policy resolution fixtures (GOVERNANCE_ARCHITECTURE_REPORT.md §8). Pins ordering (pack < org < project), shadow-pack forcing, mandatory-override rejection with provenance flag, default-override application, provenance hash-neutrality, and the identity merge for org-less projects. Executed by ingest/tests/unit/effective-policy.test.ts.",
+  "cases": [
+    {
+      "name": "identity merge: org-less project is byte-identical to today",
+      "packs": [],
+      "org_rules": [],
+      "project_rules": [
+        { "id": "p1", "name": "Project keyword", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["bad"] } }
+      ],
+      "overrides": {},
+      "expect": {
+        "order": ["p1"],
+        "sources": ["project"]
+      }
+    },
+    {
+      "name": "ordering: pack rules, then org rules, then project rules",
+      "packs": [
+        {
+          "instance_id": "inst-a",
+          "pack_id": "healthcare-core",
+          "version": "1.0.0",
+          "status": "active",
+          "imported_at": "2026-07-01T00:00:00Z",
+          "rules": [
+            { "id": "phi", "name": "PHI redaction", "enabled": true, "action": "redact", "type": "pii", "conditions": { "pii_types": ["ssn"] } }
+          ]
+        }
+      ],
+      "org_rules": [
+        { "id": "o1", "name": "Org model allowlist", "enabled": true, "action": "block", "type": "model_gate", "conditions": { "allowed_models": ["gpt-4o"] } }
+      ],
+      "project_rules": [
+        { "id": "p1", "name": "Project topic", "enabled": true, "action": "flag", "type": "topic_deny", "conditions": { "topics": ["politics"] } }
+      ],
+      "overrides": {},
+      "expect": {
+        "order": ["pack:inst-a:phi", "org:o1", "p1"],
+        "sources": ["pack", "org", "project"]
+      }
+    },
+    {
+      "name": "shadow pack forces mode shadow on every contributed rule",
+      "packs": [
+        {
+          "instance_id": "inst-b",
+          "pack_id": "fintech-core",
+          "version": "2.0.0",
+          "status": "shadow",
+          "imported_at": "2026-07-02T00:00:00Z",
+          "rules": [
+            { "id": "fair", "name": "Fair lending", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["deny loan"] } }
+          ]
+        }
+      ],
+      "org_rules": [],
+      "project_rules": [],
+      "overrides": {},
+      "expect": {
+        "order": ["pack:inst-b:fair"],
+        "modes": ["shadow"]
+      }
+    },
+    {
+      "name": "retired packs contribute nothing",
+      "packs": [
+        {
+          "instance_id": "inst-c",
+          "pack_id": "old",
+          "version": "1.0.0",
+          "status": "retired",
+          "imported_at": "2026-07-01T00:00:00Z",
+          "rules": [
+            { "id": "r", "name": "Old", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["x"] } }
+          ]
+        }
+      ],
+      "org_rules": [],
+      "project_rules": [
+        { "id": "p1", "name": "P", "enabled": true, "action": "flag", "type": "keyword", "conditions": { "keywords": ["y"] } }
+      ],
+      "overrides": {},
+      "expect": { "order": ["p1"] }
+    },
+    {
+      "name": "default-enforcement org rule can be shadowed and disabled by project overrides",
+      "packs": [],
+      "org_rules": [
+        { "id": "o1", "name": "Org A", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["a"] } },
+        { "id": "o2", "name": "Org B", "enabled": true, "action": "block", "type": "keyword", "conditions": { "keywords": ["b"] } }
+      ],
+      "project_rules": [],
+      "overrides": {
+        "org:o1": { "mode": "shadow", "reason": "false positives in this app", "created_by": "u1", "created_at": "t" },
+        "org:o2": { "disabled": true, "reason": "not applicable", "created_by": "u1", "created_at": "t" }
+      },
+      "expect": {
+        "order": ["org:o1"],
+        "modes": ["shadow"],
+        "overridden": [true]
+      }
+    },
+    {
+      "name": "MANDATORY org rule ignores overrides and flags the attempt in provenance",
+      "packs": [],
+      "org_rules": [
+        { "id": "o1", "name": "Org mandate", "enabled": true, "action": "block", "type": "model_gate", "enforcement": "mandatory", "conditions": { "allowed_models": ["gpt-4o"] } }
+      ],
+      "project_rules": [],
+      "overrides": {
+        "org:o1": { "disabled": true, "reason": "attempted weakening", "created_by": "u1", "created_at": "t" }
+      },
+      "expect": {
+        "order": ["org:o1"],
+        "modes": ["enforce"],
+        "override_rejected": [true]
+      }
+    },
+    {
+      "name": "provenance is hash-neutral: effective hash equals the hash of the same rules without provenance",
+      "packs": [
+        {
+          "instance_id": "inst-a",
+          "pack_id": "healthcare-core",
+          "version": "1.0.0",
+          "status": "active",
+          "imported_at": "2026-07-01T00:00:00Z",
+          "rules": [
+            { "id": "phi", "name": "PHI redaction", "enabled": true, "action": "redact", "type": "pii", "conditions": { "pii_types": ["ssn"] } }
+          ]
+        }
+      ],
+      "org_rules": [
+        { "id": "o1", "name": "Org gate", "enabled": true, "action": "block", "type": "environment_gate", "conditions": { "target_environments": ["production"] } }
+      ],
+      "project_rules": [
+        { "id": "p1", "name": "P", "enabled": true, "action": "flag", "type": "keyword", "conditions": { "keywords": ["y"] } }
+      ],
+      "overrides": {},
+      "expect": {
+        "hash_neutral": true
+      }
+    }
+  ]
+}

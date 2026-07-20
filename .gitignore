@@ -1,0 +1,28 @@
+# Node
+node_modules/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+build/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Coverage
+coverage/
+.coverage
+htmlcov/
+
+# Env / local
+.env
+.env.*
+*.log
+.DS_Store
+LAUNCH.md
+bench/results/
+.claude/

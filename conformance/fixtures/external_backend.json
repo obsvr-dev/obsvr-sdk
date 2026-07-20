@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "name": "external_backend",
+  "description": "Cross-SDK fixtures for the inbound OPA/Cedar external policy backend (ADR-4). merge_cases pin the DENY-WINS merge plus fail-closed and shadow (observe-only) semantics: a deny from EITHER the local pipeline or the backend blocks; a backend error/timeout is a deny in enforce mode; shadow mode never blocks. provenance_cases pin the backend identity + effective-policy-hash computation. Both SDK harnesses (sdk/tests/unit/external-backend-conformance.test.ts, sdk-python/tests/test_external_backend_conformance.py) run mergeExternalBackendDecision / merge_external_backend_decision and backendProvenance / backend_provenance over every case and must agree byte for byte. A divergence is a release blocker.",
+  "merge_cases": [
+    { "id": "allow_allow_enforce", "desc": "local allow + backend allow (enforce) -> allow", "local": "allow", "outcome": "allow", "shadow": false, "expect": { "decision": "allow", "blocked_by_backend": false } },
+    { "id": "allow_allow_shadow", "desc": "local allow + backend allow (shadow) -> allow", "local": "allow", "outcome": "allow", "shadow": true, "expect": { "decision": "allow", "blocked_by_backend": false } },
+    { "id": "allow_deny_enforce", "desc": "local allow + backend deny (enforce) -> backend blocks", "local": "allow", "outcome": "deny", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": true } },
+    { "id": "allow_deny_shadow", "desc": "local allow + backend deny (shadow) -> observe-only, allow", "local": "allow", "outcome": "deny", "shadow": true, "expect": { "decision": "allow", "blocked_by_backend": false } },
+    { "id": "allow_error_enforce", "desc": "local allow + backend error (enforce) -> fail-closed deny", "local": "allow", "outcome": "error", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": true } },
+    { "id": "allow_error_shadow", "desc": "local allow + backend error (shadow) -> observe-only, allow", "local": "allow", "outcome": "error", "shadow": true, "expect": { "decision": "allow", "blocked_by_backend": false } },
+    { "id": "allow_timeout_enforce", "desc": "local allow + backend timeout (enforce) -> fail-closed deny", "local": "allow", "outcome": "timeout", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": true } },
+    { "id": "allow_timeout_shadow", "desc": "local allow + backend timeout (shadow) -> observe-only, allow", "local": "allow", "outcome": "timeout", "shadow": true, "expect": { "decision": "allow", "blocked_by_backend": false } },
+
+    { "id": "redact_allow_enforce", "desc": "local redact + backend allow (enforce) -> redact stands", "local": "redact", "outcome": "allow", "shadow": false, "expect": { "decision": "redact", "blocked_by_backend": false } },
+    { "id": "redact_allow_shadow", "desc": "local redact + backend allow (shadow) -> redact stands", "local": "redact", "outcome": "allow", "shadow": true, "expect": { "decision": "redact", "blocked_by_backend": false } },
+    { "id": "redact_deny_enforce", "desc": "local redact + backend deny (enforce) -> block escalation (deny wins over redact)", "local": "redact", "outcome": "deny", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": true } },
+    { "id": "redact_deny_shadow", "desc": "local redact + backend deny (shadow) -> observe-only, redact stands", "local": "redact", "outcome": "deny", "shadow": true, "expect": { "decision": "redact", "blocked_by_backend": false } },
+    { "id": "redact_error_enforce", "desc": "local redact + backend error (enforce) -> fail-closed block", "local": "redact", "outcome": "error", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": true } },
+    { "id": "redact_error_shadow", "desc": "local redact + backend error (shadow) -> observe-only, redact stands", "local": "redact", "outcome": "error", "shadow": true, "expect": { "decision": "redact", "blocked_by_backend": false } },
+    { "id": "redact_timeout_enforce", "desc": "local redact + backend timeout (enforce) -> fail-closed block", "local": "redact", "outcome": "timeout", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": true } },
+    { "id": "redact_timeout_shadow", "desc": "local redact + backend timeout (shadow) -> observe-only, redact stands", "local": "redact", "outcome": "timeout", "shadow": true, "expect": { "decision": "redact", "blocked_by_backend": false } },
+
+    { "id": "block_allow_enforce", "desc": "local block + backend allow (enforce) -> backend allow never downgrades a local block", "local": "block", "outcome": "allow", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_allow_shadow", "desc": "local block + backend allow (shadow) -> block stands", "local": "block", "outcome": "allow", "shadow": true, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_deny_enforce", "desc": "local block + backend deny (enforce) -> block stands, backend did not cause it", "local": "block", "outcome": "deny", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_deny_shadow", "desc": "local block + backend deny (shadow) -> block stands", "local": "block", "outcome": "deny", "shadow": true, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_error_enforce", "desc": "local block + backend error (enforce) -> block stands", "local": "block", "outcome": "error", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_error_shadow", "desc": "local block + backend error (shadow) -> block stands", "local": "block", "outcome": "error", "shadow": true, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_timeout_enforce", "desc": "local block + backend timeout (enforce) -> block stands", "local": "block", "outcome": "timeout", "shadow": false, "expect": { "decision": "block", "blocked_by_backend": false } },
+    { "id": "block_timeout_shadow", "desc": "local block + backend timeout (shadow) -> block stands", "local": "block", "outcome": "timeout", "shadow": true, "expect": { "decision": "block", "blocked_by_backend": false } }
+  ],
+  "provenance_cases": [
+    {
+      "id": "opa_endpoint_identity",
+      "desc": "OPA with no name/policy: identity from type+host, hash from type|url",
+      "backend": { "type": "opa", "url": "https://opa.example.com/v1/data/obsvr/allow" },
+      "expect": { "identity": "opa:opa.example.com", "policy_hash": "fe9b6c89df0afb11" }
+    },
+    {
+      "id": "cedar_named_with_policy",
+      "desc": "Cedar with name + policy text: identity from name, hash from policy text",
+      "backend": { "type": "cedar", "url": "https://cedar.example.com/v1/is_authorized", "name": "corp-cedar", "policy": "permit(principal, action, resource);" },
+      "expect": { "identity": "corp-cedar", "policy_hash": "bacfa3fab8b34a87" }
+    },
+    {
+      "id": "opa_policy_text_empty_name",
+      "desc": "OPA with empty name + policy text: identity falls back to type+host, hash from policy text",
+      "backend": { "type": "opa", "url": "https://policy.internal.example.com:8181/v1/data/authz", "name": "", "policy": "package authz\ndefault allow = false" },
+      "expect": { "identity": "opa:policy.internal.example.com:8181", "policy_hash": "710d539f1f96550b" }
+    }
+  ]
+}

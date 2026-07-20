@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "name": "rules_hash.canonical",
+  "description": "Cross-SDK canonical rules-hash fixture. Both SDKs must derive these exact hashes from these rules. The hash is the policy_version stamped on every audit event and the pin for approvals, so a divergence here is a release blocker, never a known-divergence.",
+  "rules": [
+    {
+      "id": "r-block-ssn",
+      "name": "Block SSN",
+      "enabled": true,
+      "action": "block",
+      "type": "pii",
+      "conditions": { "pii_types": ["ssn", "credit_card"], "min_confidence": 0.8 }
+    },
+    {
+      "id": "r-quota-user",
+      "name": "Per-user quota",
+      "enabled": true,
+      "action": "block",
+      "type": "quota",
+      "conditions": { "quota_limit": 100, "quota_window_ms": 60000, "quota_scope": "user_id" },
+      "applies_to": "prompt"
+    },
+    {
+      "id": "r-disabled",
+      "name": "Disabled rule",
+      "enabled": false,
+      "action": "flag",
+      "type": "keyword",
+      "conditions": { "keywords": ["test"] }
+    }
+  ],
+  "expected": {
+    "set_hash": "4bdd7fad795f7545",
+    "set_hash_note": "Order-insensitive over enabled rules; disabled rules excluded.",
+    "rule_hashes": {
+      "r-block-ssn": "123876ad928aaf23",
+      "r-quota-user": "6a55fb11aac90df3"
+    },
+    "empty_set_hash": "none",
+    "all_disabled_hash": "none"
+  }
+}

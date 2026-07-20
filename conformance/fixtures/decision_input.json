@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "name": "decision_input.canonical",
+  "description": "Cross-SDK canonical decision-input document fixture (ADR-2, schema obsvr-decision-input-v1). Both SDKs must build these exact documents from these inputs, serialize them to these exact canonical bytes (RFC 8785-style: UTF-8, sorted keys, no insignificant whitespace, absent optionals omitted), and derive these exact SHA-256 hashes. The hash is the decision_input_hash stamped on every audit event and sealed by the ledger's v7 Merkle leaf, so a divergence here is a release blocker, never a known-divergence. engine_version bumps only when evaluation semantics change.",
+  "engine_version": "obsvr-rules/1",
+  "cases": [
+    {
+      "id": "request-allow-all-scopes",
+      "note": "request target, active rules, every scope identifier present, hook allowed",
+      "input": {
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": false,
+        "target": "request",
+        "evaluated_text": "hello world",
+        "user_id": "user-42",
+        "service_name": "checkout-api",
+        "tenant_id": "tenant-7",
+        "hook": "allow"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": false,
+        "target": "request",
+        "hook": "allow",
+        "prompt_sha256": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+        "user_id": "user-42",
+        "service_name": "checkout-api",
+        "tenant_id": "tenant-7"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":false,\"engine_version\":\"obsvr-rules/1\",\"hook\":\"allow\",\"prompt_sha256\":\"b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9\",\"rules_hash\":\"4bdd7fad795f7545\",\"schema\":\"obsvr-decision-input-v1\",\"service_name\":\"checkout-api\",\"target\":\"request\",\"tenant_id\":\"tenant-7\",\"user_id\":\"user-42\"}",
+        "hash": "dd03647c59c2813b8027b5c7431b8bf41c93a8d8a5a965510a0ba5d38e728de3"
+      }
+    },
+    {
+      "id": "request-no-optionals",
+      "note": "no rules enabled, empty evaluated text, no scope ids, no hook configured — absent optionals are OMITTED",
+      "input": {
+        "rules_hash": "none",
+        "degraded": false,
+        "target": "request",
+        "evaluated_text": "",
+        "hook": "not_configured"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "none",
+        "degraded": false,
+        "target": "request",
+        "hook": "not_configured",
+        "prompt_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":false,\"engine_version\":\"obsvr-rules/1\",\"hook\":\"not_configured\",\"prompt_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"rules_hash\":\"none\",\"schema\":\"obsvr-decision-input-v1\",\"target\":\"request\"}",
+        "hash": "a293901dc2f61d4a75ad699e3c79f9325a0d6c3474bd277e4bf11bf4c20a08b3"
+      }
+    },
+    {
+      "id": "response-target",
+      "note": "response target digests into response_sha256 (prompt_sha256 absent)",
+      "input": {
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": false,
+        "target": "response",
+        "evaluated_text": "The answer is 42.",
+        "user_id": "u1",
+        "hook": "skipped"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": false,
+        "target": "response",
+        "hook": "skipped",
+        "response_sha256": "97b38b2ebda1ca4cf4ea291005d97d07c7053db2aed3ef866c04b49ecfb3448d",
+        "user_id": "u1"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":false,\"engine_version\":\"obsvr-rules/1\",\"hook\":\"skipped\",\"response_sha256\":\"97b38b2ebda1ca4cf4ea291005d97d07c7053db2aed3ef866c04b49ecfb3448d\",\"rules_hash\":\"4bdd7fad795f7545\",\"schema\":\"obsvr-decision-input-v1\",\"target\":\"response\",\"user_id\":\"u1\"}",
+        "hash": "3a3c22c79c74940f5dbfc4bb567e402d065e5c89494cdd2effe37d327bd61c9d"
+      }
+    },
+    {
+      "id": "unicode-scopes-and-text",
+      "note": "non-ASCII scope identifiers and evaluated text: canonical bytes are raw UTF-8 (no \\u escapes)",
+      "input": {
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": false,
+        "target": "request",
+        "evaluated_text": "¿Dónde está la biblioteca? 東京 🚀",
+        "user_id": "Ωμέγα-user-π",
+        "service_name": "café-service",
+        "tenant_id": "租户-42",
+        "hook": "allow"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": false,
+        "target": "request",
+        "hook": "allow",
+        "prompt_sha256": "d66a3cd8167a4bd55163f62ed891ff1e22463bdfdaa6a06e77598803aa4051d1",
+        "user_id": "Ωμέγα-user-π",
+        "service_name": "café-service",
+        "tenant_id": "租户-42"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":false,\"engine_version\":\"obsvr-rules/1\",\"hook\":\"allow\",\"prompt_sha256\":\"d66a3cd8167a4bd55163f62ed891ff1e22463bdfdaa6a06e77598803aa4051d1\",\"rules_hash\":\"4bdd7fad795f7545\",\"schema\":\"obsvr-decision-input-v1\",\"service_name\":\"café-service\",\"target\":\"request\",\"tenant_id\":\"租户-42\",\"user_id\":\"Ωμέγα-user-π\"}",
+        "hash": "85f2497e744d517b31e232a9e67d2ea7d630d772009d1f8da532ae3261ee4505"
+      }
+    },
+    {
+      "id": "degraded-kill-switch",
+      "note": "kill switch active: degraded true + reason present, hook skipped (gate blocks are not overridable)",
+      "input": {
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": true,
+        "degraded_reason": "project_paused_or_key_revoked",
+        "target": "request",
+        "evaluated_text": "blocked while paused",
+        "hook": "skipped"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "4bdd7fad795f7545",
+        "degraded": true,
+        "target": "request",
+        "hook": "skipped",
+        "degraded_reason": "project_paused_or_key_revoked",
+        "prompt_sha256": "955991fe479a3784c7108fef3de7c3390170f5b022e4787a1598bff9fa8e21f3"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":true,\"degraded_reason\":\"project_paused_or_key_revoked\",\"engine_version\":\"obsvr-rules/1\",\"hook\":\"skipped\",\"prompt_sha256\":\"955991fe479a3784c7108fef3de7c3390170f5b022e4787a1598bff9fa8e21f3\",\"rules_hash\":\"4bdd7fad795f7545\",\"schema\":\"obsvr-decision-input-v1\",\"target\":\"request\"}",
+        "hash": "2446f2fd24f0b57f6fb70c7e5640ea6c2aa2ca3ceb882a49d3c67f0441d8af07"
+      }
+    },
+    {
+      "id": "hook-timeout",
+      "note": "customer hook timed out (disposition recorded even when fail-open allowed the call)",
+      "input": {
+        "rules_hash": "none",
+        "degraded": false,
+        "target": "request",
+        "evaluated_text": "hook took too long",
+        "user_id": "user-42",
+        "hook": "timeout"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "none",
+        "degraded": false,
+        "target": "request",
+        "hook": "timeout",
+        "prompt_sha256": "65ff0687ad388d4b967ae939d07f8dcbea3c2317e00fcd2148816bf27bc64baf",
+        "user_id": "user-42"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":false,\"engine_version\":\"obsvr-rules/1\",\"hook\":\"timeout\",\"prompt_sha256\":\"65ff0687ad388d4b967ae939d07f8dcbea3c2317e00fcd2148816bf27bc64baf\",\"rules_hash\":\"none\",\"schema\":\"obsvr-decision-input-v1\",\"target\":\"request\",\"user_id\":\"user-42\"}",
+        "hash": "501a9eb184b03125c939d689076a32f9dbf454a47dbbb011c4984f649fcbdaa7"
+      }
+    },
+    {
+      "id": "response-degraded-stale-hook-error",
+      "note": "response target + fail-closed staleness + hook error, all in one document",
+      "input": {
+        "rules_hash": "0123456789abcdef",
+        "degraded": true,
+        "degraded_reason": "policy_sync_stale",
+        "target": "response",
+        "evaluated_text": "stale-policy response text",
+        "service_name": "svc-a",
+        "hook": "error"
+      },
+      "doc": {
+        "schema": "obsvr-decision-input-v1",
+        "engine_version": "obsvr-rules/1",
+        "rules_hash": "0123456789abcdef",
+        "degraded": true,
+        "target": "response",
+        "hook": "error",
+        "degraded_reason": "policy_sync_stale",
+        "response_sha256": "7f6e40b5ab4140ab6941372626f8ad8cbe21c2d999d191eefc7b6848bf94d22f",
+        "service_name": "svc-a"
+      },
+      "expected": {
+        "canonical": "{\"degraded\":true,\"degraded_reason\":\"policy_sync_stale\",\"engine_version\":\"obsvr-rules/1\",\"hook\":\"error\",\"response_sha256\":\"7f6e40b5ab4140ab6941372626f8ad8cbe21c2d999d191eefc7b6848bf94d22f\",\"rules_hash\":\"0123456789abcdef\",\"schema\":\"obsvr-decision-input-v1\",\"service_name\":\"svc-a\",\"target\":\"response\"}",
+        "hash": "b51e1e63ecc30f8e0feb5ece22badbbcf69e09988566c4bfac30ffeb9e4e28cb"
+      }
+    }
+  ]
+}

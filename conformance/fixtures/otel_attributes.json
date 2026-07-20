@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "otel_attributes.parity",
+  "description": "Both SDKs' OTel mirrors must emit spans with EXACTLY this attribute key set (GenAI semconv + obsvr governance outcomes). A key added to one SDK without the other (and this file) is a parity break.",
+  "attribute_keys": [
+    "gen_ai.request.model",
+    "gen_ai.system",
+    "gen_ai.usage.input_tokens",
+    "gen_ai.usage.output_tokens",
+    "obsvr.action_reason",
+    "obsvr.action_taken",
+    "obsvr.environment",
+    "obsvr.event_type",
+    "obsvr.pii_detected",
+    "obsvr.rule_id",
+    "obsvr.sdk_session_id",
+    "obsvr.seq_no"
+  ]
+}

@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "name": "session_taint",
+  "description": "Cross-SDK session taint latch fixtures. key_cases pin derive_session_key/deriveSessionKey (metadata.user_id ?? session_id ?? tenant_id ?? 'global'). decision_cases pin evaluate_session_taint/evaluateSessionTaint: the harness mark_tainted's the key when `tainted`, then asserts the enforcement (none|flag|block) for the given config (action defaults to flag; disabled/absent config never enforces). Both SDK harnesses (sdk/tests/unit/session-taint-conformance.test.ts, sdk-python/tests/test_session_taint_conformance.py) must agree; divergence is a release blocker unless recorded in known-divergences.md.",
+  "key_cases": [
+    {
+      "id": "user_id_wins",
+      "metadata": {
+        "user_id": "alice",
+        "session_id": "s1",
+        "tenant_id": "t1"
+      },
+      "expect": "alice"
+    },
+    {
+      "id": "session_id_fallback",
+      "metadata": {
+        "session_id": "s1",
+        "tenant_id": "t1"
+      },
+      "expect": "s1"
+    },
+    {
+      "id": "tenant_id_fallback",
+      "metadata": {
+        "tenant_id": "t1"
+      },
+      "expect": "t1"
+    },
+    {
+      "id": "global_when_absent",
+      "metadata": {},
+      "expect": "global"
+    },
+    {
+      "id": "global_when_none",
+      "metadata": null,
+      "expect": "global"
+    },
+    {
+      "id": "empty_user_id_falls_through",
+      "metadata": {
+        "user_id": "",
+        "session_id": "s1"
+      },
+      "expect": "s1"
+    },
+    {
+      "id": "empty_user_id_and_session",
+      "metadata": {
+        "user_id": "",
+        "session_id": ""
+      },
+      "expect": "global"
+    },
+    {
+      "id": "all_empty_is_global",
+      "metadata": {
+        "user_id": "",
+        "session_id": "",
+        "tenant_id": ""
+      },
+      "expect": "global"
+    },
+    {
+      "id": "numeric_zero_user_id_is_valid",
+      "metadata": {
+        "user_id": 0,
+        "session_id": "s1"
+      },
+      "expect": "0"
+    },
+    {
+      "id": "numeric_user_id",
+      "metadata": {
+        "user_id": 123
+      },
+      "expect": "123"
+    },
+    {
+      "id": "empty_then_tenant",
+      "metadata": {
+        "user_id": "",
+        "session_id": "",
+        "tenant_id": "t9"
+      },
+      "expect": "t9"
+    }
+  ],
+  "decision_cases": [
+    {
+      "id": "untainted_flag_noop",
+      "tainted": false,
+      "config": {
+        "enabled": true,
+        "action": "flag"
+      },
+      "expect": {
+        "enforcement": "none"
+      }
+    },
+    {
+      "id": "untainted_block_noop",
+      "tainted": false,
+      "config": {
+        "enabled": true,
+        "action": "block"
+      },
+      "expect": {
+        "enforcement": "none"
+      }
+    },
+    {
+      "id": "tainted_flag",
+      "tainted": true,
+      "config": {
+        "enabled": true,
+        "action": "flag"
+      },
+      "expect": {
+        "enforcement": "flag"
+      }
+    },
+    {
+      "id": "tainted_block",
+      "tainted": true,
+      "config": {
+        "enabled": true,
+        "action": "block"
+      },
+      "expect": {
+        "enforcement": "block"
+      }
+    },
+    {
+      "id": "tainted_default_action_is_flag",
+      "tainted": true,
+      "config": {
+        "enabled": true
+      },
+      "expect": {
+        "enforcement": "flag"
+      }
+    },
+    {
+      "id": "disabled_never_enforces",
+      "tainted": true,
+      "config": {
+        "enabled": false,
+        "action": "block"
+      },
+      "expect": {
+        "enforcement": "none"
+      }
+    },
+    {
+      "id": "no_config_noop",
+      "tainted": true,
+      "config": null,
+      "expect": {
+        "enforcement": "none"
+      }
+    }
+  ]
+}
