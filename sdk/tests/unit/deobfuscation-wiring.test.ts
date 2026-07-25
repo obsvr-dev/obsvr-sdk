@@ -90,6 +90,33 @@ describe('deobfuscation wiring: wrap() pre-call', () => {
     expect(ev.user_input).toBe(OBFUSCATED_REDACTION_PLACEHOLDER);
   });
 
+  it('flag ON + block policy: PII split apart by a hidden element is caught in the canonical view', async () => {
+    const sentEvents = captureEvents();
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      pii_policy: { default: 'block' },
+      deobfuscation: { enabled: true },
+    });
+    const create = jest.fn(async (_args: any) => ({ choices: [{ message: { content: 'ok' } }] }));
+    const wrapped = wrap({ chat: { completions: { create } } });
+    await expect(
+      wrapped.chat.completions.create({
+        model: 'gpt-4',
+        // Hidden junk breaks the SSN for a substring scanner; a reader (and
+        // the model) sees it whole. Nothing here is base64/hex/percent, so
+        // only the canonical view can catch it.
+        messages: [
+          { role: 'user', content: 'my ssn is 123-45<span style="display:none">QQQ</span>-6789' },
+        ],
+      }),
+    ).rejects.toThrow(/blocked by policy/i);
+    expect(create).not.toHaveBeenCalled();
+    await waitFor(sentEvents, 1);
+    expect(sentEvents[0].event_type).toBe('blocked_call');
+    expect(sentEvents[0].metadata?.security_normalized).toBe('deobfuscated');
+  });
+
   it('flag ON + redact policy: a view-only hit ESCALATES to block (never a false "redacted")', async () => {
     captureEvents();
     init({

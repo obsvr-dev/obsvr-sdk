@@ -151,7 +151,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     degraded: s("not_applicable"),
     hookOverridable: true,
     notes:
-      "Findings-only view producer; malformed encodings are handled internally (an undecodable view is simply not produced) rather than raised.",
+      "Findings-only view producer; malformed encodings are handled internally (an undecodable view is simply not produced) rather than raised. The CSS-hidden / aria-hidden stripping pass is declared here rather than as its own layer: it is a step inside this producer, and malformed markup (unterminated or same-name-nested) resolves to a shorter view, never an exception.",
   },
   {
     id: "multi_turn_injection",

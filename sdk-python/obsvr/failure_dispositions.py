@@ -155,7 +155,10 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "hook_overridable": True,
         "notes": (
             "Findings-only view producer; malformed encodings are handled internally (an "
-            "undecodable view is simply not produced) rather than raised."
+            "undecodable view is simply not produced) rather than raised. The CSS-hidden / "
+            "aria-hidden stripping pass is declared here rather than as its own layer: it is "
+            "a step inside this producer, and malformed markup (unterminated or "
+            "same-name-nested) resolves to a shorter view, never an exception."
         ),
     },
     {

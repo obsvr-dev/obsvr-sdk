@@ -2,8 +2,9 @@
  * De-obfuscation views for the injection/PII detectors (server-side normalizer mirror).
  *
  * Derives read-only scan "views" from a prompt so payloads hidden behind
- * zero-width characters, homoglyphs, HTML comments, whitespace padding, or
- * base64/hex/percent encoding are still seen by the pattern scanners.
+ * zero-width characters, homoglyphs, HTML comments, CSS-hidden or aria-hidden
+ * markup, whitespace padding, or base64/hex/percent encoding are still seen by
+ * the pattern scanners.
  * Behavior-identical to the server-side normalizer,
  * pinned by conformance/fixtures/deobfuscation.json. Twin:
  * sdk-python/obsvr/deobfuscate.py.
@@ -161,6 +162,182 @@ export function foldConfusables(text: string): string {
     }
   }
   return changed ? out : text;
+}
+
+/**
+ * HTML elements that never have a closing tag, so a hidden one removes only
+ * its own tag.
+ */
+const VOID_ELEMENTS: ReadonlySet<string> = new Set([
+  'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+  'link', 'meta', 'param', 'source', 'track', 'wbr',
+]);
+
+function isTagNameStart(c: string): boolean {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+function isTagNameChar(c: string): boolean {
+  return isTagNameStart(c) || (c >= '0' && c <= '9') || c === '-';
+}
+
+/** ASCII whitespace only; markup separators are ASCII by spec. A char-compare
+ * rather than a regex test because this runs per character of every tag. */
+function isAsciiSpace(c: string): boolean {
+  return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v';
+}
+
+/**
+ * Index of the `>` closing the tag whose attributes start at `from`, or -1.
+ * Quoted attribute values are honored so a `>` inside one does not end the tag.
+ */
+function findTagEnd(text: string, from: number): number {
+  let quote = '';
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (c === '>') return i;
+  }
+  return -1;
+}
+
+/** Index just past the first `</name ... >` at or after `from`, or -1. */
+function indexOfClosingTag(text: string, from: number, name: string): number {
+  for (let i = from; ; ) {
+    const lt = text.indexOf('</', i);
+    if (lt === -1) return -1;
+    const nameStart = lt + 2;
+    if (text.slice(nameStart, nameStart + name.length).toLowerCase() === name) {
+      const after = text[nameStart + name.length];
+      // A real closer, not a longer name that merely starts the same way.
+      if (after === undefined || !isTagNameChar(after)) {
+        const gt = text.indexOf('>', nameStart + name.length);
+        if (gt === -1) return -1;
+        return gt + 1;
+      }
+    }
+    i = lt + 2;
+  }
+}
+
+/**
+ * Whether a tag's attribute text hides the element: `aria-hidden="true"`, or a
+ * `style` value carrying `display:none` / `visibility:hidden`. Only the `style`
+ * attribute is inspected for the CSS forms, so `data-note="display:none"` does
+ * not hide anything. Attribute text is bounded by the tag, so this is cheap.
+ */
+function hasHiddenAttribute(attrs: string): boolean {
+  const lower = attrs.toLowerCase();
+  if (!lower.includes('aria-hidden') && !lower.includes('style')) return false;
+  let i = 0;
+  while (i < lower.length) {
+    while (i < lower.length && !isTagNameStart(lower[i])) i++;
+    const nameStart = i;
+    while (i < lower.length && isTagNameChar(lower[i])) i++;
+    if (i === nameStart) break;
+    const name = lower.slice(nameStart, i);
+    // Only two attribute names can hide anything; skipping the value scan for
+    // every other one keeps a tag-heavy prompt off the expensive path.
+    const interesting = name === 'aria-hidden' || name === 'style';
+    while (i < lower.length && isAsciiSpace(lower[i])) i++;
+    let value = '';
+    if (lower[i] === '=') {
+      i++;
+      while (i < lower.length && isAsciiSpace(lower[i])) i++;
+      const q = lower[i];
+      if (q === '"' || q === "'") {
+        const end = lower.indexOf(q, i + 1);
+        if (interesting) value = end === -1 ? lower.slice(i + 1) : lower.slice(i + 1, end);
+        i = end === -1 ? lower.length : end + 1;
+      } else {
+        const start = i;
+        while (i < lower.length && !isAsciiSpace(lower[i])) i++;
+        if (interesting) value = lower.slice(start, i);
+      }
+    }
+    if (!interesting) continue;
+    if (name === 'aria-hidden' && value === 'true') return true;
+    if (name === 'style') {
+      const css = value.replace(/[ \t\n\r\f\v]+/g, '');
+      if (css.includes('display:none') || css.includes('visibility:hidden')) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Remove CSS-hidden (`display:none`, `visibility:hidden`) and
+ * `aria-hidden="true"` elements, tag AND content, from the canonical view.
+ *
+ * The attack this closes is not "a payload is hidden" - a payload sitting in a
+ * hidden div is already plain text in the raw prompt, and the raw text is
+ * always scanned first. It is the SPLIT: interleaving hidden junk breaks a
+ * phrase the scanner would otherwise match, so `ignore <span
+ * style="display:none">zzz</span>all previous instructions` reads as an
+ * injection to the model and as three unrelated fragments to a substring
+ * scanner. Removing the region rejoins the phrase, exactly as `stripInvisible`
+ * rejoins a zero-width-split word - which is why the region is removed with NO
+ * separator (unlike `stripHtmlComments`, which leaves a space): the canonical
+ * view is what a reader actually sees rendered.
+ *
+ * Deliberately a bounded text pass, not a parser (hot-path budget, P-01):
+ *  - no regex over the document, so no backtracking surface; the only regexes
+ *    are whitespace tests over one tag's attribute text
+ *  - single forward pass, O(input): each hidden region's closing-tag search
+ *    ends where scanning resumes, so no character is examined twice
+ *  - the FIRST matching closing tag ends the region, so same-name nesting
+ *    (`<div style="display:none">a<div>b</div>c</div>`) leaves a tail in the
+ *    view. That fails toward keeping content, and the raw scan still covers it.
+ *  - an unterminated hidden element drops the remainder, matching
+ *    `stripHtmlComments`.
+ */
+export function stripHiddenHtml(text: string): string {
+  if (!text.includes('<')) return text;
+  let out: string | null = null;
+  let emitted = 0;
+  let scan = 0;
+  while (scan < text.length) {
+    const lt = text.indexOf('<', scan);
+    if (lt === -1) break;
+    const nameStart = lt + 1;
+    if (nameStart >= text.length || !isTagNameStart(text[nameStart])) {
+      scan = lt + 1;
+      continue;
+    }
+    let p = nameStart;
+    while (p < text.length && isTagNameChar(text[p])) p++;
+    const tagEnd = findTagEnd(text, p);
+    if (tagEnd === -1) {
+      scan = lt + 1;
+      continue;
+    }
+    const attrs = text.slice(p, tagEnd);
+    if (!hasHiddenAttribute(attrs)) {
+      scan = tagEnd + 1;
+      continue;
+    }
+    const name = text.slice(nameStart, p).toLowerCase();
+    if (out === null) out = '';
+    out += text.slice(emitted, lt);
+    let regionEnd: number;
+    if (attrs.trimEnd().endsWith('/') || VOID_ELEMENTS.has(name)) {
+      regionEnd = tagEnd + 1;
+    } else {
+      const close = indexOfClosingTag(text, tagEnd + 1, name);
+      regionEnd = close === -1 ? text.length : close;
+    }
+    emitted = regionEnd;
+    scan = regionEnd;
+  }
+  if (out === null) return text;
+  return out + text.slice(emitted);
 }
 
 /**
@@ -370,7 +547,7 @@ const TOKEN_SPLIT_RE = /[^A-Za-z0-9+/=_-]+/;
 /**
  * Derive scan views from `text`: at most one canonical "deobfuscated" view
  * (strip-invisible → fold-confusables → strip-HTML-comments →
- * collapse-whitespace, composed) followed by at most 5 decoded views
+ * strip-hidden-HTML → collapse-whitespace, composed) followed by at most 5 decoded views
  * ("percent" whole-string first, then per-token "hex"/"base64" in token
  * order). Decode depth is exactly 1. Never mutates or returns the input.
  */
@@ -380,7 +557,7 @@ export function deobfuscate(text: string): DeobfuscationView[] {
 
   // collapseWhitespace already trims, so non-empty here is the gateway's
   // TrimSpace(canon) != "" gate.
-  const canon = collapseWhitespace(stripHtmlComments(foldConfusables(stripInvisible(t))));
+  const canon = collapseWhitespace(stripHiddenHtml(stripHtmlComments(foldConfusables(stripInvisible(t)))));
   if (canon !== t && canon !== '') {
     views.push({ method: 'deobfuscated', text: canon });
   }

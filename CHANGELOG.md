@@ -48,6 +48,19 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **CSS-hidden and aria-hidden content is stripped from the scan view
+  (TypeScript).** The de-obfuscation view layer previously handled HTML
+  comments only, so hidden markup could be used to break a phrase apart:
+  `ignore <span style="display:none">zzz</span>all previous instructions` reads
+  as an injection to the model and as three unrelated fragments to a substring
+  scanner. Elements hidden via `display:none`, `visibility:hidden`, or
+  `aria-hidden="true"` are now removed - tag and content, with no separator -
+  from the canonical view, so the phrase rejoins and is detected. Detection-only
+  as before: the view never feeds redaction, and the raw text is still scanned
+  first, so a payload hidden whole was and remains caught. Off unless
+  `deobfuscation: { enabled: true }`. Measured cost of the pass: 0.04 us on a
+  100-byte prompt with no markup, 0.4 us with one hidden element. The Python
+  twin follows.
 - **Python signed-policy verification.** `obsvr.init(policy_public_key=...)`
   pins an Ed25519 public key, and `policy_verify.py` checks the signature block
   on a fetched policy the way the TypeScript SDK already did: same checks, same
