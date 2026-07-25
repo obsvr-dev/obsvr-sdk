@@ -136,8 +136,16 @@ jobs:
         working-directory: sdk-python
 
       - name: Python fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
-        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py -q
+        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py tests/test_cli_verify.py -q
         working-directory: sdk-python
+
+      # Both obsvr-verify CLIs, driven over ONE export built from the shared
+      # signing vectors. Each language's own suite can agree with itself
+      # forever while disagreeing with the other; only this catches that.
+      - name: obsvr-verify CLI parity (both languages, one export)
+        run: |
+          npm --prefix sdk run build
+          node scripts/check-cli-verify-parity.mjs
 
   lint:
     name: Lint (ESLint + Ruff)

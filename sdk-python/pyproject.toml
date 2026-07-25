@@ -31,6 +31,11 @@ classifiers = [
 ]
 dependencies = []
 
+# Offline evidence verification without a Node toolchain. Same modes, exit
+# codes, and verdicts as the npm `obsvr-verify` CLI.
+[project.scripts]
+obsvr-verify = "obsvr.cli_verify:main"
+
 [project.urls]
 Homepage = "https://github.com/obsvr-dev/obsvr-sdk"
 Repository = "https://github.com/obsvr-dev/obsvr-sdk"

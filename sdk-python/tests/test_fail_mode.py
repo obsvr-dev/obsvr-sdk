@@ -200,6 +200,7 @@ class TestRegistryGate:
         "_version.py",
         "agent_run.py",
         "auto.py",
+        "cli_verify.py",
         "config.py",
         "decision_record.py",
         "errors.py",

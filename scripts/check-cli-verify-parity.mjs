@@ -1,0 +1,122 @@
+#!/usr/bin/env node
+/**
+ * Cross-language parity for the obsvr-verify CLI.
+ *
+ * The verification claim is language-unqualified: an auditor holding an export
+ * must reach the same verdict whichever CLI they run. That is only true if both
+ * are driven over the SAME export and compared, which is what this does - the
+ * unit suites on each side can agree with themselves forever while disagreeing
+ * with each other.
+ *
+ * The export is built from the shared signing vectors
+ * (conformance/fixtures/signing_vectors.json), so the chain is the fixture's,
+ * not a per-language literal.
+ *
+ * Compared per case: exit code, stdout, and stderr, byte for byte. Exit codes
+ * and verdicts are the contract; the prose is compared too because it costs
+ * nothing and catches a drift the verdict alone would hide.
+ *
+ * Requires the TypeScript SDK to be built (sdk/dist/cli-verify.js). Run:
+ *   npm --prefix sdk run build && node scripts/check-cli-verify-parity.mjs
+ */
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const TS_CLI = join(root, "sdk", "dist", "cli-verify.js");
+const PY_DIR = join(root, "sdk-python");
+
+if (!existsSync(TS_CLI)) {
+  console.error(`✗ ${TS_CLI} is missing. Build it first: npm --prefix sdk run build`);
+  process.exit(2);
+}
+
+const vectors = JSON.parse(
+  readFileSync(join(root, "conformance", "fixtures", "signing_vectors.json"), "utf8"),
+);
+const API_KEY = vectors.api_key;
+/** The fixture chain, with the session id the fixture keeps alongside it. */
+const chain = vectors.events.map((e) => ({ ...e, sdk_session_id: vectors.session_id }));
+
+const workdir = mkdtempSync(join(tmpdir(), "obsvr-cli-parity-"));
+const write = (name, value) => {
+  const path = join(workdir, name);
+  writeFileSync(path, JSON.stringify(value));
+  return path;
+};
+
+const tampered = JSON.parse(JSON.stringify(chain));
+tampered[1].prompt = "tampered";
+const gapped = [chain[0], { ...chain[1], seq_no: 5 }];
+
+const CASES = [
+  { name: "valid chain, keyless", args: [write("valid.json", chain)] },
+  { name: "valid chain, --api-key", args: [write("valid.json", chain), "--api-key", API_KEY] },
+  { name: "flags before the file", args: ["--api-key", API_KEY, write("valid.json", chain)] },
+  {
+    name: "trace bundle shape",
+    args: [write("bundle.json", { trace: { steps: chain } }), "--api-key", API_KEY],
+  },
+  { name: "steps bundle shape", args: [write("steps.json", { steps: chain })] },
+  { name: "events bundle shape", args: [write("events.json", { events: chain })] },
+  {
+    name: "tampered content, --api-key",
+    args: [write("tampered.json", tampered), "--api-key", API_KEY],
+  },
+  { name: "tampered content, keyless (undetectable by design)", args: [write("tampered.json", tampered)] },
+  { name: "seq_no gap, keyless", args: [write("gapped.json", gapped)] },
+  { name: "wrong key", args: [write("valid.json", chain), "--api-key", "not-the-key"] },
+  { name: "unrecognized shape", args: [write("weird.json", { nope: true })] },
+  { name: "missing file argument", args: [] },
+  {
+    name: "nonexistent file",
+    args: [join(workdir, "absent.json")],
+    // The message ends in the runtime's own OS error text ("ENOENT: no such
+    // file or directory" vs "[Errno 2] No such file or directory"), which is
+    // not something either SDK should paper over. Everything that IS the
+    // contract - exit code, and the SDK's own wording up to the cause - is
+    // still compared exactly.
+    stderrPrefix: "✗ Cannot read ",
+  },
+];
+
+/** Python is invoked as a module so this runs against the tree under test,
+ *  installed console script or not - the entry point itself is asserted by the
+ *  Python unit suite. */
+const runPy = (args) =>
+  spawnSync("python3", ["-m", "obsvr.cli_verify", ...args], { cwd: PY_DIR, encoding: "utf8" });
+const runTs = (args) => spawnSync("node", [TS_CLI, ...args], { cwd: root, encoding: "utf8" });
+
+let failures = 0;
+for (const testCase of CASES) {
+  const ts = runTs(testCase.args);
+  const py = runPy(testCase.args);
+  const diffs = [];
+  if (ts.status !== py.status) diffs.push(`exit code: ts=${ts.status} py=${py.status}`);
+  if (ts.stdout !== py.stdout) diffs.push(`stdout:\n--- ts ---\n${ts.stdout}--- py ---\n${py.stdout}`);
+  if (testCase.stderrPrefix) {
+    for (const [lang, out] of [["ts", ts.stderr], ["py", py.stderr]]) {
+      if (!out.startsWith(testCase.stderrPrefix)) {
+        diffs.push(`${lang} stderr does not start with ${JSON.stringify(testCase.stderrPrefix)}: ${out}`);
+      }
+    }
+  } else if (ts.stderr !== py.stderr) {
+    diffs.push(`stderr:\n--- ts ---\n${ts.stderr}--- py ---\n${py.stderr}`);
+  }
+  if (diffs.length) {
+    failures++;
+    console.error(`✗ ${testCase.name}`);
+    for (const d of diffs) console.error(`   ${d}`);
+  } else {
+    console.log(`✓ ${testCase.name} (exit ${ts.status})`);
+  }
+}
+
+if (failures) {
+  console.error(`✗ obsvr-verify CLI parity FAILED: ${failures}/${CASES.length} case(s) diverged`);
+  process.exit(1);
+}
+console.log(`✓ obsvr-verify CLI parity: ${CASES.length} cases identical in both languages`);

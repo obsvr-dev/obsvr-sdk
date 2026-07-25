@@ -48,6 +48,15 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` now installs an
+  `obsvr-verify` console script with the same two tiers, the same exit codes
+  (0 verified / 1 broken / 2 usage), the same accepted bundle shapes, and the
+  same verdicts as the npm CLI. A Python-only compliance team can verify its
+  own evidence without adopting a Node toolchain — the verification claim was
+  never language-qualified, but until now the tooling was. CI drives both
+  binaries over one export built from the shared signing vectors and compares
+  exit codes and output, so the two cannot drift apart. The GitHub Action keeps
+  using the npm CLI.
 - **Tool-call events carry `tool_content_hash` (TypeScript).** Every event
   emitted at an MCP tool boundary or by `obsvrGovernTool` now carries a digest
   binding the tool name, the descriptor the caller held, and the call
@@ -139,9 +148,9 @@ cut, when it is renamed to that version.
   no-delivery warning at `init()` and delivers nothing, matching the TypeScript
   SDK on the same misconfiguration. Previously a Python process with no
   `ingest_url` streamed governed events - including redacted prompt text on
-  blocked calls - to whatever was listening on local port 3000. *Migration: if
+  blocked calls - to whatever was listening on local port 3000. _Migration: if
   you relied on the localhost default in development, pass
-  `ingest_url="http://localhost:3000"` explicitly.* Governance itself is
+  `ingest_url="http://localhost:3000"` explicitly._ Governance itself is
   unaffected either way; only delivery stops.
 - An unusable ingest URL is now a delivery failure in Python rather than an
   exception: the sender and the policy poll both treat it as a retryable
@@ -192,7 +201,7 @@ in this repository is built on it.
 #### Security fixes
 
 - **Streaming bypass closed.** PII scanning, policy rules, and the `onPreCall`
-  hook now run *before* the model is contacted for `stream: true` calls.
+  hook now run _before_ the model is contacted for `stream: true` calls.
   Previously every streaming request skipped those checks entirely - the whole
   governance boundary was optional if a caller passed one flag.
 - **`policy_version` derived from the active rule set.** Each audit event
@@ -214,11 +223,11 @@ in this repository is built on it.
 - **BREAKING: `ingest_url` / `baseUrl` is required.** The previous
   `http://localhost:3000` default was removed. Unset, a warning is logged and
   events are dropped rather than streamed to whatever is listening on a local
-  port. *Migration: set `ingest_url` explicitly.* (The Python default was not
+  port. _Migration: set `ingest_url` explicitly._ (The Python default was not
   removed at the same time; see Unreleased once that lands.)
 - **BREAKING: HTTPS enforced for non-localhost `ingest_url`.** An `http://` URL
-  for a non-localhost host throws at init. *Migration: use `https://`, or
-  localhost for development.*
+  for a non-localhost host throws at init. _Migration: use `https://`, or
+  localhost for development._
 - **BREAKING: source maps excluded from the published package.** `.js.map`
   files are no longer shipped; `.d.ts.map` is retained for editor
   go-to-definition.
