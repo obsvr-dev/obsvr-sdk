@@ -547,14 +547,34 @@ def derive_policy_version(rules: List[PolicyRule]) -> str:
     prefix over the canonical projections sorted by id (codepoint order).
     Returns "none" when no rules are enabled. Stamped on every audit
     event as policy_version; must match the TS SDK byte for byte
-    (pinned by the shared fixture)."""
-    if not rules:
-        return "none"
-    enabled = sorted([r for r in rules if r.enabled], key=lambda r: r.id)
-    if not enabled:
-        return "none"
-    data = _canonical_json([_canonical_rule(r) for r in enabled])
-    return hashlib.sha256(data.encode("utf-8")).hexdigest()[:16]
+    (pinned by the shared fixture).
+
+    Guarded at the function, like ``redact_for_storage``, because there is one
+    correct answer at all of its call sites and most are on live host paths -
+    the wrapper's per-call stamp, the integrations, MCP, the poll header, the
+    policy log. It reads the same rule objects the matcher does, so a malformed
+    rule raises HERE, before any detector span is entered.
+
+    Always open: the policy version is a provenance field, not a control. It
+    records which rules a decision ran under; it never decides anything, so a
+    version that cannot be computed must not block a call. "unknown" is the
+    honest value and is distinguishable from the legitimate "none".
+
+    Twin: sdk/src/policy/rules.ts (``derivePolicyVersion``).
+    """
+    try:
+        if not rules:
+            return "none"
+        enabled = sorted([r for r in rules if r.enabled], key=lambda r: r.id)
+        if not enabled:
+            return "none"
+        data = _canonical_json([_canonical_rule(r) for r in enabled])
+        return hashlib.sha256(data.encode("utf-8")).hexdigest()[:16]
+    except Exception as _version_exc:  # noqa: BLE001 - deliberate catch-all
+        from .policy import record_check_only_failure
+
+        record_check_only_failure("policy_rules", _version_exc)
+        return "unknown"
 
 
 def derive_rule_hash(rule: PolicyRule) -> str:

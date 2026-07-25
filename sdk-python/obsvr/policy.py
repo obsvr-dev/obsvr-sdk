@@ -448,6 +448,31 @@ def _reset_detector_errors() -> None:
     _detector_errors = 0
 
 
+def record_check_only_failure(layer: str, exc: BaseException) -> None:
+    """Count and log a failure on a surface that is STRUCTURALLY always open,
+    so the log does not assert a resolution the caller will not apply.
+
+    ``record_detector_failure`` reports "resolving closed / the call was
+    BLOCKED" whenever fail_mode says so. That message is wrong for a unit that
+    cannot block by construction: a shadow rule runs after the active decision
+    is final and is defined as never decision-affecting, and the policy-version
+    hash is a provenance field. Honouring fail_mode at either would let a
+    check-only unit stop a call, which is the one thing shadow mode promises it
+    cannot do.
+
+    Twin: sdk/src/policy/detector-guard.ts (``recordCheckOnlyFailure``).
+    """
+    global _detector_errors
+    _detector_errors += 1
+    logging.getLogger("obsvr").error(
+        "obsvr detector layer '%s' failed on a check-only surface (%s). "
+        "The call is UNAFFECTED - this unit never decides anything - and only "
+        "its own output was lost. This is an SDK defect - please report it.",
+        layer or "unknown",
+        f"{type(exc).__name__}: {exc}"[:200],
+    )
+
+
 def apply_outbound_redaction(
     redact: Callable[[], None], layer: str = "builtin_pii_scan"
 ) -> Optional[Dict[str, Any]]:
@@ -1220,9 +1245,20 @@ def apply_pre_call_policy(
     shadow_outcome = None
     if getattr(config, "policy_rules", None):
         from .rules import evaluate_shadow_rules
-        shadow_outcome = evaluate_shadow_rules(
-            config.policy_rules, prompt_text, context={"metadata": metadata or {}}
-        )
+
+        # Check-only, and structurally always open: a shadow rule is defined as
+        # never decision-affecting (it runs AFTER the active decision is final),
+        # so a defect in one must not change the outcome in EITHER direction.
+        # fail_mode is deliberately not consulted - honoring "closed" here would
+        # let a shadow rule block a call, which is the one thing shadow mode
+        # promises it cannot do. The loss is recorded; the outcome stays None.
+        try:
+            shadow_outcome = evaluate_shadow_rules(
+                config.policy_rules, prompt_text, context={"metadata": metadata or {}}
+            )
+        except Exception as _shadow_exc:  # noqa: BLE001 - deliberate catch-all
+            record_check_only_failure("policy_rules", _shadow_exc)
+            shadow_outcome = None
 
     # Canonical decision record (ADR-2): commit exactly what this decision ran
     # over. ``scan`` is the text the pipeline evaluated (pre-redaction).
@@ -1661,5 +1697,14 @@ def explain(
             result["rule_id"] = rr.get("rule_id")
             result["reason"] = rr.get("reason")
 
-    result["shadow_outcome"] = evaluate_shadow_rules(rules, prompt_text, target, ctx)
+    # Same rule on the check-only surface: explain() predicts, it never
+    # enforces, so a lost shadow evaluation is reported as unevaluated rather
+    # than raised at whoever called explain().
+    try:
+        result["shadow_outcome"] = evaluate_shadow_rules(rules, prompt_text, target, ctx)
+    except Exception as _shadow_exc:  # noqa: BLE001 - deliberate catch-all
+        record_check_only_failure("policy_rules", _shadow_exc)
+        result["shadow_outcome"] = None
+        if "policy_rules" not in result["not_evaluated"]:
+            result["not_evaluated"].append("policy_rules")
     return result

@@ -166,6 +166,30 @@ export async function applyOutboundRedactionAsync(
   }
 }
 
+/**
+ * Count and log a failure on a surface that is STRUCTURALLY always open, so
+ * the log does not assert a resolution the caller will not apply.
+ *
+ * `recordDetectorFailure` reports "resolving closed / the call was BLOCKED"
+ * whenever failMode says so. That message is wrong for a unit that cannot
+ * block by construction: a shadow rule runs after the active decision is final
+ * and is defined as never decision-affecting, and the policy-version hash is a
+ * provenance field. Honouring failMode at either would let a check-only unit
+ * stop a call, which is the one thing shadow mode promises it cannot do.
+ *
+ * Twin: sdk-python/obsvr/policy.py (`record_check_only_failure`).
+ */
+export function recordCheckOnlyFailure(layer: string, err: unknown): void {
+  detectorErrors += 1;
+  // eslint-disable-next-line no-console
+  console.error(
+    `[obsvr] detector layer "${layer || "unknown"}" failed on a check-only ` +
+      `surface (${describeError(err)}). The call is UNAFFECTED - this unit ` +
+      `never decides anything - and only its own output was lost. ` +
+      `This is an SDK defect - please report it.`,
+  );
+}
+
 /** Short, bounded description of a thrown value for the audit record. */
 export function describeError(err: unknown): string {
   if (err instanceof Error) return `${err.name}: ${err.message}`.slice(0, 200);

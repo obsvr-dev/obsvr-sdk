@@ -21,7 +21,9 @@ import {
   applyOutboundRedactionAsync,
   describeError,
   detectorFailureRecord,
+  recordCheckOnlyFailure,
   recordDetectorFailure,
+  safeStoredCopy,
   type DetectorFailure,
 } from "../policy/detector-guard.js";
 import {
@@ -668,9 +670,14 @@ function buildAuditEvent(
     external_backend: compliance.externalBackend,
   };
 
-  // M-5: PII-scan error messages when pii_policy is configured
+  // M-5: PII-scan error messages when pii_policy is configured. This builds a
+  // STORED field, so a redactor defect resolves the stored-copy way: withhold
+  // it under the unscanned marker rather than persist a provider error string
+  // nothing scanned. The call has already failed here - there is nothing left
+  // to block, and the host must not receive a second error from the audit path.
   if (error && event.error_message && config.pii_policy) {
-    event.error_message = redactBuiltinPii(event.error_message);
+    const rawErrorMessage = event.error_message;
+    event.error_message = safeStoredCopy(() => redactBuiltinPii(rawErrorMessage));
   }
 
   // Cost governance: record this call's token usage against any token-unit
@@ -931,9 +938,13 @@ function wrapStreamingIterator(
           external_backend: compliance.externalBackend,
         };
 
-        // M-5: PII-scan error messages when pii_policy is configured
+        // M-5: PII-scan error messages when pii_policy is configured. Same
+        // stored-copy rule as the non-streaming path above.
         if (streamError && streamAuditEvent.error_message && config.pii_policy) {
-          streamAuditEvent.error_message = redactBuiltinPii(streamAuditEvent.error_message);
+          const rawStreamError = streamAuditEvent.error_message;
+          streamAuditEvent.error_message = safeStoredCopy(() =>
+            redactBuiltinPii(rawStreamError),
+          );
         }
 
         // EV-1 post_call phase on the accumulated stream text (skips itself
@@ -1617,7 +1628,18 @@ function createAuditedMethod(
         provider,
         ...(audit_fields.metadata as Record<string, unknown> ?? {}),
       };
-      shadowOutcome = evaluateShadowRules(config.policyRules, promptText, "prompt", evalCtx);
+      // Check-only, and structurally always open: a shadow rule is defined as
+      // never decision-affecting (it runs AFTER the active decision is final),
+      // so a defect in one must not change the outcome in EITHER direction.
+      // failMode is deliberately not consulted - honoring "closed" here would
+      // let a shadow rule block a call, which is the one thing shadow mode
+      // promises it cannot do. The loss is recorded; the outcome stays null.
+      try {
+        shadowOutcome = evaluateShadowRules(config.policyRules, promptText, "prompt", evalCtx);
+      } catch (shadowErr) {
+        recordCheckOnlyFailure("policy_rules", shadowErr);
+        shadowOutcome = null;
+      }
     }
 
     // Canonical decision record (ADR-2): commit exactly what this decision

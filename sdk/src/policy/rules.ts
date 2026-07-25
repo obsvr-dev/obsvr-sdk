@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import type { PolicyDecisionResult } from './hook.js';
 import { hasApproval } from './approvals.js';
+import { recordCheckOnlyFailure } from './detector-guard.js';
 import { incrementQuota, checkQuota, checkTokenBudget } from '../governance/quota.js';
 import { hasEscrow, spendEscrowShare, peekEscrowShare } from '../governance/escrow.js';
 import { safeRegexTest } from '../utils/safe-regex.js';
@@ -573,15 +574,30 @@ function canonicalRule(r: PolicyRule): Record<string, unknown> {
  * derive_policy_version byte for byte (pinned by the shared fixture).
  */
 export function derivePolicyVersion(rules: PolicyRule[]): string {
-  if (!rules || rules.length === 0) return 'none';
-  const sorted = rules
-    .filter((r) => r.enabled)
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  if (sorted.length === 0) return 'none';
-  const hash = createHash('sha256')
-    .update(stableStringify(sorted.map(canonicalRule)))
-    .digest('hex');
-  return hash.slice(0, 16);
+  // Guarded at the function, like redactForStorage, because there is one
+  // correct answer at all ~20 of its call sites and most of them are on live
+  // host paths - the wrapper's per-call stamp, the integrations, MCP, the poll
+  // header, the policy log. This reads the same rule objects the matcher does,
+  // so a malformed rule raises HERE, before any detector span is entered.
+  //
+  // Always open: the policy version is a provenance field, not a control. It
+  // records which rules a decision ran under; it never decides anything, so a
+  // version that cannot be computed must not block a call. "unknown" is the
+  // honest value and is distinguishable from the legitimate "none".
+  try {
+    if (!rules || rules.length === 0) return 'none';
+    const sorted = rules
+      .filter((r) => r.enabled)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (sorted.length === 0) return 'none';
+    const hash = createHash('sha256')
+      .update(stableStringify(sorted.map(canonicalRule)))
+      .digest('hex');
+    return hash.slice(0, 16);
+  } catch (err) {
+    recordCheckOnlyFailure('policy_rules', err);
+    return 'unknown';
+  }
 }
 
 /**

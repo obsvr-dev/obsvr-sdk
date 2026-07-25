@@ -551,3 +551,84 @@ class TestOutboundRedactionApplication:
             )
         assert get_detector_error_count() == 1
         _reset()
+
+
+class TestCheckOnlyAndProvenanceSurfaces:
+    """Shadow rules and the policy-version hash.
+
+    Both are structurally always OPEN, and for the same reason: neither
+    decides anything. A shadow rule runs after the active decision is final
+    and is defined as never decision-affecting, so honouring fail_mode="closed"
+    there would let it block a call - the one thing shadow mode promises it
+    cannot do. The policy version is a provenance field recording which rules a
+    decision ran under.
+
+    Twin: sdk/tests/unit/detector-guard-response.test.ts.
+    """
+
+    def test_the_policy_version_hash_never_raises_at_its_callers(self):
+        from obsvr.policy import get_detector_error_count
+        from obsvr.rules import derive_policy_version
+
+        _init(fail_mode="open")
+
+        class _HostileRule:
+            enabled = True
+            id = "r1"
+
+            def __getattr__(self, name):
+                raise RuntimeError("rule shape bug")
+
+        assert derive_policy_version([_HostileRule()]) == "unknown"
+        assert get_detector_error_count() == 1
+        _reset()
+
+    def test_a_healthy_policy_version_is_unchanged(self):
+        from obsvr.policy import get_detector_error_count
+        from obsvr.rules import derive_policy_version
+
+        _init(fail_mode="open")
+        assert derive_policy_version([]) == "none"
+        assert get_detector_error_count() == 0
+        _reset()
+
+    def test_a_broken_shadow_rule_cannot_block_even_fail_closed(self, monkeypatch):
+        """fail_mode='closed' is the strong case: a shadow rule that blocked
+        would break the one promise shadow mode makes."""
+        import obsvr
+        from obsvr import rules as rules_mod
+        from obsvr.policy import apply_pre_call_policy, get_detector_error_count
+
+        _reset()
+        obsvr.init(api_key="test", fail_mode="closed")
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("shadow bug")
+
+        monkeypatch.setattr(rules_mod, "evaluate_shadow_rules", _boom)
+        cfg = get_config()
+        object.__setattr__(
+            cfg,
+            "policy_rules",
+            [
+                type(
+                    "R",
+                    (),
+                    {
+                        "enabled": True,
+                        "mode": "shadow",
+                        "id": "s1",
+                        "type": "keyword",
+                        "action": "block",
+                    },
+                )()
+            ],
+        )
+
+        res = apply_pre_call_policy(
+            "hello", cfg, provider="openai", operation="chat"
+        )
+        assert res["decision"] != "block", "a shadow rule must never block"
+        assert res["compliance"]["shadow_outcome"] is None
+        assert get_detector_error_count() >= 1
+        _reset()
