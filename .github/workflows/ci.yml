@@ -110,6 +110,12 @@ jobs:
           cache: npm
           cache-dependency-path: sdk/package-lock.json
 
+      # Corpus drift, both pin files, and the coverage rule (every fixture has
+      # an in-repo consumer). A forked copy of a "shared" fixture passes its own
+      # suite forever; this is what makes it fail instead.
+      - name: Conformance corpus pin (drift + pins + consumer coverage)
+        run: node scripts/generate-conformance-manifest.mjs --check
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:

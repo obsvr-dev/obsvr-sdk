@@ -48,6 +48,16 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **The shared conformance corpus is hash-pinned.**
+  `conformance/MANIFEST.sha256` records a sha256 of every file in the corpus,
+  and `sdk/conformance.pin` / `sdk-python/conformance.pin` record the corpus
+  hash each package's suite was written against. CI fails if a fixture changes
+  without regenerating the pin, if the two pins disagree, or if a fixture has no
+  in-repo consumer. The failure this closes is not a wrong fixture but a forked
+  one: a copy drifts, both copies keep passing their own suites, and the
+  "shared" contract quietly stops being shared. Regenerate with
+  `node scripts/generate-conformance-manifest.mjs`; the update protocol is in a
+  comment at the top of the manifest.
 - **CSS-hidden and aria-hidden content is stripped from the scan view
   (TypeScript).** The de-obfuscation view layer previously handled HTML
   comments only, so hidden markup could be used to break a phrase apart:

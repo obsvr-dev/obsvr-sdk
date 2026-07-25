@@ -1,0 +1,9 @@
+# Hash pin of the shared conformance corpus.
+#
+# This records the corpus content this package's test suite was written
+# against. It must equal the corpus hash in conformance/MANIFEST.sha256, and
+# must equal the sibling package's pin. A copy of the corpus that has drifted
+# no longer matches, so it fails loudly instead of passing its own suite.
+#
+# GENERATED: node scripts/generate-conformance-manifest.mjs
+corpus_sha256 = b8339bc1117f1e24cc1c1d626dd0be826a5da7cc14691917c075c80d2e1f28a5

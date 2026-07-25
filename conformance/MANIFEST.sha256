@@ -1,0 +1,40 @@
+# Conformance corpus manifest - the hash pin of the cross-language contract.
+#
+# GENERATED. Do not hand-edit: run
+#   node scripts/generate-conformance-manifest.mjs
+# and commit the result.
+#
+# UPDATE PROTOCOL. A fixture change is a cross-language change, so it lands as
+# ONE coordinated commit: edit the fixture, update both language suites,
+# regenerate this manifest AND the two pin files (sdk/conformance.pin,
+# sdk-python/conformance.pin), and commit them together. Changing a fixture
+# without regenerating fails CI; regenerating without both pins fails CI.
+#
+# Format: "<sha256>  <path relative to conformance/>", sorted by path.
+#
+# corpus_sha256 = b8339bc1117f1e24cc1c1d626dd0be826a5da7cc14691917c075c80d2e1f28a5
+#   sha256 of the lines below (this header excluded, so editing these comments
+#   does not invalidate the pins). This is the value both conformance.pin files
+#   must carry.
+db05eafe28164448438d7b3ff7974677ef780e9505ea1210540f0f39b33b5da2  SPEC-evaluation.md
+31568301fcef270034bc708edfde517fcdbf047881dd19918a92a7a4df00223c  fixtures/canary.json
+125cf30e53e3f7590ed685e8e379b627b213e204b4bbe664085a8642c9a4bb3e  fixtures/decision_input.json
+d648ddc3bc0da2ceb023cd1bbc5631048f2d5b6c874db16ae093ef5917c21064  fixtures/deobfuscation.json
+f9c7e5b3ce5e0026a33d1730a1989dd5eb4bc4ec3d3ad9b888f2ce19212c0497  fixtures/effective_policy.json
+399b085942b5490974fbfa2303dd417d1a7b44e34c2227a2f1f9cc326f89271f  fixtures/error_parity.json
+a8f9676da615b0e9fbab037394b1cab1fc68921215397ec15703626392743526  fixtures/eval_semantics.json
+dbba9144a45d71af6d2bc53ed0f5eba4319aed48d1c56fcb07a3e0c4ff8d7677  fixtures/external_backend.json
+02772ebe7fb03aa999a6655f667b53673258acfd747d75bc2867bd07b2132d7c  fixtures/fail_mode.json
+38aa87fe32296a2bd87af8a74525d6524485a691e780736c225823a46de328d7  fixtures/instance_guard.json
+0429a05ee68234d6e15036d6aff0cd29576b8938483ba70c7064c3986e45cc29  fixtures/normalization.json
+8995c88f504764437ff46a767cfef29ac0115ae11ba22f336b2dfdc1b65660c3  fixtures/otel_attributes.json
+2283f62573b716dd2d9f70598c7cf093365b220fc464e8c9dea1df511d24229d  fixtures/pii_scan.json
+e59f15f9d7e94c827c282c92177a6535952387880d15699b380c43b9f26748fe  fixtures/policy_floor.json
+16c19921111abd8b4cd7ec0d275374a7ab006476679b72f0203330a5fcdd7224  fixtures/policy_signature.json
+e1333190fedc0cfea13fc1ac44cb12982cefc138bbdbe3db81890fcbe2c635a7  fixtures/quota_escrow.json
+c9a606151019021b45035d66d5b3b531cb838279ac213f1fe5f59b83772d6d41  fixtures/reason_codes.json
+d5f9f211701a51fbd4978b9d718d3bdc5b017d033b1dadc3e0fe3719f2e48496  fixtures/rules_hash.json
+9c3e5e94bbb9dc81531503ae83510c878326465de36cd5afa2cee43d72e1b986  fixtures/session_taint.json
+6dea1bd14c53901acfbc9c5db0493f540a3baf3210fbc630d79610f3cf1f6e50  fixtures/signing_vectors.json
+427e57fb28b7fbab698ca32baddb25878bb096e2ffd95ce89fda5cc834c9cf24  fixtures/tool_pinning.json
+367950537d5895c6cc2ba1303472a617049373f50cb31e5ba58495137db2dda2  known-divergences.md
