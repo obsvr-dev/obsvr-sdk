@@ -204,7 +204,7 @@ try {
 
 **ReDoS-hardened rules.** Customer-supplied `regex` rules are checked by a static catastrophic-backtracking validator before they can be installed, **and** every match executes against a bounded input slice (≤ 50 KB). Two layers of defense in depth: the validator rejects the known pathological shapes, and the input cap bounds the blast radius of anything that slips past it, so a hostile pattern is contained rather than left to run unbounded against a large input.
 
-**Signed policy distribution.** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego via the `obsvr-export-rego` CLI for teams running policy-as-code.
+**Signed policy distribution (TypeScript today).** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego via the `obsvr-export-rego` CLI for teams running policy-as-code.
 
 **Non-overridable policy floor.** Rules in `policyFloor` (same shape as `policyRules`) are the operator baseline that customer rules and hooks cannot weaken: `enabled: false` / `mode: "shadow"` are ignored, the `onPreCall` hook can never un-block or downgrade a floor match (the attempt is recorded as `floor_override_ignored` on the signed event), and a remote policy sync — which replaces only `policyRules` — cannot delete it. A floor `redact` **fails closed to a block**. Enforced block-before-send on every surface (wrapper, integrations, MCP, and the governance `evaluate()`/`explain()` endpoint). Off by default.
 
@@ -243,7 +243,7 @@ Default severities: `ssn`, `credit_card`, `api_key`, `aws_access_key`, `jwt`, `p
 
 > **`prompt_injection` is pattern-based**, not an ML jailbreak classifier. It's a curated set of deterministic regexes (normalized for lookalikes) that catches known injection phrasings — a useful signal and defense-in-depth, **not** proof of prevention. Don't rely on it as your only guardrail against adversarial prompts.
 
-**De-obfuscation views (opt-in).** With `deobfuscation: { enabled: true }`, the built-in scanners also see base64/hex/percent-decoded and invisible-stripped / confusable-folded / HTML-comment-stripped views of the text, so encoded or hidden payloads can't dodge detection. Detection-only and bounded (64 KiB input, ≤ 6 views, decode depth 1). A hit found _only_ in a decoded view has no locatable span, so a `redact` resolution escalates to `block` (and stored copies become a `[REDACTED:obfuscated]` placeholder) rather than emit a false "redacted" record while the payload flows through; events carry the view that defeated the obfuscation (`security_normalized`). Off by default — enabling can turn previously-allowed calls into blocks.
+**De-obfuscation views (opt-in).** With `deobfuscation: { enabled: true }`, the built-in scanners also see base64/hex/percent-decoded and invisible-stripped / confusable-folded / HTML-comment-stripped views of the text, so encoded or hidden payloads can't dodge detection. TypeScript additionally strips CSS-hidden (`display:none`, `visibility:hidden`) and `aria-hidden="true"` markup, which closes the trick of splitting a phrase with hidden junk so a substring scanner misses what the model still reads whole; the Python twin follows (recorded as `KD-7`). Detection-only and bounded (64 KiB input, ≤ 6 views, decode depth 1). A hit found _only_ in a decoded view has no locatable span, so a `redact` resolution escalates to `block` (and stored copies become a `[REDACTED:obfuscated]` placeholder) rather than emit a false "redacted" record while the payload flows through; events carry the view that defeated the obfuscation (`security_normalized`). Off by default — enabling can turn previously-allowed calls into blocks.
 
 Recommended rollout: run `detect_only` for a couple of weeks to baseline what actually flows, then move sensitive types to `redact` or `block`.
 
@@ -330,19 +330,21 @@ flowchart LR
 
 ## Verifying the record
 
-The TypeScript SDK ships the **`obsvr-verify`** CLI:
+**Both SDKs** ship the **`obsvr-verify`** CLI, so checking a Python fleet's evidence needs no Node toolchain:
 
 ```bash
-# structure verification (no key)
-npx obsvr-verify ./bundle.json
+# structural verification (no key)
+npx obsvr-verify ./bundle.json      # TypeScript
+obsvr-verify ./bundle.json          # Python (console script from obsvr-sdk)
 
 # full client HMAC-chain re-verification
 npx obsvr-verify ./bundle.json --api-key <key>
+obsvr-verify ./bundle.json --api-key <key>
 ```
 
-Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error.
+Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error — identical in both, along with the accepted bundle shapes and the verdicts. CI drives both binaries over one export built from the shared signing vectors and compares exit codes and output, so the two cannot drift apart.
 
-Python verifies the same chain without a Node toolchain, as a library call:
+Python also exposes verification as a library call:
 
 ```python
 import obsvr
@@ -352,7 +354,7 @@ if not result.valid:
     print(f"broken at event {result.broken_at}: {result.reason}")
 ```
 
-Both verifiers recompute every signature and check sequence continuity, chain linkage, session consistency, and timestamp monotonicity, and return the **same verdict on the same input** — pinned case by case in `conformance/fixtures/signing_vectors.json`. One documented limit, identical in both: verification proves the events it is given are genuine, in order, and unmodified; it cannot prove they are *all* of them, because a chain truncated from the front is internally consistent. A dropped prefix is caught by the service's sequence guard and the sealed root, not by the client chain. (A Python `obsvr-verify` console script matching the CLI's modes and exit codes is not shipped yet — today Python gets the library, TypeScript gets both.)
+Both verifiers recompute every signature and check sequence continuity, chain linkage, session consistency, and timestamp monotonicity, and return the **same verdict on the same input** — pinned case by case in `conformance/fixtures/signing_vectors.json`. One documented limit, identical in both: verification proves the events it is given are genuine, in order, and unmodified; it cannot prove they are *all* of them, because a chain truncated from the front is internally consistent. A dropped prefix is caught by the service's sequence guard and the sealed root, not by the client chain.
 
 This re-checks the **client HMAC chain** — capture order and content integrity — with your key, independently of obsvr. The **public-key-only** check (recompute the Merkle root from raw events and verify the Ed25519 root signature with the published public key, no obsvr account) is performed by your obsvr ingest service's bundle verifier over an exported audit bundle; the SDK's job is to produce events that verify identically wherever they're checked, which the [conformance fixtures](#cross-language-parity-conformance-is-the-contract) pin.
 
@@ -409,8 +411,11 @@ The two SDKs are kept byte-for-byte compatible by shared fixtures in [`conforman
 - `rules_hash.json` — the canonical `policy_version` hash of a rule set, derived identically in both languages.
 - `reason_codes.json` — the closed registry of verdict reason codes; a staleness check in each SDK fails if the registries diverge or the engine emits an unregistered code.
 - `normalization.json`, `otel_attributes.json`, `effective_policy.json` — Unicode-normalization, telemetry-attribute, and effective-policy parity.
+- `tool_pinning.json`, `tool_content_hash.json` — the two tool digests, which are deliberately **different contracts**: one is the descriptor pin that catches a rug-pull, the other is the per-call evidence sealing which tool content and arguments a call actually saw. The fixtures pin, in both directions, that neither can be substituted for the other.
 
-A fixture failing in one language is a release blocker unless recorded in [`conformance/known-divergences.md`](conformance/known-divergences.md) — currently **empty**. Any behavior change must update the fixtures **and** both implementations in the same change.
+A fixture failing in one language is a release blocker unless recorded in [`conformance/known-divergences.md`](conformance/known-divergences.md), which currently carries **five** rows — each with the reason it is accepted, an owner, and what closes it. Any behavior change must update the fixtures **and** both implementations in the same change.
+
+The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixture, and `sdk/conformance.pin` / `sdk-python/conformance.pin` record the corpus hash each package's suite was written against. CI fails on a fixture edited without regenerating the pin, on the two pins disagreeing, and on a fixture with no in-repo consumer — so a forked copy fails loudly instead of quietly passing its own suite forever.
 
 ---
 
