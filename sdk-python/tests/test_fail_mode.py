@@ -206,6 +206,7 @@ class TestRegistryGate:
         "escrow.py",
         "events.py",
         "failure_dispositions.py",
+        "instance_guard.py",
         "normalize.py",
         "otel_mirror.py",
         "pii_types.py",

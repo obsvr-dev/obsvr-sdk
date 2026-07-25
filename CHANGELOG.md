@@ -29,6 +29,12 @@ cut, when it is renamed to that version.
   unchanged**, so existing code that string-matched it keeps working, and the
   Python error still subclasses `RuntimeError`, so existing `except` blocks
   keep catching it.
+- **Duplicate-instance guard.** If the SDK ends up in one process twice -
+  installed directly and again as a transitive dependency - the first copy to
+  `init()` governs, and the second logs once and stands down instead of both
+  polling, both wrapping, and both emitting duplicate events for the same call.
+  A copy that stood down passes clients through unwrapped, so its warning names
+  the fix: deduplicate the dependency.
 - **Python chain verification.** `obsvr.verify_chain(events, api_key)` verifies
   an exported audit chain offline - recomputing every HMAC signature and
   checking sequence continuity, chain linkage, session consistency, and

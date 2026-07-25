@@ -8,6 +8,7 @@ import dataclasses
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -18,6 +19,17 @@ from typing import Any, Callable, Dict, List, Optional
 DEFAULT_INGEST_URL = ""
 DEFAULT_TIMEOUT_S = 5.0
 DEFAULT_MAX_PAYLOAD_CHARS = 100000
+
+#: Identifies THIS copy of the package inside the process (see instance_guard).
+_MODULE_INSTANCE_ID = f"obsvr-{uuid.uuid4().hex[:12]}"
+
+
+def _sdk_version() -> str:
+    """Read the version lazily: importing it at module scope would widen this
+    module's import graph for no reason."""
+    from ._version import __version__
+
+    return __version__
 
 # Loopback hosts exempt from the HTTPS requirement (local development).
 _LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
@@ -350,6 +362,16 @@ def init(
             "will NOT fail closed on a paused project / revoked key / stale sync. "
             "Enable polling for a working fail-closed posture."
         )
+
+    # Two copies of the SDK in one process would each poll, each wrap, and each
+    # emit - duplicate evidence for one call. The first copy to init governs;
+    # this one says so once and stands down.
+    from .instance_guard import claim_governing_instance, duplicate_instance_message
+
+    claim = claim_governing_instance(_sdk_version(), _MODULE_INSTANCE_ID)
+    if not claim["governing"]:
+        logging.getLogger("obsvr").warning(duplicate_instance_message(claim))
+        return
 
     # Remote policy sync: fetch server rules + approval grants, detect the
     # dashboard kill switch, and (with fail_mode="closed") enforce staleness.

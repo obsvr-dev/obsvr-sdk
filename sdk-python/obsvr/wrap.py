@@ -987,6 +987,15 @@ def wrap(client: Any, **options: Any) -> Any:
     if config.disabled:
         return client
 
+    # A copy that yielded to another SDK instance in this process passes the
+    # client through: one governing instance, never two interceptions of the
+    # same call. The stand-down was already reported once at init().
+    from .config import _MODULE_INSTANCE_ID
+    from .instance_guard import is_governing_instance
+
+    if not is_governing_instance(_MODULE_INSTANCE_ID):
+        return client
+
     provider = _detect_provider(client)
 
     # Gemini: generate_content sits directly on the model object

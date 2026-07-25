@@ -81,6 +81,12 @@ import { verifyAuditChain as _verifyAuditChain } from "./governance/verify-chain
 import { startPolicyPolling } from "./proxy/config.js";
 import type { LLMAuditInitConfig, ObsvrConfig, WrapOptions } from "./proxy/types.js";
 import { autoInstrument } from "./auto/index.js";
+import {
+  claimGoverningInstance,
+  duplicateInstanceMessage,
+  isGoverningInstance,
+} from "./proxy/instance-guard.js";
+import { SDK_VERSION } from "./constants.js";
 
 // Re-export proxy types
 export type { LLMAuditInitConfig, ObsvrConfig, WrapOptions, AuditEvent, AuditFields, AgentPolicy } from "./proxy/types.js";
@@ -194,8 +200,21 @@ export function defineConfig(config: ObsvrConfig): ObsvrConfig {
 /**
  * Wrapper around the internal init that also checks interceptor coverage.
  */
+/** Identifies THIS copy of the module inside the process. */
+const MODULE_INSTANCE_ID = `obsvr-${SDK_VERSION}-${Math.random().toString(36).slice(2)}`;
+
 function initWithAutoInstrumentation(config: LLMAuditInitConfig | ObsvrConfig): void {
   _init(config);
+
+  // Two copies of the SDK in one process would each poll, each wrap, and each
+  // emit - duplicate evidence for one call. The first copy to init governs;
+  // this one says so once and stands down.
+  const claim = claimGoverningInstance(SDK_VERSION, MODULE_INSTANCE_ID);
+  if (!claim.governing) {
+    console.warn(duplicateInstanceMessage(claim));
+    return;
+  }
+
   // After config is resolved, verify interceptor coverage and start policy polling
   // (autoInstrument never patches anything; it only warns on misconfiguration)
   try {
@@ -208,6 +227,15 @@ function initWithAutoInstrumentation(config: LLMAuditInitConfig | ObsvrConfig): 
   } catch {
     // If getConfig() fails for any reason, skip auto-instrumentation silently
   }
+}
+
+/**
+ * Whether this copy of the module governs the process. A copy that yielded to
+ * an earlier one passes clients through unwrapped rather than governing them
+ * alongside it.
+ */
+export function isGoverningCopy(): boolean {
+  return isGoverningInstance(MODULE_INSTANCE_ID);
 }
 
 /**
@@ -288,7 +316,13 @@ export const obsvr = {
    * );
    * ```
    */
-  wrap: <T extends object>(client: T, options?: WrapOptions): T => wrap(client, options),
+  wrap: <T extends object>(client: T, options?: WrapOptions): T => {
+    // A copy that yielded to another SDK instance in this process passes the
+    // client through: one governing instance, never two interceptions of the
+    // same call. The stand-down was already reported once at init().
+    if (!isGoverningCopy()) return client;
+    return wrap(client, options);
+  },
 
   /**
    * Run a function inside a named span scope. Governed calls made within it

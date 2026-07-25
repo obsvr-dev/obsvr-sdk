@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "name": "instance_guard",
+  "description": "Duplicate-SDK-instance guard, shared by both SDKs. TS source: sdk/src/proxy/instance-guard.ts (Symbol.for global slot). Python twin: sdk-python/obsvr/instance_guard.py (a sys.modules slot - a module-level variable would not survive the very duplication this guards against). Both suites (sdk/tests/unit/instance-guard.test.ts, sdk-python/tests/test_instance_guard.py) drive these sequences and must reach the same outcome. The SDK can appear in one process twice - installed directly and again as a transitive dependency - and two copies would each poll, each wrap, and each emit, producing duplicate evidence for a single call.",
+  "semantics": {
+    "first_claim_wins": "the first copy to initialize governs; later copies yield",
+    "reinit_is_not_duplication": "the governing copy re-initializing (new config) keeps governing and logs nothing",
+    "log_once": "a yielding copy logs exactly once, at init - a duplicate install is one problem, not one per call",
+    "yield_means_passthrough": "a yielded copy does not poll and does not wrap; clients wrapped through it are NOT governed, which is why the log names the fix (deduplicate the dependency)",
+    "incumbent_keeps_the_slot": "even when the incumbent is an older version; that case is called out in the log rather than triggering a takeover, because taking over mid-process would leave the incumbent's already-wrapped clients governed by a released instance"
+  },
+  "cases": [
+    {
+      "id": "single_instance_governs",
+      "desc": "one copy, one claim: it governs and logs nothing",
+      "claims": [
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-a"
+        }
+      ],
+      "expect": [
+        {
+          "governing": true,
+          "logs": 0
+        }
+      ]
+    },
+    {
+      "id": "second_copy_yields_and_logs_once",
+      "desc": "a second copy finds the slot taken, logs once, and does not govern",
+      "claims": [
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-a"
+        },
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-b"
+        }
+      ],
+      "expect": [
+        {
+          "governing": true,
+          "logs": 0
+        },
+        {
+          "governing": false,
+          "logs": 1,
+          "message_contains": "already",
+          "incumbent_version": "0.10.0"
+        }
+      ]
+    },
+    {
+      "id": "repeated_claims_by_the_yielded_copy_stay_quiet",
+      "desc": "the yielded copy re-initializing does not turn one duplicate install into a stream of warnings",
+      "claims": [
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-a"
+        },
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-b"
+        },
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-b"
+        }
+      ],
+      "expect": [
+        {
+          "governing": true,
+          "logs": 0
+        },
+        {
+          "governing": false,
+          "logs": 1
+        },
+        {
+          "governing": false,
+          "logs": 1
+        }
+      ]
+    },
+    {
+      "id": "governing_copy_reinit_keeps_governing",
+      "desc": "re-initializing the governing copy with new config is not duplication",
+      "claims": [
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-a"
+        },
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-a"
+        }
+      ],
+      "expect": [
+        {
+          "governing": true,
+          "logs": 0
+        },
+        {
+          "governing": true,
+          "logs": 0
+        }
+      ]
+    },
+    {
+      "id": "older_incumbent_keeps_the_slot_and_is_named",
+      "desc": "a newer copy still yields to an older incumbent, and the log says the governing copy is older",
+      "claims": [
+        {
+          "version": "0.9.0",
+          "instance_id": "copy-old"
+        },
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-new"
+        }
+      ],
+      "expect": [
+        {
+          "governing": true,
+          "logs": 0
+        },
+        {
+          "governing": false,
+          "logs": 1,
+          "incumbent_is_older": true,
+          "message_contains": "OLDER",
+          "incumbent_version": "0.9.0"
+        }
+      ]
+    },
+    {
+      "id": "newer_incumbent_is_not_flagged_as_older",
+      "desc": "the older-version note appears only when it is true",
+      "claims": [
+        {
+          "version": "0.10.0",
+          "instance_id": "copy-new"
+        },
+        {
+          "version": "0.9.0",
+          "instance_id": "copy-old"
+        }
+      ],
+      "expect": [
+        {
+          "governing": true,
+          "logs": 0
+        },
+        {
+          "governing": false,
+          "logs": 1,
+          "incumbent_is_older": false
+        }
+      ]
+    }
+  ]
+}
