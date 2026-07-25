@@ -103,14 +103,18 @@ function canonicalNumber(n: number): string {
 }
 
 /**
- * Canonical JSON for hashing (dedicated to tool descriptors; NOT the frozen
+ * Canonical JSON for hashing (dedicated to tool content; NOT the frozen
  * rules-hash canonicalizer). Recursively: sorted object keys, nested nulls
  * KEPT (only the top-level projection omits absent fields), strings/keys via
  * the native JSON string serializer (identical escaping in both engines),
  * numbers via canonicalNumber. Throws on unsupported/undecidable values so
  * the caller fails closed.
+ *
+ * Exported for the second hasher over the same attacker-controlled input
+ * class: tool-content-hash.ts. Both must canonicalize identically or one of
+ * them is wrong; there is exactly one implementation per language on purpose.
  */
-function canonicalJsonForHash(value: unknown): string {
+export function canonicalJsonForHash(value: unknown): string {
   if (value === null) return "null";
   const t = typeof value;
   if (t === "boolean") return value ? "true" : "false";
