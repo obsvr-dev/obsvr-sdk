@@ -105,34 +105,28 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "id": "session_taint",
         "module": "sdk-python/obsvr/session_taint.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
         "hook_overridable": True,
-        "notes": "Pure in-process latch over a bounded store. No timeout channel, no error channel.",
+        "notes": "Guarded at the pre-call span in both languages and at the tool-execution path. An exception resolves by failMode: open loses this layer's escalation for the call, closed refuses it.",
     },
     {
         "id": "canary",
         "module": "sdk-python/obsvr/canary.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("closed"),
         "degraded": _s("not_applicable"),
         "hook_overridable": False,
-        "notes": (
-            "A canary leak is unsuppressible: the hook-override branch excludes it explicitly, "
-            "because a leaked canary is proof of exfiltration in progress."
-        ),
+        "notes": "Floor class: resolves CLOSED regardless of failMode, because a layer that cannot run is the strongest form of 'cannot guarantee' and a canary block is unsuppressible by construction. The response phase is the exception - once an answer exists it is never withheld, so there the failure falls closed only on the stored copy.",
     },
     {
         "id": "builtin_pii_scan",
         "module": "sdk-python/obsvr/policy.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("fail_mode", "redaction_application_closed"),
         "degraded": _s("not_applicable"),
         "hook_overridable": True,
-        "notes": (
-            "Regex tier, bounded by the ReDoS-checked matcher rather than a timeout. An explicit "
-            "hook allow can override its block; a hook timeout or error cannot."
-        ),
+        "notes": "Guarded at every pre-call span. Detection resolves by failMode; APPLYING a resolved redaction to outbound content resolves closed - see the redaction_application_closed qualifier.",
     },
     {
         "id": "presidio_merge",
@@ -150,53 +144,37 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "id": "deobfuscation_views",
         "module": "sdk-python/obsvr/deobfuscate.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("fail_mode", "redaction_application_closed"),
         "degraded": _s("not_applicable"),
         "hook_overridable": True,
-        "notes": (
-            "Findings-only view producer; malformed encodings are handled internally (an "
-            "undecodable view is simply not produced) rather than raised. The CSS-hidden / "
-            "aria-hidden stripping pass is declared here rather than as its own layer: it is "
-            "a step inside this producer, and malformed markup (unterminated or "
-            "same-name-nested) resolves to a shorter view, never an exception."
-        ),
+        "notes": "Guarded with the scan it feeds. Detection resolves by failMode; the stored-copy redactor fails closed to [UNSCANNED:detector_error] rather than persist text nothing vetted, and outbound application resolves closed - see the redaction_application_closed qualifier.",
     },
     {
         "id": "multi_turn_injection",
         "module": "sdk-python/obsvr/injection_session.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
         "hook_overridable": True,
-        "notes": (
-            "In-process accumulator over a bounded store; scoring is arithmetic with no failure "
-            "channel."
-        ),
+        "notes": "Guarded at the pre-call span in both languages. Resolves by failMode; a lost score costs this call's accumulated-probing signal only.",
     },
     {
         "id": "policy_floor",
         "module": "sdk-python/obsvr/rules.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("closed"),
         "degraded": _s("not_applicable"),
         "hook_overridable": False,
-        "notes": (
-            "The non-overridable baseline. A floor redact the pipeline cannot guarantee fails "
-            "CLOSED to a block rather than forward content under a false redacted record. Hook "
-            "attempts to override are refused and recorded on the event."
-        ),
+        "notes": "Floor class: resolves CLOSED regardless of failMode. The non-overridable baseline that cannot run must not wave a call through ungoverned, exactly as a floor redact it cannot guarantee already fails closed to a block. The response phase never withholds the caller's value, so there it falls closed only on the stored copy.",
     },
     {
         "id": "policy_rules",
         "module": "sdk-python/obsvr/rules.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
         "hook_overridable": True,
-        "notes": (
-            "Deterministic rule evaluation; regex conditions are ReDoS-checked rather than timed "
-            "out."
-        ),
+        "notes": "Guarded at every span that evaluates rules. Resolves by failMode. Two units of this layer are structurally always OPEN and cannot block whatever failMode says: shadow evaluation, which is defined as never decision-affecting, and the policy-version hash, which is provenance rather than a control.",
     },
     {
         "id": "customer_hook",
@@ -255,13 +233,10 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "id": "tool_result_scan",
         "module": "sdk-python/obsvr/response_scan.py",
         "timeout": _s("not_applicable"),
-        "error": _s("unguarded"),
+        "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
         "hook_overridable": False,
-        "notes": (
-            "Response-side scan of tool results, the exfiltration channel. Runs outside the "
-            "tool-call path's policy guard, so an exception here reaches the caller."
-        ),
+        "notes": "Guarded at its own call site, scan and sanitizer alike. Resolves by failMode with the default open even though it sees canary tokens, because the tool has ALREADY RUN: blocking cannot undo the side effect, it only withholds the result from the model.",
     },
 ]
 

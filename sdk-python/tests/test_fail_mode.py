@@ -235,19 +235,13 @@ class TestRegistryGate:
             f"detector modules with no failure disposition declared: {undeclared}"
         )
 
-    def test_unguarded_layers_are_counted_so_the_number_cannot_grow_unnoticed(self):
-        assert sorted(unguarded_layer_ids()) == sorted(
-            [
-                "builtin_pii_scan",
-                "canary",
-                "deobfuscation_views",
-                "multi_turn_injection",
-                "policy_floor",
-                "policy_rules",
-                "session_taint",
-                "tool_result_scan",
-            ]
-        )
+    def test_no_layer_lets_its_failure_escape_to_the_host(self):
+        """This list was the eight in-process layers with no error channel at
+        all. Every one is now guarded, so the correct assertion is that the
+        list is EMPTY - and it stays a tripwire in the other direction: a new
+        detector that ships without an error channel, or a guard someone
+        removes, turns this red rather than passing unnoticed."""
+        assert unguarded_layer_ids() == []
 
 
 class TestDeclarationsMatchObservedBehavior:
@@ -311,14 +305,19 @@ class TestDeclarationsMatchObservedBehavior:
                 "hello", get_config(), provider="openai", operation="chat"
             )["decision"] == "block"
 
-    def test_an_unguarded_layer_really_is_unguarded(self, monkeypatch):
-        """The declaration says an exception escapes to the host. Prove it, so
-        the day someone adds a guard this test tells them to update the table."""
-        import pytest
-
+    def test_a_detector_defect_resolves_instead_of_reaching_the_caller(self, monkeypatch):
+        """This test used to assert the opposite. The declaration said an
+        exception escaped to the host, and its docstring said that the day
+        someone added a guard, this test would tell them to update the table.
+        That is what happened, so the assertion is inverted rather than
+        deleted: the same injected defect must now resolve."""
         from obsvr import policy as policy_mod
+        from obsvr.policy import get_detector_error_count
 
-        assert disposition_for("builtin_pii_scan", "error") == {"disposition": "unguarded"}
+        assert disposition_for("builtin_pii_scan", "error") == {
+            "disposition": "fail_mode",
+            "qualifier": "redaction_application_closed",
+        }
 
         def boom(*_a, **_k):
             raise RuntimeError("detector bug")
@@ -326,7 +325,18 @@ class TestDeclarationsMatchObservedBehavior:
         _reset()
         obsvr.init(api_key="test", pii_policy={"action": "block", "types": ["email"]})
         monkeypatch.setattr(policy_mod, "run_builtin_pii_scan", boom)
-        with pytest.raises(RuntimeError, match="detector bug"):
-            apply_pre_call_policy(
-                "hello a@b.com", get_config(), provider="openai", operation="chat"
-            )
+        res = apply_pre_call_policy(
+            "hello a@b.com", get_config(), provider="openai", operation="chat"
+        )
+        assert res["decision"] == "allow"
+        assert res["compliance"]["rule_id"] == "sdk:detector_error"
+        assert get_detector_error_count() == 1
+
+        # And closed when the operator opted in.
+        _reset()
+        obsvr.init(api_key="test", fail_mode="closed",
+                   pii_policy={"action": "block", "types": ["email"]})
+        monkeypatch.setattr(policy_mod, "run_builtin_pii_scan", boom)
+        assert apply_pre_call_policy(
+            "hello a@b.com", get_config(), provider="openai", operation="chat"
+        )["decision"] == "block"

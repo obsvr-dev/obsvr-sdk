@@ -216,19 +216,13 @@ describe('failure-disposition registry: the gate', () => {
     expect(undeclared).toEqual([]);
   });
 
-  it('counts the layers whose failure escapes to the host, so the number cannot grow unnoticed', () => {
-    expect(unguardedLayerIds().sort()).toEqual(
-      [
-        'builtin_pii_scan',
-        'canary',
-        'deobfuscation_views',
-        'multi_turn_injection',
-        'policy_floor',
-        'policy_rules',
-        'session_taint',
-        'tool_result_scan',
-      ].sort(),
-    );
+  it('no layer lets its failure escape to the host', () => {
+    // This list was the eight in-process layers with no error channel at all.
+    // Every one is now guarded, so the correct assertion is that the list is
+    // EMPTY - and it stays a tripwire in the other direction: a new detector
+    // that ships without an error channel, or a guard someone removes, turns
+    // this red rather than passing unnoticed.
+    expect(unguardedLayerIds()).toEqual([]);
   });
 });
 

@@ -138,6 +138,29 @@ cut, when it is renamed to that version.
 
 ### Fixed
 
+- **A bug inside a detector layer could break the calling application.** Eight
+  in-process detector layers - builtin PII scan, canary, de-obfuscation views,
+  multi-turn injection, policy floor, policy rules, session taint, tool-result
+  scan - had no error channel at all, so an unexpected exception inside one
+  propagated out of your own LLM call rather than resolving to allow or block.
+  That was neither fail-open nor fail-closed but the absence of a decision.
+  Every path that runs them is now guarded in both SDKs, and the resolution is
+  declared per layer in `conformance/fixtures/fail_mode.json`: by `failMode`
+  for the scanning layers, and closed for the policy floor and canary, which
+  are by definition the layers `failMode` cannot move. Failures are counted
+  under a `detector_errors` key on the fleet-status poll and recorded on the
+  call's own signed event under `obsvr_telemetry.detector_failure`.
+- **A failed redaction could send the content it was told to remove.** Applying
+  a `redact` decision to the outbound provider arguments was unguarded, so a
+  defect in the redactor either propagated to your application or, mid-walk,
+  left a partially-redacted request. Because the scan has already found
+  something by that point, this now fails **closed** regardless of `failMode` -
+  the call is refused rather than forwarded - and the event drops any
+  `redacted` claim instead of asserting a redaction that did not happen.
+- **A stored audit copy could be written by a broken redactor.** Every stored
+  copy now goes through one guarded point per language, falling back to
+  `[UNSCANNED:detector_error]` - deliberately unlike the `[REDACTED…]` markers -
+  rather than persisting content nothing scanned.
 - **The GitHub Action installed a stale SDK.** Its `version` input defaulted to
   0.9.0 against a 0.10.0 repository, so a CI job using the defaults verified
   evidence with an older SDK than the one that produced it. The default now
