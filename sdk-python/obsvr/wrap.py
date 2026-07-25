@@ -30,6 +30,8 @@ from .policy import (
     apply_pre_call_policy,
     apply_post_call_policy,
     blocked_prompt_for_storage,
+    apply_outbound_redaction,
+    outbound_redaction_blocked_compliance,
     redact_builtin_pii,
 )
 from .sender import send_audit_async, should_sample
@@ -745,8 +747,33 @@ def _governed_call(
         raise blocked_call_error(compliance)
 
     if policy["decision"] == "redact":
-        _redact_messages_in_place(kwargs, redact_builtin_pii)
-        args = _redact_positional_inputs(args, redact_builtin_pii)
+        # Enforcement application: a redaction that cannot be carried out blocks
+        # the call rather than forwarding the content it was told to remove.
+        _redacted_args = args
+
+        def _apply_redaction() -> None:
+            nonlocal _redacted_args
+            _redact_messages_in_place(kwargs, redact_builtin_pii)
+            _redacted_args = _redact_positional_inputs(args, redact_builtin_pii)
+
+        _not_redacted = apply_outbound_redaction(_apply_redaction)
+        if _not_redacted is not None:
+            compliance = outbound_redaction_blocked_compliance(compliance, _not_redacted)
+            event = build_audit_event(
+                config,
+                provider=provider, model=model, operation=operation,
+                source="python_wrap",
+                prompt=blocked_prompt_for_storage(prompt_text, compliance, security_normalized),
+                response="", status_code=403, success=False,
+                options=options, compliance=compliance,
+                user_input=redact_for_storage(
+                    _last_user_message_text(provider, args, kwargs), security_normalized
+                ),
+                metadata=metadata or None,
+            )
+            _emit_audit(config, event, compliance)
+            raise blocked_call_error(compliance)
+        args = _redacted_args
 
     start = time.monotonic()
     try:
@@ -864,8 +891,33 @@ async def _governed_call_async(
         raise blocked_call_error(compliance)
 
     if policy["decision"] == "redact":
-        _redact_messages_in_place(kwargs, redact_builtin_pii)
-        args = _redact_positional_inputs(args, redact_builtin_pii)
+        # Enforcement application: a redaction that cannot be carried out blocks
+        # the call rather than forwarding the content it was told to remove.
+        _redacted_args = args
+
+        def _apply_redaction() -> None:
+            nonlocal _redacted_args
+            _redact_messages_in_place(kwargs, redact_builtin_pii)
+            _redacted_args = _redact_positional_inputs(args, redact_builtin_pii)
+
+        _not_redacted = apply_outbound_redaction(_apply_redaction)
+        if _not_redacted is not None:
+            compliance = outbound_redaction_blocked_compliance(compliance, _not_redacted)
+            event = build_audit_event(
+                config,
+                provider=provider, model=model, operation=operation,
+                source="python_wrap",
+                prompt=blocked_prompt_for_storage(prompt_text, compliance, security_normalized),
+                response="", status_code=403, success=False,
+                options=options, compliance=compliance,
+                user_input=redact_for_storage(
+                    _last_user_message_text(provider, args, kwargs), security_normalized
+                ),
+                metadata=metadata or None,
+            )
+            _emit_audit(config, event, compliance)
+            raise blocked_call_error(compliance)
+        args = _redacted_args
 
     start = time.monotonic()
     try:

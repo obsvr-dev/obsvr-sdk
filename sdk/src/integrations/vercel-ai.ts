@@ -44,7 +44,9 @@ import {
   type IntegrationOptions,
   type IntegrationProvider,
   DEFAULT_COMPLIANCE,
+  outboundRedactionBlockedCompliance,
 } from "./core.js";
+import { applyOutboundRedaction } from "../policy/detector-guard.js";
 
 const SOURCE = "vercel_ai";
 const OPERATION = "generate";
@@ -276,7 +278,36 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
         throw blockedCallError(policy.compliance);
       }
       if (policy.decision === "redact") {
-        redactParamsInPlace(params);
+        // Enforcement application: a redaction that cannot be carried out
+        // blocks rather than forwarding the content it was told to remove.
+        const notRedacted = applyOutboundRedaction(() => {
+          redactParamsInPlace(params);
+        });
+        if (notRedacted) {
+          const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
+          emitIntegrationEvent({
+            config,
+            provider,
+            model,
+            operation: args.type === "stream" ? STREAM_OPERATION : OPERATION,
+            source: opts.source ?? SOURCE,
+            prompt: blockedPromptForStorage(
+              extractParamsPrompt(params),
+              blocked,
+              policy.securityNormalized,
+            ),
+            response: "",
+            userInput: blockedUserInputForStorage(userText, policy),
+            latencyMs: 0,
+            success: false,
+            statusCode: 403,
+            options: opts,
+            canaryTelemetry: policy.canaryTelemetry,
+            floorTelemetry: policy.floorTelemetry,
+            compliance: blocked,
+          });
+          throw blockedCallError(blocked);
+        }
       }
 
       callState.set(params, { compliance: policy.compliance, sampled });

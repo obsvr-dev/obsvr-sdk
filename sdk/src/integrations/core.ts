@@ -26,6 +26,7 @@ import {
   responsePhaseFailureCompliance,
   safePolicyVersion,
   safeStoredCopy,
+  type OutboundRedactionFailure,
   UNSCANNED_PLACEHOLDER,
   type DetectorFailure,
 } from "../policy/detector-guard.js";
@@ -280,6 +281,33 @@ export function extractLastUserText(args: unknown): string {
   }
 
   return extractAllPromptText(args);
+}
+
+/**
+ * Compliance for a call blocked because its redaction could not be APPLIED.
+ *
+ * Derived from the policy's own compliance so the version and provenance
+ * fields survive, with every "redacted" claim stripped: an event asserting a
+ * redaction that did not happen is worse than no event at all, because it
+ * tells an auditor the content was cleaned. The types the scan found move to
+ * `blocked_types`, which is what they now are - the reason the call was
+ * refused rather than a list of things removed.
+ */
+export function outboundRedactionBlockedCompliance(
+  base: ComplianceInfo,
+  failed: OutboundRedactionFailure,
+): ComplianceInfo {
+  return {
+    ...base,
+    event_type: "blocked_call",
+    action_taken: "blocked",
+    action_reason: "policy_violation",
+    redacted_types: [],
+    blocked_types: [...new Set([...base.blocked_types, ...base.redacted_types])],
+    rule_id: failed.ruleId,
+    policy_reason: failed.policyReason,
+    detector_failure: failed.failure,
+  };
 }
 
 /**

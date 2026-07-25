@@ -52,6 +52,8 @@ from ..policy import (
     apply_pre_call_policy,
     blocked_prompt_for_storage,
     blocked_user_input_for_storage,
+    apply_outbound_redaction,
+    outbound_redaction_blocked_compliance,
     redact_builtin_pii,
 )
 
@@ -404,13 +406,42 @@ class _GovernedBedrockClient:
                 raise blocked_call_error(compliance)
 
             if policy["decision"] == "redact":
-                if is_converse:
-                    _redact_converse_inplace(kwargs)
-                    prompt_text = _extract_converse_prompt(kwargs)
-                elif invoke_body is not None:
-                    _redact_invoke_body_inplace(invoke_body)
-                    kwargs["body"] = _encode_body(invoke_body)
-                    prompt_text = _extract_invoke_prompt(invoke_body)
+                # Enforcement application: a redaction that cannot be carried
+                # out blocks the call rather than forwarding the content it was
+                # told to remove.
+                def _apply_redaction() -> None:
+                    nonlocal prompt_text
+                    if is_converse:
+                        _redact_converse_inplace(kwargs)
+                        prompt_text = _extract_converse_prompt(kwargs)
+                    elif invoke_body is not None:
+                        _redact_invoke_body_inplace(invoke_body)
+                        kwargs["body"] = _encode_body(invoke_body)
+                        prompt_text = _extract_invoke_prompt(invoke_body)
+
+                _not_redacted = apply_outbound_redaction(_apply_redaction)
+                if _not_redacted is not None:
+                    compliance = outbound_redaction_blocked_compliance(
+                        compliance, _not_redacted
+                    )
+                    emit_event(
+                        cfg,
+                        provider=PROVIDER,
+                        model=model,
+                        operation=operation,
+                        source=SOURCE,
+                        prompt=blocked_prompt_for_storage(
+                            prompt_text, compliance, policy.get("security_normalized")
+                        ),
+                        response="",
+                        user_input=blocked_user_input_for_storage(user_text, policy),
+                        latency_ms=0,
+                        success=False,
+                        status_code=403,
+                        compliance=compliance,
+                        options=options,
+                    )
+                    raise blocked_call_error(compliance)
 
             # --- Execute ---
             start = time.monotonic()

@@ -429,3 +429,125 @@ def test_stored_copy_redactor_leaves_a_healthy_redaction_alone():
     assert "[REDACTED_SSN]" in redact_for_storage("my ssn is 123-45-6789", None)
     assert get_detector_error_count() == 0
     _reset()
+
+
+class TestOutboundRedactionApplication:
+    """Enforcement APPLICATION: a redaction that could not be carried out.
+
+    A third phase, and deliberately not the pre-call rule. Pre-call resolves by
+    fail_mode because a DETECTION failure means the SDK does not know whether
+    sensitive content is present. Here the scan already ran, already found
+    something, and policy already said remove it - so failing open would
+    transmit to a third-party provider exactly the content the SDK was told to
+    strip. It fails CLOSED regardless of fail_mode, on the same reasoning the
+    policy floor already uses: never forward content that cannot be guaranteed
+    redacted.
+
+    Twin: sdk/tests/unit/detector-guard-outbound.test.ts.
+    """
+
+    def test_fails_closed_on_both_fail_modes(self):
+        from obsvr.policy import apply_outbound_redaction, get_detector_error_count
+
+        for mode in ("open", "closed"):
+            _reset()
+            _init(fail_mode=mode)
+
+            def _boom() -> None:
+                raise RuntimeError("redactor bug")
+
+            failed = apply_outbound_redaction(_boom)
+            assert failed is not None, f"fail_mode={mode} must not let it through"
+            assert failed["detector_failure"]["resolution"] == "closed"
+            assert failed["detector_failure"]["phase"] == "enforcement_application"
+            assert failed["rule_id"] == "sdk:detector_error"
+            assert get_detector_error_count() == 1
+        _reset()
+
+    def test_reports_nothing_when_the_redaction_succeeds(self):
+        from obsvr.policy import apply_outbound_redaction, get_detector_error_count
+
+        _init(fail_mode="open")
+        ran = []
+        assert apply_outbound_redaction(lambda: ran.append(True)) is None
+        assert ran == [True]
+        assert get_detector_error_count() == 0
+        _reset()
+
+    def test_the_event_never_claims_a_redaction_that_did_not_happen(self):
+        from obsvr.policy import (
+            apply_outbound_redaction,
+            outbound_redaction_blocked_compliance,
+        )
+
+        _init(fail_mode="open")
+        base = {
+            "event_type": "llm_call",
+            "policy_version": "v1",
+            "action_taken": "redacted",
+            "action_reason": "pii_detected",
+            "action_source": "builtin",
+            "redacted_types": ["email", "ssn"],
+            "blocked_types": [],
+        }
+
+        def _boom() -> None:
+            raise RuntimeError("redactor bug")
+
+        corrected = outbound_redaction_blocked_compliance(
+            base, apply_outbound_redaction(_boom)
+        )
+        assert corrected["action_taken"] == "blocked"
+        assert corrected["event_type"] == "blocked_call"
+        assert corrected["redacted_types"] == []
+        # What the scan found is now the reason for the refusal, not a list of
+        # things removed - nothing was removed.
+        assert corrected["blocked_types"] == ["email", "ssn"]
+        assert corrected["rule_id"] == "sdk:detector_error"
+        assert corrected["detector_failure"]["phase"] == "enforcement_application"
+        # Provenance the policy already established survives.
+        assert corrected["policy_version"] == "v1"
+        _reset()
+
+    def test_wrap_blocks_rather_than_forwarding_a_partial_redaction(self):
+        """End to end through wrap(): the redaction walk cannot write to the
+        message, and the call is refused instead of sending the prompt the SDK
+        was told to clean. Twin vector to the TypeScript frozen-message test.
+        """
+        import obsvr
+        from obsvr.errors import ObsvrPolicyError
+        from obsvr.policy import get_detector_error_count
+
+        class _ReadOnlyMessage(dict):
+            """A message a caller reuses and does not expect us to mutate:
+            readable by the scanner, unwritable by the redactor."""
+
+            def __setitem__(self, *_args):
+                raise TypeError("message is read-only")
+
+        _reset()
+        obsvr.init(api_key="test", ingest_url="https://x.test", fail_mode="open",
+                   pii_policy={"action": "redact", "types": ["ssn"]})
+
+        class _Completions:
+            def create(self, **_kw):
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        class _Chat:
+            def __init__(self):
+                self.completions = _Completions()
+
+        class _Client:
+            def __init__(self):
+                self.chat = _Chat()
+
+        client = obsvr.wrap(_Client())
+        with pytest.raises(ObsvrPolicyError):
+            client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    _ReadOnlyMessage(role="user", content="my ssn is 123-45-6789")
+                ],
+            )
+        assert get_detector_error_count() == 1
+        _reset()

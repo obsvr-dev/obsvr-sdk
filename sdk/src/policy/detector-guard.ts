@@ -58,7 +58,7 @@ export interface DetectorFailure {
   error: string;
   resolution: "open" | "closed";
   floor_class: boolean;
-  phase: "pre_call" | "response" | "event_build";
+  phase: "pre_call" | "response" | "event_build" | "enforcement_application";
   stored_unscanned?: boolean;
 }
 
@@ -83,6 +83,87 @@ export function recordDetectorFailure(
       `This is an SDK defect - please report it.`,
   );
   return failClosed;
+}
+
+/**
+ * What a caller must do when an outbound redaction could not be applied.
+ * Present ⟹ block; absent ⟹ the redaction completed.
+ */
+export interface OutboundRedactionFailure {
+  failure: DetectorFailure;
+  ruleId: string;
+  policyReason: string;
+}
+
+function outboundFailure(layer: string, err: unknown): OutboundRedactionFailure {
+  detectorErrors += 1;
+  // eslint-disable-next-line no-console
+  console.error(
+    `[obsvr] detector layer "${layer || "unknown"}" failed while APPLYING a ` +
+      `redaction (${describeError(err)}); resolving closed. The call was BLOCKED - ` +
+      `the SDK does not forward content it cannot guarantee was redacted. ` +
+      `This is an SDK defect - please report it.`,
+  );
+  const why =
+    `Redaction could not be applied: detector layer '${layer || "unknown"}' raised ` +
+    `${describeError(err)}; blocked rather than forwarded unredacted`;
+  return {
+    failure: detectorFailureRecord(layer, err, "closed", "enforcement_application"),
+    ruleId: "sdk:detector_error",
+    policyReason: why.slice(0, 256),
+  };
+}
+
+/**
+ * Apply a redaction to OUTBOUND content, reporting failure instead of throwing.
+ *
+ * This is the enforcement-APPLICATION phase, and it is deliberately not the
+ * pre-call rule. Pre-call resolves by failMode because a DETECTION failure
+ * means the SDK does not know whether sensitive content is present, and
+ * proceeding is a bounded risk. Here the scan already ran, already found
+ * something, and policy already said remove it: the uncertainty is resolved
+ * against us, so failing open would transmit to a third party exactly the
+ * content the SDK was told to strip.
+ *
+ * So it fails CLOSED regardless of failMode, on the same reasoning the floor
+ * already uses one step away - a floor redact that cannot be guaranteed blocks
+ * because the SDK must never forward content it cannot guarantee was redacted.
+ * That rule is about the act of forwarding, not about the rule being a floor.
+ *
+ * The in-place redactors walk message structures field by field, so a throw
+ * mid-walk leaves a PARTIALLY redacted request. Forwarding that is the worst
+ * of the three outcomes: it still carries unredacted content while looking, to
+ * every downstream reader, like a redaction that succeeded.
+ *
+ * Callers must also drop any "redacted" claim from the event: an audit record
+ * asserting a redaction that did not happen is worse than none, because it
+ * tells an auditor the content was cleaned.
+ *
+ * Twin: sdk-python/obsvr/policy.py (`apply_outbound_redaction`).
+ */
+export function applyOutboundRedaction(
+  redact: () => void,
+  layer = "builtin_pii_scan",
+): OutboundRedactionFailure | undefined {
+  try {
+    redact();
+    return undefined;
+  } catch (err) {
+    return outboundFailure(layer, err);
+  }
+}
+
+/** Async twin, for the paths whose redactors await an external anonymizer. */
+export async function applyOutboundRedactionAsync(
+  redact: () => Promise<void> | void,
+  layer = "builtin_pii_scan",
+): Promise<OutboundRedactionFailure | undefined> {
+  try {
+    await redact();
+    return undefined;
+  } catch (err) {
+    return outboundFailure(layer, err);
+  }
 }
 
 /** Short, bounded description of a thrown value for the audit record. */

@@ -38,6 +38,7 @@ import {
   isAsyncIterable,
   redactForStorage,
   redactRequestMessagesInPlace,
+  outboundRedactionBlockedCompliance,
   setupExitHandlers,
   shouldSample,
   type ComplianceInfo,
@@ -45,6 +46,7 @@ import {
   type IntegrationProvider,
 } from "./core.js";
 import type { ResolvedConfig } from "../proxy/types.js";
+import { applyOutboundRedaction } from "../policy/detector-guard.js";
 
 const TARGET_PATH = ["chat", "completions", "create"];
 const OPERATION = "chat.completions.create";
@@ -183,7 +185,38 @@ function createAuditedCreate(
       throw blockedCallError(policy.compliance);
     }
     if (policy.decision === "redact") {
-      redactRequestMessagesInPlace(request);
+      // Enforcement application: a redaction that cannot be carried out blocks
+      // the call rather than forwarding the content it was told to remove.
+      const notRedacted = applyOutboundRedaction(() => {
+        redactRequestMessagesInPlace(request);
+      });
+      if (notRedacted) {
+        const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
+        emitIntegrationEvent({
+          config,
+          provider: opts.provider,
+          model: extractModel(request as OpenAIChatRequest),
+          operation: OPERATION,
+          source: opts.source,
+          prompt: blockedPromptForStorage(
+            extractAllPromptText(request),
+            blocked,
+            policy.securityNormalized,
+          ),
+          response: "",
+          userInput: blockedUserInputForStorage(userText, policy),
+          latencyMs: 0,
+          success: false,
+          statusCode: 403,
+          requestId: audit_fields.request_id,
+          metadata: audit_fields.metadata,
+          options,
+          canaryTelemetry: policy.canaryTelemetry,
+          floorTelemetry: policy.floorTelemetry,
+          compliance: blocked,
+        });
+        throw blockedCallError(blocked);
+      }
     }
 
     const startTime = performance.now();

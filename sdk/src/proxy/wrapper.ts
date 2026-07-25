@@ -16,7 +16,14 @@ import type {
 import type { OpenAIChatRequest } from "./extractors/types.js";
 import { getConfig, isWrapped, markWrapped, isPolicyEnforcementDegraded } from "./config.js";
 import { evaluatePolicyHook, redactBuiltinPii, resolvePiiPolicy, runBuiltinPiiScan } from "../policy/hook.js";
-import { describeError, detectorFailureRecord, recordDetectorFailure } from "../policy/detector-guard.js";
+import {
+  applyOutboundRedaction,
+  applyOutboundRedactionAsync,
+  describeError,
+  detectorFailureRecord,
+  recordDetectorFailure,
+  type DetectorFailure,
+} from "../policy/detector-guard.js";
 import {
   runConfiguredPiiScan,
   escalateViewOnlyAction,
@@ -1044,6 +1051,11 @@ function createAuditedMethod(
     // jumps to the catch, so every later read is unreachable, not empty.
     let taintCfg: ReturnType<typeof resolveSessionTaint>;
     let taintKey = "";
+    // A redaction that could not be applied. Set by either redact branch (the
+    // builtin one inside the span, the hook one below it) and stamped on the
+    // event at the end, so the record says the call was blocked because
+    // enforcement could not be applied - never that it was redacted.
+    let outboundRedactionFailure: DetectorFailure | undefined;
     // --- guarded detector section ------------------------------------
     // A detector defect resolves here instead of escaping into the
     // caller's own provider call. A closed resolution drives the
@@ -1160,30 +1172,46 @@ function createAuditedMethod(
             blockedTypes = resolved.blockedTypes;
             redactedTypes = resolved.redactedTypes; // medium-risk types present alongside block-level types
           } else if (piiAction === "redact") {
-            if (typeof cleaned_args[0] === 'string') {
-              if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-                cleaned_args[0] =
-                  (await presidioRedactText(
+            // Enforcement APPLICATION, not detection: the scan already found
+            // something and policy already said remove it, so a failure here
+            // blocks regardless of failMode rather than send the prompt on
+            // unredacted. The enclosing guard would otherwise resolve it open.
+            const notRedacted = await applyOutboundRedactionAsync(async () => {
+              if (typeof cleaned_args[0] === 'string') {
+                if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
+                  cleaned_args[0] =
+                    (await presidioRedactText(
+                      cleaned_args[0],
+                      config.presidio_analyzer_url,
+                      config.presidio_anonymizer_url,
+                    )) ?? redactBuiltinPii(cleaned_args[0]);
+                } else {
+                  cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+                }
+              } else {
+                if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
+                  await presidioRedactArgs(
                     cleaned_args[0],
                     config.presidio_analyzer_url,
                     config.presidio_anonymizer_url,
-                  )) ?? redactBuiltinPii(cleaned_args[0]);
-              } else {
-                cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+                  );
+                } else {
+                  redactMessagesInPlace(cleaned_args[0]);
+                }
               }
+            });
+            if (notRedacted) {
+              actionTaken = "blocked";
+              actionReason = "policy_violation";
+              actionSource = "builtin";
+              redactedTypes = []; // nothing was redacted; the record must not say otherwise
+              ruleIdOverride = notRedacted.ruleId;
+              policyReasonOverride = notRedacted.policyReason;
+              outboundRedactionFailure = notRedacted.failure;
             } else {
-              if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-                await presidioRedactArgs(
-                  cleaned_args[0],
-                  config.presidio_analyzer_url,
-                  config.presidio_anonymizer_url,
-                );
-              } else {
-                redactMessagesInPlace(cleaned_args[0]);
-              }
+              redactedTypes = resolved.redactedTypes;
+              actionTaken = "redacted";
             }
-            redactedTypes = resolved.redactedTypes;
-            actionTaken = "redacted";
           }
           // detect_only: reason/source set; action stays "allowed"
         }
@@ -1461,17 +1489,46 @@ function createAuditedMethod(
           // event was stamped "redacted" — a false compliance record and a real
           // leak. (A hook that must suppress non-PII content should return
           // "block": redact applies the SDK's structure-aware PII redaction.)
-          if (typeof cleaned_args[0] === "string") {
-            cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+          // Same application rule as the builtin branch: the hook asserted the
+          // content must be removed, so a failed removal blocks rather than
+          // forwards it. This branch is outside the detector span entirely.
+          const notRedacted = applyOutboundRedaction(() => {
+            if (typeof cleaned_args[0] === "string") {
+              cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+            } else {
+              redactMessagesInPlace(cleaned_args[0]);
+            }
+          });
+          if (notRedacted) {
+            actionTaken = "blocked";
+            actionReason = "policy_violation";
+            actionSource = "customer_hook";
+            redactedTypes = [];
+            ruleId = notRedacted.ruleId;
+            policyReason = notRedacted.policyReason;
+            outboundRedactionFailure = notRedacted.failure;
           } else {
-            redactMessagesInPlace(cleaned_args[0]);
+            redactedTypes = ["all"]; // customer-driven; exact types are unknown
+            actionTaken = "redacted";
+            actionReason = "policy_violation";
+            actionSource = "customer_hook";
           }
-          redactedTypes = ["all"]; // customer-driven; exact types are unknown
-          actionTaken = "redacted";
-          actionReason = "policy_violation";
-          actionSource = "customer_hook";
         }
       }
+    }
+
+    // A failed outbound redaction rides the same telemetry channel, under its
+    // own phase so an auditor can tell "we could not decide" apart from "we
+    // decided and could not carry it out". Stamped here because either redact
+    // branch can set it - the builtin one inside the span, the hook one above.
+    if (outboundRedactionFailure) {
+      audit_fields.metadata = {
+        ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
+        obsvr_telemetry: {
+          ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
+          detector_failure: outboundRedactionFailure,
+        },
+      };
     }
 
     // Seal the floor evidence on every event under an active floor: the

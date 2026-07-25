@@ -51,7 +51,9 @@ import {
   shouldSample,
   type IntegrationEventParams,
   type IntegrationOptions,
+  outboundRedactionBlockedCompliance,
 } from "./core.js";
+import { applyOutboundRedaction } from "../policy/detector-guard.js";
 
 const PROVIDER = "cloudflare" as const;
 const OPERATION = "ai.run";
@@ -311,7 +313,41 @@ function createAuditedRun(
       throw blockedCallError(policy.compliance);
     }
     if (policy.decision === "redact" && inputs) {
-      redactWorkersInputsInPlace(inputs);
+      // Enforcement application: a redaction that cannot be carried out blocks
+      // the call rather than forwarding the content it was told to remove.
+      const notRedacted = applyOutboundRedaction(() => {
+        redactWorkersInputsInPlace(inputs);
+      });
+      if (notRedacted) {
+        const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
+        emitWorkersEvent(
+          {
+            config,
+            provider: PROVIDER,
+            model,
+            operation: OPERATION,
+            source: opts.source ?? "cloudflare",
+            prompt: blockedPromptForStorage(
+              extractAllPromptText(inputs) || extractWorkersPrompt(inputs),
+              blocked,
+              policy.securityNormalized,
+            ),
+            response: "",
+            userInput: blockedUserInputForStorage(userText, policy),
+            latencyMs: 0,
+            success: false,
+            statusCode: 403,
+            requestId: audit_fields.request_id,
+            metadata: audit_fields.metadata,
+            options,
+            canaryTelemetry: policy.canaryTelemetry,
+            floorTelemetry: policy.floorTelemetry,
+            compliance: blocked,
+          },
+          opts.ctx,
+        );
+        throw blockedCallError(blocked);
+      }
     }
 
     const startTime = performance.now();

@@ -53,7 +53,9 @@ import {
   shouldSample,
   type ComplianceInfo,
   type IntegrationOptions,
+  outboundRedactionBlockedCompliance,
 } from "./core.js";
+import { applyOutboundRedaction } from "../policy/detector-guard.js";
 import type { ResolvedConfig } from "../proxy/types.js";
 
 const PROVIDER = "vertex_ai" as const;
@@ -195,10 +197,41 @@ function createAuditedMethod(
       throw blockedCallError(policy.compliance);
     }
     if (policy.decision === "redact") {
-      if (typeof request === "string") {
-        cleaned_args[0] = redactBuiltinPii(request);
-      } else {
-        redactRequestMessagesInPlace(request);
+      // Enforcement application: a redaction that cannot be carried out blocks
+      // the call rather than forwarding the content it was told to remove.
+      const notRedacted = applyOutboundRedaction(() => {
+        if (typeof request === "string") {
+          cleaned_args[0] = redactBuiltinPii(request);
+        } else {
+          redactRequestMessagesInPlace(request);
+        }
+      });
+      if (notRedacted) {
+        const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
+        emitIntegrationEvent({
+          config,
+          provider: PROVIDER,
+          model,
+          operation,
+          source: options.source ?? "vertex_ai",
+          prompt: blockedPromptForStorage(
+            extractAllPromptText(request),
+            blocked,
+            policy.securityNormalized,
+          ),
+          response: "",
+          userInput: blockedUserInputForStorage(userText, policy),
+          latencyMs: 0,
+          success: false,
+          statusCode: 403,
+          requestId: audit_fields.request_id,
+          metadata: audit_fields.metadata,
+          options,
+          canaryTelemetry: policy.canaryTelemetry,
+          floorTelemetry: policy.floorTelemetry,
+          compliance: blocked,
+        });
+        throw blockedCallError(blocked);
       }
     }
 

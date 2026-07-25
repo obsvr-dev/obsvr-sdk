@@ -30,7 +30,9 @@ import {
   shouldSample,
   type ComplianceInfo,
   type IntegrationOptions,
+  outboundRedactionBlockedCompliance,
 } from "./core.js";
+import { applyOutboundRedaction } from "../policy/detector-guard.js";
 
 const WRAPPED_MARKER = Symbol("obsvr-bedrock-wrapped");
 const PROVIDER = "bedrock" as const;
@@ -439,15 +441,40 @@ function createAuditedSend(
       throw blockedCallError(policy.compliance);
     }
     if (policy.decision === "redact") {
-      if (isConverse) {
-        redactConverseInPlace(input);
-        promptText = extractConversePrompt(input);
-        userText = extractConverseLastUser(input);
-      } else if (invokeBody) {
-        redactInvokeBodyInPlace(invokeBody);
-        input.body = encodeBody(invokeBody, input.body);
-        promptText = extractInvokeBodyPrompt(invokeBody);
-        userText = extractInvokeBodyLastUser(invokeBody);
+      // Enforcement application: a redaction that cannot be carried out blocks
+      // the call rather than forwarding the content it was told to remove.
+      const notRedacted = applyOutboundRedaction(() => {
+        if (isConverse) {
+          redactConverseInPlace(input);
+          promptText = extractConversePrompt(input);
+          userText = extractConverseLastUser(input);
+        } else if (invokeBody) {
+          redactInvokeBodyInPlace(invokeBody);
+          input.body = encodeBody(invokeBody, input.body);
+          promptText = extractInvokeBodyPrompt(invokeBody);
+          userText = extractInvokeBodyLastUser(invokeBody);
+        }
+      });
+      if (notRedacted) {
+        const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
+        emitIntegrationEvent({
+          config,
+          provider: PROVIDER,
+          model,
+          operation,
+          source,
+          prompt: blockedPromptForStorage(promptText, blocked, policy.securityNormalized),
+          response: "",
+          userInput: blockedUserInputForStorage(userText, policy),
+          latencyMs: 0,
+          success: false,
+          statusCode: 403,
+          options: opts,
+          canaryTelemetry: policy.canaryTelemetry,
+          floorTelemetry: policy.floorTelemetry,
+          compliance: blocked,
+        });
+        throw blockedCallError(blocked);
       }
     }
 

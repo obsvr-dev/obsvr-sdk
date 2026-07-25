@@ -448,6 +448,101 @@ def _reset_detector_errors() -> None:
     _detector_errors = 0
 
 
+def apply_outbound_redaction(
+    redact: Callable[[], None], layer: str = "builtin_pii_scan"
+) -> Optional[Dict[str, Any]]:
+    """Apply a redaction to OUTBOUND content, reporting failure instead of raising.
+
+    This is the enforcement-APPLICATION phase, and it is deliberately not the
+    pre-call rule. Pre-call resolves by fail_mode because a DETECTION failure
+    means the SDK does not know whether sensitive content is present, and
+    proceeding is a bounded risk. Here the scan already ran, already found
+    something, and policy already said remove it: the uncertainty is resolved
+    against us, so failing open would transmit to a third party exactly the
+    content the SDK was told to strip.
+
+    So it fails CLOSED regardless of fail_mode, on the same reasoning the floor
+    already uses one step away - a floor redact that cannot be guaranteed blocks
+    because the SDK must never forward content it cannot guarantee was redacted.
+    That rule is about the act of forwarding, not about the rule being a floor.
+
+    The in-place redactors walk message structures field by field, so a raise
+    mid-walk leaves a PARTIALLY redacted request. Forwarding that is the worst
+    of the three outcomes: it still carries unredacted content while looking, to
+    every downstream reader, like a redaction that succeeded.
+
+    Returns None when the redaction completed, or a failure descriptor the
+    caller must turn into a block. Callers must also drop any "redacted" claim
+    from the event: a record asserting a redaction that did not happen is worse
+    than none, because it tells an auditor the content was cleaned.
+
+    Twin: sdk/src/policy/detector-guard.ts (``applyOutboundRedaction``).
+    """
+    global _detector_errors
+    try:
+        redact()
+        return None
+    except Exception as exc:  # noqa: BLE001 - deliberate catch-all
+        _detector_errors += 1
+        detail = f"{type(exc).__name__}: {exc}"[:200]
+        logging.getLogger("obsvr").error(
+            "obsvr detector layer '%s' failed while APPLYING a redaction (%s); "
+            "resolving closed. The call was BLOCKED - the SDK does not forward "
+            "content it cannot guarantee was redacted. This is an SDK defect - "
+            "please report it.",
+            layer or "unknown",
+            detail,
+        )
+        return {
+            "rule_id": "sdk:detector_error",
+            "policy_reason": (
+                f"Redaction could not be applied: detector layer "
+                f"'{layer or 'unknown'}' raised {detail}; blocked rather than "
+                f"forwarded unredacted"
+            )[:256],
+            "detector_failure": {
+                "layer": layer or "unknown",
+                "error": detail,
+                "resolution": "closed",
+                "floor_class": layer in _FLOOR_CLASS_LAYERS,
+                "phase": "enforcement_application",
+            },
+        }
+
+
+def outbound_redaction_blocked_compliance(
+    base: Dict[str, Any], failed: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Compliance for a call blocked because its redaction could not be APPLIED.
+
+    Derived from the policy's own compliance so the version and provenance
+    fields survive, with every "redacted" claim stripped. The types the scan
+    found move to ``blocked_types``, which is what they now are - the reason the
+    call was refused rather than a list of things removed.
+
+    Twin: sdk/src/integrations/core.ts (``outboundRedactionBlockedCompliance``).
+    """
+    merged = dict(base)
+    merged.update(
+        {
+            "event_type": "blocked_call",
+            "action_taken": "blocked",
+            "action_reason": "policy_violation",
+            "redacted_types": [],
+            "blocked_types": list(
+                dict.fromkeys(
+                    list(base.get("blocked_types") or [])
+                    + list(base.get("redacted_types") or [])
+                )
+            ),
+            "rule_id": failed["rule_id"],
+            "policy_reason": failed["policy_reason"],
+            "detector_failure": failed["detector_failure"],
+        }
+    )
+    return merged
+
+
 def safe_policy_version(config: ResolvedConfig) -> str:
     """Derive the policy version for a failure record WITHOUT trusting the
     inputs that just failed.

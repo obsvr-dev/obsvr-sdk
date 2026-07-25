@@ -44,6 +44,8 @@ from ..policy import (
     apply_pre_call_policy,
     blocked_prompt_for_storage,
     blocked_user_input_for_storage,
+    apply_outbound_redaction,
+    outbound_redaction_blocked_compliance,
     redact_builtin_pii,
 )
 
@@ -307,13 +309,42 @@ class _GovernedGenerativeModel:
                 raise blocked_call_error(compliance)
 
             if policy["decision"] == "redact":
-                new_request = _redact_request_inplace(request)
-                if args:
-                    args = (new_request,) + tuple(args[1:])
-                else:
-                    kwargs["contents"] = new_request
-                request = new_request
-                prompt_text = _extract_prompt(request)
+                # Enforcement application: a redaction that cannot be carried
+                # out blocks the call rather than forwarding the content it was
+                # told to remove.
+                def _apply_redaction() -> None:
+                    nonlocal args, request, prompt_text
+                    new_request = _redact_request_inplace(request)
+                    if args:
+                        args = (new_request,) + tuple(args[1:])
+                    else:
+                        kwargs["contents"] = new_request
+                    request = new_request
+                    prompt_text = _extract_prompt(request)
+
+                _not_redacted = apply_outbound_redaction(_apply_redaction)
+                if _not_redacted is not None:
+                    compliance = outbound_redaction_blocked_compliance(
+                        compliance, _not_redacted
+                    )
+                    emit_event(
+                        cfg,
+                        provider=PROVIDER,
+                        model=model,
+                        operation=operation,
+                        source=SOURCE,
+                        prompt=blocked_prompt_for_storage(
+                            prompt_text, compliance, policy.get("security_normalized")
+                        ),
+                        response="",
+                        user_input=blocked_user_input_for_storage(user_text, policy),
+                        latency_ms=0,
+                        success=False,
+                        status_code=403,
+                        compliance=compliance,
+                        options=options,
+                    )
+                    raise blocked_call_error(compliance)
 
             start = time.monotonic()
             try:
