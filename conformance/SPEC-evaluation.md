@@ -150,23 +150,31 @@ worse than an honest gap, because it stops anyone from closing the gap.
 
 | EV | Pinned by | Cases |
 |----|-----------|-------|
+| EV-3 | eval_semantics.json, fail_mode.json | `ev3_gate_paused` (gate decides before content scanning and is not hook-overridable) |
 | EV-6, EV-8 | eval_semantics.json | `ev6_first_match_block`, `ev8_stored_order_decides` |
 | EV-9 | eval_semantics.json | `ev9_disabled_skipped`, `ev9_applies_to_skipped` |
 | EV-10 | eval_semantics.json | `ev10_redact`, `ev10_flag_allows_with_rule`, `ev10_topic_allow_short_circuits` |
 | EV-11 | eval_semantics.json | `ev11_approval_required_block_shape` |
 | EV-12 | eval_semantics.json | `ev12_malformed_rule_skipped` |
 | EV-13 | eval_semantics.json | `ev13_pathological_regex_never_matches` |
+| EV-14 | eval_semantics.json | `ev14_composition` (most restrictive wins; a later step never weakens an earlier block) |
 | EV-20, EV-21 | eval_semantics.json | `ev20_shadow_inert_active_allow`, `ev20_shadow_beside_active_block` |
 | EV-16, EV-17 | rules_hash.json | canonical projection and hash vectors |
-| EV-3 (gate), EV-7 (hook failure), EV-23 (failure posture) | fail_mode.json | per-layer failure dispositions for timeout, error, and degraded states |
+| EV-22 | eval_semantics.json | `ev22_explain_pure` (check-only evaluation consumes no quota) |
+| EV-7 (hook failure), EV-23 (failure posture) | fail_mode.json | per-layer failure dispositions for timeout, error, and degraded states |
 
 Namespace cases (`ns_*`) in eval_semantics.json pin cross-tenant and
 namespace-asymmetry behavior, which the EV statements above do not yet
 describe; treat the fixture as normative there until a spec version adds them.
 
-Not yet covered by a dedicated case: EV-1, EV-2, EV-4, EV-5, EV-14, EV-15,
-EV-18, EV-19, EV-22. Their behavior is exercised indirectly by the SDK suites
-but is not pinned cross-language, so a divergence there would not fail CI.
+Cases run in one of three modes: `rules` (the default, driving the rules
+engine), `pipeline` (driving the full pre-call pipeline, which is the only way
+to pin statements about step composition and the integrity gate), and `explain`
+(check-only evaluation).
+
+Not yet covered by a dedicated case: EV-1, EV-2, EV-4, EV-5, EV-15, EV-18,
+EV-19. Their behavior is exercised indirectly by the SDK suites but is not
+pinned cross-language, so a divergence there would not fail CI.
 
 Divergences discovered between SDKs are release blockers unless
 recorded in conformance/known-divergences.md with a tracking entry.

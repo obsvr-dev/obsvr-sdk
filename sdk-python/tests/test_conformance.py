@@ -2,15 +2,31 @@
 sdk/tests/unit/conformance.test.ts. Runs every case in
 conformance/fixtures/eval_semantics.json through validator + evaluator +
 shadow evaluator. A divergence from the fixture (or from the TS harness)
-is a release blocker unless recorded in conformance/known-divergences.md."""
+is a release blocker unless recorded in conformance/known-divergences.md.
+
+Three case modes:
+    rules     (default) drive the rules engine directly
+    pipeline  drive the full pre-call pipeline - the only way to pin
+              statements about step composition and the integrity gate
+    explain   drive check-only evaluation and prove it consumes nothing
+"""
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import obsvr
+from obsvr.config import _reset, get_config
+from obsvr.policy import apply_pre_call_policy, explain
 from obsvr.remote import _valid_rule
-from obsvr.rules import PolicyRule, evaluate_policy_rules, evaluate_shadow_rules
+from obsvr.rules import (
+    PolicyRule,
+    _reset_quota,
+    evaluate_policy_rules,
+    evaluate_shadow_rules,
+)
 
 FIXTURE = json.loads(
     (Path(__file__).parent / "../../conformance/fixtures/eval_semantics.json")
@@ -29,8 +45,11 @@ def _to_rule(r):
     )
 
 
-@pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["id"] for c in FIXTURE["cases"]])
-def test_conformance_case(case):
+def _valid_rules(case):
+    return [_to_rule(r) for r in case["rules"] if _valid_rule(r)]
+
+
+def _run_rules_case(case):
     # 1. Validator pass (EV-12): malformed rules are dropped.
     valid_raw = [r for r in case["rules"] if _valid_rule(r)]
     if "expect_valid_rule_ids" in case:
@@ -61,3 +80,99 @@ def test_conformance_case(case):
         assert shadow is not None
         assert shadow["rule_id"] == case["expect_shadow"]["rule_id"]
         assert shadow["would"] == case["expect_shadow"]["would"]
+
+
+def _run_pipeline_case(case):
+    pipeline = case.get("pipeline", {})
+    hook_ran = {"value": False}
+
+    init_kwargs = {"api_key": "test", "policy_rules": _valid_rules(case)}
+    if pipeline.get("pii_policy"):
+        init_kwargs["pii_policy"] = pipeline["pii_policy"]
+    if pipeline.get("hook"):
+        def hook(_event, _decision=pipeline["hook"]):
+            hook_ran["value"] = True
+            return _decision
+
+        init_kwargs["on_pre_call"] = hook
+
+    _reset()
+    obsvr.init(**init_kwargs)
+
+    # The integrity gate is driven by sync state, not by policy input: a paused
+    # project or revoked key is what the server told this client.
+    degraded = (
+        {"degraded": True, "reason": pipeline["degraded_reason"]}
+        if pipeline.get("degraded_reason")
+        else {"degraded": False, "reason": None}
+    )
+
+    with patch("obsvr.remote.is_enforcement_degraded", return_value=degraded):
+        result = apply_pre_call_policy(
+            case["input"]["text"],
+            get_config(),
+            provider="openai",
+            operation="chat.completions.create",
+        )
+
+    expected = case["expect_pipeline"]
+    compliance = result["compliance"]
+    assert result["decision"] == expected["decision"]
+    if "action_reason" in expected:
+        assert compliance["action_reason"] == expected["action_reason"]
+    if "action_source" in expected:
+        assert compliance["action_source"] == expected["action_source"]
+    if "rule_id" in expected:
+        assert compliance.get("rule_id") == expected["rule_id"]
+    if "hook_ran" in expected:
+        assert hook_ran["value"] is expected["hook_ran"]
+
+
+def _run_explain_case(case):
+    rules = _valid_rules(case)
+    _reset()
+    _reset_quota()
+    obsvr.init(api_key="test", policy_rules=rules)
+
+    # Check-only evaluation, repeated: if it consumed anything, the budget
+    # below would already be gone.
+    for _ in range(case.get("explain_runs", 1)):
+        explained = explain(case["input"]["text"], config=get_config())
+        assert explained["decision"] == case["expect"]["decision"]
+        if case["expect"].get("rule_id") is None:
+            assert explained.get("rule_id") is None
+        else:
+            assert explained.get("rule_id") == case["expect"]["rule_id"]
+
+    # A real evaluation consumes; the first one still fits the budget...
+    first = evaluate_policy_rules(rules, case["input"]["text"], "prompt")
+    assert first["decision"] == case["expect_first_real_call"]["decision"]
+    if case["expect_first_real_call"].get("rule_id") is None:
+        assert first.get("rule_id") is None
+    else:
+        assert first.get("rule_id") == case["expect_first_real_call"]["rule_id"]
+
+    # ...and the next one does not, proving the counter moves for real calls
+    # and did not move for the explains.
+    second = evaluate_policy_rules(rules, case["input"]["text"], "prompt")
+    assert second["decision"] == case["expect_second_real_call"]["decision"]
+    if case["expect_second_real_call"].get("rule_id"):
+        assert second.get("rule_id") == case["expect_second_real_call"]["rule_id"]
+
+
+@pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["id"] for c in FIXTURE["cases"]])
+def test_conformance_case(case):
+    mode = case.get("mode", "rules")
+    try:
+        if mode == "rules":
+            _run_rules_case(case)
+        elif mode == "pipeline":
+            _run_pipeline_case(case)
+        elif mode == "explain":
+            _run_explain_case(case)
+        else:
+            raise AssertionError(f"unknown case mode in fixture: {mode}")
+    finally:
+        if mode != "rules":
+            _reset()
+            _reset_quota()
