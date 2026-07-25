@@ -48,6 +48,15 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **The Python sender reads batch responses.** It previously discarded the
+  response body entirely, so when a batch POST returned 2xx while refusing
+  individual events inside it, those events were silently counted as sent -
+  strictly worse than TypeScript on the same public counters promise. Per-event
+  rejects now increment `dropped_rejected` under the same name TypeScript uses,
+  are excluded from `sent`, arm no backoff (the batch itself succeeded), and
+  appear as their own key on the `X-Obsvr-Counters` poll header. A response body
+  that is absent or unparseable means "no rejects reported", never a failed
+  delivery.
 - **The shared conformance corpus is hash-pinned.**
   `conformance/MANIFEST.sha256` records a sha256 of every file in the corpus,
   and `sdk/conformance.pin` / `sdk-python/conformance.pin` record the corpus

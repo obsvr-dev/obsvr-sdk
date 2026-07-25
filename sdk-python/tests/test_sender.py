@@ -1,6 +1,7 @@
 """Sender tests — mock urlopen, queue behaviour, 429 backoff."""
 
 import json
+import threading
 import time
 from io import BytesIO
 from unittest.mock import MagicMock, call, patch
@@ -34,7 +35,7 @@ def test_shutdown_drains_despite_armed_backoff(monkeypatch):
     captured = []
     monkeypatch.setattr(sender, "_send_event", lambda cfg, ev: (captured.append(ev), "ok")[1])
     monkeypatch.setattr(
-        sender, "_send_event_batch", lambda cfg, evs: (captured.extend(evs), "ok")[1]
+        sender, "_send_event_batch", lambda cfg, evs: (captured.extend(evs), ("ok", 0))[1]
     )
     # Arm a long backoff window, as an ingest outage would.
     sender._backoff["until"] = time.time() + 60.0
@@ -189,3 +190,187 @@ def test_disabled_config_skips_send():
     real_sender.send_audit_async(cfg, event)
     after = real_sender.get_queue_size()
     assert after == before  # nothing enqueued
+
+
+# ── Per-event rejects inside an ACCEPTED batch ──────────────────────────────
+#
+# The public promise is that every drop is visible in the per-client delivery
+# counters. The case that used to be invisible in Python is the one below: the
+# sender never read a response body at all, so a batch the server answered 2xx
+# while refusing individual events inside it was counted, wrongly, as fully
+# sent. Those events were delivered and refused - a different audit story from
+# "never delivered" - so they land in their own `dropped_rejected` bucket under
+# exactly the name the TypeScript sender uses.
+
+
+def _batch_response(status: int, body: dict) -> MagicMock:
+    resp = _make_response(status)
+    resp.read.return_value = json.dumps(body).encode("utf-8")
+    return resp
+
+
+def _drain_single_then_batch(monkeypatch, events, respond):
+    """Enqueue one event, wait until it is IN FLIGHT, then enqueue the rest.
+
+    The worker takes the single-event path for one queued event and the batch
+    path for more, so holding the first request open is what makes the split
+    deterministic rather than timing-dependent (same reasoning as the TS twin).
+    ``respond(url, payload, call_index)`` returns the mocked response.
+    """
+    in_flight = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        idx = len(calls)
+        calls.append(req.full_url)
+        if idx == 0:
+            in_flight.set()
+            release.wait(5)
+        return respond(req.full_url, json.loads(req.data.decode("utf-8")), idx)
+
+    monkeypatch.setattr(sender, "urlopen", fake_urlopen)
+    cfg = _cfg()
+    sender.send_audit_async(cfg, events[0])
+    assert in_flight.wait(5), "worker never issued the single-event request"
+    for event in events[1:]:
+        sender.send_audit_async(cfg, event)
+    release.set()
+    sender.flush(timeout=5.0)
+    return calls
+
+
+def test_batch_rejects_increment_dropped_rejected_and_are_not_sent(monkeypatch):
+    sender._reset_sender()
+    body = {
+        "count": 1,
+        "rejected": [
+            {"index": 0, "error": "policy_blocked"},
+            {"index": 2, "error": "schema_invalid"},
+        ],
+    }
+    calls = _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"r{i}", "prompt": "p", "response": ""} for i in range(4)],
+        lambda url, payload, idx: (
+            _batch_response(200, body) if url.endswith("/ingest/batch") else _make_response(200)
+        ),
+    )
+    assert any(u.endswith("/ingest/batch") for u in calls), "no batch request was made"
+
+    stats = sender.get_sender_stats()
+    assert stats["enqueued"] == 4
+    assert stats["dropped_rejected"] == 2
+    # 1 single-event send + 1 accepted event out of the batch of 3.
+    assert stats["sent"] == 2
+    # Rejects are not a transport failure: nothing retried, dead-lettered, or
+    # overflowed, and no backoff is armed - the batch itself succeeded.
+    assert stats["retries"] == 0
+    assert stats["dropped_permanent"] == 0
+    assert stats["dropped_overflow"] == 0
+    assert stats["dropped_retry_exhausted"] == 0
+    assert sender._backoff["until"] == 0.0
+    # Every enqueued event is accounted for exactly once.
+    assert stats["sent"] + stats["dropped_rejected"] == stats["enqueued"]
+    sender._reset_sender()
+
+
+def test_batch_with_no_rejects_counts_every_event_as_sent(monkeypatch):
+    sender._reset_sender()
+    _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"n{i}", "prompt": "p", "response": ""} for i in range(3)],
+        lambda url, payload, idx: (
+            _batch_response(200, {"count": 2}) if url.endswith("/ingest/batch") else _make_response(200)
+        ),
+    )
+    stats = sender.get_sender_stats()
+    assert stats["sent"] == 3
+    assert stats["dropped_rejected"] == 0
+    sender._reset_sender()
+
+
+def test_unparseable_batch_body_is_not_a_delivery_failure(monkeypatch):
+    """A body that is absent, truncated, or not JSON means no rejects were
+    reported - never a failed delivery, which would double-count the batch."""
+    sender._reset_sender()
+
+    def broken_body(url, payload, idx):
+        if not url.endswith("/ingest/batch"):
+            return _make_response(200)
+        resp = _make_response(200)
+        resp.read.return_value = b"<html>not json</html>"
+        return resp
+
+    _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"b{i}", "prompt": "p", "response": ""} for i in range(3)],
+        broken_body,
+    )
+    stats = sender.get_sender_stats()
+    assert stats["sent"] == 3
+    assert stats["dropped_rejected"] == 0
+    assert stats["dropped_permanent"] == 0
+    sender._reset_sender()
+
+
+def test_malformed_reject_list_cannot_inflate_the_counter(monkeypatch):
+    """More rejects than events in the batch must not over-count the drop."""
+    sender._reset_sender()
+    body = {"rejected": [{"index": i, "error": "policy_blocked"} for i in range(10)]}
+    _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"m{i}", "prompt": "p", "response": ""} for i in range(3)],
+        lambda url, payload, idx: (
+            _batch_response(200, body) if url.endswith("/ingest/batch") else _make_response(200)
+        ),
+    )
+    stats = sender.get_sender_stats()
+    assert stats["dropped_rejected"] == 2  # the batch held 2 events, not 10
+    assert stats["sent"] == 1
+    sender._reset_sender()
+
+
+def test_whole_request_4xx_still_counts_as_dropped_permanent(monkeypatch):
+    """Rejects are additive: the existing permanent-failure taxonomy is unchanged."""
+    sender._reset_sender()
+    _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"p{i}", "prompt": "p", "response": ""} for i in range(3)],
+        lambda url, payload, idx: _make_response(400),
+    )
+    stats = sender.get_sender_stats()
+    assert stats["dropped_permanent"] == 3
+    assert stats["dropped_rejected"] == 0
+    assert stats["sent"] == 0
+    sender._reset_sender()
+
+
+def test_poll_header_reports_dropped_rejected_as_its_own_key(monkeypatch):
+    """Byte-level parity with the TS poll header: the refused bucket is a
+    separate key, and the never-delivered aggregate stays separate from it."""
+    from obsvr import remote
+
+    sender._reset_sender()
+    sender._bump("dropped_rejected", 3)
+    sender._bump("sent", 5)
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured.update(dict(req.headers))
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = b'{"rules": []}'
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = lambda s, *a: False
+        return resp
+
+    monkeypatch.setattr(remote, "urlopen", fake_urlopen)
+    remote.poll_once(_cfg())
+
+    # urllib title-cases header names on the Request object.
+    counters = next(v for k, v in captured.items() if k.lower() == "x-obsvr-counters")
+    assert "dropped_rejected=3" in counters
+    assert "dropped=0" in counters
+    assert "sent=5" in counters
+    sender._reset_sender()

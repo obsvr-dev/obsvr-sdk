@@ -195,9 +195,13 @@ def poll_once(config: ResolvedConfig) -> None:
         + stats.get("dropped_permanent", 0)
         + stats.get("dropped_retry_exhausted", 0)
     )
+    # `dropped` aggregates the never-delivered buckets; server-refused events
+    # ride their own key so the fleet view can tell "we never got it" apart
+    # from "we got it and said no" (same key name and order as the TS poll).
     counters = (
         f"enqueued={stats.get('enqueued', 0)},sent={stats.get('sent', 0)},"
         f"retries={stats.get('retries', 0)},dropped={dropped}"
+        f",dropped_rejected={stats.get('dropped_rejected', 0)}"
     )
     # Escrow report (ADR-7): how much of each rule's granted share this instance
     # spent since the last grant, tagged with the epoch it was granted under (a

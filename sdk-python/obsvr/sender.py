@@ -21,6 +21,7 @@ import atexit
 import hashlib
 import hmac as hmac_mod
 import json
+import logging
 import random
 import threading
 import time
@@ -62,6 +63,12 @@ _stats: Dict[str, int] = {
     "dropped_overflow": 0,
     "dropped_permanent": 0,
     "dropped_retry_exhausted": 0,
+    # Events the server ACCEPTED the request for but REFUSED individually
+    # (per-event rejects inside a 2xx batch response). Its own bucket, not
+    # folded into the dropped_* aggregate above: a server-refused event and a
+    # never-delivered event are different audit stories, and only the first
+    # means the server saw the event and said no. Name matches the TS sender.
+    "dropped_rejected": 0,
 }
 _stats_lock = threading.Lock()
 _worker = None
@@ -200,11 +207,50 @@ def _classify_status(status: int, path: str) -> str:
     return "retryable"
 
 
-def _post(config: ResolvedConfig, path: str, payload: Any) -> str:
+def _count_rejects(config: ResolvedConfig, body: Any, events: list) -> int:
+    """Per-event rejects inside an ACCEPTED batch response.
+
+    The request succeeded; the server refused individual events (policy_blocked,
+    duplicate_event, ...). Those refusals are final - never retried - but they
+    are also not deliveries, so counting them as sent would overstate coverage.
+    Shape mirrors the TS sender: {count?, rejected?: [{index, error, message?}]}.
+    """
+    if not isinstance(body, dict):
+        return 0
+    rejected = body.get("rejected")
+    if not isinstance(rejected, list) or not rejected:
+        return 0
+    for entry in rejected:
+        if not isinstance(entry, dict):
+            continue
+        idx = entry.get("index")
+        event = events[idx] if isinstance(idx, int) and 0 <= idx < len(events) else None
+        label = (event or {}).get("request_id") or f"index {idx}"
+        _debug_warn(
+            config,
+            f"Audit event rejected by server ({entry.get('error')}) - dropping: {label}",
+        )
+    # Never exceed the batch: a malformed body cannot inflate the counter.
+    return min(len(rejected), len(events))
+
+
+def _debug_warn(config: ResolvedConfig, message: str) -> None:
+    if getattr(config, "debug", False):
+        logging.getLogger("obsvr").warning(message)
+
+
+def _post(config: ResolvedConfig, path: str, payload: Any, events: Optional[list] = None) -> Any:
     """POST JSON; returns 'ok' | 'retryable' | 'permanent'.
-    429 and retryable failures arm the (jittered) backoff window."""
+
+    429 and retryable failures arm the (jittered) backoff window. When
+    ``events`` is given (the batch path), the 2xx response BODY is read and the
+    return becomes ``(verdict, rejected_count)`` - without reading it, a
+    per-event refusal inside an accepted batch is invisible and miscounted as
+    a delivery.
+    """
     url = f"{config.ingest_url}{path}"
     data = json.dumps(payload).encode("utf-8")
+    rejected = 0
     try:
         # Request construction is inside the guard because an unset ingest_url
         # makes the URL unusable, and that must be a delivery failure like any
@@ -225,6 +271,14 @@ def _post(config: ResolvedConfig, path: str, payload: Any) -> str:
         if status is None and hasattr(resp, "getcode"):
             status = resp.getcode()
         verdict = _classify_status(status or 0, path)
+        if verdict == "ok" and events is not None:
+            # Best-effort: a body that is absent, truncated, or not JSON means
+            # no rejects were reported, never a failed delivery.
+            try:
+                raw = resp.read()
+                rejected = _count_rejects(config, json.loads(raw), events)
+            except Exception:
+                rejected = 0
     except HTTPError as err:
         verdict = _classify_status(err.code, path)
     except Exception:
@@ -233,18 +287,23 @@ def _post(config: ResolvedConfig, path: str, payload: Any) -> str:
         _reset_backoff()
     elif verdict == "retryable":
         _apply_backoff()
-    return verdict
+    return (verdict, rejected) if events is not None else verdict
 
 
 def _send_event(config: ResolvedConfig, event: Dict[str, Any]) -> str:
     return _post(config, INGEST_PATH, event)
 
 
-def _send_event_batch(config: ResolvedConfig, events: list) -> str:
-    """One request for up to SEND_BATCH_SIZE events via /ingest/batch. The
-    server accepts/rejects per event, so a blocked or duplicate event never
-    costs the others; 'retryable' means a transport failure worth retrying."""
-    return _post(config, INGEST_BATCH_PATH, events)
+def _send_event_batch(config: ResolvedConfig, events: list) -> tuple:
+    """One request for up to SEND_BATCH_SIZE events via /ingest/batch.
+
+    The server accepts/rejects per event, so a blocked or duplicate event never
+    costs the others; 'retryable' means a transport failure worth retrying.
+    Returns ``(verdict, rejected_count)`` - the count of events the server
+    refused individually, so the caller can account for them as delivered and
+    refused rather than sent (twin of the TS sendEventBatch).
+    """
+    return _post(config, INGEST_BATCH_PATH, events, events=events)
 
 
 def _worker_loop() -> None:
@@ -286,13 +345,18 @@ def _worker_loop() -> None:
 
             config = batch[0][0]
             events = [item[1] for item in batch]
-            verdict = (
-                _send_event(config, events[0])
-                if len(events) == 1
-                else _send_event_batch(config, events)
-            )
+            if len(events) == 1:
+                verdict, rejected = _send_event(config, events[0]), 0
+            else:
+                verdict, rejected = _send_event_batch(config, events)
             if verdict == "ok":
-                _bump("sent", len(events))
+                # Events the server refused individually were delivered but not
+                # accepted: they count as rejected, never as sent. The batch
+                # itself succeeded, so no backoff is armed for them.
+                _bump("sent", len(events) - rejected)
+                if rejected > 0:
+                    _bump("dropped_rejected", rejected)
+                    _dropped += rejected
             elif verdict == "permanent":
                 _dropped += len(batch)
                 _bump("dropped_permanent", len(batch))
