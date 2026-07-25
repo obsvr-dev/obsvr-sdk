@@ -39,6 +39,16 @@ cut, when it is renamed to that version.
   that eight in-process detector layers currently have no error channel, so an
   unexpected exception inside them reaches the host application.
 
+### Fixed
+
+- **The GitHub Action installed a stale SDK.** Its `version` input defaulted to
+  0.9.0 against a 0.10.0 repository, so a CI job using the defaults verified
+  evidence with an older SDK than the one that produced it. The default now
+  tracks the package version, and `scripts/check-version-consistency.mjs` -
+  which already guarded `package.json`, `constants.ts`, and `_version.py` -
+  now covers `action/action.yml` too, so this cannot drift again unnoticed. Both
+  publish workflows run that check before publishing.
+
 ### Changed
 
 - **BREAKING (Python): `ingest_url` no longer defaults to

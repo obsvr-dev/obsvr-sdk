@@ -5,6 +5,12 @@
  *
  * Checks: sdk/package.json .version  ==  sdk/src/constants.ts SDK_VERSION
  *         ==  sdk-python/obsvr/_version.py __version__
+ *         ==  action/action.yml `version` input default
+ *
+ * The Action is in scope because it installs a pinned @obsvr/sdk to get the
+ * obsvr-verify CLI. A stale default there means every CI job using the Action
+ * verifies evidence with an older SDK than the one that produced it, which is
+ * exactly the drift this check exists to catch - and it drifted once already.
  *
  * Optionally, when a release TAG is provided (env TAG, or the GITHUB_REF_NAME
  * on a tag push), the tag's version must match too. Accepted tag shapes:
@@ -37,10 +43,18 @@ const versionPyMatch = read("sdk-python/obsvr/_version.py").match(
 if (!versionPyMatch) fail("could not find __version__ in sdk-python/obsvr/_version.py");
 const versionPy = versionPyMatch[1];
 
+// The `version:` input's default, matched inside that input's block so a
+// default belonging to another input (node-version) can never be read instead.
+const actionYml = read("action/action.yml");
+const actionMatch = actionYml.match(/\n {2}version:\n(?:.*\n)*? {4}default:\s*['"]([^'"]+)['"]/);
+if (!actionMatch) fail("could not find the version input default in action/action.yml");
+const actionVersion = actionMatch[1];
+
 const sources = {
   "sdk/package.json": pkg,
   "sdk/src/constants.ts (SDK_VERSION)": constants,
   "sdk-python/obsvr/_version.py (__version__)": versionPy,
+  "action/action.yml (version input default)": actionVersion,
 };
 
 const distinct = [...new Set(Object.values(sources))];
