@@ -16,6 +16,7 @@ import type {
 import type { OpenAIChatRequest } from "./extractors/types.js";
 import { getConfig, isWrapped, markWrapped, isPolicyEnforcementDegraded } from "./config.js";
 import { evaluatePolicyHook, redactBuiltinPii, resolvePiiPolicy, runBuiltinPiiScan } from "../policy/hook.js";
+import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
 import {
   runConfiguredPiiScan,
   escalateViewOnlyAction,
@@ -1067,224 +1068,251 @@ function createAuditedMethod(
       }
     }
 
-    // 0.75 Canary-leak scan (unsuppressible). A planted honeytoken echoed back
-    //      in the user's message is a CRITICAL leak signal — block before the
-    //      provider is contacted. Scans the last user turn (never the app's
-    //      planted system prompt), and only when a canary was minted.
-    if (canaryRegistrySize() > 0 && actionTaken !== "blocked") {
-      const leak = scanForCanary(extractLastUserMessageText(cleaned_args[0]) ?? "");
-      if (leak.leaked) {
-        actionTaken = "blocked";
-        actionReason = "policy_violation";
-        actionSource = "builtin";
-        canaryFloor = true;
-        ruleIdOverride = "sdk:canary_leak";
-        policyReasonOverride = `Canary token leaked in request (${leak.hits.map((h) => h.id).join(", ")})`;
-        audit_fields.metadata = {
-          ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
-          obsvr_telemetry: {
-            ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
-            ...canaryLeakTelemetry(leak.hits, "request"),
-          },
-        };
-        debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
-        if (taintCfg) markTainted(taintKey, "canary_leak", Date.now());
-      }
-    }
-
-    // 1. Built-in PII scan (runs before customer hook; skipped when the
-    //    integrity gate already blocked the call)
-    if (config.pii_policy && actionTaken !== "blocked") {
-      const promptText = extractLastUserMessageText(cleaned_args[0]);
-
-      // Builtin regex scan (always runs, fast). With deobfuscation enabled
-      // the scanner also sees decoded/stripped views of the text (the server-side normalizer
-      // mirror); `via` records which view surfaced a hit that the raw text hid.
-      const piiScan = runConfiguredPiiScan(promptText, config.deobfuscation);
-      const regexTypes = piiScan.detected_types;
-      piiScanVia = piiScan.via;
-
-      // Presidio NLP scan - always runs when configured, merged with regex results
-      let allTypes = regexTypes;
-      if (config.presidio_analyzer_url) {
-        const { detected_types: nlpTypes } = await presidioScan(
-          promptText, config.presidio_analyzer_url,
-        );
-        allTypes = [...new Set([...regexTypes, ...nlpTypes])];
-      }
-
-      if (allTypes.length > 0) {
-        actionReason = "pii_detected";
-        actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
-        // A detected prompt-injection taints the session (later egress escalated).
-        if (taintCfg && allTypes.includes("prompt_injection")) {
-          markTainted(taintKey, "prompt_injection", Date.now());
-        }
-        // Server-side normalizer mirror: seal which view defeated the obfuscation, so
-        // "detection survived obfuscation" is itself on the audit record.
-        if (piiScanVia !== undefined) {
+    // Hoisted above the guard: the code after this section reads these,
+    // and a try block would otherwise scope them away.
+    let floorBlock = false;
+    let floorOverrideIgnored: { rule_id?: string; attempted: "allow" | "redact" } | undefined;
+    let floorActive = false;
+    let ruleId: string | undefined;
+    let policyReason: string | undefined;
+    // --- guarded detector section ------------------------------------
+    // A detector defect resolves here instead of escaping into the
+    // caller's own provider call. A closed resolution drives the
+    // wrapper's existing block path rather than adding a second throw.
+    let layer = "";
+    try {
+      layer = "canary";
+      // 0.75 Canary-leak scan (unsuppressible). A planted honeytoken echoed back
+      //      in the user's message is a CRITICAL leak signal — block before the
+      //      provider is contacted. Scans the last user turn (never the app's
+      //      planted system prompt), and only when a canary was minted.
+      if (canaryRegistrySize() > 0 && actionTaken !== "blocked") {
+        const leak = scanForCanary(extractLastUserMessageText(cleaned_args[0]) ?? "");
+        if (leak.leaked) {
+          actionTaken = "blocked";
+          actionReason = "policy_violation";
+          actionSource = "builtin";
+          canaryFloor = true;
+          ruleIdOverride = "sdk:canary_leak";
+          policyReasonOverride = `Canary token leaked in request (${leak.hits.map((h) => h.id).join(", ")})`;
           audit_fields.metadata = {
             ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
-            security_normalized: piiScanVia,
+            obsvr_telemetry: {
+              ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
+              ...canaryLeakTelemetry(leak.hits, "request"),
+            },
           };
+          debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
+          if (taintCfg) markTainted(taintKey, "canary_leak", Date.now());
         }
-        const resolved = resolvePiiPolicy(allTypes, config.pii_policy);
-        // A view-only hit has no locatable span in the raw text, so "redact"
-        // would no-op while the record claims "redacted" — escalate to block.
-        const piiAction = escalateViewOnlyAction(resolved.action, piiScanVia);
-        if (piiAction === "block") {
-          actionTaken = "blocked";
-          blockedTypes = resolved.blockedTypes;
-          redactedTypes = resolved.redactedTypes; // medium-risk types present alongside block-level types
-        } else if (piiAction === "redact") {
-          if (typeof cleaned_args[0] === 'string') {
-            if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-              cleaned_args[0] =
-                (await presidioRedactText(
+      }
+
+      layer = "builtin_pii_scan";
+      // 1. Built-in PII scan (runs before customer hook; skipped when the
+      //    integrity gate already blocked the call)
+      if (config.pii_policy && actionTaken !== "blocked") {
+        const promptText = extractLastUserMessageText(cleaned_args[0]);
+
+        // Builtin regex scan (always runs, fast). With deobfuscation enabled
+        // the scanner also sees decoded/stripped views of the text (the server-side normalizer
+        // mirror); `via` records which view surfaced a hit that the raw text hid.
+        const piiScan = runConfiguredPiiScan(promptText, config.deobfuscation);
+        const regexTypes = piiScan.detected_types;
+        piiScanVia = piiScan.via;
+
+        // Presidio NLP scan - always runs when configured, merged with regex results
+        let allTypes = regexTypes;
+        if (config.presidio_analyzer_url) {
+          const { detected_types: nlpTypes } = await presidioScan(
+            promptText, config.presidio_analyzer_url,
+          );
+          allTypes = [...new Set([...regexTypes, ...nlpTypes])];
+        }
+
+        if (allTypes.length > 0) {
+          actionReason = "pii_detected";
+          actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
+          // A detected prompt-injection taints the session (later egress escalated).
+          if (taintCfg && allTypes.includes("prompt_injection")) {
+            markTainted(taintKey, "prompt_injection", Date.now());
+          }
+          // Server-side normalizer mirror: seal which view defeated the obfuscation, so
+          // "detection survived obfuscation" is itself on the audit record.
+          if (piiScanVia !== undefined) {
+            audit_fields.metadata = {
+              ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
+              security_normalized: piiScanVia,
+            };
+          }
+          const resolved = resolvePiiPolicy(allTypes, config.pii_policy);
+          // A view-only hit has no locatable span in the raw text, so "redact"
+          // would no-op while the record claims "redacted" — escalate to block.
+          const piiAction = escalateViewOnlyAction(resolved.action, piiScanVia);
+          if (piiAction === "block") {
+            actionTaken = "blocked";
+            blockedTypes = resolved.blockedTypes;
+            redactedTypes = resolved.redactedTypes; // medium-risk types present alongside block-level types
+          } else if (piiAction === "redact") {
+            if (typeof cleaned_args[0] === 'string') {
+              if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
+                cleaned_args[0] =
+                  (await presidioRedactText(
+                    cleaned_args[0],
+                    config.presidio_analyzer_url,
+                    config.presidio_anonymizer_url,
+                  )) ?? redactBuiltinPii(cleaned_args[0]);
+              } else {
+                cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+              }
+            } else {
+              if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
+                await presidioRedactArgs(
                   cleaned_args[0],
                   config.presidio_analyzer_url,
                   config.presidio_anonymizer_url,
-                )) ?? redactBuiltinPii(cleaned_args[0]);
-            } else {
-              cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+                );
+              } else {
+                redactMessagesInPlace(cleaned_args[0]);
+              }
             }
-          } else {
-            if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-              await presidioRedactArgs(
-                cleaned_args[0],
-                config.presidio_analyzer_url,
-                config.presidio_anonymizer_url,
-              );
-            } else {
-              redactMessagesInPlace(cleaned_args[0]);
-            }
+            redactedTypes = resolved.redactedTypes;
+            actionTaken = "redacted";
           }
-          redactedTypes = resolved.redactedTypes;
-          actionTaken = "redacted";
+          // detect_only: reason/source set; action stays "allowed"
         }
-        // detect_only: reason/source set; action stays "allowed"
       }
-    }
 
-    // 1.2. Multi-turn injection scoring - catches injection payloads split
-    //      across turns that no single message would trip. Sessions are keyed
-    //      by metadata user_id (falling back to a process-wide bucket) and
-    //      the score decays with a half-life, so sustained probing trips the
-    //      gate while normal traffic never accumulates.
-    if (config.multiTurnInjection?.enabled && actionTaken !== "blocked") {
-      // Score only THIS turn's new text (the last user message), not the whole
-      // joined history — otherwise a benign phrase in an early turn is re-counted
-      // on every subsequent call and inflates the decayed score into a false trip
-      // (the gate is designed to accumulate per-turn deltas).
-      const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
-      const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
-      const sessionKey = String(meta.user_id ?? meta.session_id ?? meta.tenant_id ?? "global");
-      // RAW scan only — deliberately NOT the deobfuscation-aware scan. The
-      // gate below fires on `tripped && !hadFullMatch` ("a full match is
-      // already handled by the single-turn scan"), but the single-turn scan
-      // only enforces when pii_policy is configured. A view-aware hadFullMatch
-      // here let an ENCODED injection suppress the accumulation block while
-      // nothing else enforced it — enabling deobfuscation weakened this gate
-      // (caught by adversarial review). With pii_policy set, the view-aware
-      // step-1 scan above already blocks encoded injections.
-      const hadFullMatch = runBuiltinPiiScan(promptText).detected_types.includes("prompt_injection");
-      const mt = scoreTurn(sessionKey, promptText, hadFullMatch, {
-        threshold: config.multiTurnInjection.threshold ?? 1.0,
-        halfLifeMs: config.multiTurnInjection.halfLifeMs ?? 600_000,
-      });
-      // A full match is already handled by the single-turn scan above; the
-      // multi-turn gate exists for the accumulation case.
-      if (mt.tripped && !hadFullMatch) {
-        const mtAction = config.multiTurnInjection.action ?? "block";
-        ruleIdOverride = "sdk:multi_turn_injection";
-        policyReasonOverride = `Multi-turn injection score ${mt.score.toFixed(2)} reached threshold over ${mt.turns} turn(s); this turn's signals: ${mt.signals.join(", ") || "none"}`;
-        // Accumulated injection taints the session (later egress escalated).
-        if (taintCfg) markTainted(taintKey, "multi_turn_injection", Date.now());
-        if (mtAction === "block") {
+      layer = "multi_turn_injection";
+      // 1.2. Multi-turn injection scoring - catches injection payloads split
+      //      across turns that no single message would trip. Sessions are keyed
+      //      by metadata user_id (falling back to a process-wide bucket) and
+      //      the score decays with a half-life, so sustained probing trips the
+      //      gate while normal traffic never accumulates.
+      if (config.multiTurnInjection?.enabled && actionTaken !== "blocked") {
+        // Score only THIS turn's new text (the last user message), not the whole
+        // joined history — otherwise a benign phrase in an early turn is re-counted
+        // on every subsequent call and inflates the decayed score into a false trip
+        // (the gate is designed to accumulate per-turn deltas).
+        const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+        const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
+        const sessionKey = String(meta.user_id ?? meta.session_id ?? meta.tenant_id ?? "global");
+        // RAW scan only — deliberately NOT the deobfuscation-aware scan. The
+        // gate below fires on `tripped && !hadFullMatch` ("a full match is
+        // already handled by the single-turn scan"), but the single-turn scan
+        // only enforces when pii_policy is configured. A view-aware hadFullMatch
+        // here let an ENCODED injection suppress the accumulation block while
+        // nothing else enforced it — enabling deobfuscation weakened this gate
+        // (caught by adversarial review). With pii_policy set, the view-aware
+        // step-1 scan above already blocks encoded injections.
+        const hadFullMatch = runBuiltinPiiScan(promptText).detected_types.includes("prompt_injection");
+        const mt = scoreTurn(sessionKey, promptText, hadFullMatch, {
+          threshold: config.multiTurnInjection.threshold ?? 1.0,
+          halfLifeMs: config.multiTurnInjection.halfLifeMs ?? 600_000,
+        });
+        // A full match is already handled by the single-turn scan above; the
+        // multi-turn gate exists for the accumulation case.
+        if (mt.tripped && !hadFullMatch) {
+          const mtAction = config.multiTurnInjection.action ?? "block";
+          ruleIdOverride = "sdk:multi_turn_injection";
+          policyReasonOverride = `Multi-turn injection score ${mt.score.toFixed(2)} reached threshold over ${mt.turns} turn(s); this turn's signals: ${mt.signals.join(", ") || "none"}`;
+          // Accumulated injection taints the session (later egress escalated).
+          if (taintCfg) markTainted(taintKey, "multi_turn_injection", Date.now());
+          if (mtAction === "block") {
+            actionTaken = "blocked";
+            actionReason = "policy_violation";
+            actionSource = "policy_rules";
+            debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
+          } else {
+            if (actionReason === "none") actionReason = "policy_violation";
+            actionSource = "policy_rules";
+            debugLog(config, "warn", `Call flagged: ${policyReasonOverride}`);
+          }
+        }
+      }
+
+      layer = "policy_floor";
+      // 1.4. Anti-tamper policy FLOOR — non-overridable rules evaluated BEFORE
+      //      customer rules and excluded from the hook-override branches below.
+      floorBlock = false;
+      floorOverrideIgnored = undefined;
+      floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
+      if (floorActive && actionTaken !== "blocked") {
+        const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+        // The floor's authoritative context (environment, model, provider) is
+        // pinned AFTER the caller-metadata spread, so a caller cannot set
+        // metadata.model / metadata.currentEnvironment / metadata.provider to
+        // spoof the values a floor model_gate / environment_gate rule reads and
+        // dodge it. Other caller metadata (quota scope, namespaces) is preserved.
+        const floorCtx: PolicyEvalContext = {
+          ...(audit_fields.metadata as Record<string, unknown> ?? {}),
+          currentEnvironment: config.environment,
+          model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
+          provider,
+        };
+        const floorResult = evaluateFloor(config.policyFloor, promptText, "prompt", floorCtx);
+        if (floorResult.decision === "block" || floorResult.decision === "redact") {
+          // A floor is the non-overridable security baseline: it must never
+          // forward content it cannot GUARANTEE was redacted. The wrapper has no
+          // span-level redaction for an arbitrary floor-rule match (only the PII
+          // scanner and the hook-redact branch mutate the outgoing prompt), so a
+          // floor 'redact' FAILS CLOSED to a block rather than send the prompt
+          // verbatim under a false "redacted" record. Parity with the governance
+          // surface. floorBlock=true so the hook-override exclusion and the
+          // floor_override_ignored record below also cover the redact case.
+          floorBlock = true;
+          ruleIdOverride = floorResult.rule_id;
+          policyReasonOverride = floorResult.reason ?? "Blocked by policy floor";
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "policy_rules";
-          debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
-        } else {
-          if (actionReason === "none") actionReason = "policy_violation";
+          debugLog(config, "warn", `Floor block (${floorResult.decision} → block): ${policyReasonOverride}`);
+        }
+      }
+
+      layer = "policy_rules";
+      // 1.5. Structured policy rules - runs before the customer hook so that
+      //      rules fetched by the polling loop can block calls before the hook fires.
+      ruleId = ruleIdOverride;
+      policyReason = policyReasonOverride;
+      if (config.policyRules?.length && actionTaken !== "blocked") {
+        const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+        // Build PolicyEvalContext from audit_fields metadata and config environment
+        const evalCtx: PolicyEvalContext = {
+          currentEnvironment: config.environment,
+          // model_gate context: model from the request (or Gemini instance hint)
+          model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
+          provider,
+          ...(audit_fields.metadata as Record<string, unknown> ?? {}),
+        };
+        const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx);
+        ruleId = result.rule_id;
+        policyReason = result.reason;
+        if (result.decision === "block") {
+          actionTaken = "blocked";
+          actionReason = "policy_violation";
           actionSource = "policy_rules";
-          debugLog(config, "warn", `Call flagged: ${policyReasonOverride}`);
+          // require_approval rule without a grant: file a request so the
+          // dashboard Approvals queue can grant a time-boxed pass; the retry
+          // succeeds once the grant arrives on a policy poll.
+          if (result.approval_required) {
+            const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
+            requestApproval(config, {
+              rule_id: result.rule_id,
+              rule_name: result.reason,
+              operation: methodPath,
+              user_id: typeof meta.user_id === "string" ? meta.user_id : undefined,
+              rule_hash: result.rule_hash,
+            });
+          }
         }
       }
-    }
-
-    // 1.4. Anti-tamper policy FLOOR — non-overridable rules evaluated BEFORE
-    //      customer rules and excluded from the hook-override branches below.
-    let floorBlock = false;
-    let floorOverrideIgnored: { rule_id?: string; attempted: "allow" | "redact" } | undefined;
-    const floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
-    if (floorActive && actionTaken !== "blocked") {
-      const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
-      // The floor's authoritative context (environment, model, provider) is
-      // pinned AFTER the caller-metadata spread, so a caller cannot set
-      // metadata.model / metadata.currentEnvironment / metadata.provider to
-      // spoof the values a floor model_gate / environment_gate rule reads and
-      // dodge it. Other caller metadata (quota scope, namespaces) is preserved.
-      const floorCtx: PolicyEvalContext = {
-        ...(audit_fields.metadata as Record<string, unknown> ?? {}),
-        currentEnvironment: config.environment,
-        model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
-        provider,
-      };
-      const floorResult = evaluateFloor(config.policyFloor, promptText, "prompt", floorCtx);
-      if (floorResult.decision === "block" || floorResult.decision === "redact") {
-        // A floor is the non-overridable security baseline: it must never
-        // forward content it cannot GUARANTEE was redacted. The wrapper has no
-        // span-level redaction for an arbitrary floor-rule match (only the PII
-        // scanner and the hook-redact branch mutate the outgoing prompt), so a
-        // floor 'redact' FAILS CLOSED to a block rather than send the prompt
-        // verbatim under a false "redacted" record. Parity with the governance
-        // surface. floorBlock=true so the hook-override exclusion and the
-        // floor_override_ignored record below also cover the redact case.
-        floorBlock = true;
-        ruleIdOverride = floorResult.rule_id;
-        policyReasonOverride = floorResult.reason ?? "Blocked by policy floor";
+    } catch (err) {
+      if (recordDetectorFailure(layer, err, config)) {
         actionTaken = "blocked";
         actionReason = "policy_violation";
-        actionSource = "policy_rules";
-        debugLog(config, "warn", `Floor block (${floorResult.decision} → block): ${policyReasonOverride}`);
-      }
-    }
-
-    // 1.5. Structured policy rules - runs before the customer hook so that
-    //      rules fetched by the polling loop can block calls before the hook fires.
-    let ruleId: string | undefined = ruleIdOverride;
-    let policyReason: string | undefined = policyReasonOverride;
-    if (config.policyRules?.length && actionTaken !== "blocked") {
-      const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
-      // Build PolicyEvalContext from audit_fields metadata and config environment
-      const evalCtx: PolicyEvalContext = {
-        currentEnvironment: config.environment,
-        // model_gate context: model from the request (or Gemini instance hint)
-        model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
-        provider,
-        ...(audit_fields.metadata as Record<string, unknown> ?? {}),
-      };
-      const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx);
-      ruleId = result.rule_id;
-      policyReason = result.reason;
-      if (result.decision === "block") {
-        actionTaken = "blocked";
-        actionReason = "policy_violation";
-        actionSource = "policy_rules";
-        // require_approval rule without a grant: file a request so the
-        // dashboard Approvals queue can grant a time-boxed pass; the retry
-        // succeeds once the grant arrives on a policy poll.
-        if (result.approval_required) {
-          const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
-          requestApproval(config, {
-            rule_id: result.rule_id,
-            rule_name: result.reason,
-            operation: methodPath,
-            user_id: typeof meta.user_id === "string" ? meta.user_id : undefined,
-            rule_hash: result.rule_hash,
-          });
-        }
+        actionSource = "builtin";
+        ruleId = "sdk:detector_error";
+        policyReason = `Detector layer '${layer || "unknown"}' raised ${describeError(err)}`.slice(0, 256);
       }
     }
 

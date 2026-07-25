@@ -1,0 +1,185 @@
+/**
+ * The one place a detector exception becomes a decision (TypeScript side).
+ *
+ * Eight in-process detector layers have no error channel of their own, so an
+ * exception inside one used to propagate out of the host's own LLM call -
+ * neither fail-open nor fail-closed, but the absence of a decision. Every
+ * guarded call site funnels here so the rule exists once instead of per path.
+ *
+ * The rule: every internal failure resolves by failMode, EXCEPT the floor
+ * class, which is by definition the thing failMode cannot move.
+ *
+ * The response phase is different and deliberately so: once the provider has
+ * answered, "closed" is not an available action. Blocking cannot undo the
+ * answer, and the published contract is that a response-side control never
+ * withholds the value returned to the caller. So that phase never raises and
+ * never withholds - it fails closed only on the STORED audit copy, which is
+ * the one thing still in the SDK's hands.
+ *
+ * Twin: sdk-python/obsvr/policy.py (`record_detector_failure`).
+ *
+ * @packageDocumentation
+ */
+
+import type { ResolvedConfig } from "../proxy/types.js";
+
+/**
+ * Layers whose disposition failMode cannot move. A floor is the operator's
+ * non-overridable baseline, so a floor that CANNOT RUN is the strongest form
+ * of "cannot guarantee" - it fails closed, exactly as a floor redact that
+ * cannot be guaranteed already fails closed to a block.
+ */
+export const FLOOR_CLASS_LAYERS: ReadonlySet<string> = new Set(["policy_floor", "canary"]);
+
+/**
+ * Stored-copy marker for content NOTHING scanned, because the scanner that
+ * would have vetted it raised. Deliberately NOT a "[REDACTED..." token: every
+ * other placeholder here means "a scan ran and removed something", and an
+ * auditor who cannot tell that apart from "we never looked" has to treat every
+ * redaction as possibly the second.
+ */
+export const UNSCANNED_PLACEHOLDER = "[UNSCANNED:detector_error]";
+
+/** Detector exceptions this process has resolved (fleet-poll counter). */
+let detectorErrors = 0;
+
+export function getDetectorErrorCount(): number {
+  return detectorErrors;
+}
+
+/** Reset the counter (tests only). */
+export function _resetDetectorErrors(): void {
+  detectorErrors = 0;
+}
+
+/** Per-event record of which layer was lost and how it resolved. */
+export interface DetectorFailure {
+  layer: string;
+  error: string;
+  resolution: "open" | "closed";
+  floor_class: boolean;
+  phase: "pre_call" | "response" | "event_build";
+  stored_unscanned?: boolean;
+}
+
+/**
+ * Count and log one detector failure; return true if it resolves CLOSED.
+ * Never re-raises - an SDK defect must not surface as an unhandled error in
+ * the calling application.
+ */
+export function recordDetectorFailure(
+  layer: string,
+  err: unknown,
+  config: Pick<ResolvedConfig, "failMode"> | undefined,
+): boolean {
+  detectorErrors += 1;
+  const failClosed =
+    FLOOR_CLASS_LAYERS.has(layer) || (config?.failMode ?? "open") === "closed";
+  // eslint-disable-next-line no-console
+  console.error(
+    `[obsvr] detector layer "${layer || "unknown"}" failed (${describeError(err)}); ` +
+      `resolving ${failClosed ? "closed" : "open"}. The call was ` +
+      `${failClosed ? "BLOCKED" : "allowed with this layer's enforcement lost"}. ` +
+      `This is an SDK defect - please report it.`,
+  );
+  return failClosed;
+}
+
+/** Short, bounded description of a thrown value for the audit record. */
+export function describeError(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`.slice(0, 200);
+  return String(err).slice(0, 200);
+}
+
+/** The telemetry object stamped on the call's own event. */
+export function detectorFailureRecord(
+  layer: string,
+  err: unknown,
+  resolution: "open" | "closed",
+  phase: DetectorFailure["phase"],
+  storedUnscanned = false,
+): DetectorFailure {
+  return {
+    layer: layer || "unknown",
+    error: describeError(err),
+    resolution,
+    floor_class: FLOOR_CLASS_LAYERS.has(layer),
+    phase,
+    ...(storedUnscanned ? { stored_unscanned: true } : {}),
+  };
+}
+
+/**
+ * Resolve a RESPONSE-phase failure: never raises, never withholds the caller's
+ * value, and reports that the stored copy must be withheld instead.
+ */
+export function resolveResponsePhaseFailure(
+  layer: string,
+  err: unknown,
+  config: Pick<ResolvedConfig, "failMode"> | undefined,
+): { storedCopy: string; failure: DetectorFailure } {
+  recordDetectorFailure(layer, err, config);
+  return {
+    storedCopy: UNSCANNED_PLACEHOLDER,
+    failure: detectorFailureRecord(layer, err, "open", "response", true),
+  };
+}
+
+/** Compliance block for a failed detector layer. Structurally compatible with
+ *  ComplianceInfo; typed locally so this module stays free of an import cycle
+ *  back into the integrations layer. */
+export interface DetectorFailureCompliance {
+  event_type: string;
+  policy_version: string;
+  action_taken: string;
+  action_reason: string;
+  action_source: string;
+  redacted_types: string[];
+  blocked_types: string[];
+  rule_id: string;
+  policy_reason: string;
+  detector_failure: DetectorFailure;
+}
+
+/**
+ * The compliance block a guarded pre-call site returns. `action_taken` stays
+ * inside the closed wire enum - a detector failure never mints a new value.
+ */
+export function preCallFailureCompliance(
+  layer: string,
+  err: unknown,
+  failClosed: boolean,
+  policyVersion: string,
+): DetectorFailureCompliance {
+  const floorClass = FLOOR_CLASS_LAYERS.has(layer);
+  const why = floorClass
+    ? "resolved closed (floor class cannot fail open)"
+    : failClosed
+      ? "resolved closed (failMode)"
+      : "resolved open, enforcement lost for this call";
+  return {
+    event_type: failClosed ? "blocked_call" : "policy_flag",
+    policy_version: policyVersion,
+    action_taken: failClosed ? "blocked" : "allowed",
+    action_reason: failClosed ? "policy_violation" : "none",
+    action_source: "builtin",
+    redacted_types: [],
+    blocked_types: [],
+    rule_id: "sdk:detector_error",
+    policy_reason: `Detector layer '${layer || "unknown"}' raised ${describeError(err)}; ${why}`.slice(0, 256),
+    detector_failure: detectorFailureRecord(layer, err, failClosed ? "closed" : "open", "pre_call"),
+  };
+}
+
+/**
+ * Redact a stored copy without trusting the redactor: the scan that would have
+ * produced it may be exactly what just failed. Falls back to the unscanned
+ * marker rather than persisting text nothing vetted.
+ */
+export function safeStoredCopy(redact: () => string): string {
+  try {
+    return redact();
+  } catch {
+    return UNSCANNED_PLACEHOLDER;
+  }
+}

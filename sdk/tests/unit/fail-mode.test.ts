@@ -200,6 +200,7 @@ describe('failure-disposition registry: the gate', () => {
     'rego-export.ts', // one-way policy export, never an evaluator
     'tool-content-hash.ts', // evidence producer, decides nothing
     'failure-dispositions.ts', // this registry
+    'detector-guard.ts', // the resolution point itself, not a layer that can fail
   ]);
 
   it('declares every detector module in src/policy/', () => {
