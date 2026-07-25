@@ -202,6 +202,7 @@ class TestRegistryGate:
         "auto.py",
         "config.py",
         "decision_record.py",
+        "errors.py",
         "escrow.py",
         "events.py",
         "failure_dispositions.py",

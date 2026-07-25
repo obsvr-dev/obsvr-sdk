@@ -19,6 +19,16 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **Typed policy-block error.** A call refused by policy now throws
+  `ObsvrPolicyError` (TypeScript) / raises `ObsvrPolicyError` (Python) carrying
+  a stable `type`, a `reason_code` from the closed registry, the deciding
+  `rule_id`, and the decision metadata, so callers can tell "refused on
+  purpose" from a provider or transport failure without matching on the
+  message. An unrecognized reason category produces `ObsvrUnknownPolicyError`
+  rather than degrading to an untyped error. **The message string is
+  unchanged**, so existing code that string-matched it keeps working, and the
+  Python error still subclasses `RuntimeError`, so existing `except` blocks
+  keep catching it.
 - **Python chain verification.** `obsvr.verify_chain(events, api_key)` verifies
   an exported audit chain offline - recomputing every HMAC signature and
   checking sequence continuity, chain linkage, session consistency, and

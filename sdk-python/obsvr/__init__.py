@@ -37,6 +37,9 @@ from .agent_run import (  # noqa: F401
 from .sender import flush  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
 from .verify_chain import ChainVerificationResult, verify_chain  # noqa: F401
+# Typed policy-block error: catch this to tell "refused by policy" apart
+# from a provider or transport failure without matching on the message.
+from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .wrap import wrap  # noqa: F401
 
@@ -60,6 +63,8 @@ __all__ = [
     "current_agent_run_id",
     "generate_run_id",
     "verify_chain",
+    "ObsvrPolicyError",
+    "ObsvrUnknownPolicyError",
     "ChainVerificationResult",
     "SPAN_ATTR",
     "ResolvedConfig",

@@ -195,6 +195,7 @@ describe('failure-disposition registry: the gate', () => {
     'decision-record.ts', // canonical decision document + hashing
     'normalize.ts', // text normalization primitives
     'pii-types.ts', // the PII type vocabulary
+    'policy-error.ts', // typed policy-block error and its construction choke point
     'policy-log.ts', // policy-change audit emission
     'rego-export.ts', // one-way policy export, never an evaluator
     'tool-content-hash.ts', // evidence producer, decides nothing

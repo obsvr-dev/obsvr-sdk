@@ -105,6 +105,7 @@ import {
 } from "./sender/index.js";
 import { truncate } from "../utils/truncate.js";
 import { debugLog } from "../utils/logger.js";
+import { createPolicyError } from "../policy/policy-error.js";
 import { generateUUID } from "../client.js";
 
 /**
@@ -1625,9 +1626,14 @@ function createAuditedMethod(
         "info",
         `Request blocked (${actionReason}): ${blockedEvent.request_id}`,
       );
-      throw new Error(
-        `[obsvr] Request blocked by policy (${actionReason === "pii_detected" ? "PII detected" : "policy violation"})`,
-      );
+      throw createPolicyError({
+        action_taken: actionTaken,
+        action_reason: actionReason,
+        action_source: actionSource,
+        policy_version: policyVersion,
+        policy_reason: policyReason,
+        rule_id: ruleId,
+      });
     }
 
     // Check for streaming - compliance boundary has already run above.

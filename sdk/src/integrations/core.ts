@@ -19,6 +19,7 @@ import {
 import { spanEnvelopeFor, withSpanMetadata } from "../proxy/span.js";
 import { withRunMetadata } from "../proxy/agent-run.js";
 import { getCurrentSubject } from "../proxy/subject.js";
+import { createPolicyError, type ObsvrPolicyError } from "../policy/policy-error.js";
 import { getConfig, isInitialized, getTenantConfig, isPolicyEnforcementDegraded } from "../proxy/config.js";
 import {
   evaluatePolicyHook,
@@ -1490,16 +1491,19 @@ export function emitIntegrationEvent(
 }
 
 /**
- * Standard blocked-call error thrown by infra integrations.
+ * Standard blocked-call error thrown by infra integrations. Delegates to the
+ * one construction choke point so every surface throws the same typed error
+ * with the same classification; the message is unchanged.
  */
-export function blockedCallError(compliance: ComplianceInfo): Error {
-  return new Error(
-    `[obsvr] Request blocked by policy (${
-      compliance.action_reason === "pii_detected"
-        ? "PII detected"
-        : "policy violation"
-    })`,
-  );
+export function blockedCallError(compliance: ComplianceInfo): ObsvrPolicyError {
+  return createPolicyError({
+    action_taken: compliance.action_taken,
+    action_reason: compliance.action_reason,
+    action_source: compliance.action_source,
+    policy_version: compliance.policy_version,
+    policy_reason: compliance.policy_reason,
+    rule_id: compliance.rule_id,
+  });
 }
 
 /**

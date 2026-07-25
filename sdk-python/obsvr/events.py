@@ -7,12 +7,15 @@ ingest RawEventSchema (snake_case, compliance fields, truncation marker).
 
 import json
 import uuid
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from . import sender
 from .agent_run import with_run_metadata
 from .config import ResolvedConfig
 from .policy import DEFAULT_COMPLIANCE
+
+if TYPE_CHECKING:  # import cycle: errors -> reason_codes is fine, events -> errors at runtime is not
+    from .errors import ObsvrPolicyError
 
 # keep metadata under the ingest 10 KB canonical cap (with headroom), or
 # the canonicalizer replaces it wholesale with {"_truncated": true}, destroying
@@ -311,11 +314,10 @@ def emit_event(config: ResolvedConfig, **params: Any) -> Optional[Dict[str, Any]
         return None
 
 
-def blocked_call_error(compliance: Dict[str, Any]) -> RuntimeError:
-    """Standard blocked-call error (same message as the TS SDK)."""
-    reason = (
-        "PII detected"
-        if compliance.get("action_reason") == "pii_detected"
-        else "policy violation"
-    )
-    return RuntimeError(f"[obsvr] Request blocked by policy ({reason})")
+def blocked_call_error(compliance: Dict[str, Any]) -> "ObsvrPolicyError":
+    """Standard blocked-call error. Delegates to the one construction choke
+    point so every surface raises the same typed error with the same
+    classification; the message is unchanged (same as the TS SDK)."""
+    from .errors import create_policy_error
+
+    return create_policy_error(compliance)

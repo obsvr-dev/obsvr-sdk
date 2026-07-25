@@ -126,6 +126,13 @@ export type {
 export { useSubject, getCurrentSubject, parseSubject } from "./proxy/subject.js";
 export type { Subject } from "./proxy/subject.js";
 export { verifyAuditChain } from "./governance/verify-chain.js";
+// Typed policy-block error: catch this to tell "refused by policy" apart
+// from a provider or transport failure without matching on the message.
+export {
+  ObsvrPolicyError,
+  ObsvrUnknownPolicyError,
+} from "./policy/policy-error.js";
+export type { ObsvrPolicyDecision } from "./policy/policy-error.js";
 export { checkQuota, incrementQuota, resetQuota, getQuotaStatus } from "./governance/quota.js";
 export { createGovernanceServer } from "./governance/server.js";
 

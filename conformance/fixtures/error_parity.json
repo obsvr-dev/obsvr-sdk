@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "name": "error_parity",
+  "description": "Serialized shape of the typed policy-block error, shared by both SDKs. TS source: sdk/src/policy/policy-error.ts (createPolicyError). Python twin: sdk-python/obsvr/errors.py (create_policy_error). Both suites (sdk/tests/unit/policy-error.test.ts, sdk-python/tests/test_policy_error.py) build an error from each case's `input` through their own choke point and must produce the pinned `expect` exactly. Parity is asserted on SERIALIZED FIELDS, never on the class hierarchy: the two languages are free to model inheritance differently, but a caller reading type/reason_code/rule_id/decision/message must see the same thing. reason_code values are drawn from the closed registry in reason_codes.json. The message is a compatibility contract - it predates the typed error, callers string-matched it, and it must not change.",
+  "type_strings": {
+    "obsvr_policy_error": "a block whose reason category this SDK version recognizes",
+    "obsvr_unknown_policy_error": "the documented fallback: a reason category this version does not know, most likely from a newer control plane. Still typed, still catchable the same way - never a bare error"
+  },
+  "cases": [
+    {
+      "id": "pii_block_builtin",
+      "desc": "the builtin scanner blocks on detected PII",
+      "input": {
+        "action_taken": "blocked",
+        "action_reason": "pii_detected",
+        "action_source": "builtin",
+        "policy_version": "a1b2c3d4e5f60718",
+        "rule_id": null,
+        "policy_reason": null
+      },
+      "expect": {
+        "type": "obsvr_policy_error",
+        "reason_code": "PII_DETECTED",
+        "rule_id": null,
+        "message": "[obsvr] Request blocked by policy (PII detected)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "pii_detected",
+          "action_source": "builtin",
+          "policy_version": "a1b2c3d4e5f60718"
+        }
+      }
+    },
+    {
+      "id": "rule_block_carries_rule_id",
+      "desc": "a structured rule blocks; the deciding rule is on the error",
+      "input": {
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "action_source": "policy_rules",
+        "policy_version": "a1b2c3d4e5f60718",
+        "rule_id": "r-secrets-1",
+        "policy_reason": "matched keyword: secret"
+      },
+      "expect": {
+        "type": "obsvr_policy_error",
+        "reason_code": "POLICY_VIOLATION",
+        "rule_id": "r-secrets-1",
+        "message": "[obsvr] Request blocked by policy (policy violation)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "policy_violation",
+          "action_source": "policy_rules",
+          "policy_version": "a1b2c3d4e5f60718",
+          "policy_reason": "matched keyword: secret"
+        }
+      }
+    },
+    {
+      "id": "customer_hook_block",
+      "desc": "the customer hook blocks",
+      "input": {
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "action_source": "customer_hook",
+        "policy_version": "none",
+        "rule_id": null,
+        "policy_reason": null
+      },
+      "expect": {
+        "type": "obsvr_policy_error",
+        "reason_code": "HOOK_BLOCKED",
+        "rule_id": null,
+        "message": "[obsvr] Request blocked by policy (policy violation)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "policy_violation",
+          "action_source": "customer_hook",
+          "policy_version": "none"
+        }
+      }
+    },
+    {
+      "id": "external_backend_deny",
+      "desc": "an external policy backend denies",
+      "input": {
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "action_source": "external_backend",
+        "policy_version": "a1b2c3d4e5f60718",
+        "rule_id": "backend:opa",
+        "policy_reason": "denied by corp policy"
+      },
+      "expect": {
+        "type": "obsvr_policy_error",
+        "reason_code": "EXTERNAL_BACKEND_DENY",
+        "rule_id": "backend:opa",
+        "message": "[obsvr] Request blocked by policy (policy violation)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "policy_violation",
+          "action_source": "external_backend",
+          "policy_version": "a1b2c3d4e5f60718",
+          "policy_reason": "denied by corp policy"
+        }
+      }
+    },
+    {
+      "id": "explicit_reason_code_wins",
+      "desc": "a deciding layer that already resolved a reason code keeps it rather than having one re-derived",
+      "input": {
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "action_source": "policy_rules",
+        "policy_version": "a1b2c3d4e5f60718",
+        "rule_id": "r-quota-1",
+        "reason_code": "QUOTA_EXCEEDED",
+        "policy_reason": null
+      },
+      "expect": {
+        "type": "obsvr_policy_error",
+        "reason_code": "QUOTA_EXCEEDED",
+        "rule_id": "r-quota-1",
+        "message": "[obsvr] Request blocked by policy (policy violation)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "policy_violation",
+          "action_source": "policy_rules",
+          "policy_version": "a1b2c3d4e5f60718"
+        }
+      }
+    },
+    {
+      "id": "unknown_category_falls_back",
+      "desc": "a reason category this version does not know still produces a typed error, never a bare one",
+      "input": {
+        "action_taken": "blocked",
+        "action_reason": "future_category_from_a_newer_control_plane",
+        "action_source": "policy_rules",
+        "policy_version": "a1b2c3d4e5f60718",
+        "rule_id": null,
+        "policy_reason": null
+      },
+      "expect": {
+        "type": "obsvr_unknown_policy_error",
+        "reason_code": "UNKNOWN_BLOCKED",
+        "rule_id": null,
+        "message": "[obsvr] Request blocked by policy (policy violation)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "future_category_from_a_newer_control_plane",
+          "action_source": "policy_rules",
+          "policy_version": "a1b2c3d4e5f60718"
+        }
+      }
+    },
+    {
+      "id": "sparse_input_still_typed",
+      "desc": "missing metadata does not degrade the error: the decision block is filled with explicit defaults",
+      "input": {
+        "action_taken": null,
+        "action_reason": null,
+        "action_source": null,
+        "policy_version": null,
+        "rule_id": null,
+        "policy_reason": null
+      },
+      "expect": {
+        "type": "obsvr_unknown_policy_error",
+        "reason_code": "UNKNOWN_BLOCKED",
+        "rule_id": null,
+        "message": "[obsvr] Request blocked by policy (policy violation)",
+        "decision": {
+          "action_taken": "blocked",
+          "action_reason": "policy_violation",
+          "action_source": "unknown"
+        }
+      }
+    }
+  ]
+}
