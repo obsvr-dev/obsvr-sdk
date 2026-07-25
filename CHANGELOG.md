@@ -48,6 +48,19 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **Tool-call events carry `tool_content_hash` (TypeScript).** Every event
+  emitted at an MCP tool boundary or by `obsvrGovernTool` now carries a digest
+  binding the tool name, the descriptor the caller held, and the call
+  arguments, so a descriptor swap or a rug-pulled MCP server becomes
+  attributable after the fact: disclose the parts, recompute, compare against
+  the anchored root. It rides `metadata.obsvr_tool_content_hash` until the
+  ingest schema has a column for it (promotion plan in the module docs), is
+  stamped after caller metadata so a key collision cannot overwrite sealed
+  evidence, and is omitted rather than guessed when a value cannot be
+  canonicalized identically in both languages. Blocked tool calls are stamped
+  too. Descriptor-pinning hashes are unchanged and unrelated. MCP `call_tool`
+  carries no descriptor, so those events commit to the name and arguments with
+  the empty-descriptor digest - what the producer actually saw.
 - **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** Both senders
   classified every 4xx other than the documented single-event 403 as a
   permanent failure without ever looking at the body, so a retry that raced a

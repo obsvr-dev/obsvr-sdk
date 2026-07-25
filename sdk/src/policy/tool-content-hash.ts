@@ -59,8 +59,18 @@
  * document and the canonical rule projection.
  *
  * Parity: the Python twin is a follow-on item; the byte contract of record is
- * conformance/fixtures/tool_content_hash.json. This module computes; it wires
- * nothing (attaching the field at tool boundaries is a separate change).
+ * conformance/fixtures/tool_content_hash.json.
+ *
+ * ## Where the descriptor comes from
+ *
+ * `obsvrGovernTool` holds the tool object itself, so the descriptor is right
+ * there. The MCP call path is not so lucky: `call_tool` carries only
+ * `{name, arguments}`, and the SDK keeps descriptor HASHES from discovery (for
+ * pinning), never the descriptors. So MCP tool-call events commit to the tool
+ * name and arguments with the empty-descriptor digest. That is the honest
+ * record of what the producer actually saw, and it is stable: the same call
+ * always yields the same hash. Giving MCP a real descriptor digest means
+ * retaining descriptors from `tools/list`, which is its own change.
  *
  * @packageDocumentation
  */
@@ -182,4 +192,54 @@ export function canonicalizeToolContent(doc: ToolContentDocument): string {
  */
 export function computeToolContentHash(params: ToolContentParams): string {
   return sha256Hex(canonicalizeToolContent(buildToolContentDocument(params)));
+}
+
+/**
+ * Reserved-metadata key the hash rides on until ingest has a column for it.
+ *
+ * ## Carriage and promotion plan
+ *
+ * The ingest wire schema has no `tool_content_hash` column today, and an
+ * unknown top-level field is stripped, so emitting it there would lose it
+ * silently. It therefore starts in reserved `obsvr_*` metadata - the same
+ * route `obsvr_external_backend` already takes - and the sender's trimmer
+ * preserves reserved keys, so a large event cannot drop the evidence.
+ *
+ *   1. (now) The SDK stamps `metadata.obsvr_tool_content_hash` on tool-call
+ *      events. Consumers read it from metadata.
+ *   2. Ingest adds a `tool_content_hash` column and accepts the reserved key
+ *      as its source, backfilling from metadata; the v8 Merkle leaf, which is
+ *      already built for this field, starts sealing it.
+ *   3. The SDK emits the top-level field and keeps mirroring into metadata for
+ *      one minor release, then stops.
+ *
+ * Until step 2, nothing downstream of the SDK depends on the top-level name,
+ * so steps 1 and 3 are additive and need no coordinated release.
+ */
+export const TOOL_CONTENT_HASH_METADATA_KEY = "obsvr_tool_content_hash";
+
+/**
+ * Hot-path wrapper: the hash, or `undefined` if it cannot be computed.
+ *
+ * `computeToolContentHash` throws on content the two languages cannot
+ * canonicalize identically. On a tool boundary that must not break the host
+ * call, and where a WRONG hash is strictly worse than none - sealed evidence
+ * cannot be reissued - the only correct response is to omit the field.
+ */
+export function safeToolContentHash(params: ToolContentParams): string | undefined {
+  try {
+    return computeToolContentHash(params);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The metadata fragment carrying the hash, empty when there is none. Spread it
+ * LAST at every emission site, after caller-supplied metadata, so a key
+ * collision can never overwrite sealed evidence - the same precedence the pin
+ * and normalizer stamps already use.
+ */
+export function toolContentMetadata(hash: string | undefined): Record<string, unknown> {
+  return hash === undefined ? {} : { [TOOL_CONTENT_HASH_METADATA_KEY]: hash };
 }

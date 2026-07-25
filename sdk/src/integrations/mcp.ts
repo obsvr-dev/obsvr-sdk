@@ -37,6 +37,7 @@ import { isPolicyEnforcementDegraded } from "../proxy/config.js";
 import { normalizeForMatching } from "../policy/normalize.js";
 import { canaryRegistrySize } from "../policy/canary.js";
 import { sessionTaintSize } from "../policy/session-taint.js";
+import { safeToolContentHash, toolContentMetadata } from "../policy/tool-content-hash.js";
 import {
   createToolPinStore,
   evaluateToolPin,
@@ -511,6 +512,17 @@ async function runGovernedCallTool(
     const toolName = params?.name ?? "unknown";
     const toolArgs = params?.arguments;
 
+    // Sealed evidence of WHICH tool content and arguments this call saw,
+    // spread LAST into every event below so a caller metadata key collision
+    // cannot overwrite it (same precedence as the pin and normalizer stamps).
+    // call_tool carries only {name, arguments} - the SDK retains descriptor
+    // HASHES from discovery, never descriptors - so the document commits to
+    // the name and arguments with the empty-descriptor digest. That is what
+    // this producer actually saw; see the module docs.
+    const toolContentMeta = toolContentMetadata(
+      safeToolContentHash({ toolName, args: toolArgs }),
+    );
+
     const promptText = extractMcpPrompt(toolName, toolArgs);
     const startTime = performance.now();
 
@@ -544,7 +556,7 @@ async function runGovernedCallTool(
         prompt: promptText,
         response: "",
         success: false,
-        metadata: { tool_name: toolName, ...opts.metadata },
+        metadata: { tool_name: toolName, ...opts.metadata, ...toolContentMeta },
         options: opts,
         compliance: {
           event_type: "blocked_call",
@@ -610,6 +622,7 @@ async function runGovernedCallTool(
             tool_pin_status: pinVerdict.status,
             ...(pinVerdict.expected !== undefined ? { tool_pin_expected: pinVerdict.expected } : {}),
             ...(pinVerdict.observed !== undefined ? { tool_descriptor_hash: pinVerdict.observed } : {}),
+            ...toolContentMeta,
           },
           options: opts,
           compliance: {
@@ -651,7 +664,7 @@ async function runGovernedCallTool(
           prompt: promptText,
           response: "",
           success: false,
-          metadata: { tool_name: toolName, ...opts.metadata },
+          metadata: { tool_name: toolName, ...opts.metadata, ...toolContentMeta },
           options: opts,
           compliance: blockedCompliance,
         });
@@ -716,6 +729,7 @@ async function runGovernedCallTool(
                     },
                   }
                 : {}),
+              ...toolContentMeta,
             },
             options: opts,
             compliance,
@@ -768,7 +782,7 @@ async function runGovernedCallTool(
         latencyMs,
         success: false,
         error: callError,
-        metadata: { tool_name: toolName, ...opts.metadata },
+        metadata: { tool_name: toolName, ...opts.metadata, ...toolContentMeta },
         options: opts,
         compliance: eventCompliance,
       });
@@ -805,6 +819,7 @@ async function runGovernedCallTool(
           ...(respScan.canaryTelemetry !== undefined
             ? { obsvr_telemetry: respScan.canaryTelemetry }
             : {}),
+          ...toolContentMeta,
         },
         options: opts,
         compliance: {
@@ -874,6 +889,7 @@ async function runGovernedCallTool(
                 : {}),
             }
           : {}),
+        ...toolContentMeta,
       },
       options: opts,
       compliance: eventCompliance,

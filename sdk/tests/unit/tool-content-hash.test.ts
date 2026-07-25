@@ -8,6 +8,7 @@
  * sealing a hash only one of them can recompute.
  */
 import {
+  TOOL_CONTENT_HASH_METADATA_KEY,
   TOOL_CONTENT_SCHEMA,
   buildToolContentDocument,
   canonicalizeToolContent,
@@ -227,11 +228,12 @@ describe('tool_content_hash: fails closed on cross-language-unstable content', (
   });
 });
 
-describe('tool_content_hash: no wiring', () => {
-  it('is not referenced by any emission path yet (producer only)', () => {
-    // This module is the producer only; attaching the field at tool
-    // boundaries is a separate change. If this fails, wiring landed without
-    // the review that change is supposed to get.
+describe('tool_content_hash: wiring surface', () => {
+  it('is consumed at the tool boundaries and nowhere else', () => {
+    // The hash belongs at tool-call time and only there. This started life as
+    // a "not wired anywhere yet" gate; it is now the inverse, so a future
+    // change cannot quietly start stamping the field on, say, llm_call events
+    // - a different evidence claim than the one the ledger leaf seals.
     const srcDir = findUpward('src/policy/tool-content-hash.ts').replace(/\/policy\/tool-content-hash\.ts$/, '');
     const hits: string[] = [];
     const walk = (dir: string) => {
@@ -240,11 +242,22 @@ describe('tool_content_hash: no wiring', () => {
         if (entry.isDirectory()) walk(full);
         else if (entry.name.endsWith('.ts') && entry.name !== 'tool-content-hash.ts') {
           // Imports only - a prose mention of the module is not wiring.
-          if (/from\s+["'][^"']*tool-content-hash/.test(fs.readFileSync(full, 'utf8'))) hits.push(full);
+          if (/from\s+["'][^"']*tool-content-hash/.test(fs.readFileSync(full, 'utf8'))) {
+            hits.push(path.relative(srcDir, full).split(path.sep).join('/'));
+          }
         }
       }
     };
     walk(srcDir);
-    expect(hits).toEqual([]);
+    expect(hits.sort()).toEqual(['integrations/mcp.ts', 'integrations/tools.ts']);
+  });
+
+  it('reserves the metadata key so the sender cannot trim the evidence away', () => {
+    const senderSrc = fs.readFileSync(
+      findUpward('src/proxy/sender/fire-and-forget.ts'),
+      'utf8',
+    );
+    const reserved = senderSrc.slice(senderSrc.indexOf('const RESERVED_META_KEYS'));
+    expect(reserved.slice(0, reserved.indexOf(']'))).toContain(TOOL_CONTENT_HASH_METADATA_KEY);
   });
 });

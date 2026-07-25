@@ -36,6 +36,11 @@ import {
   touchTaint,
   sessionTaintSize,
 } from "../policy/session-taint.js";
+import {
+  safeToolContentHash,
+  toolContentMetadata,
+  type ToolContentDescriptor,
+} from "../policy/tool-content-hash.js";
 
 const SOURCE = "obsvr_tool";
 
@@ -91,6 +96,21 @@ function resolveToolName(t: AnyTool, opts: GovernToolOptions): string {
   );
 }
 
+/**
+ * The tool's descriptor, under the evidence contract's MCP wire names. The
+ * input-schema property is spelled differently per framework (Vercel
+ * `inputSchema`/`parameters`, LangChain `schema`), so all three are accepted;
+ * a tool carrying none contributes no schema rather than a guessed one.
+ */
+function toolContentDescriptorOf(t: AnyTool): ToolContentDescriptor {
+  const schema = t.inputSchema ?? t.parameters ?? t.schema;
+  return {
+    name: typeof t.name === "string" ? t.name : undefined,
+    description: typeof t.description === "string" ? t.description : undefined,
+    inputSchema: schema === undefined || typeof schema === "function" ? undefined : schema,
+  };
+}
+
 function safeJson(v: unknown): string {
   if (typeof v === "string") return v;
   try {
@@ -127,6 +147,18 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
       const input = execKey === "invoke" && args.length >= 2 ? args[1] : args[0];
       const inputText = safeJson(input);
 
+      // Sealed evidence of WHICH tool content and arguments this call saw. The
+      // tool object IS the descriptor here, so the digest covers both halves.
+      // Computed once and stamped on every event this call emits - including
+      // the blocked ones, where "what was refused" is the point of the record.
+      const toolContentMeta = toolContentMetadata(
+        safeToolContentHash({
+          toolName,
+          descriptor: toolContentDescriptorOf(t),
+          args: input,
+        }),
+      );
+
       // 1) allow/deny — BLOCK a denied tool before it runs.
       const policy = config.agentPolicy;
       if (policy) {
@@ -146,6 +178,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             metadata: {
               tool_name: toolName,
               reason: denied ? "tool_denied" : "tool_not_in_allowlist",
+              ...toolContentMeta,
             },
             compliance: BLOCKED_COMPLIANCE,
             options,
@@ -179,7 +212,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
               response: "",
               success: false,
               statusCode: 403,
-              metadata: { tool_name: toolName },
+              metadata: { tool_name: toolName, ...toolContentMeta },
               compliance: {
                 ...BLOCKED_COMPLIANCE,
                 rule_id: "sdk:session_tainted",
@@ -210,7 +243,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         source: SOURCE,
         prompt: recordedArgs,
         response: "",
-        metadata: { tool_name: toolName },
+        metadata: { tool_name: toolName, ...toolContentMeta },
         compliance: toolTaintFlag !== undefined
           ? {
               ...TOOL_CALL_COMPLIANCE,

@@ -465,6 +465,7 @@ const RESERVED_META_KEYS = [
   "obsvr_span",
   "obsvr_telemetry",
   "obsvr_external_backend",
+  "obsvr_tool_content_hash",
 ];
 
 /**
