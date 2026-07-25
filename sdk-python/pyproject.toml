@@ -51,7 +51,12 @@ haystack = ["haystack-ai>=2.0.0"]
 smolagents = ["smolagents>=1.0.0"]
 agent-framework = ["agent-framework>=0.1.0"]
 semantic-kernel = ["semantic-kernel>=1.0.0"]
-dev = ["pytest>=7.0"]
+# Ed25519 verification of signed remote policy. Optional because the package
+# ships zero mandatory runtime dependencies and Python has no stdlib Ed25519;
+# without it a pinned policy key still fails closed, and events carry
+# policy_verification_unavailable. PyNaCl is accepted as an alternative.
+crypto = ["cryptography>=41.0.0"]
+dev = ["pytest>=7.0", "cryptography>=41.0.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "obsvr._version.__version__" }

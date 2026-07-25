@@ -340,6 +340,33 @@ def _atexit_flush() -> None:
         pass
 
 
+def _stamp_integrity_flags(event: Dict[str, Any]) -> None:
+    """Stamp per-event integrity flags into reserved metadata.
+
+    One additive array carrying the degraded states an auditor must see even
+    though nothing failed loudly - today only ``policy_verification_unavailable``
+    (a policy key is pinned but no Ed25519 backend is installed). Stamped HERE
+    because this is the single enqueue choke point every emission path uses, so
+    "every affected event" needs no per-caller cooperation. Metadata is not part
+    of the HMAC preimage (see ``_sign_event_locked``), so this cannot disturb the
+    chain. Reserved-metadata carriage with a written promotion plan, per the
+    ``obsvr_external_backend`` precedent; the trimmer preserves obsvr_* keys.
+    """
+    from .policy_verify import INTEGRITY_FLAGS_METADATA_KEY, integrity_flags
+
+    flags = integrity_flags()
+    if not flags:
+        return
+    md = dict(event.get("metadata") or {})
+    existing = md.get(INTEGRITY_FLAGS_METADATA_KEY)
+    merged = list(existing) if isinstance(existing, list) else []
+    for flag in flags:
+        if flag not in merged:
+            merged.append(flag)
+    md[INTEGRITY_FLAGS_METADATA_KEY] = merged
+    event["metadata"] = md
+
+
 def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     """Enqueue an audit event for fire-and-forget sending.
 
@@ -350,6 +377,7 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     global _dropped, _seq_no, _last_sig
     if config.disabled:
         return
+    _stamp_integrity_flags(event)
     # sign and enqueue ATOMICALLY under the sign lock. If the put failed
     # AFTER signing (the queue filled between a bare full() check and put_nowait,
     # or a concurrent producer/worker took the last slot), the event would be

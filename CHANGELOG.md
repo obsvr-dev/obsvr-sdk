@@ -48,6 +48,18 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **Python signed-policy verification.** `obsvr.init(policy_public_key=...)`
+  pins an Ed25519 public key, and `policy_verify.py` checks the signature block
+  on a fetched policy the way the TypeScript SDK already did: same checks, same
+  order, same refusal reasons, asserted against the shared vectors in
+  `conformance/fixtures/policy_signature.json`. Until now only TypeScript
+  verified, so a Python fleet applied whatever structurally valid rules the
+  delivery path handed it. Python has no standard-library Ed25519, so the
+  backend is optional (`pip install "obsvr-sdk[crypto]"`); with a key pinned and
+  no backend installed the policy is still refused and events carry
+  `policy_verification_unavailable` in reserved metadata, so an unverifiable
+  window is visible rather than silent. This ships the module and the flag; the
+  poll path that consumes it lands next.
 - **Failure-disposition registry.** Every governance layer now declares what it
   does in each failure state (timeout, error, degraded) in one table per
   language, pinned by `conformance/fixtures/fail_mode.json`. Descriptive only:

@@ -96,8 +96,8 @@ jobs:
           grep -q "conformance/fixtures/pii_scan.json" sdk-python/tests/test_pii_scan_conformance.py
           grep -q "conformance/fixtures/fail_mode.json" sdk/tests/unit/fail-mode.test.ts
           grep -q "conformance/fixtures/fail_mode.json" sdk-python/tests/test_fail_mode.py
-          # Python consumer of policy_signature.json lands with the Python verifier.
           grep -q "conformance/fixtures/policy_signature.json" sdk/tests/unit/policy-verify.test.ts
+          grep -q "conformance/fixtures/policy_signature.json" sdk-python/tests/test_policy_verify.py
           grep -q "conformance/fixtures/error_parity.json" sdk/tests/unit/policy-error.test.ts
           grep -q "conformance/fixtures/error_parity.json" sdk-python/tests/test_policy_error.py
           grep -q "conformance/fixtures/instance_guard.json" sdk/tests/unit/instance-guard.test.ts
@@ -130,7 +130,7 @@ jobs:
         working-directory: sdk-python
 
       - name: Python fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
-        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py -q
+        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py -q
         working-directory: sdk-python
 
   lint:

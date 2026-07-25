@@ -84,6 +84,24 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         ),
     },
     {
+        "id": "policy_signature",
+        "module": "sdk-python/obsvr/policy_verify.py",
+        "timeout": _s("not_applicable"),
+        "error": _s("open"),
+        "degraded": _s("open"),
+        "hook_overridable": False,
+        "notes": (
+            "Runs on the poll path, not the call path, so its failure is closed for the "
+            "POLICY and open for the CALL: an unsigned, tampered, forged, or rolled-back "
+            "payload is never applied and the last-good policy keeps governing, while "
+            "in-flight calls proceed under it. Degraded means the signature could not be "
+            "checked at all (Python without an Ed25519 backend); the policy is refused the "
+            "same way and events carry policy_verification_unavailable. Either way the sync "
+            "did not succeed, so staleness accrues and the integrity gate turns it into a "
+            "block when the fail mode is closed."
+        ),
+    },
+    {
         "id": "session_taint",
         "module": "sdk-python/obsvr/session_taint.py",
         "timeout": _s("not_applicable"),

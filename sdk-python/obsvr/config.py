@@ -110,6 +110,13 @@ class ResolvedConfig:
     # With fail_mode="closed": max age (s) of the last successful policy
     # sync before governed calls block. Default max(3x interval, 90).
     policy_staleness_budget_s: Optional[float] = None
+    # Pinned base64 raw 32-byte Ed25519 public key. When set, every /policies
+    # response MUST carry a valid signature block or the fetched policy is
+    # refused and the last-good policy stays in force (parity with the TS
+    # SDK's policyPublicKey). Verification needs an optional crypto backend:
+    # pip install "obsvr-sdk[crypto]". Without one the policy is still refused
+    # and events carry policy_verification_unavailable.
+    policy_public_key: Optional[str] = None
     # Presidio NLP PII services (optional; regex scan always runs)
     presidio_analyzer_url: Optional[str] = None
     presidio_anonymizer_url: Optional[str] = None
@@ -167,6 +174,7 @@ def init(
     mcp_tool_policy: Optional[Dict[str, Any]] = None,
     policy_refresh_interval_s: Optional[float] = None,
     policy_staleness_budget_s: Optional[float] = None,
+    policy_public_key: Optional[str] = None,
     presidio_analyzer_url: Optional[str] = None,
     presidio_anonymizer_url: Optional[str] = None,
     multi_turn_injection: Optional[Dict[str, Any]] = None,
@@ -325,6 +333,7 @@ def init(
             policy_refresh_interval_s if policy_refresh_interval_s is not None else 30.0
         ),
         policy_staleness_budget_s=policy_staleness_budget_s,
+        policy_public_key=policy_public_key,
         presidio_analyzer_url=presidio_analyzer_url,
         presidio_anonymizer_url=presidio_anonymizer_url,
         multi_turn_injection=multi_turn_injection,
@@ -476,9 +485,11 @@ def _reset() -> None:
     from .remote import _reset_remote
     from .canary import _reset_canaries
     from .session_taint import _reset_session_taint
+    from .policy_verify import _reset_policy_verify
     _reset_remote()
     _reset_canaries()
     _reset_session_taint()
+    _reset_policy_verify()
     _state["initialized"] = False
     _state["config"] = None
     _tenant_registry.clear()

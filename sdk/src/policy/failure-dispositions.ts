@@ -95,6 +95,16 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
       "A failed policy poll does not block by itself; it counts toward staleness. Degraded state blocks: a revoked key or paused project always, and stale sync when the fail mode is closed. Not overridable by any means - the server has withdrawn authorization.",
   },
   {
+    id: "policy_signature",
+    module: "sdk/src/proxy/policy-verify.ts",
+    timeout: s("not_applicable"),
+    error: s("open"),
+    degraded: s("open"),
+    hookOverridable: false,
+    notes:
+      "Runs on the poll path, not the call path, so its failure is closed for the POLICY and open for the CALL: an unsigned, tampered, forged, or rolled-back payload is never applied and the last-good policy keeps governing, while in-flight calls proceed under it. Degraded means the signature could not be checked at all (Python without an Ed25519 backend); the policy is refused the same way and events carry policy_verification_unavailable. Either way the sync did not succeed, so staleness accrues and the integrity gate turns it into a block when the fail mode is closed.",
+  },
+  {
     id: "session_taint",
     module: "sdk/src/policy/session-taint.ts",
     timeout: s("not_applicable"),
