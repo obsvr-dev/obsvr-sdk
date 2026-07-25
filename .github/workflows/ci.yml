@@ -81,6 +81,7 @@ jobs:
           test -f conformance/fixtures/reason_codes.json
           test -f conformance/fixtures/pii_scan.json
           test -f conformance/fixtures/fail_mode.json
+          test -f conformance/fixtures/policy_signature.json
           grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/signing-vectors.test.ts
           grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/verify-chain-conformance.test.ts
           grep -q "conformance/fixtures/signing_vectors.json" sdk-python/tests/test_verify_chain.py
@@ -93,6 +94,8 @@ jobs:
           grep -q "conformance/fixtures/pii_scan.json" sdk-python/tests/test_pii_scan_conformance.py
           grep -q "conformance/fixtures/fail_mode.json" sdk/tests/unit/fail-mode.test.ts
           grep -q "conformance/fixtures/fail_mode.json" sdk-python/tests/test_fail_mode.py
+          # Python consumer of policy_signature.json lands with the Python verifier.
+          grep -q "conformance/fixtures/policy_signature.json" sdk/tests/unit/policy-verify.test.ts
 
       - name: Use Node.js 20.x
         uses: actions/setup-node@v4
@@ -111,7 +114,7 @@ jobs:
         working-directory: sdk
 
       - name: TypeScript fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
-        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/verify-chain-conformance.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts tests/unit/fail-mode.test.ts
+        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/verify-chain-conformance.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts tests/unit/fail-mode.test.ts tests/unit/policy-verify.test.ts
         working-directory: sdk
         env:
           NODE_ENV: test

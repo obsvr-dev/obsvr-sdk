@@ -1,0 +1,269 @@
+{
+  "schema_version": 1,
+  "name": "policy_signature",
+  "description": "Ed25519 signed-policy verification vectors, shared by both SDKs. TS implementation: sdk/src/proxy/policy-verify.ts (consumed by sdk/tests/unit/policy-verify.test.ts). Every case supplies the rules and approvals AS RECEIVED plus the signature block, and pins whether verification accepts. A rejecting case also pins a substring its reason must contain, so both languages refuse for the SAME cause rather than merely refusing. Verification failure is fail-closed everywhere: the fetched policy is discarded and the last-good policy stays in force. Anti-rollback (issued_at monotonicity) is wiring behavior asserted by the poll-path tests, not a vector here.",
+  "canonical_message": "obsvr-policy-v1|<issued_at>|<rules_sha256>|<approvals_sha256>",
+  "hashing": "rules_sha256 and approvals_sha256 are sha256 hex over the canonical JSON (recursively sorted keys, compact separators) of the received arrays - the same canonicalization the rules hash uses.",
+  "keys": {
+    "pinned_public_key_b64": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+    "pinned_key_id": "ff5d5db9eb589837",
+    "other_public_key_b64": "WLNZWG9oNdzR7CVOyqZMoyv5bRWfXRMl6cA5mBMPWo0=",
+    "test_only_private_key_seed_b64": "CKMcmDcX2T1B84joNbEqNu7i6/8rRRII2aOwUvbbIbM=",
+    "other_test_only_private_key_seed_b64": "TqAQFKlatjvQJDYeBNo0CLdRcMHzxOSUV4E/m+qoxXA=",
+    "warning": "THROWAWAY TEST KEYS. Generated solely to produce these vectors, used nowhere else, and safe to publish. The seeds are included so the vectors can be regenerated; never pin these keys in a real deployment."
+  },
+  "cases": [
+    {
+      "id": "valid_signature_accepts",
+      "desc": "a correctly signed policy from the pinned key is applied",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "ff5d5db9eb589837",
+        "public_key": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "k42T3XY4ELdMEv+9XrRExWgIvAfjnpQ7N2plORojWwMmGkE+Tpn7ik4J6u50xnAZDX31aellel4+oAkab88hAg=="
+      },
+      "expect": {
+        "ok": true
+      }
+    },
+    {
+      "id": "tampered_rules_reject",
+      "desc": "rules altered in transit no longer hash to the signed rules_sha256",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "nothing"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "ff5d5db9eb589837",
+        "public_key": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "k42T3XY4ELdMEv+9XrRExWgIvAfjnpQ7N2plORojWwMmGkE+Tpn7ik4J6u50xnAZDX31aellel4+oAkab88hAg=="
+      },
+      "expect": {
+        "ok": false,
+        "reason_contains": "rules hash"
+      }
+    },
+    {
+      "id": "tampered_approvals_reject",
+      "desc": "approvals altered in transit no longer hash to the signed approvals_sha256",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [
+        {
+          "rule_id": "r1",
+          "granted_to": "attacker"
+        }
+      ],
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "ff5d5db9eb589837",
+        "public_key": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "k42T3XY4ELdMEv+9XrRExWgIvAfjnpQ7N2plORojWwMmGkE+Tpn7ik4J6u50xnAZDX31aellel4+oAkab88hAg=="
+      },
+      "expect": {
+        "ok": false,
+        "reason_contains": "approvals hash"
+      }
+    },
+    {
+      "id": "wrong_key_reject",
+      "desc": "a policy signed by a key other than the pinned one is refused before any crypto",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "b10b975a5671fee0",
+        "public_key": "WLNZWG9oNdzR7CVOyqZMoyv5bRWfXRMl6cA5mBMPWo0=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "DxGDiZ7XPYQ1h23svdaEN8+mSBlWl/KN34oAu16hJe5CAdsdfB1O8FzJhLN5Azk00KQJj/nxZpO17qaK+eVVDA=="
+      },
+      "expect": {
+        "ok": false,
+        "reason_contains": "public_key"
+      }
+    },
+    {
+      "id": "forged_value_reject",
+      "desc": "the block claims the pinned key but the signature was made by another private key",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "ff5d5db9eb589837",
+        "public_key": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "DxGDiZ7XPYQ1h23svdaEN8+mSBlWl/KN34oAu16hJe5CAdsdfB1O8FzJhLN5Azk00KQJj/nxZpO17qaK+eVVDA=="
+      },
+      "expect": {
+        "ok": false,
+        "reason_contains": "verification failed"
+      }
+    },
+    {
+      "id": "key_id_mismatch_reject",
+      "desc": "key_id must be derived from the public key it travels with",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": {
+        "alg": "ed25519",
+        "key_id": "0000000000000000",
+        "public_key": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "k42T3XY4ELdMEv+9XrRExWgIvAfjnpQ7N2plORojWwMmGkE+Tpn7ik4J6u50xnAZDX31aellel4+oAkab88hAg=="
+      },
+      "expect": {
+        "ok": false,
+        "reason_contains": "key_id"
+      }
+    },
+    {
+      "id": "missing_signature_reject",
+      "desc": "with a key pinned, an unsigned response is refused",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": null,
+      "expect": {
+        "ok": false,
+        "reason_contains": "unsigned"
+      }
+    },
+    {
+      "id": "unsupported_alg_reject",
+      "desc": "only ed25519 is accepted",
+      "rules": [
+        {
+          "id": "r1",
+          "name": "block secret",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "secret"
+            ]
+          }
+        }
+      ],
+      "approvals": [],
+      "signature": {
+        "alg": "rsa-pss",
+        "key_id": "ff5d5db9eb589837",
+        "public_key": "SLF+aEJXSASKMYo33VQ2brKqWLxgIQC42LuHi80XR8g=",
+        "issued_at": "2026-07-12T00:00:00.000Z",
+        "rules_sha256": "9dbe4cb2e9839d2b05278b12a5e0cfb865565d14b10fa5fe096e4e6ce8cc1fac",
+        "approvals_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "value": "k42T3XY4ELdMEv+9XrRExWgIvAfjnpQ7N2plORojWwMmGkE+Tpn7ik4J6u50xnAZDX31aellel4+oAkab88hAg=="
+      },
+      "expect": {
+        "ok": false,
+        "reason_contains": "alg"
+      }
+    }
+  ]
+}

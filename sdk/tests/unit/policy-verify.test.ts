@@ -83,3 +83,64 @@ describe('verifyPolicySignature', () => {
     expect(verifyPolicySignature(RULES, APPROVALS, sig, pubB64, '2026-07-11T00:00:00.000Z').ok).toBe(true);
   });
 });
+
+// ── Shared conformance vectors ───────────────────────────────────────────────
+//
+// The cases above generate their key material at run time, which proves the TS
+// implementation is self-consistent but cannot prove the Python one agrees. The
+// vectors below are fixed bytes in conformance/fixtures/policy_signature.json:
+// the same signatures, over the same rules, under the same pinned key, verified
+// by both languages. That file is the contract; this suite is one of its two
+// readers.
+
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
+function findFixture(rel: string): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    const candidate = join(dir, rel);
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error(`fixture not found upward from ${process.cwd()}: ${rel}`);
+}
+
+interface VectorCase {
+  id: string;
+  desc: string;
+  rules: unknown[];
+  approvals: unknown[];
+  signature: PolicySignature | null;
+  expect: { ok: boolean; reason_contains?: string };
+}
+
+const vectors = JSON.parse(
+  readFileSync(findFixture('conformance/fixtures/policy_signature.json'), 'utf-8'),
+) as { keys: { pinned_public_key_b64: string }; cases: VectorCase[] };
+
+describe('conformance: policy_signature vectors', () => {
+  it('has cases to run', () => {
+    expect(vectors.cases.length).toBeGreaterThan(0);
+  });
+
+  for (const testCase of vectors.cases) {
+    it(`${testCase.id}: ${testCase.desc}`, () => {
+      const result = verifyPolicySignature(
+        testCase.rules,
+        testCase.approvals,
+        testCase.signature ?? undefined,
+        vectors.keys.pinned_public_key_b64,
+      );
+
+      expect(result.ok).toBe(testCase.expect.ok);
+      if (testCase.expect.reason_contains) {
+        // Refusing is not enough: both languages must refuse for the same
+        // reason, or one of them is failing closed by accident.
+        expect(result.reason).toContain(testCase.expect.reason_contains);
+      } else {
+        expect(result.reason).toBeUndefined();
+      }
+    });
+  }
+});
