@@ -8,10 +8,6 @@ Breaking changes are marked **BREAKING** and carry a migration note. Additive
 changes to closed enums count as breaking, because they break exhaustive
 switches in consumer code.
 
-Nothing has been published to npm or PyPI yet. Every version below describes
-code that exists in this repository's history; none of them are installable
-releases. The first publish will be a 0.x release from the current line.
-
 ## [Unreleased]
 
 Changes landed since 0.10.0. This section accumulates until the next release
@@ -182,10 +178,8 @@ Security engine and integrity hardening. Private beta.
 
 ## [0.9.0] - 2026-07-17
 
-The version benchmarked in `BENCHMARKS.md`. This repository's history was
-squashed at 0.10.0, so per-change detail for 0.9.0 and earlier is not
-recoverable from this repository; what is recorded of the earlier lineage is
-below.
+The version benchmarked in `BENCHMARKS.md`. What is recorded of the earlier
+lineage is below.
 
 ## Pre-fork history
 
@@ -196,7 +190,7 @@ the current 0.x line supersedes nothing and there is no upgrade path to
 describe. The security work from that period is recorded here because the code
 in this repository is built on it.
 
-### [2.0.0] - 2026-06-14 (never published)
+### [2.0.0] - 2026-06-14
 
 #### Security fixes
 
