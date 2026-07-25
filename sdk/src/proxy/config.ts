@@ -662,9 +662,16 @@ async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
       // events ride their own key so the fleet view can tell "we never got
       // it" apart from "we got it and said no".
       const dropped = s.dropped_overflow + s.dropped_permanent + s.dropped_retry_exhausted;
+      const { getDetectorErrorCount } = await import("../policy/detector-guard.js");
       countersHeader =
         `enqueued=${s.enqueued},sent=${s.sent},retries=${s.retries},dropped=${dropped}` +
-        `,dropped_rejected=${s.dropped_rejected}`;
+        `,dropped_rejected=${s.dropped_rejected}` +
+        // Enforcement loss, not delivery loss: a detector layer that raised
+        // and was resolved by the guard. Its own key for the same reason
+        // dropped_rejected has one - these are different operational stories,
+        // and folding them together would report a lost control as a lost
+        // event. Same key name and order as the Python poll.
+        `,detector_errors=${getDetectorErrorCount()}`;
     } catch {
       // stats unavailable: send the poll anyway
     }

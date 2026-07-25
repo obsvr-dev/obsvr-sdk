@@ -16,7 +16,7 @@ import type {
 import type { OpenAIChatRequest } from "./extractors/types.js";
 import { getConfig, isWrapped, markWrapped, isPolicyEnforcementDegraded } from "./config.js";
 import { evaluatePolicyHook, redactBuiltinPii, resolvePiiPolicy, runBuiltinPiiScan } from "../policy/hook.js";
-import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
+import { describeError, detectorFailureRecord, recordDetectorFailure } from "../policy/detector-guard.js";
 import {
   runConfiguredPiiScan,
   escalateViewOnlyAction,
@@ -1314,13 +1314,30 @@ function createAuditedMethod(
         }
       }
     } catch (err) {
-      if (recordDetectorFailure(layer, err, config)) {
+      const failClosed = recordDetectorFailure(layer, err, config);
+      if (failClosed) {
         actionTaken = "blocked";
         actionReason = "policy_violation";
         actionSource = "builtin";
         ruleId = "sdk:detector_error";
         policyReason = `Detector layer '${layer || "unknown"}' raised ${describeError(err)}`.slice(0, 256);
       }
+      // Record WHICH layer was lost on this call's own event, on the reserved
+      // telemetry channel - the same route canary and floor evidence take. An
+      // open resolution leaves the call looking ordinary otherwise, so without
+      // this an operator cannot see that a control silently stopped running.
+      audit_fields.metadata = {
+        ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
+        obsvr_telemetry: {
+          ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
+          detector_failure: detectorFailureRecord(
+            layer,
+            err,
+            failClosed ? "closed" : "open",
+            "pre_call",
+          ),
+        },
+      };
     }
 
     // 2. Customer hook - fires according to hookTrigger config.
