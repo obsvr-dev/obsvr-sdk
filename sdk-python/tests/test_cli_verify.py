@@ -143,21 +143,35 @@ def test_flag_value_is_never_mistaken_for_the_file(tmp_path, capsys):
 # ── multi-session exports ───────────────────────────────────────────────────
 
 
-def test_verifies_each_session_chain_separately(tmp_path, capsys):
+SECOND_SESSION = "22222222-2222-2222-2222-222222222222"
+
+
+def test_verifies_each_session_chain_separately(tmp_path, capsys, monkeypatch):
     """The HMAC chain is per sdk_session_id, so an export holding two sessions
     must verify as two chains rather than one interleaved (and broken) one.
 
     The second chain is signed by the SDK's own signer rather than by copying
     the fixture under a new session id - the session id is part of the signed
     preimage, so a copy would not (and must not) verify.
+
+    The signer's session id is pinned explicitly rather than left to the
+    module default. `_reset_sender()` clears the sequence and chain head but
+    NOT `_sdk_session_id`, so whichever value another test last wrote is still
+    in place - and one of them writes the fixture's own session id. Inheriting
+    it would put both chains in one group with two seq 1s, which is a failure
+    that depends only on test order. monkeypatch restores it afterwards.
     """
     from obsvr import sender
+
+    monkeypatch.setattr(sender, "_sdk_session_id", SECOND_SESSION)
+    assert SECOND_SESSION != VECTORS["session_id"], "the two chains must not share a session"
 
     sender._reset_sender()
     live = [{"request_id": "a", "prompt": "one", "response": "1"},
             {"request_id": "b", "prompt": "two", "response": "2"}]
     for event in live:
         sender.sign_event(event, API_KEY)
+    assert {e["sdk_session_id"] for e in live} == {SECOND_SESSION}
     sender._reset_sender()
 
     assert _run([_write(tmp_path, "m.json", _chain() + live), "--api-key", API_KEY]) == 0

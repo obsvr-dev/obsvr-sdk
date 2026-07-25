@@ -27,12 +27,16 @@ class TestSigningVectors:
         key = derive_signing_key(v["api_key"])
         assert key.hex() == v["signing_key_hex"]
 
-    def test_event_signatures_match_shared_vectors(self):
+    def test_event_signatures_match_shared_vectors(self, monkeypatch):
         v = _load_vectors()
         # Drive the signer deterministically by pinning session/seq/timestamp
         # to the vector values, then verifying the computed sdk_sig matches.
+        # Pinned via monkeypatch so it is RESTORED afterwards: _reset_sender()
+        # does not clear _sdk_session_id, so a bare assignment here leaks the
+        # fixture's session id into every later test in the process and makes
+        # their outcome depend on file order.
         sender._reset_sender()
-        sender._sdk_session_id = v["session_id"]
+        monkeypatch.setattr(sender, "_sdk_session_id", v["session_id"])
 
         prev = None
         for expected in v["events"]:
