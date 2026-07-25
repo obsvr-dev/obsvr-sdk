@@ -1,10 +1,11 @@
 /**
  * A detector defect must never surface as an unhandled error in the host app.
  *
- * Covers the three PRE-CALL paths, and asserts the split the disposition
- * registry draws: the scanning layers resolve by failMode, while the floor
- * class (policy_floor, canary) blocks regardless, because a floor is by
- * definition the thing failMode cannot move.
+ * Covers every PRE-CALL path - the proxy wrapper, the integrations core, the
+ * governance surface and tool execution - and asserts the split the
+ * disposition registry draws: the scanning layers resolve by failMode, while
+ * the floor class (policy_floor, canary) blocks regardless, because a floor is
+ * by definition the thing failMode cannot move.
  *
  * The failure is injected as a REAL one rather than by mocking a module: a
  * metadata object whose property getter throws makes the session-key
@@ -18,6 +19,8 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import { applyPreCallPolicy } from '../../src/integrations/core';
 import { evaluate } from '../../src/governance/evaluate';
 import { wrap } from '../../src/proxy/wrapper';
+import { obsvrGovernTool } from '../../src/integrations/tools';
+import { markTainted, _resetSessionTaint } from '../../src/policy/session-taint';
 import {
   FLOOR_CLASS_LAYERS,
   UNSCANNED_PLACEHOLDER,
@@ -47,6 +50,27 @@ afterEach(() => {
 function hostileMetadata(): Record<string, unknown> {
   return Object.defineProperty({}, 'user_id', {
     get() {
+      throw new Error('detector bug');
+    },
+    enumerable: true,
+    configurable: true,
+  }) as Record<string, unknown>;
+}
+
+/**
+ * The same defect, but transient: the getter throws on its FIRST read only.
+ *
+ * Needed on the wrap() path because a permanently-throwing getter also breaks
+ * `JSON.stringify` later, inside the audit sender's metadata trim - a
+ * different subsystem with its own posture, not a detector layer. Throwing
+ * once keeps the vector aimed at the thing under test: the detector read.
+ */
+function hostileMetadataOnce(): Record<string, unknown> {
+  let thrown = false;
+  return Object.defineProperty({}, 'user_id', {
+    get() {
+      if (thrown) return 'u1';
+      thrown = true;
       throw new Error('detector bug');
     },
     enumerable: true,
@@ -184,10 +208,119 @@ describe('pre-call guard: the proxy wrapper (the host call itself)', () => {
     ).rejects.toThrow(/blocked by policy/i);
   });
 
-  // NOTE on coverage: the metadata vector cannot reach the wrapper's guarded
-  // span - the wrapper reads metadata during argument marshalling, before the
-  // detector section, so a throwing getter fires outside the guard. That read
-  // is argument handling, not a detector layer, so it is out of this guard's
-  // scope; the wrapper's own guard is exercised through the shared resolution
-  // point above and by the enumeration in the closing sweep.
+  // The wrapper's session-taint step derives the session key by spreading the
+  // call's metadata, so a throwing getter raises INSIDE the guarded span - a
+  // real detector defect on the SDK's most-used path, end to end through
+  // wrap(). Until the taint step moved inside the span this same call threw
+  // "detector bug" straight out of the host's own create().
+  it('a defect inside the span does not reach the host, and is counted', async () => {
+    initWith('open');
+    const res = await client().chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'hello' }],
+      metadata: hostileMetadataOnce(),
+    } as never);
+
+    expect(res).toEqual({ choices: [{ message: { content: 'ok' } }] });
+    expect(getDetectorErrorCount()).toBe(1);
+  });
+
+  it('the same defect blocks under failMode closed, as a policy error', async () => {
+    initWith('closed');
+    await expect(
+      client().chat.completions.create({
+        model: 'gpt-4o',
+        messages: [{ role: 'user', content: 'hello' }],
+        metadata: hostileMetadataOnce(),
+      } as never),
+    ).rejects.toThrow(/blocked by policy/i);
+    expect(getDetectorErrorCount()).toBe(1);
+  });
+
+  it('a healthy call on the same path is unaffected', async () => {
+    initWith('open');
+    const res = await client().chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'hello' }],
+      metadata: { user_id: 'u1' },
+    } as never);
+    expect(res).toEqual({ choices: [{ message: { content: 'ok' } }] });
+    expect(getDetectorErrorCount()).toBe(0);
+  });
+});
+
+describe('pre-call guard: obsvrGovernTool (the tool-execution path)', () => {
+  function governed(metadata: Record<string, unknown>) {
+    return obsvrGovernTool(
+      { name: 'calc', execute: async (_input: unknown) => 'tool ran' },
+      { name: 'calc', metadata },
+    );
+  }
+
+  /** The taint layer only derives a key once a session is actually tainted. */
+  function seedTaintedSession() {
+    markTainted('someone-else', 'prompt_injection', Date.now());
+  }
+
+  beforeEach(() => {
+    _resetSessionTaint();
+  });
+
+  it('a defect in the taint layer does not reach the host; the tool still runs', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+    seedTaintedSession();
+
+    await expect(governed(hostileMetadata()).execute('2+2')).resolves.toBe('tool ran');
+    expect(getDetectorErrorCount()).toBe(1);
+  });
+
+  it('the same defect refuses the tool under failMode closed', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'closed',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+    seedTaintedSession();
+
+    // The refusal is raised before the tool function is entered, so it
+    // surfaces synchronously - the same shape the allow/deny gate uses.
+    expect(() => governed(hostileMetadata()).execute('2+2')).toThrow(
+      /session_taint detector failed/i,
+    );
+    expect(getDetectorErrorCount()).toBe(1);
+  });
+
+  it('the guard does not swallow the taint latch\'s own block', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+    markTainted('u1', 'canary_leak', Date.now());
+
+    expect(() => governed({ user_id: 'u1' }).execute('2+2')).toThrow(
+      /session tainted \(canary_leak\)/i,
+    );
+    expect(getDetectorErrorCount()).toBe(0);
+  });
+
+  it('a healthy tool call is unaffected', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+    seedTaintedSession();
+
+    await expect(governed({ user_id: 'u1' }).execute('2+2')).resolves.toBe('tool ran');
+    expect(getDetectorErrorCount()).toBe(0);
+  });
 });

@@ -1031,43 +1031,6 @@ function createAuditedMethod(
       debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
     }
 
-    // 0.5 Session taint latch: a session compromised on an earlier turn has
-    //     its later egress (this LLM call) escalated. ENFORCE runs on PRIOR
-    //     taint; SET happens at this call's detection points below. The taint
-    //     key folds in the SAME identity channels the integrations path uses
-    //     (per-call metadata, then wrap-level options.user_id, then the
-    //     ambient useSubject() subject) so a session tainted on wrap() and one
-    //     tainted on MCP/tools share a key — otherwise the cross-egress
-    //     escalation silently no-ops for useSubject-identified sessions.
-    const taintCfg = resolveSessionTaint(config);
-    const ambientSubject = getCurrentSubject();
-    const rawTaintMeta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
-    const resolvedTaintUser =
-      rawTaintMeta.user_id ?? audit_fields.user_id ?? ctx.options.user_id ?? ambientSubject?.user_id;
-    const resolvedTaintTenant = rawTaintMeta.tenant_id ?? ambientSubject?.tenant_id;
-    const taintKey = deriveSessionKey({
-      ...rawTaintMeta,
-      ...(resolvedTaintUser !== undefined ? { user_id: resolvedTaintUser } : {}),
-      ...(resolvedTaintTenant !== undefined ? { tenant_id: resolvedTaintTenant } : {}),
-    });
-    if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
-      const verdict = evaluateSessionTaint(taintKey, taintCfg);
-      if (verdict.enforcement !== "none") {
-        touchTaint(taintKey, Date.now()); // LRU: keep an enforced victim alive
-        ruleIdOverride = "sdk:session_tainted";
-        policyReasonOverride = `Session previously compromised (${verdict.reason}); egress escalated`;
-        if (verdict.enforcement === "block") {
-          actionTaken = "blocked";
-          actionReason = "policy_violation";
-          actionSource = "policy_rules";
-          debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
-        } else {
-          if (actionReason === "none") actionReason = "policy_violation";
-          actionSource = "policy_rules";
-        }
-      }
-    }
-
     // Hoisted above the guard: the code after this section reads these,
     // and a try block would otherwise scope them away.
     let floorBlock = false;
@@ -1075,12 +1038,56 @@ function createAuditedMethod(
     let floorActive = false;
     let ruleId: string | undefined;
     let policyReason: string | undefined;
+    // Same reason, one step earlier: the session-taint key and sub-config are
+    // set by the first step INSIDE the guard and read by the canary, PII and
+    // multi-turn steps further down it. A throw before the key is derived
+    // jumps to the catch, so every later read is unreachable, not empty.
+    let taintCfg: ReturnType<typeof resolveSessionTaint>;
+    let taintKey = "";
     // --- guarded detector section ------------------------------------
     // A detector defect resolves here instead of escaping into the
     // caller's own provider call. A closed resolution drives the
     // wrapper's existing block path rather than adding a second throw.
     let layer = "";
     try {
+      layer = "session_taint";
+      // 0.5 Session taint latch: a session compromised on an earlier turn has
+      //     its later egress (this LLM call) escalated. ENFORCE runs on PRIOR
+      //     taint; SET happens at this call's detection points below. The taint
+      //     key folds in the SAME identity channels the integrations path uses
+      //     (per-call metadata, then wrap-level options.user_id, then the
+      //     ambient useSubject() subject) so a session tainted on wrap() and one
+      //     tainted on MCP/tools share a key — otherwise the cross-egress
+      //     escalation silently no-ops for useSubject-identified sessions.
+      taintCfg = resolveSessionTaint(config);
+      const ambientSubject = getCurrentSubject();
+      const rawTaintMeta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
+      const resolvedTaintUser =
+        rawTaintMeta.user_id ?? audit_fields.user_id ?? ctx.options.user_id ?? ambientSubject?.user_id;
+      const resolvedTaintTenant = rawTaintMeta.tenant_id ?? ambientSubject?.tenant_id;
+      taintKey = deriveSessionKey({
+        ...rawTaintMeta,
+        ...(resolvedTaintUser !== undefined ? { user_id: resolvedTaintUser } : {}),
+        ...(resolvedTaintTenant !== undefined ? { tenant_id: resolvedTaintTenant } : {}),
+      });
+      if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
+        const verdict = evaluateSessionTaint(taintKey, taintCfg);
+        if (verdict.enforcement !== "none") {
+          touchTaint(taintKey, Date.now()); // LRU: keep an enforced victim alive
+          ruleIdOverride = "sdk:session_tainted";
+          policyReasonOverride = `Session previously compromised (${verdict.reason}); egress escalated`;
+          if (verdict.enforcement === "block") {
+            actionTaken = "blocked";
+            actionReason = "policy_violation";
+            actionSource = "policy_rules";
+            debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
+          } else {
+            if (actionReason === "none") actionReason = "policy_violation";
+            actionSource = "policy_rules";
+          }
+        }
+      }
+
       layer = "canary";
       // 0.75 Canary-leak scan (unsuppressible). A planted honeytoken echoed back
       //      in the user's message is a CRITICAL leak signal — block before the

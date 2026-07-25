@@ -41,8 +41,18 @@ import {
   toolContentMetadata,
   type ToolContentDescriptor,
 } from "../policy/tool-content-hash.js";
+import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
 
 const SOURCE = "obsvr_tool";
+
+/** A refusal that must reach the caller: either the taint latch's own block or
+ *  a detector failure that resolved closed. Carried out of the guard as a value
+ *  so the guard cannot swallow the enforcement it exists to protect. */
+interface ToolBlock {
+  rule_id: string;
+  policy_reason: string;
+  message: string;
+}
 
 /** Verdict for a tool that was blocked by policy (so it reads as BLOCKED, not
  *  the default "allowed"/"llm_call"). */
@@ -192,38 +202,69 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
       // earlier turn has its tool calls escalated. Keyed on options.metadata
       // identity (same derivation as every other egress). block mode refuses
       // the tool before it runs; flag mode records it on the event.
-      const taintCfg = resolveSessionTaint(config);
+      //
+      // Guarded: a defect in the taint layer resolves here instead of
+      // escaping into the host's own tool call. The INTENDED block travels
+      // back out of the try as a descriptor rather than a throw — a guard
+      // that swallowed its own enforcement would be worse than no guard.
       let toolTaintFlag: string | undefined;
-      if (taintCfg && sessionTaintSize() > 0) {
-        const taintKey = deriveSessionKey(
-          (options.metadata ?? {}) as Record<string, unknown>,
-        );
-        const verdict = evaluateSessionTaint(taintKey, taintCfg);
-        if (verdict.enforcement !== "none") {
-          touchTaint(taintKey, Date.now());
-          if (verdict.enforcement === "block") {
-            emitIntegrationEvent({
-              config,
-              provider: "unknown",
-              model: "unknown",
-              operation: "tool.call",
-              source: SOURCE,
-              prompt: "",
-              response: "",
-              success: false,
-              statusCode: 403,
-              metadata: { tool_name: toolName, ...toolContentMeta },
-              compliance: {
-                ...BLOCKED_COMPLIANCE,
+      let toolBlock: ToolBlock | undefined;
+      try {
+        const taintCfg = resolveSessionTaint(config);
+        if (taintCfg && sessionTaintSize() > 0) {
+          const taintKey = deriveSessionKey(
+            (options.metadata ?? {}) as Record<string, unknown>,
+          );
+          const verdict = evaluateSessionTaint(taintKey, taintCfg);
+          if (verdict.enforcement !== "none") {
+            touchTaint(taintKey, Date.now());
+            if (verdict.enforcement === "block") {
+              toolBlock = {
                 rule_id: "sdk:session_tainted",
                 policy_reason: `Session previously compromised (${verdict.reason}); tool call escalated`,
-              },
-              options,
-            });
-            throw new Error(`[obsvr] Tool blocked: session tainted (${verdict.reason})`);
+                message: `[obsvr] Tool blocked: session tainted (${verdict.reason})`,
+              };
+            } else {
+              toolTaintFlag = verdict.reason; // flag mode: annotate below
+            }
           }
-          toolTaintFlag = verdict.reason; // flag mode: annotate below
         }
+      } catch (err) {
+        // session_taint is a scanning layer, so failMode decides: open lets
+        // the tool run with this layer's enforcement lost, closed refuses it.
+        if (recordDetectorFailure("session_taint", err, config)) {
+          toolBlock = {
+            rule_id: "sdk:detector_error",
+            policy_reason:
+              `Detector layer 'session_taint' raised ${describeError(err)}; resolved closed (failMode)`.slice(
+                0,
+                256,
+              ),
+            message: "[obsvr] Tool blocked: session_taint detector failed (failMode=closed)",
+          };
+        }
+      }
+
+      if (toolBlock) {
+        emitIntegrationEvent({
+          config,
+          provider: "unknown",
+          model: "unknown",
+          operation: "tool.call",
+          source: SOURCE,
+          prompt: "",
+          response: "",
+          success: false,
+          statusCode: 403,
+          metadata: { tool_name: toolName, ...toolContentMeta },
+          compliance: {
+            ...BLOCKED_COMPLIANCE,
+            rule_id: toolBlock.rule_id,
+            policy_reason: toolBlock.policy_reason,
+          },
+          options,
+        });
+        throw new Error(toolBlock.message);
       }
 
       // 2) PII scan on the arguments; redact in the stored record. A
