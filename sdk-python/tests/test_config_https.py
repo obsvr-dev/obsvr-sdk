@@ -43,9 +43,12 @@ def test_http_localhost_allowed(url):
     assert obsvr.is_initialized()
 
 
-def test_default_ingest_url_allowed():
-    _init()  # DEFAULT_INGEST_URL is http://localhost:3000
+def test_unset_ingest_url_does_not_trip_the_https_check():
+    # The default is now empty (no defaulted network destination), so there is
+    # no scheme to validate and init still succeeds - it just delivers nothing.
+    _init()
     assert obsvr.is_initialized()
+    assert obsvr.get_config().ingest_url == ""
 
 
 def test_env_override_allows_http_remote(monkeypatch):

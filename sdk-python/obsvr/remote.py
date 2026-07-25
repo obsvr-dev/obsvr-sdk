@@ -221,12 +221,16 @@ def poll_once(config: ResolvedConfig) -> None:
         headers["X-Obsvr-Quota-Consumed"] = json.dumps(
             consumed, sort_keys=True, separators=(",", ":")
         )
-    req = Request(
-        f"{config.ingest_url}/policies",
-        headers=headers,
-        method="GET",
-    )
     try:
+        # Inside the guard: with no ingest_url configured the URL is unusable,
+        # and that must count as a sync failure like an unreachable server
+        # rather than an exception that kills the polling thread (parity with
+        # the TS poll, whose fetch rejects on the same input).
+        req = Request(
+            f"{config.ingest_url}/policies",
+            headers=headers,
+            method="GET",
+        )
         resp = urlopen(req, timeout=config.timeout)
         body = json.loads(resp.read().decode("utf-8"))
     except HTTPError as err:

@@ -41,6 +41,18 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **BREAKING (Python): `ingest_url` no longer defaults to
+  `http://localhost:3000`.** Unset, it is now empty: the SDK logs a loud
+  no-delivery warning at `init()` and delivers nothing, matching the TypeScript
+  SDK on the same misconfiguration. Previously a Python process with no
+  `ingest_url` streamed governed events - including redacted prompt text on
+  blocked calls - to whatever was listening on local port 3000. *Migration: if
+  you relied on the localhost default in development, pass
+  `ingest_url="http://localhost:3000"` explicitly.* Governance itself is
+  unaffected either way; only delivery stops.
+- An unusable ingest URL is now a delivery failure in Python rather than an
+  exception: the sender and the policy poll both treat it as a retryable
+  failure and count it, instead of raising inside their background threads.
 - The normative evaluation-semantics specification (EV-1 through EV-23) now
   lives at `conformance/SPEC-evaluation.md`, beside the fixtures that pin it.
   Semantics are unchanged; its fixture map was corrected to name only cases that

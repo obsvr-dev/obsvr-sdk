@@ -11,7 +11,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-DEFAULT_INGEST_URL = "http://localhost:3000"
+# No default destination. A defaulted ingest URL means a misconfigured process
+# streams governed events - including redacted prompt text on blocked calls - to
+# whatever happens to be listening on that port. Unset is unset: the SDK warns
+# loudly and delivers nothing. (Twin: DEFAULT_INGEST_URL in sdk/src/constants.ts.)
+DEFAULT_INGEST_URL = ""
 DEFAULT_TIMEOUT_S = 5.0
 DEFAULT_MAX_PAYLOAD_CHARS = 100000
 
@@ -260,6 +264,13 @@ def init(
         rate = 1.0
 
     url = (ingest_url or DEFAULT_INGEST_URL).rstrip("/")
+    if not url:
+        # Same condition, severity, and content as the TypeScript SDK's warning
+        # (sdk/src/proxy/config.ts). Governance still runs; only delivery stops.
+        logging.getLogger("obsvr").warning(
+            "WARNING: ingest_url is not configured. Audit events will not be "
+            "delivered until ingest_url is set in obsvr.init()."
+        )
     _validate_ingest_url_scheme(url)
 
     # Legacy {"action": "block"} shape -> {"default": "block"}

@@ -205,16 +205,21 @@ def _post(config: ResolvedConfig, path: str, payload: Any) -> str:
     429 and retryable failures arm the (jittered) backoff window."""
     url = f"{config.ingest_url}{path}"
     data = json.dumps(payload).encode("utf-8")
-    req = Request(
-        url,
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            API_KEY_HEADER: config.api_key,
-        },
-        method="POST",
-    )
     try:
+        # Request construction is inside the guard because an unset ingest_url
+        # makes the URL unusable, and that must be a delivery failure like any
+        # other - retried, then counted as a drop - not an exception that kills
+        # the worker thread. Same observable outcome as the TS sender, whose
+        # fetch rejects on the same input.
+        req = Request(
+            url,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                API_KEY_HEADER: config.api_key,
+            },
+            method="POST",
+        )
         resp = urlopen(req, timeout=config.timeout)
         status = getattr(resp, "status", None)
         if status is None and hasattr(resp, "getcode"):
