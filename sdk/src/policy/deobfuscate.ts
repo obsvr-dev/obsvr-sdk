@@ -34,6 +34,7 @@
  */
 
 import { runBuiltinPiiScan, redactBuiltinPii } from './hook.js';
+import { recordDetectorFailure, UNSCANNED_PLACEHOLDER } from './detector-guard.js';
 
 // ── Caps (gateway parity) ─────────────────────────────────────────────────────
 
@@ -686,5 +687,18 @@ export function redactForStorage(
   text: string,
   via: DeobfuscationView['method'] | undefined,
 ): string {
-  return via !== undefined ? OBFUSCATED_REDACTION_PLACEHOLDER : redactBuiltinPii(text);
+  // Guarded HERE rather than at each of its call sites, because there is one
+  // correct answer for all of them and P-02 wants it stated once: this builds
+  // a STORED copy, so a redactor defect resolves the response-phase way even
+  // when the caller is on the pre-call path. It fails closed on the stored
+  // copy alone - the marker, never the raw text, because persisting content
+  // nothing vetted into an evidence record is the fake enforcement P-02
+  // forbids, and never a "[REDACTED..." token, because "we could not scan
+  // this" must not read as "we scanned it and removed something".
+  try {
+    return via !== undefined ? OBFUSCATED_REDACTION_PLACEHOLDER : redactBuiltinPii(text);
+  } catch (err) {
+    recordDetectorFailure('deobfuscation_views', err, undefined);
+    return UNSCANNED_PLACEHOLDER;
+  }
 }

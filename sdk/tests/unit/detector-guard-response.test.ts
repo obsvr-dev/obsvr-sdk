@@ -24,6 +24,7 @@ import {
 } from '../../src/integrations/core';
 import { explain } from '../../src/governance/evaluate';
 import { resolveResponseScanFailure } from '../../src/policy/response-scan';
+import { redactForStorage } from '../../src/policy/deobfuscate';
 import {
   UNSCANNED_PLACEHOLDER,
   getDetectorErrorCount,
@@ -217,6 +218,37 @@ describe('explain() (check-only)', () => {
     const result = explain('some text');
     expect(result.rule_id).not.toBe('sdk:detector_error');
     expect(result.not_evaluated).toEqual(['customer_hook', 'multi_turn_injection']);
+    expect(getDetectorErrorCount()).toBe(0);
+  });
+});
+
+describe('the stored-copy redactor', () => {
+  /**
+   * `redactForStorage` is the single point every stored audit copy passes
+   * through - blocked-event prompts, post-call stored responses, the
+   * observe-path fields, and the framework integrations' stored text. It is
+   * guarded there rather than at its ~20 call sites because the answer is the
+   * same at all of them, which is what P-02 means by one resolution point.
+   */
+  it('withholds the stored copy rather than persisting unvetted text', () => {
+    initWith('open');
+    // A non-string reaches the redactor's string operations and throws there.
+    const stored = redactForStorage({} as unknown as string, undefined);
+
+    expect(stored).toBe(UNSCANNED_PLACEHOLDER);
+    expect(getDetectorErrorCount()).toBe(1);
+  });
+
+  it('never returns the raw text it could not scan', () => {
+    initWith('open');
+    const secret = { toString: () => 'ssn 123-45-6789' };
+    const stored = redactForStorage(secret as unknown as string, undefined);
+    expect(stored).not.toContain('123-45-6789');
+  });
+
+  it('a healthy redaction is unchanged', () => {
+    initWith('open');
+    expect(redactForStorage('my ssn is 123-45-6789', undefined)).toContain('[REDACTED_SSN]');
     expect(getDetectorErrorCount()).toBe(0);
   });
 });

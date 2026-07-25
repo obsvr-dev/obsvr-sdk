@@ -393,3 +393,39 @@ def test_event_builder_canary_net_failure_does_not_reach_the_host(monkeypatch):
     assert failure["phase"] == "event_build"
     assert failure["stored_unscanned"] is True
     _reset()
+
+
+def test_stored_copy_redactor_never_persists_unvetted_text():
+    """``redact_for_storage`` is the single point every stored audit copy
+    passes through - blocked-event prompts, post-call stored responses, the
+    observe-path fields, and the framework integrations' stored text. It is
+    guarded there rather than at each of its call sites because the answer is
+    the same at all of them, which is what P-02 means by one resolution point.
+
+    Twin: sdk/tests/unit/detector-guard-response.test.ts.
+    """
+    from obsvr.deobfuscate import redact_for_storage
+    from obsvr.policy import UNSCANNED_PLACEHOLDER, get_detector_error_count
+
+    _init(fail_mode="open")
+
+    class _Hostile:
+        """Reaches the redactor's string operations and raises there."""
+
+        def __getattr__(self, name):
+            raise RuntimeError("redactor bug")
+
+    stored = redact_for_storage(_Hostile(), None)
+    assert stored == UNSCANNED_PLACEHOLDER
+    assert get_detector_error_count() == 1
+    _reset()
+
+
+def test_stored_copy_redactor_leaves_a_healthy_redaction_alone():
+    from obsvr.deobfuscate import redact_for_storage
+    from obsvr.policy import get_detector_error_count
+
+    _init(fail_mode="open")
+    assert "[REDACTED_SSN]" in redact_for_storage("my ssn is 123-45-6789", None)
+    assert get_detector_error_count() == 0
+    _reset()

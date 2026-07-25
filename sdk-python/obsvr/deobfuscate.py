@@ -468,9 +468,26 @@ def redact_for_storage(text: str, via: Optional[str]) -> str:
     replaced — never a silently-intact "redacted" record. Detection
     provenance (detected_types + via) still rides the event, so the record
     stays useful.
-    """
-    if via is not None:
-        return OBFUSCATED_REDACTION_PLACEHOLDER
-    from .policy import redact_builtin_pii  # lazy: policy imports this module
 
-    return redact_builtin_pii(text)
+    Guarded HERE rather than at each of its call sites, because there is one
+    correct answer for all of them and P-02 wants it stated once: this builds a
+    STORED copy, so a redactor defect resolves the response-phase way even when
+    the caller is on the pre-call path. It fails closed on the stored copy alone
+    - the marker, never the raw text, because persisting content nothing vetted
+    into an evidence record is the fake enforcement P-02 forbids, and never a
+    "[REDACTED..." token, because "we could not scan this" must not read as "we
+    scanned it and removed something".
+
+    Twin: sdk/src/policy/deobfuscate.ts (``redactForStorage``).
+    """
+    try:
+        if via is not None:
+            return OBFUSCATED_REDACTION_PLACEHOLDER
+        from .policy import redact_builtin_pii  # lazy: policy imports this module
+
+        return redact_builtin_pii(text)
+    except Exception as _redact_exc:  # noqa: BLE001 - deliberate catch-all
+        from .policy import UNSCANNED_PLACEHOLDER, record_detector_failure
+
+        record_detector_failure("deobfuscation_views", _redact_exc, None)
+        return UNSCANNED_PLACEHOLDER
