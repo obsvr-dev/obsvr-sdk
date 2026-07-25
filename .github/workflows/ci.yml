@@ -81,6 +81,8 @@ jobs:
           test -f conformance/fixtures/reason_codes.json
           test -f conformance/fixtures/pii_scan.json
           grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/signing-vectors.test.ts
+          grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/verify-chain-conformance.test.ts
+          grep -q "conformance/fixtures/signing_vectors.json" sdk-python/tests/test_verify_chain.py
           grep -q "conformance/fixtures/eval_semantics.json" sdk/tests/unit/conformance.test.ts
           grep -q "conformance/fixtures/reason_codes.json" sdk/tests/unit/reason-codes.test.ts
           grep -q "conformance/fixtures/pii_scan.json" sdk/tests/unit/pii-scan-conformance.test.ts
@@ -105,8 +107,8 @@ jobs:
         run: npm ci
         working-directory: sdk
 
-      - name: TypeScript fixture suites (signing vectors + eval semantics + reason codes + pii scan)
-        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts
+      - name: TypeScript fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan)
+        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/verify-chain-conformance.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts
         working-directory: sdk
         env:
           NODE_ENV: test
@@ -115,8 +117,8 @@ jobs:
         run: pip install -e ".[dev]"
         working-directory: sdk-python
 
-      - name: Python fixture suites (signing vectors + eval semantics + reason codes + pii scan)
-        run: python -m pytest tests/test_signing.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py -q
+      - name: Python fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan)
+        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py -q
         working-directory: sdk-python
 
   lint:

@@ -19,5 +19,173 @@
       "prev_sig": "f76990f9a01d464615b4c93027d37c30bb1d4c30446cd8196664b0977bb1f9db",
       "sdk_sig": "51e518bf37ae7b92ed15099d4a164d091837aa5698e4ed10e9328514dd438e19"
     }
-  ]
+  ],
+  "chain_verification": {
+    "description": "Chain-verification verdicts over the events above. Both verifiers (sdk/src/governance/verify-chain.ts and sdk-python/obsvr/verify_chain.py) build the chain from `events`, apply each case's mutations in order, verify, and must produce THIS verdict - identical valid/broken_at/reason in both languages. A divergence is a release blocker: it means a customer's evidence verifies in one language and not the other.",
+    "mutation_ops": {
+      "set": "events[index][field] = value",
+      "delete": "remove events[index][field]",
+      "drop_event": "remove events[index]",
+      "reverse": "reverse the event order",
+      "api_key": "verify with this key instead of the fixture's api_key"
+    },
+    "cases": [
+      {
+        "id": "valid_chain",
+        "desc": "the unmodified vectors verify",
+        "mutations": [],
+        "expect": { "valid": true, "events_verified": 2 }
+      },
+      {
+        "id": "tampered_prompt",
+        "desc": "editing content after signing breaks that event's signature",
+        "mutations": [{ "op": "set", "index": 1, "field": "prompt", "value": "foo (edited)" }],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "forged_signature",
+        "desc": "a fabricated signature does not recompute",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 0,
+            "field": "sdk_sig",
+            "value": "0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 0,
+          "reason": "Signature mismatch at event 0",
+          "events_verified": 0
+        }
+      },
+      {
+        "id": "wrong_api_key",
+        "desc": "a genuine chain does not verify under the wrong key",
+        "mutations": [{ "op": "api_key", "value": "not-the-signing-key" }],
+        "expect": {
+          "valid": false,
+          "broken_at": 0,
+          "reason": "Signature mismatch at event 0",
+          "events_verified": 0
+        }
+      },
+      {
+        "id": "seq_gap",
+        "desc": "a jumped sequence number is a gap",
+        "mutations": [{ "op": "set", "index": 1, "field": "seq_no", "value": 9 }],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "seq_no gap at event 1: expected 2, got 9",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "missing_seq_no",
+        "desc": "an event without a sequence number cannot be placed in the chain",
+        "mutations": [{ "op": "delete", "index": 1, "field": "seq_no" }],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Missing seq_no at event 1",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "invalid_initial_seq_no",
+        "desc": "sequence numbers are 1-based",
+        "mutations": [{ "op": "set", "index": 0, "field": "seq_no", "value": 0 }],
+        "expect": {
+          "valid": false,
+          "broken_at": 0,
+          "reason": "Invalid initial seq_no: 0",
+          "events_verified": 0
+        }
+      },
+      {
+        "id": "broken_prev_sig",
+        "desc": "the chain link must point at the prior event's signature",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "prev_sig",
+            "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Chain break at event 1: prev_sig does not match prior event's sdk_sig",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "session_mismatch",
+        "desc": "events spliced in from another session are rejected",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "sdk_session_id",
+            "value": "22222222-2222-2222-2222-222222222222"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Session ID mismatch at event 1: expected 11111111-1111-1111-1111-111111111111, got 22222222-2222-2222-2222-222222222222",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "missing_session_id",
+        "desc": "a chain with no session identity cannot be verified at all",
+        "mutations": [{ "op": "delete", "index": 0, "field": "sdk_session_id" }],
+        "expect": {
+          "valid": false,
+          "broken_at": 0,
+          "reason": "First event missing sdk_session_id",
+          "events_verified": 0
+        }
+      },
+      {
+        "id": "backdated_timestamp",
+        "desc": "timestamps never move backwards inside a session",
+        "mutations": [
+          { "op": "set", "index": 1, "field": "timestamp_sdk", "value": 1699999999999 }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Timestamp decreased at event 1: 1699999999999 < 1700000000000",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "reordered_events",
+        "desc": "reordering is visible as a sequence gap",
+        "mutations": [{ "op": "reverse" }],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "seq_no gap at event 1: expected 3, got 1",
+          "events_verified": 1
+        }
+      },
+      {
+        "id": "front_truncated_is_not_detectable",
+        "desc": "DOCUMENTED LIMIT, identical in both languages: verification proves the events it is given are genuine, in order, and unmodified - not that they are all of them. A suffix starting at seq_no 2 is internally consistent, and nothing inside an export says the session began at 1. Detecting a dropped prefix needs the session's known start (the server-side sequence guard and the sealed ledger). Pinned so the silence is a decision, not an oversight.",
+        "mutations": [{ "op": "drop_event", "index": 0 }],
+        "expect": { "valid": true, "events_verified": 1 }
+      }
+    ]
+  }
 }
