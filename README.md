@@ -186,6 +186,22 @@ obsvr.init({
 
 **Shadow mode** — set `mode: 'shadow'` on any rule to evaluate it against live traffic and record a would-have outcome without altering the response. Every verdict also carries a stable **`reason_code`** from a closed registry (alongside the free-form `reason`), so downstream tooling classifies decisions without string-matching.
 
+**Catching a block.** A blocked call throws `ObsvrPolicyError` (both SDKs), carrying a stable `type`, the `reason_code`, the deciding `rule_id`, and the decision metadata — so "refused on purpose" is distinguishable from a provider outage without matching on a message. A reason category the SDK doesn't recognize (a newer control plane) yields `ObsvrUnknownPolicyError` rather than an untyped throw. The Python class subclasses `RuntimeError`, and the message string is unchanged from earlier versions, so existing `except` blocks and string matches keep working.
+
+```typescript
+import { ObsvrPolicyError } from "@obsvr/sdk";
+
+try {
+  await openai.chat.completions.create({ ... });
+} catch (err) {
+  if (err instanceof ObsvrPolicyError) {
+    console.warn(`refused: ${err.reason_code} by ${err.rule_id ?? "builtin"}`);
+  } else {
+    throw err; // provider or transport failure — not a policy decision
+  }
+}
+```
+
 **ReDoS-hardened rules.** Customer-supplied `regex` rules are checked by a static catastrophic-backtracking validator before they can be installed, **and** every match executes against a bounded input slice (≤ 50 KB). Two layers of defense in depth: the validator rejects the known pathological shapes, and the input cap bounds the blast radius of anything that slips past it, so a hostile pattern is contained rather than left to run unbounded against a large input.
 
 **Signed policy distribution.** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego via the `obsvr-export-rego` CLI for teams running policy-as-code.
@@ -324,7 +340,21 @@ npx obsvr-verify ./bundle.json
 npx obsvr-verify ./bundle.json --api-key <key>
 ```
 
-Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error. This re-checks the **client HMAC chain** — capture order and content integrity — with your key, independently of obsvr. The **public-key-only** check (recompute the Merkle root from raw events and verify the Ed25519 root signature with the published public key, no obsvr account) is performed by your obsvr ingest service's bundle verifier over an exported audit bundle; the SDK's job is to produce events that verify identically wherever they're checked, which the [conformance fixtures](#cross-language-parity-conformance-is-the-contract) pin.
+Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error.
+
+Python verifies the same chain without a Node toolchain, as a library call:
+
+```python
+import obsvr
+
+result = obsvr.verify_chain(events, api_key)   # events = the exported chain
+if not result.valid:
+    print(f"broken at event {result.broken_at}: {result.reason}")
+```
+
+Both verifiers recompute every signature and check sequence continuity, chain linkage, session consistency, and timestamp monotonicity, and return the **same verdict on the same input** — pinned case by case in `conformance/fixtures/signing_vectors.json`. One documented limit, identical in both: verification proves the events it is given are genuine, in order, and unmodified; it cannot prove they are *all* of them, because a chain truncated from the front is internally consistent. A dropped prefix is caught by the service's sequence guard and the sealed root, not by the client chain. (A Python `obsvr-verify` console script matching the CLI's modes and exit codes is not shipped yet — today Python gets the library, TypeScript gets both.)
+
+This re-checks the **client HMAC chain** — capture order and content integrity — with your key, independently of obsvr. The **public-key-only** check (recompute the Merkle root from raw events and verify the Ed25519 root signature with the published public key, no obsvr account) is performed by your obsvr ingest service's bundle verifier over an exported audit bundle; the SDK's job is to produce events that verify identically wherever they're checked, which the [conformance fixtures](#cross-language-parity-conformance-is-the-contract) pin.
 
 ---
 
@@ -396,6 +426,8 @@ Documented plainly, from the code. For the full threat model — what the signat
 - **Budget scope.** In-process token/request budgets are enforced **per SDK instance**, and token usage is recorded post-call, so N instances can allow up to N× a limit and budgets lag by one call. Fleet-wide quota escrow is coordinated by the ingest service; enforce hard global caps upstream if you need them.
 - **Serverless.** Each cold start begins a fresh integrity session (`sdk_session_id`, `seq_no` reset). Multiple sessions starting at `seq_no=1` are expected and verify correctly. Call `await obsvr.flush()` before the runtime freezes.
 - **SDK bypass.** Not calling `init()` means no coverage — there is no post-hoc runtime check; assert `obsvr.isInitialized()` at startup. `disabled: true` in production emits a `governance_disabled` event so the bypass is on the record.
+- **Two copies of the SDK in one process.** If the SDK is installed twice — directly and again as a transitive dependency — the first copy to `init()` governs and the second logs a warning and stands down, so one call is never governed or emitted twice. A copy that stood down does **not** wrap: clients wrapped only through it are **not governed**. The warning names the fix (deduplicate the dependency); do not treat it as cosmetic.
+- **Internal detector failure.** A detector that throws unexpectedly is not currently converted into an allow or a block on the in-process pipeline — the exception propagates to your call. Hook timeouts and errors *are* resolved by `failMode`, as is MCP tool-call policy evaluation. Every layer's declared posture per failure state is recorded in `conformance/fixtures/fail_mode.json` and asserted in both SDKs, including the layers where this gap exists.
 
 ---
 
