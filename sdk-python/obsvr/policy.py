@@ -18,6 +18,7 @@ matching runs on the NFKC-normalized copy (§6).
 
 import bisect
 import concurrent.futures
+import logging
 import re
 import time
 import unicodedata
@@ -36,6 +37,13 @@ from .normalize import nfkc_with_source_map, normalize_for_matching, strip_invis
 # copy is replaced wholesale rather than span-redacted. Byte-identical to the
 # TS twin (core.FLOOR_REDACTION_PLACEHOLDER) so cross-SDK stored copies agree.
 FLOOR_REDACTION_PLACEHOLDER = "[REDACTED:policy_floor]"
+
+# Stored-copy marker for content NOTHING scanned, because the scanner that
+# would have vetted it raised. Deliberately NOT a "[REDACTED..." token: every
+# other placeholder in this SDK means "a scan ran and removed something", and
+# an auditor who cannot tell that apart from "we never looked" has to treat
+# every redaction as possibly the second. Different word, no prefix collision.
+UNSCANNED_PLACEHOLDER = "[UNSCANNED:detector_error]"
 
 
 class PolicyDecisionResult(TypedDict, total=False):
@@ -414,6 +422,183 @@ def resolve_pii_policy(
 # ============================================================================
 
 
+#: Layers whose disposition failMode cannot move. A floor is the operator's
+#: non-overridable baseline, so a floor that CANNOT RUN is the strongest form
+#: of "cannot guarantee" - it fails closed, exactly as a floor redact that
+#: cannot be guaranteed already fails closed to a block. Canary is the same
+#: class: a leak block is unsuppressible, so an unusable canary scan must not
+#: quietly wave the call through.
+_FLOOR_CLASS_LAYERS = frozenset({"policy_floor", "canary"})
+
+#: Count of detector exceptions swallowed by the guard. Its own bucket,
+#: reported on the fleet poll: a lost enforcement layer and an undelivered
+#: event are different operational stories, so it is never folded into the
+#: delivery drop counters.
+_detector_errors = 0
+
+
+def get_detector_error_count() -> int:
+    """Detector exceptions this process has resolved (fleet-poll counter)."""
+    return _detector_errors
+
+
+def _reset_detector_errors() -> None:
+    """Reset the counter (tests only)."""
+    global _detector_errors
+    _detector_errors = 0
+
+
+def record_detector_failure(
+    layer: str, exc: BaseException, config: ResolvedConfig
+) -> bool:
+    """Count and log one detector failure; return True if it resolves CLOSED.
+
+    The single resolution point for the rule: every internal failure resolves
+    by fail_mode, EXCEPT the floor class, which is by definition the thing
+    fail_mode cannot move. Both the pre-call guard and the response-scan guard
+    come here, so the rule exists once rather than per call site.
+    """
+    global _detector_errors
+    _detector_errors += 1
+
+    fail_closed = layer in _FLOOR_CLASS_LAYERS or getattr(config, "fail_mode", "open") == "closed"
+    logging.getLogger("obsvr").error(
+        "obsvr detector layer %r failed (%s: %s); resolving %s. The call was %s. "
+        "This is an SDK defect - please report it.",
+        layer or "unknown",
+        type(exc).__name__,
+        exc,
+        "closed" if fail_closed else "open",
+        "BLOCKED" if fail_closed else "allowed with this layer's enforcement lost",
+    )
+    return fail_closed
+
+
+def _resolve_post_call_detector_failure(
+    layer: str, exc: BaseException, config: ResolvedConfig
+) -> Dict[str, Any]:
+    """Resolve an exception raised by a RESPONSE-phase detector layer.
+
+    Never raises and never withholds the response: the provider has already
+    answered, blocking cannot undo that, and the SDK's published contract is
+    that a response-side control never mutates the value returned to the
+    caller. The floor class is included in that - "closed" is simply not an
+    available action once the answer exists.
+
+    What DOES fail closed is the stored audit copy. The scan that would have
+    redacted it is the thing that just failed, so persisting the raw response
+    into an evidence record would be storing content nothing vetted. It is
+    replaced with a marker that cannot be confused with a real redaction.
+    """
+    record_detector_failure(layer, exc, config)
+    from .decision_record import ENGINE_VERSION
+    from .rules import derive_policy_version
+
+    return {
+        # "flag", never "redact_response": the caller's value is untouched.
+        "decision": "flag",
+        "redacted_response": UNSCANNED_PLACEHOLDER,
+        "compliance": {
+            "event_type": "policy_flag",
+            "policy_version": derive_policy_version(getattr(config, "policy_rules", None) or []),
+            "action_taken": "allowed",
+            "action_reason": "none",
+            "action_source": "builtin",
+            "redacted_types": [],
+            "blocked_types": [],
+            "rule_id": "sdk:detector_error",
+            "policy_reason": (
+                f"Response-phase detector layer '{layer or 'unknown'}' raised "
+                f"{type(exc).__name__}; response delivered unchanged, stored copy withheld"
+            )[:256],
+            "shadow_outcome": None,
+            "decision_input_hash": None,
+            "engine_version": ENGINE_VERSION,
+            "external_backend": None,
+            "detector_failure": {
+                "layer": layer or "unknown",
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+                "resolution": "open",
+                "floor_class": layer in _FLOOR_CLASS_LAYERS,
+                "phase": "response",
+                # Queryable without string-matching content.
+                "stored_unscanned": True,
+            },
+        },
+    }
+
+
+def _resolve_detector_failure(
+    layer: str,
+    exc: BaseException,
+    config: ResolvedConfig,
+    prompt_text: str,
+) -> Dict[str, Any]:
+    """The one place a detector exception becomes a decision.
+
+    Never re-raises: an SDK defect must not surface as an unhandled error in
+    the calling application. The failure resolves by fail_mode for the
+    scanning layers and CLOSED for the floor class, is recorded on this call's
+    own event (no second event, and no new action_taken value - that is a
+    closed wire enum), and is counted so an operator can see that a layer's
+    enforcement was lost rather than infer it from silence.
+    """
+    fail_closed = record_detector_failure(layer, exc, config)
+    floor_class = layer in _FLOOR_CLASS_LAYERS
+    detail = f"{type(exc).__name__}: {exc}"
+
+    reason = (
+        f"Detector layer '{layer or 'unknown'}' raised {type(exc).__name__}; "
+        + (
+            "resolved closed (floor class cannot fail open)"
+            if floor_class
+            else ("resolved closed (fail_mode)" if fail_closed else "resolved open, enforcement lost for this call")
+        )
+    )
+
+    from .decision_record import ENGINE_VERSION
+    from .rules import derive_policy_version
+
+    compliance: Dict[str, Any] = {
+        "event_type": "blocked_call" if fail_closed else "policy_flag",
+        "policy_version": derive_policy_version(getattr(config, "policy_rules", None) or []),
+        # NOT a new action_taken value: that field is a closed wire enum.
+        "action_taken": "blocked" if fail_closed else "allowed",
+        "action_reason": "policy_violation" if fail_closed else "none",
+        "action_source": "builtin",
+        "redacted_types": [],
+        "blocked_types": [],
+        "rule_id": "sdk:detector_error",
+        "policy_reason": reason[:256],
+        "shadow_outcome": None,
+        "decision_input_hash": None,
+        "engine_version": ENGINE_VERSION,
+        "external_backend": None,
+        # Mirrored onto metadata.obsvr_telemetry by the event builder, the
+        # same route the external-backend provenance takes.
+        "detector_failure": {
+            "layer": layer or "unknown",
+            "error": detail[:200],
+            "resolution": "closed" if fail_closed else "open",
+            "floor_class": floor_class,
+            "phase": "pre_call",
+        },
+    }
+
+    # The scan that would have produced a redacted copy is the thing that just
+    # failed, so redaction is attempted but never trusted to succeed.
+    try:
+        redacted_prompt = redact_for_storage(prompt_text, None)
+    except Exception:
+        redacted_prompt = "[REDACTED:detector_error]"
+
+    return {
+        "decision": "block" if fail_closed else "allow",
+        "compliance": compliance,
+        "redacted_prompt": redacted_prompt,
+    }
+
+
 def apply_pre_call_policy(
     prompt_text: str,
     config: ResolvedConfig,
@@ -473,238 +658,256 @@ def apply_pre_call_policy(
             else f"Policy sync unavailable with fail_mode=closed ({degraded['reason']})"
         )
 
-    # 0.5 Session taint latch: a session compromised on an earlier turn has its
-    #     later egress escalated. ENFORCE runs on PRIOR taint; SET happens at
-    #     this call's detection points below (TS parity: core.ts / wrapper.ts).
-    from .session_taint import (
-        resolve_session_taint,
-        derive_session_key,
-        evaluate_session_taint,
-        mark_tainted,
-        touch_taint,
-        session_taint_size,
-    )
-    taint_cfg = resolve_session_taint(config)
-    taint_key = derive_session_key(metadata)
-    taint_rule_id: Optional[str] = None
-    taint_reason: Optional[str] = None
-    if taint_cfg and session_taint_size() > 0 and action_taken != "blocked":
-        verdict = evaluate_session_taint(taint_key, taint_cfg)
-        if verdict["enforcement"] != "none":
-            touch_taint(taint_key, time.monotonic())  # LRU: keep victim alive
-            taint_rule_id = "sdk:session_tainted"
-            taint_reason = (
-                "Session previously compromised (%s); egress escalated"
-                % verdict["reason"]
-            )
-            if verdict["enforcement"] == "block":
-                action_taken = "blocked"
-                action_reason = "policy_violation"
-                action_source = "policy_rules"
-            elif action_reason == "none":
-                action_reason = "policy_violation"
-                action_source = "policy_rules"
-
-    # 0.75 Canary-leak scan (unsuppressible). A planted honeytoken appearing in
-    #      the OUTBOUND text (tool-call arguments, or a user turn echoing a
-    #      leaked token) is a CRITICAL exfiltration signal -- block before it
-    #      reaches the provider/tool, and DO NOT let the customer hook downgrade
-    #      it (canary_floor). Scans ``scan`` (the user/tool-args decision text,
-    #      never the app's planted system prompt), only when a canary is minted.
-    canary_floor = False
-    canary_telemetry: Optional[Dict[str, Any]] = None
-    canary_rule_id: Optional[str] = None
-    canary_reason: Optional[str] = None
-    from .canary import canary_registry_size
-    if canary_registry_size() > 0 and action_taken != "blocked":
-        from .canary import scan_for_canary, canary_leak_telemetry
-        leak = scan_for_canary(scan)
-        if leak["leaked"]:
-            action_taken = "blocked"
-            action_reason = "policy_violation"
-            action_source = "builtin"
-            canary_floor = True
-            ids = ", ".join(h["id"] for h in leak["hits"])
-            canary_rule_id = "sdk:canary_leak"
-            canary_reason = f"Canary token leaked in request ({ids})"
-            canary_telemetry = canary_leak_telemetry(leak["hits"], "request")
-            if taint_cfg:
-                mark_tainted(taint_key, "canary_leak", time.monotonic())
-
-    # 1. Built-in PII scan (note: empty-dict policy still enables it).
-    #    Presidio NLP results merge with the regex scan when configured,
-    #    matching the TS SDK (regex always runs; Presidio adds NLP types).
-    #    With deobfuscation enabled the scanner also sees decoded/stripped
-    #    views (server-side normalizer mirror); ``via`` records which view surfaced a
-    #    hit the raw text hid.
-    pii_scan_via: Optional[str] = None
-    if config.pii_policy is not None and action_taken != "blocked":
-        pii = run_configured_pii_scan(scan, getattr(config, "deobfuscation", None))
-        pii_scan_via = pii.get("via")
-        detected_types = list(pii["detected_types"])
-        if getattr(config, "presidio_analyzer_url", None):
-            from .presidio import presidio_scan
-            nlp = presidio_scan(scan, config.presidio_analyzer_url)
-            for t in nlp["detected_types"]:
-                if t not in detected_types:
-                    detected_types.append(t)
-        if detected_types:
-            action_reason = "pii_detected"
-            action_source = (
-                "builtin+presidio"
-                if getattr(config, "presidio_analyzer_url", None)
-                else "builtin"
-            )
-            # A detected prompt-injection taints the session.
-            if taint_cfg and "prompt_injection" in detected_types:
-                mark_tainted(taint_key, "prompt_injection", time.monotonic())
-            resolved = resolve_pii_policy(detected_types, config.pii_policy)
-            # A view-only hit has no locatable span in the raw text, so
-            # "redact" would no-op while the record claims "redacted" —
-            # escalate to block (parity with the TS wrapper/core).
-            pii_action = escalate_view_only_action(resolved["action"], pii_scan_via)
-            if pii_action == "block":
-                action_taken = "blocked"
-                blocked_types = resolved["blocked_types"]
-                redacted_types = resolved["redacted_types"]
-            elif pii_action == "redact":
-                action_taken = "redacted"
-                redacted_types = resolved["redacted_types"]
-            # detect_only: reason/source set; action stays "allowed"
-
-    # 1.2. Multi-turn injection scoring - catches payloads split across turns
-    #      that no single message would trip. Session keyed by metadata
-    #      user_id (falls back to a process-wide bucket); score decays with
-    #      a half-life so normal traffic never accumulates.
-    mti = getattr(config, "multi_turn_injection", None)
-    if mti and mti.get("enabled") and action_taken != "blocked":
-        from .injection_session import score_turn
-        meta = metadata or {}
-        session_key = str(meta.get("user_id") or meta.get("session_id") or meta.get("tenant_id") or "global")
-        # Score THIS turn's new text (``scan`` = last user message when the
-        # caller provides it), never the joined history — parity with the TS
-        # wrapper's per-turn-delta scoring; re-scoring earlier turns on every
-        # call would inflate the decayed score into a false trip.
-        # RAW scan only -- deliberately NOT the deobfuscation-aware scan. The
-        # gate below fires on ``tripped and not had_full`` ("a full match is
-        # already handled by the single-turn scan"), but the single-turn scan
-        # only enforces when pii_policy is configured. A view-aware had_full
-        # here let an ENCODED injection suppress the accumulation block while
-        # nothing else enforced it -- enabling deobfuscation weakened this
-        # gate (caught by adversarial review). With pii_policy set, the
-        # view-aware step-1 scan above already blocks encoded injections.
-        had_full = "prompt_injection" in run_builtin_pii_scan(scan)["detected_types"]
-        mt = score_turn(
-            session_key,
-            scan,
-            had_full,
-            threshold=float(mti.get("threshold", 1.0)),
-            half_life_s=float(mti.get("half_life_s", 600.0)),
+    # --- guarded detector section -------------------------------------
+    # One enclosing guard for the seven in-process detector layers below.
+    # `_layer` names whichever one is executing so the handler can resolve
+    # the floor class differently from the scanning layers; the customer
+    # hook and the external backend sit OUTSIDE it because they already
+    # carry their own guards and dispositions, and so does the
+    # enforcement-integrity gate above.
+    _layer = ""
+    try:
+        _layer = "session_taint"
+        # 0.5 Session taint latch: a session compromised on an earlier turn has its
+        #     later egress escalated. ENFORCE runs on PRIOR taint; SET happens at
+        #     this call's detection points below (TS parity: core.ts / wrapper.ts).
+        from .session_taint import (
+            resolve_session_taint,
+            derive_session_key,
+            evaluate_session_taint,
+            mark_tainted,
+            touch_taint,
+            session_taint_size,
         )
-        # Full matches are already handled by the single-turn scan; the
-        # multi-turn gate exists for the accumulation case.
-        if mt["tripped"] and not had_full:
-            gate_rule_id = "sdk:multi_turn_injection"
-            gate_reason = (
-                f"Multi-turn injection score {mt['score']:.2f} reached threshold over "
-                f"{mt['turns']} turn(s); this turn's signals: {', '.join(mt['signals']) or 'none'}"
-            )
-            # Accumulated injection taints the session (later egress escalated).
-            if taint_cfg:
-                mark_tainted(taint_key, "multi_turn_injection", time.monotonic())
-            if mti.get("action", "block") == "block":
-                action_taken = "blocked"
-                action_reason = "policy_violation"
-                # "policy_rules": parity with the TS wrapper and integrations
-                # core (rule_id sdk:multi_turn_injection names the gate).
-                action_source = "policy_rules"
-            else:
-                # flag: annotate without changing the action (TS parity).
-                if action_reason == "none":
-                    action_reason = "policy_violation"
-                action_source = "policy_rules"
-
-    # 1.4. Anti-tamper policy FLOOR (before customer rules; floor rules always
-    #      enforce, and a floor block is excluded from the hook-override
-    #      branches below). Lives in its own config field so a remote sync
-    #      replacing policy_rules can never delete it. TS parity: core.ts 1.4.
-    floor_block = False
-    floor_rule_id: Optional[str] = None
-    floor_reason: Optional[str] = None
-    floor_override_ignored: Optional[Dict[str, Any]] = None
-    floor_active = bool(getattr(config, "policy_floor", None))
-    if floor_active and action_taken != "blocked":
-        from .rules import evaluate_floor
-        floor_result = evaluate_floor(
-            config.policy_floor,
-            scan,
-            "prompt",
-            # SAME context the customer-rules pass below builds, so a rule
-            # promoted INTO the floor evaluates identically (incl.
-            # current_environment for environment_gate floor rules) — the floor
-            # must never be weaker than the same rule as a customer rule.
-            {
-                "metadata": metadata or {},
-                "model": model,
-                "provider": provider,
-                "current_environment": getattr(config, "environment", None),
-            },
-        )
-        if floor_result.get("decision") in ("block", "redact"):
-            # A floor 'redact' FAILS CLOSED to a block (parity with TS wrapper,
-            # core.ts, and the governance surface): there is no span-level
-            # redaction for an arbitrary floor-rule match, so blocking is the
-            # only way the non-overridable baseline can guarantee the matched
-            # content is not forwarded. floor_block=True so the hook-override
-            # exclusion + floor_override_ignored record cover the redact case.
-            floor_block = True
-            floor_rule_id = floor_result.get("rule_id")
-            floor_reason = floor_result.get("reason") or "Blocked by policy floor"
-            action_taken = "blocked"
-            action_reason = "policy_violation"
-            action_source = "policy_rules"
-
-    # 1.5. Structured policy rules
-    rules_rule_id: Optional[str] = floor_rule_id or gate_rule_id
-    rules_reason: Optional[str] = floor_reason or gate_reason
-    if getattr(config, 'policy_rules', None) and action_taken != "blocked":
-        from .rules import evaluate_policy_rules
-        rules_result = evaluate_policy_rules(
-            config.policy_rules,
-            scan,
-            context={
-                "metadata": metadata or {},
-                "model": model,
-                "provider": provider,
-                "current_environment": getattr(config, "environment", None),
-            },
-        )
-        rules_decision = rules_result.get("decision", "allow")
-        rules_rule_id = rules_result.get("rule_id")
-        rules_reason = rules_result.get("reason")
-        if rules_decision == "block" and action_taken != "blocked":
-            action_taken = "blocked"
-            action_reason = "policy_violation"
-            # Parity with TS (EV-15): structured-rule outcomes are labeled
-            # "policy_rules", never "builtin", so evidence names the
-            # determining step correctly.
-            action_source = "policy_rules"
-            # Human-in-the-loop: file an approval request so the dashboard
-            # queue can grant a time-boxed pass; retries pass once granted.
-            if rules_result.get("approval_required"):
-                from .remote import request_approval
-                request_approval(
-                    config,
-                    rule_id=rules_result.get("rule_id") or "",
-                    rule_name=rules_result.get("reason"),
-                    operation=operation,
-                    user_id=(metadata or {}).get("user_id"),
-                    rule_hash=rules_result.get("rule_hash"),
+        taint_cfg = resolve_session_taint(config)
+        taint_key = derive_session_key(metadata)
+        taint_rule_id: Optional[str] = None
+        taint_reason: Optional[str] = None
+        if taint_cfg and session_taint_size() > 0 and action_taken != "blocked":
+            verdict = evaluate_session_taint(taint_key, taint_cfg)
+            if verdict["enforcement"] != "none":
+                touch_taint(taint_key, time.monotonic())  # LRU: keep victim alive
+                taint_rule_id = "sdk:session_tainted"
+                taint_reason = (
+                    "Session previously compromised (%s); egress escalated"
+                    % verdict["reason"]
                 )
-        elif rules_decision == "redact" and action_taken != "redacted":
-            action_taken = "redacted"
-            action_reason = "policy_violation"
-            action_source = "policy_rules"
+                if verdict["enforcement"] == "block":
+                    action_taken = "blocked"
+                    action_reason = "policy_violation"
+                    action_source = "policy_rules"
+                elif action_reason == "none":
+                    action_reason = "policy_violation"
+                    action_source = "policy_rules"
+
+        _layer = "canary"
+        # 0.75 Canary-leak scan (unsuppressible). A planted honeytoken appearing in
+        #      the OUTBOUND text (tool-call arguments, or a user turn echoing a
+        #      leaked token) is a CRITICAL exfiltration signal -- block before it
+        #      reaches the provider/tool, and DO NOT let the customer hook downgrade
+        #      it (canary_floor). Scans ``scan`` (the user/tool-args decision text,
+        #      never the app's planted system prompt), only when a canary is minted.
+        canary_floor = False
+        canary_telemetry: Optional[Dict[str, Any]] = None
+        canary_rule_id: Optional[str] = None
+        canary_reason: Optional[str] = None
+        from .canary import canary_registry_size
+        if canary_registry_size() > 0 and action_taken != "blocked":
+            from .canary import scan_for_canary, canary_leak_telemetry
+            leak = scan_for_canary(scan)
+            if leak["leaked"]:
+                action_taken = "blocked"
+                action_reason = "policy_violation"
+                action_source = "builtin"
+                canary_floor = True
+                ids = ", ".join(h["id"] for h in leak["hits"])
+                canary_rule_id = "sdk:canary_leak"
+                canary_reason = f"Canary token leaked in request ({ids})"
+                canary_telemetry = canary_leak_telemetry(leak["hits"], "request")
+                if taint_cfg:
+                    mark_tainted(taint_key, "canary_leak", time.monotonic())
+
+        _layer = "builtin_pii_scan"
+        # 1. Built-in PII scan (note: empty-dict policy still enables it).
+        #    Presidio NLP results merge with the regex scan when configured,
+        #    matching the TS SDK (regex always runs; Presidio adds NLP types).
+        #    With deobfuscation enabled the scanner also sees decoded/stripped
+        #    views (server-side normalizer mirror); ``via`` records which view surfaced a
+        #    hit the raw text hid.
+        pii_scan_via: Optional[str] = None
+        if config.pii_policy is not None and action_taken != "blocked":
+            pii = run_configured_pii_scan(scan, getattr(config, "deobfuscation", None))
+            pii_scan_via = pii.get("via")
+            detected_types = list(pii["detected_types"])
+            if getattr(config, "presidio_analyzer_url", None):
+                from .presidio import presidio_scan
+                nlp = presidio_scan(scan, config.presidio_analyzer_url)
+                for t in nlp["detected_types"]:
+                    if t not in detected_types:
+                        detected_types.append(t)
+            if detected_types:
+                action_reason = "pii_detected"
+                action_source = (
+                    "builtin+presidio"
+                    if getattr(config, "presidio_analyzer_url", None)
+                    else "builtin"
+                )
+                # A detected prompt-injection taints the session.
+                if taint_cfg and "prompt_injection" in detected_types:
+                    mark_tainted(taint_key, "prompt_injection", time.monotonic())
+                resolved = resolve_pii_policy(detected_types, config.pii_policy)
+                # A view-only hit has no locatable span in the raw text, so
+                # "redact" would no-op while the record claims "redacted" —
+                # escalate to block (parity with the TS wrapper/core).
+                pii_action = escalate_view_only_action(resolved["action"], pii_scan_via)
+                if pii_action == "block":
+                    action_taken = "blocked"
+                    blocked_types = resolved["blocked_types"]
+                    redacted_types = resolved["redacted_types"]
+                elif pii_action == "redact":
+                    action_taken = "redacted"
+                    redacted_types = resolved["redacted_types"]
+                # detect_only: reason/source set; action stays "allowed"
+
+        _layer = "multi_turn_injection"
+        # 1.2. Multi-turn injection scoring - catches payloads split across turns
+        #      that no single message would trip. Session keyed by metadata
+        #      user_id (falls back to a process-wide bucket); score decays with
+        #      a half-life so normal traffic never accumulates.
+        mti = getattr(config, "multi_turn_injection", None)
+        if mti and mti.get("enabled") and action_taken != "blocked":
+            from .injection_session import score_turn
+            meta = metadata or {}
+            session_key = str(meta.get("user_id") or meta.get("session_id") or meta.get("tenant_id") or "global")
+            # Score THIS turn's new text (``scan`` = last user message when the
+            # caller provides it), never the joined history — parity with the TS
+            # wrapper's per-turn-delta scoring; re-scoring earlier turns on every
+            # call would inflate the decayed score into a false trip.
+            # RAW scan only -- deliberately NOT the deobfuscation-aware scan. The
+            # gate below fires on ``tripped and not had_full`` ("a full match is
+            # already handled by the single-turn scan"), but the single-turn scan
+            # only enforces when pii_policy is configured. A view-aware had_full
+            # here let an ENCODED injection suppress the accumulation block while
+            # nothing else enforced it -- enabling deobfuscation weakened this
+            # gate (caught by adversarial review). With pii_policy set, the
+            # view-aware step-1 scan above already blocks encoded injections.
+            had_full = "prompt_injection" in run_builtin_pii_scan(scan)["detected_types"]
+            mt = score_turn(
+                session_key,
+                scan,
+                had_full,
+                threshold=float(mti.get("threshold", 1.0)),
+                half_life_s=float(mti.get("half_life_s", 600.0)),
+            )
+            # Full matches are already handled by the single-turn scan; the
+            # multi-turn gate exists for the accumulation case.
+            if mt["tripped"] and not had_full:
+                gate_rule_id = "sdk:multi_turn_injection"
+                gate_reason = (
+                    f"Multi-turn injection score {mt['score']:.2f} reached threshold over "
+                    f"{mt['turns']} turn(s); this turn's signals: {', '.join(mt['signals']) or 'none'}"
+                )
+                # Accumulated injection taints the session (later egress escalated).
+                if taint_cfg:
+                    mark_tainted(taint_key, "multi_turn_injection", time.monotonic())
+                if mti.get("action", "block") == "block":
+                    action_taken = "blocked"
+                    action_reason = "policy_violation"
+                    # "policy_rules": parity with the TS wrapper and integrations
+                    # core (rule_id sdk:multi_turn_injection names the gate).
+                    action_source = "policy_rules"
+                else:
+                    # flag: annotate without changing the action (TS parity).
+                    if action_reason == "none":
+                        action_reason = "policy_violation"
+                    action_source = "policy_rules"
+
+        _layer = "policy_floor"
+        # 1.4. Anti-tamper policy FLOOR (before customer rules; floor rules always
+        #      enforce, and a floor block is excluded from the hook-override
+        #      branches below). Lives in its own config field so a remote sync
+        #      replacing policy_rules can never delete it. TS parity: core.ts 1.4.
+        floor_block = False
+        floor_rule_id: Optional[str] = None
+        floor_reason: Optional[str] = None
+        floor_override_ignored: Optional[Dict[str, Any]] = None
+        floor_active = bool(getattr(config, "policy_floor", None))
+        if floor_active and action_taken != "blocked":
+            from .rules import evaluate_floor
+            floor_result = evaluate_floor(
+                config.policy_floor,
+                scan,
+                "prompt",
+                # SAME context the customer-rules pass below builds, so a rule
+                # promoted INTO the floor evaluates identically (incl.
+                # current_environment for environment_gate floor rules) — the floor
+                # must never be weaker than the same rule as a customer rule.
+                {
+                    "metadata": metadata or {},
+                    "model": model,
+                    "provider": provider,
+                    "current_environment": getattr(config, "environment", None),
+                },
+            )
+            if floor_result.get("decision") in ("block", "redact"):
+                # A floor 'redact' FAILS CLOSED to a block (parity with TS wrapper,
+                # core.ts, and the governance surface): there is no span-level
+                # redaction for an arbitrary floor-rule match, so blocking is the
+                # only way the non-overridable baseline can guarantee the matched
+                # content is not forwarded. floor_block=True so the hook-override
+                # exclusion + floor_override_ignored record cover the redact case.
+                floor_block = True
+                floor_rule_id = floor_result.get("rule_id")
+                floor_reason = floor_result.get("reason") or "Blocked by policy floor"
+                action_taken = "blocked"
+                action_reason = "policy_violation"
+                action_source = "policy_rules"
+
+        _layer = "policy_rules"
+        # 1.5. Structured policy rules
+        rules_rule_id: Optional[str] = floor_rule_id or gate_rule_id
+        rules_reason: Optional[str] = floor_reason or gate_reason
+        if getattr(config, 'policy_rules', None) and action_taken != "blocked":
+            from .rules import evaluate_policy_rules
+            rules_result = evaluate_policy_rules(
+                config.policy_rules,
+                scan,
+                context={
+                    "metadata": metadata or {},
+                    "model": model,
+                    "provider": provider,
+                    "current_environment": getattr(config, "environment", None),
+                },
+            )
+            rules_decision = rules_result.get("decision", "allow")
+            rules_rule_id = rules_result.get("rule_id")
+            rules_reason = rules_result.get("reason")
+            if rules_decision == "block" and action_taken != "blocked":
+                action_taken = "blocked"
+                action_reason = "policy_violation"
+                # Parity with TS (EV-15): structured-rule outcomes are labeled
+                # "policy_rules", never "builtin", so evidence names the
+                # determining step correctly.
+                action_source = "policy_rules"
+                # Human-in-the-loop: file an approval request so the dashboard
+                # queue can grant a time-boxed pass; retries pass once granted.
+                if rules_result.get("approval_required"):
+                    from .remote import request_approval
+                    request_approval(
+                        config,
+                        rule_id=rules_result.get("rule_id") or "",
+                        rule_name=rules_result.get("reason"),
+                        operation=operation,
+                        user_id=(metadata or {}).get("user_id"),
+                        rule_hash=rules_result.get("rule_hash"),
+                    )
+            elif rules_decision == "redact" and action_taken != "redacted":
+                action_taken = "redacted"
+                action_reason = "policy_violation"
+                action_source = "policy_rules"
+
+    except Exception as _detector_exc:  # noqa: BLE001 - deliberate catch-all
+        return _resolve_detector_failure(_layer, _detector_exc, config, prompt_text)
 
     # 2. Customer hook. Runs after builtin policy, EXCEPT when the
     #    enforcement-integrity gate is degraded (project paused / key revoked /
@@ -1101,151 +1304,167 @@ def apply_post_call_policy(
     rule_id = None
     reason = None
 
-    # 0. Anti-tamper policy FLOOR on the RESPONSE (applies_to 'response'|'both').
-    #    Evaluated first and re-asserted at the end (below) so it is
-    #    unsuppressible: neither the customer rules nor the onPostCall hook
-    #    (which can otherwise downgrade redact_response -> flag) may weaken it.
-    #    The response already came back and cannot be un-sent, so a floor match
-    #    fails closed to redact_response. Twin: TS applyPostCallPolicy step 0.
-    floor_response_lock = False
-    floor_response_rule_id = None
-    floor_response_reason = None
-    if getattr(config, "policy_floor", None):
-        from .rules import evaluate_floor
-        floor_ctx = {
-            "metadata": {
-                **(event.get("metadata") or {}),
-                **({"user_id": event.get("user_id")} if event.get("user_id") else {}),
-                **({"service_name": event.get("service_name")} if event.get("service_name") else {}),
-                **({"tenant_id": event.get("tenant_id")} if event.get("tenant_id") else {}),
+    # --- guarded detector section (response phase) ---------------------
+    # Same layers as the pre-call pipeline, so the same guard - but the
+    # provider has ALREADY answered. Blocking cannot undo the response, and
+    # the published contract says a response-side control never withholds it
+    # from the application. So this phase never raises and never withholds:
+    # it fails closed only on the STORED copy, the one thing still in our
+    # hands, under a marker that cannot be mistaken for a real redaction.
+    _post_layer = ""
+    try:
+        _post_layer = "policy_floor"
+        # 0. Anti-tamper policy FLOOR on the RESPONSE (applies_to 'response'|'both').
+        #    Evaluated first and re-asserted at the end (below) so it is
+        #    unsuppressible: neither the customer rules nor the onPostCall hook
+        #    (which can otherwise downgrade redact_response -> flag) may weaken it.
+        #    The response already came back and cannot be un-sent, so a floor match
+        #    fails closed to redact_response. Twin: TS applyPostCallPolicy step 0.
+        floor_response_lock = False
+        floor_response_rule_id = None
+        floor_response_reason = None
+        if getattr(config, "policy_floor", None):
+            from .rules import evaluate_floor
+            floor_ctx = {
+                "metadata": {
+                    **(event.get("metadata") or {}),
+                    **({"user_id": event.get("user_id")} if event.get("user_id") else {}),
+                    **({"service_name": event.get("service_name")} if event.get("service_name") else {}),
+                    **({"tenant_id": event.get("tenant_id")} if event.get("tenant_id") else {}),
+                }
             }
-        }
-        floor_result = evaluate_floor(config.policy_floor, response_text, "response", floor_ctx)
-        if floor_result.get("decision") in ("block", "redact"):
-            decision = "redact_response"
-            rule_id = floor_result.get("rule_id")
-            reason = floor_result.get("reason")
-            floor_response_lock = True
-            floor_response_rule_id = floor_result.get("rule_id")
-            floor_response_reason = floor_result.get("reason")
-
-    # 1. Evaluate policy rules against response
-    if getattr(config, 'policy_rules', None):
-        from .rules import evaluate_policy_rules
-        rules_result = evaluate_policy_rules(config.policy_rules, response_text, "response")
-        rules_decision = rules_result.get("decision", "allow")
-        if rules_decision in ("block", "redact"):
-            decision = "redact_response"
-        rule_id = rules_result.get("rule_id")
-        reason = rules_result.get("reason")
-
-    # 2. onPostCall hook (timeout + error handling)
-    on_post_call = getattr(config, 'on_post_call', None)
-    if on_post_call is not None:
-        timeout_s = getattr(config, 'hook_timeout_ms', 2000) / 1000.0
-        # No `with` block: same rationale as the pre-call hook above — the
-        # context manager would JOIN a hung hook thread and void the timeout;
-        # shutdown(wait=False) abandons the (non-daemon) worker thread, which
-        # may delay process exit until the hook returns.
-        ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            future = ex.submit(on_post_call, response_text, event)
-            try:
-                hook_result = future.result(timeout=timeout_s)
-                if isinstance(hook_result, dict):
-                    hd = hook_result.get("decision", "pass")
-                else:
-                    hd = hook_result or "pass"
-                if hd in ("redact_response", "flag"):
-                    decision = hd
-                    rule_id = (hook_result.get("rule_id") if isinstance(hook_result, dict) else None) or rule_id
-                    reason = (hook_result.get("reason") if isinstance(hook_result, dict) else None) or reason
-            except concurrent.futures.TimeoutError:
-                pass  # keep existing decision
-        except Exception:
-            pass  # hook error: keep existing decision
-        finally:
-            ex.shutdown(wait=False)
-
-    # 3. Built-in response-side PII scan (the response twin of the pre-call
-    # Step 1 scan; mirror of the TS applyPostCallPolicy step 3). Only when a
-    # pii_policy is configured. On the response side "block" cannot un-send
-    # the request, so block and redact both redact the STORED copy;
-    # detect_only records the finding.
-    response_pii: Optional[Dict[str, Any]] = None
-    stored_redaction_via: Optional[str] = None
-    if getattr(config, "pii_policy", None) and response_text:
-        scan = run_configured_pii_scan(response_text, getattr(config, "deobfuscation", None))
-        if scan.get("pii_detected"):
-            detected_types = scan.get("detected_types", [])
-            resolved = resolve_pii_policy(detected_types, config.pii_policy)
-            must_redact = resolved.get("action") in ("block", "redact")
-            response_pii = {
-                "detected": True,
-                "types": detected_types,
-                "action": "redacted" if must_redact else "detected_only",
-            }
-            if scan.get("via") is not None:
-                # Server-side normalizer mirror: which view surfaced the hit (TS parity —
-                # key only present on view-only hits).
-                response_pii["via"] = scan["via"]
-            if must_redact:
+            floor_result = evaluate_floor(config.policy_floor, response_text, "response", floor_ctx)
+            if floor_result.get("decision") in ("block", "redact"):
                 decision = "redact_response"
-                if not reason:
-                    reason = "pii_detected_in_response"
-                # View-only hit: the stored copy must become a whole-text
-                # placeholder (span redaction cannot locate an encoded payload).
-                stored_redaction_via = scan.get("via")
+                rule_id = floor_result.get("rule_id")
+                reason = floor_result.get("reason")
+                floor_response_lock = True
+                floor_response_rule_id = floor_result.get("rule_id")
+                floor_response_reason = floor_result.get("reason")
 
-    # 4. Canary-leak scan on the RESPONSE (the primary leak surface: a planted
-    # system-prompt/context token surfacing in the model's output). Evidential
-    # -- the response already came back, so this forces redact_response and
-    # stores a placeholder (never the raw token) + CRITICAL telemetry. Only
-    # when a canary has been minted.
-    canary_telemetry: Optional[Dict[str, Any]] = None
-    canary_leaked = False
-    from .canary import canary_registry_size
-    if canary_registry_size() > 0 and response_text:
-        from .canary import scan_for_canary, canary_leak_telemetry
-        leak = scan_for_canary(response_text)
-        if leak["leaked"]:
-            canary_leaked = True
+        _post_layer = "policy_rules"
+        # 1. Evaluate policy rules against response
+        if getattr(config, 'policy_rules', None):
+            from .rules import evaluate_policy_rules
+            rules_result = evaluate_policy_rules(config.policy_rules, response_text, "response")
+            rules_decision = rules_result.get("decision", "allow")
+            if rules_decision in ("block", "redact"):
+                decision = "redact_response"
+            rule_id = rules_result.get("rule_id")
+            reason = rules_result.get("reason")
+
+        # 2. onPostCall hook (timeout + error handling)
+        on_post_call = getattr(config, 'on_post_call', None)
+        if on_post_call is not None:
+            timeout_s = getattr(config, 'hook_timeout_ms', 2000) / 1000.0
+            # No `with` block: same rationale as the pre-call hook above — the
+            # context manager would JOIN a hung hook thread and void the timeout;
+            # shutdown(wait=False) abandons the (non-daemon) worker thread, which
+            # may delay process exit until the hook returns.
+            ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                future = ex.submit(on_post_call, response_text, event)
+                try:
+                    hook_result = future.result(timeout=timeout_s)
+                    if isinstance(hook_result, dict):
+                        hd = hook_result.get("decision", "pass")
+                    else:
+                        hd = hook_result or "pass"
+                    if hd in ("redact_response", "flag"):
+                        decision = hd
+                        rule_id = (hook_result.get("rule_id") if isinstance(hook_result, dict) else None) or rule_id
+                        reason = (hook_result.get("reason") if isinstance(hook_result, dict) else None) or reason
+                except concurrent.futures.TimeoutError:
+                    pass  # keep existing decision
+            except Exception:
+                pass  # hook error: keep existing decision
+            finally:
+                ex.shutdown(wait=False)
+
+        _post_layer = "builtin_pii_scan"
+        # 3. Built-in response-side PII scan (the response twin of the pre-call
+        # Step 1 scan; mirror of the TS applyPostCallPolicy step 3). Only when a
+        # pii_policy is configured. On the response side "block" cannot un-send
+        # the request, so block and redact both redact the STORED copy;
+        # detect_only records the finding.
+        response_pii: Optional[Dict[str, Any]] = None
+        stored_redaction_via: Optional[str] = None
+        if getattr(config, "pii_policy", None) and response_text:
+            scan = run_configured_pii_scan(response_text, getattr(config, "deobfuscation", None))
+            if scan.get("pii_detected"):
+                detected_types = scan.get("detected_types", [])
+                resolved = resolve_pii_policy(detected_types, config.pii_policy)
+                must_redact = resolved.get("action") in ("block", "redact")
+                response_pii = {
+                    "detected": True,
+                    "types": detected_types,
+                    "action": "redacted" if must_redact else "detected_only",
+                }
+                if scan.get("via") is not None:
+                    # Server-side normalizer mirror: which view surfaced the hit (TS parity —
+                    # key only present on view-only hits).
+                    response_pii["via"] = scan["via"]
+                if must_redact:
+                    decision = "redact_response"
+                    if not reason:
+                        reason = "pii_detected_in_response"
+                    # View-only hit: the stored copy must become a whole-text
+                    # placeholder (span redaction cannot locate an encoded payload).
+                    stored_redaction_via = scan.get("via")
+
+        _post_layer = "canary"
+        # 4. Canary-leak scan on the RESPONSE (the primary leak surface: a planted
+        # system-prompt/context token surfacing in the model's output). Evidential
+        # -- the response already came back, so this forces redact_response and
+        # stores a placeholder (never the raw token) + CRITICAL telemetry. Only
+        # when a canary has been minted.
+        canary_telemetry: Optional[Dict[str, Any]] = None
+        canary_leaked = False
+        from .canary import canary_registry_size
+        if canary_registry_size() > 0 and response_text:
+            from .canary import scan_for_canary, canary_leak_telemetry
+            leak = scan_for_canary(response_text)
+            if leak["leaked"]:
+                canary_leaked = True
+                decision = "redact_response"
+                canary_telemetry = canary_leak_telemetry(leak["hits"], "response")
+                if not rule_id:
+                    rule_id = "sdk:canary_leak"
+                ids = ", ".join(h["id"] for h in leak["hits"])
+                reason = f"Canary token leaked in response ({ids})"
+
+        # Re-assert the floor (unsuppressible): nothing above may downgrade a
+        # floor-forced response redaction. Keep floor attribution unless a canary
+        # also leaked (canary is likewise critical and carries its own telemetry).
+        if floor_response_lock:
             decision = "redact_response"
-            canary_telemetry = canary_leak_telemetry(leak["hits"], "response")
-            if not rule_id:
-                rule_id = "sdk:canary_leak"
-            ids = ", ".join(h["id"] for h in leak["hits"])
-            reason = f"Canary token leaked in response ({ids})"
+            if not canary_leaked:
+                rule_id = floor_response_rule_id
+                reason = floor_response_reason
 
-    # Re-assert the floor (unsuppressible): nothing above may downgrade a
-    # floor-forced response redaction. Keep floor attribution unless a canary
-    # also leaked (canary is likewise critical and carries its own telemetry).
-    if floor_response_lock:
-        decision = "redact_response"
-        if not canary_leaked:
-            rule_id = floor_response_rule_id
-            reason = floor_response_reason
+        compliance: Dict[str, Any] = {}
+        if decision == "flag":
+            compliance["event_type"] = "policy_flag"
+        if rule_id:
+            compliance["rule_id"] = rule_id
+        if reason:
+            compliance["policy_reason"] = reason
 
-    compliance: Dict[str, Any] = {}
-    if decision == "flag":
-        compliance["event_type"] = "policy_flag"
-    if rule_id:
-        compliance["rule_id"] = rule_id
-    if reason:
-        compliance["policy_reason"] = reason
+        redacted_response = None
+        if decision == "redact_response":
+            if canary_leaked:
+                from .canary import CANARY_REDACTION_PLACEHOLDER
+                redacted_response = CANARY_REDACTION_PLACEHOLDER
+            elif floor_response_lock:
+                # A floor rule match has no locatable span, so store a whole-text
+                # placeholder rather than span-redact (which would leave the matched
+                # content intact). Byte-identical to TS FLOOR_REDACTION_PLACEHOLDER.
+                redacted_response = FLOOR_REDACTION_PLACEHOLDER
+            else:
+                redacted_response = redact_for_storage(response_text, stored_redaction_via)
 
-    redacted_response = None
-    if decision == "redact_response":
-        if canary_leaked:
-            from .canary import CANARY_REDACTION_PLACEHOLDER
-            redacted_response = CANARY_REDACTION_PLACEHOLDER
-        elif floor_response_lock:
-            # A floor rule match has no locatable span, so store a whole-text
-            # placeholder rather than span-redact (which would leave the matched
-            # content intact). Byte-identical to TS FLOOR_REDACTION_PLACEHOLDER.
-            redacted_response = FLOOR_REDACTION_PLACEHOLDER
-        else:
-            redacted_response = redact_for_storage(response_text, stored_redaction_via)
+    except Exception as _post_exc:  # noqa: BLE001 - deliberate catch-all
+        return _resolve_post_call_detector_failure(_post_layer, _post_exc, config)
 
     result: Dict[str, Any] = {
         "decision": decision,

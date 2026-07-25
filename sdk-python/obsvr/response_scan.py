@@ -207,3 +207,37 @@ def sanitize_mcp_result(result: Any) -> Any:
             elif isinstance(item, dict) and isinstance(item.get("text"), str):
                 item["text"] = redact_builtin_pii(item["text"])
     return result
+
+
+def resolve_response_scan_failure(
+    exc: BaseException, config: ResolvedConfig
+) -> Dict[str, Any]:
+    """Resolve an exception raised by the tool-result scanner.
+
+    Never re-raises: an SDK defect must not surface as an unhandled error in
+    the calling application. Resolves by fail_mode - and, unlike the floor
+    class, defaults OPEN even though this layer also sees canary tokens,
+    because the tool has ALREADY RUN by the time its result is scanned.
+    Blocking here would not undo the side effect, it would only withhold the
+    result from the model. The canary layer carries its own closed disposition
+    on the request side independently.
+    """
+    from .policy import record_detector_failure
+
+    fail_closed = record_detector_failure("tool_result_scan", exc, config)
+    return {
+        "action": "block" if fail_closed else "allow",
+        "event_type": "blocked_call" if fail_closed else "policy_flag",
+        "action_taken": "blocked" if fail_closed else "allowed",
+        "action_reason": "policy_violation" if fail_closed else "none",
+        "action_source": "builtin",
+        "policy_version": derive_policy_version(getattr(config, "policy_rules", None) or []),
+        "redacted_types": [],
+        "blocked_types": [],
+        "detected_types": [],
+        "rule_id": "sdk:detector_error",
+        "policy_reason": (
+            f"Tool-result scan raised {type(exc).__name__}; "
+            + ("resolved closed (fail_mode)" if fail_closed else "resolved open, scan lost for this result")
+        )[:256],
+    }

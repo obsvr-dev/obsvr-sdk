@@ -149,6 +149,7 @@ def build_audit_event(
     # user_input; stamp evidence (ids/hash-prefixes, never the token). Zero
     # cost until a canary is minted.
     _canary_tel: Optional[Dict[str, Any]] = None
+    _canary_scan_failed = False
     from .canary import canary_registry_size
 
     if canary_registry_size() > 0:
@@ -173,10 +174,25 @@ def build_audit_event(
                 return CANARY_REDACTION_PLACEHOLDER
             return v
 
-        prompt = _scrub(prompt, "prompt")
-        response = _scrub(response, "response")
-        if user_input is not None:
-            user_input = _scrub(user_input, "user_input")
+        # This net runs on EVERY emitted event on EVERY path, so an exception
+        # here would reach the host from places that never touch the policy
+        # engine. It is building a stored record, not deciding a call, so the
+        # resolution is the response-phase one: never raise, and withhold the
+        # stored copy rather than persist text no canary scan ever vetted.
+        try:
+            prompt = _scrub(prompt, "prompt")
+            response = _scrub(response, "response")
+            if user_input is not None:
+                user_input = _scrub(user_input, "user_input")
+        except Exception as _canary_exc:  # noqa: BLE001 - deliberate catch-all
+            from .policy import UNSCANNED_PLACEHOLDER, record_detector_failure
+
+            record_detector_failure("canary", _canary_exc, config)
+            _canary_scan_failed = True
+            prompt = UNSCANNED_PLACEHOLDER
+            response = UNSCANNED_PLACEHOLDER if response else response
+            if user_input is not None:
+                user_input = UNSCANNED_PLACEHOLDER
         if _hits:
             _canary_tel = canary_leak_telemetry(_hits, _leak_surface or "response")
 
@@ -266,6 +282,25 @@ def build_audit_event(
     if _external is not None:
         _md = dict(_event.get("metadata") or {})
         _md.setdefault("obsvr_external_backend", _external)
+        _event["metadata"] = _md
+    # A detector layer that raised has no top-level ingest field either (and
+    # must not widen the closed action_taken enum), so the record of WHICH
+    # layer was lost and how it resolved rides the reserved telemetry channel.
+    if _canary_scan_failed:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel.setdefault("detector_failure", {
+            "layer": "canary", "resolution": "open", "floor_class": True,
+            "phase": "event_build", "stored_unscanned": True,
+        })
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
+    _detector_failure = comp.get("detector_failure")
+    if _detector_failure is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel["detector_failure"] = _detector_failure
+        _md["obsvr_telemetry"] = _tel
         _event["metadata"] = _md
     if bool(getattr(config, "policy_floor", None)):
         # Anti-tamper floor evidence: floor_version is a pure function of

@@ -34,7 +34,7 @@ from ..events import build_audit_event
 from ..normalize import normalize_for_matching
 from ..policy import apply_pre_call_policy
 from ..remote import is_enforcement_degraded
-from ..response_scan import sanitize_mcp_result, scan_mcp_tool_result
+from ..response_scan import sanitize_mcp_result, resolve_response_scan_failure, scan_mcp_tool_result
 from ..tool_pinning import (
     ToolPinStore,
     evaluate_tool_pin,
@@ -470,7 +470,16 @@ def _build_governed_mcp_callables(
         #    channel. Scan it for PII/secrets/injection and BLOCK / SANITIZE /
         #    LOG before it reaches the caller — mirrors the request-side scanner.
         response_text = _render_result_text(result_obj)
-        resp_scan = scan_mcp_tool_result(response_text, cfg, principal)
+        try:
+            resp_scan = scan_mcp_tool_result(response_text, cfg, principal)
+        except Exception as _scan_exc:  # noqa: BLE001 - deliberate catch-all
+            # The response scanner is the last unguarded detector layer. It
+            # resolves by fail_mode rather than fail-closed: the tool has
+            # ALREADY RUN by the time its result is scanned, so blocking here
+            # does not undo the side effect, it only withholds the result from
+            # the model. A canary leak in a result is caught by the canary
+            # layer, which carries its own closed disposition independently.
+            resp_scan = resolve_response_scan_failure(_scan_exc, cfg)
         latency_ms = (time.monotonic() - start) * 1000
 
         if resp_scan["action"] == "block":

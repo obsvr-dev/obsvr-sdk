@@ -485,11 +485,13 @@ def _reset() -> None:
     from .remote import _reset_remote
     from .canary import _reset_canaries
     from .session_taint import _reset_session_taint
+    from .policy import _reset_detector_errors
     from .policy_verify import _reset_policy_verify
     _reset_remote()
     _reset_canaries()
     _reset_session_taint()
     _reset_policy_verify()
+    _reset_detector_errors()
     _state["initialized"] = False
     _state["config"] = None
     _tenant_registry.clear()

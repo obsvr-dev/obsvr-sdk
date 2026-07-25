@@ -183,6 +183,7 @@ def _signal_rejected_rules(config: ResolvedConfig, rules_raw: list, valid: list)
 def poll_once(config: ResolvedConfig) -> None:
     """One /policies refresh. Updates rules, grants, and sync health."""
     from .rules import derive_policy_version
+    from .policy import get_detector_error_count
     from .sender import get_sender_stats
     # Fleet status (E10/E11/E33): self-report version, capabilities,
     # applied rules hash, degraded state, and delivery counters; ingest
@@ -202,6 +203,10 @@ def poll_once(config: ResolvedConfig) -> None:
         f"enqueued={stats.get('enqueued', 0)},sent={stats.get('sent', 0)},"
         f"retries={stats.get('retries', 0)},dropped={dropped}"
         f",dropped_rejected={stats.get('dropped_rejected', 0)}"
+        # Enforcement loss, not delivery loss: a detector layer that raised and
+        # was resolved by the guard. Its own key for the same reason
+        # dropped_rejected has one - these are different operational stories.
+        f",detector_errors={get_detector_error_count()}"
     )
     # Escrow report (ADR-7): how much of each rule's granted share this instance
     # spent since the last grant, tagged with the epoch it was granted under (a
