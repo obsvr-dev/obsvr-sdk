@@ -658,8 +658,13 @@ async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
     try {
       const { getSenderStats } = await import("./sender/index.js");
       const s = getSenderStats();
+      // `dropped` aggregates the never-delivered buckets; server-refused
+      // events ride their own key so the fleet view can tell "we never got
+      // it" apart from "we got it and said no".
       const dropped = s.dropped_overflow + s.dropped_permanent + s.dropped_retry_exhausted;
-      countersHeader = `enqueued=${s.enqueued},sent=${s.sent},retries=${s.retries},dropped=${dropped}`;
+      countersHeader =
+        `enqueued=${s.enqueued},sent=${s.sent},retries=${s.retries},dropped=${dropped}` +
+        `,dropped_rejected=${s.dropped_rejected}`;
     } catch {
       // stats unavailable: send the poll anyway
     }

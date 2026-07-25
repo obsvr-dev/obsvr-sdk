@@ -40,6 +40,14 @@ const senderStats = {
   dropped_overflow: 0,
   dropped_permanent: 0,
   dropped_retry_exhausted: 0,
+  /**
+   * Events the server ACCEPTED the request for but REFUSED individually
+   * (per-event rejects inside a 2xx batch response). Deliberately its own
+   * bucket, not folded into the dropped_* aggregate above: a server-refused
+   * event and a never-delivered event are different audit stories, and only
+   * the first one means the server saw the event and said no.
+   */
+  dropped_rejected: 0,
 };
 
 /** Snapshot of delivery counters (enqueued/sent/retries/drops). */
@@ -195,16 +203,19 @@ async function sendEvent(
 /**
  * Send multiple audit events in one request to /ingest/batch.
  * The server accepts/rejects per event, so a policy-blocked or duplicate
- * event in the batch never costs the others. Returns false only for
- * transport-level failures (429, network, 5xx) that warrant a retry.
+ * event in the batch never costs the others. Returns "retryable" only for
+ * transport-level failures (429, network, 5xx) that warrant a retry, plus
+ * the count of events the server refused individually so the caller can
+ * account for them (they were delivered, and refused - not sent).
  */
 async function sendEventBatch(
   config: ResolvedConfig,
   events: AuditEvent[]
-): Promise<SendVerdict> {
+): Promise<{ verdict: SendVerdict; rejected: number }> {
   const url = `${config.ingest_url}${INGEST_BATCH_PATH}`;
 
   let verdict: SendVerdict;
+  let rejected = 0;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), config.timeout);
@@ -232,6 +243,10 @@ async function sendEventBatch(
           rejected?: Array<{ index: number; error: string; message?: string }>;
         };
         if (body.rejected && body.rejected.length > 0) {
+          // Count them, do not just log them: SECURITY.md promises every drop
+          // is visible in the per-client delivery counters, and a reject that
+          // only reaches the debug log is an invisible one.
+          rejected = Math.min(body.rejected.length, events.length);
           for (const r of body.rejected) {
             const ev = events[r.index];
             debugLog(
@@ -263,7 +278,7 @@ async function sendEventBatch(
   }
   if (verdict === "ok") resetBackoff();
   else if (verdict === "retryable") applyBackoff();
-  return verdict;
+  return { verdict, rejected };
 }
 
 /**
@@ -330,13 +345,19 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
       }
       if (items.length === 0) break;
 
-      const verdict =
+      const { verdict, rejected } =
         items.length === 1
-          ? await sendEvent(config, items[0].event)
+          ? { verdict: await sendEvent(config, items[0].event), rejected: 0 }
           : await sendEventBatch(config, items.map((i) => i.event));
 
       if (verdict === "ok") {
-        senderStats.sent += items.length;
+        // Events the server refused individually were delivered but not
+        // accepted: they count as rejected, never as sent.
+        senderStats.sent += items.length - rejected;
+        if (rejected > 0) {
+          senderStats.dropped_rejected += rejected;
+          droppedCount += rejected;
+        }
       } else if (verdict === "permanent") {
         // The same bytes will always fail (bad key, malformed event, body
         // too large): dead-letter now, loudly, instead of burning retries.
