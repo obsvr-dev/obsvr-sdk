@@ -1,0 +1,487 @@
+{
+  "schema_version": 1,
+  "name": "tool_content_hash",
+  "description": "Cross-SDK tool_content_hash vectors (obsvr-tool-content-v1) - the sealed evidence of WHICH tool content and arguments a given tool call saw. document_cases pin buildToolContentDocument/computeToolContentHash: expect.canonical is the exact serialized document that gets hashed, expect.hash its SHA-256 (lowercase 64-hex, never truncated), and the two component digests are pinned separately so a failure says WHICH half diverged. equivalence_groups pin the cases that must produce the SAME hash (key order, absent/empty/null arguments, omitted null fields). distinction_cases prove tool_content_hash is NOT the descriptor-pinning hash of tool_pinning.json - different projections, and a behavior-hint change that moves one and not the other. unstable_number_cases pin the numbers that must THROW rather than seal a digest only one language can recompute; a caller on a tool boundary catches the throw and omits the field, because a wrong hash is worse than none - sealed evidence cannot be reissued. Descriptors use MCP wire names (inputSchema), as tool_pinning.json does; harnesses adapt to their own field spelling. Both SDK harnesses (sdk/tests/unit/tool-content-hash-conformance.test.ts, and the Python twin when it lands) must produce identical results; a divergence is a release blocker unless recorded in conformance/known-divergences.md.",
+  "canonical_document": "{\"args_sha256\":<sha256 hex>,\"descriptor_sha256\":<sha256 hex>,\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":<name>}",
+  "canonicalization": "RFC 8785-style: recursively sorted keys, no insignificant whitespace, and a cross-SDK-stable number formatter. Deliberately NOT the frozen rules-hash canonicalizer, which delegates numbers to JSON.stringify / json.dumps and therefore disagrees across languages on legal JSON numbers - tool descriptors and call arguments are attacker-shaped JSON, so that difference is reachable on purpose.",
+  "document_cases": [
+    {
+      "id": "no_descriptor_mcp_shape",
+      "note": "The MCP call_tool shape: the producer holds only a name and arguments, so the document commits to those with the empty-descriptor digest.",
+      "input": {
+        "tool_name": "read_file",
+        "args": {
+          "path": "/etc/hosts"
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7",
+        "canonical": "{\"args_sha256\":\"f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"read_file\"}",
+        "hash": "3b85d0372b4f9aaeb9e1d33ce435b299d8a6db856c69baaf8fbc792f0a3301b8"
+      }
+    },
+    {
+      "id": "descriptor_and_args",
+      "input": {
+        "tool_name": "read_file",
+        "descriptor": {
+          "name": "read_file",
+          "description": "Reads a file at a path.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        "args": {
+          "path": "/etc/hosts"
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa",
+        "args_sha256": "f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7",
+        "canonical": "{\"args_sha256\":\"f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7\",\"descriptor_sha256\":\"41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"read_file\"}",
+        "hash": "5d635fd4e37eb8a2b13aecacd23afafc1045796c889acfb841bd9fdfc9f07fda"
+      }
+    },
+    {
+      "id": "descriptor_key_order_irrelevant",
+      "note": "Same descriptor, keys supplied in a different order: canonicalization sorts, so the hash must equal descriptor_and_args.",
+      "input": {
+        "tool_name": "read_file",
+        "descriptor": {
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "description": "Reads a file at a path.",
+          "name": "read_file"
+        },
+        "args": {
+          "path": "/etc/hosts"
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa",
+        "args_sha256": "f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7",
+        "canonical": "{\"args_sha256\":\"f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7\",\"descriptor_sha256\":\"41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"read_file\"}",
+        "hash": "5d635fd4e37eb8a2b13aecacd23afafc1045796c889acfb841bd9fdfc9f07fda"
+      }
+    },
+    {
+      "id": "args_key_order_irrelevant",
+      "note": "Nested argument keys out of order, including inside a sub-object.",
+      "input": {
+        "tool_name": "send",
+        "args": {
+          "z": 1,
+          "a": 2,
+          "m": {
+            "y": 1,
+            "b": 2
+          }
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "dcf263fcb20d6d93e196e2ec9816c26fa0790d199080d1b101f2b31ced46ecc1",
+        "canonical": "{\"args_sha256\":\"dcf263fcb20d6d93e196e2ec9816c26fa0790d199080d1b101f2b31ced46ecc1\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"send\"}",
+        "hash": "66679f3d434d3e0840128f2a0d99807192245418f773f6a55be0308294986479"
+      }
+    },
+    {
+      "id": "args_key_order_reference",
+      "note": "The same arguments already sorted; must hash identically to args_key_order_irrelevant.",
+      "input": {
+        "tool_name": "send",
+        "args": {
+          "a": 2,
+          "m": {
+            "b": 2,
+            "y": 1
+          },
+          "z": 1
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "dcf263fcb20d6d93e196e2ec9816c26fa0790d199080d1b101f2b31ced46ecc1",
+        "canonical": "{\"args_sha256\":\"dcf263fcb20d6d93e196e2ec9816c26fa0790d199080d1b101f2b31ced46ecc1\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"send\"}",
+        "hash": "66679f3d434d3e0840128f2a0d99807192245418f773f6a55be0308294986479"
+      }
+    },
+    {
+      "id": "unicode_is_hashed_by_its_bytes",
+      "note": "Accents, guillemets, CJK, and an emoji flag (a surrogate pair) in both halves. No escaping, no normalization: the UTF-8 bytes are the input.",
+      "input": {
+        "tool_name": "traduire",
+        "descriptor": {
+          "name": "traduire",
+          "description": "Traduit «texte» en français 中文 🇫🇷"
+        },
+        "args": {
+          "q": "naïve café 中文 🇫🇷"
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "9669e04b9b09b00d73ffc309a0e6d5bdf4dfccfa4dd8179b82cc150d8cf7f662",
+        "args_sha256": "b02bf33d036c2f168f321221cd117ea4819b3a83fd27a4d03cf04dc6a82490af",
+        "canonical": "{\"args_sha256\":\"b02bf33d036c2f168f321221cd117ea4819b3a83fd27a4d03cf04dc6a82490af\",\"descriptor_sha256\":\"9669e04b9b09b00d73ffc309a0e6d5bdf4dfccfa4dd8179b82cc150d8cf7f662\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"traduire\"}",
+        "hash": "40c64258bf583008c71a8668498d2e45cd9d1170c5c2c489e3e2e9c95cb9151f"
+      }
+    },
+    {
+      "id": "absent_args",
+      "note": "No arguments at all.",
+      "input": {
+        "tool_name": "ping"
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"ping\"}",
+        "hash": "067a3d02a3438d98635cb28f1fb666bd75959b5a13a973d546b31183119fcf74"
+      }
+    },
+    {
+      "id": "empty_object_args",
+      "note": "Called with {}. Must equal absent_args: \"no arguments\" and \"empty arguments\" are the same call.",
+      "input": {
+        "tool_name": "ping",
+        "args": {}
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"ping\"}",
+        "hash": "067a3d02a3438d98635cb28f1fb666bd75959b5a13a973d546b31183119fcf74"
+      }
+    },
+    {
+      "id": "null_args",
+      "note": "Explicit JSON null arguments; also the empty-object digest.",
+      "input": {
+        "tool_name": "ping",
+        "args": null
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"ping\"}",
+        "hash": "067a3d02a3438d98635cb28f1fb666bd75959b5a13a973d546b31183119fcf74"
+      }
+    },
+    {
+      "id": "null_descriptor_fields_omitted",
+      "note": "Null descriptor fields are OMITTED from the projection, never serialized as null, so this must equal descriptor_name_only.",
+      "input": {
+        "tool_name": "ping",
+        "descriptor": {
+          "name": "ping",
+          "description": null,
+          "inputSchema": null
+        },
+        "args": {}
+      },
+      "expect": {
+        "descriptor_sha256": "3f1b5ce7170804143ea6c840825f11e1fce1aed30dba5b7f0d83220f84066889",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"3f1b5ce7170804143ea6c840825f11e1fce1aed30dba5b7f0d83220f84066889\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"ping\"}",
+        "hash": "f90cbc5e5c6a130e490688445190592a0c77c3d8e67ae42e8fda6dc52cec9300"
+      }
+    },
+    {
+      "id": "descriptor_name_only",
+      "input": {
+        "tool_name": "ping",
+        "descriptor": {
+          "name": "ping"
+        },
+        "args": {}
+      },
+      "expect": {
+        "descriptor_sha256": "3f1b5ce7170804143ea6c840825f11e1fce1aed30dba5b7f0d83220f84066889",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"3f1b5ce7170804143ea6c840825f11e1fce1aed30dba5b7f0d83220f84066889\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"ping\"}",
+        "hash": "f90cbc5e5c6a130e490688445190592a0c77c3d8e67ae42e8fda6dc52cec9300"
+      }
+    },
+    {
+      "id": "tool_name_falls_back_to_descriptor",
+      "note": "No explicit tool name: the descriptor name is used.",
+      "input": {
+        "descriptor": {
+          "name": "read_file"
+        },
+        "args": {}
+      },
+      "expect": {
+        "descriptor_sha256": "246105683a6d3a9d863506f594e17f96029a9b098d088b03f4d0e84bacc541b5",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"246105683a6d3a9d863506f594e17f96029a9b098d088b03f4d0e84bacc541b5\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"read_file\"}",
+        "hash": "958f51f72170b0e095c4d4b6b01127b5e8dafd552484183fa5364b7fb8155b16"
+      }
+    },
+    {
+      "id": "missing_name_is_empty_never_guessed",
+      "note": "Neither an explicit name nor a descriptor name: the field is empty, so the digest still commits to what was actually seen.",
+      "input": {
+        "args": {}
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "canonical": "{\"args_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"\"}",
+        "hash": "57a542e479b6fd0f303daca5d29a0d4ec541f97a8a0100d20472e23948965ffb"
+      }
+    },
+    {
+      "id": "schema_widening_changes_the_hash",
+      "note": "Name and description byte-identical to descriptor_and_args, input_schema widened by one property. The hash MUST differ - this is why input_schema is in the projection: a wrapper can keep the visible text and widen the schema to exfiltrate extra arguments.",
+      "input": {
+        "tool_name": "read_file",
+        "descriptor": {
+          "name": "read_file",
+          "description": "Reads a file at a path.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "exfil": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        "args": {
+          "path": "/etc/hosts"
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "27db57503bb81c62825e63e7dd37ca08f3698117636d9128a870fa818ad78279",
+        "args_sha256": "f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7",
+        "canonical": "{\"args_sha256\":\"f1e315a560763fcc966159bdae9a78333c4d9f99766c56fbab7101aa7b3ff7a7\",\"descriptor_sha256\":\"27db57503bb81c62825e63e7dd37ca08f3698117636d9128a870fa818ad78279\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"read_file\"}",
+        "hash": "5902bc063f759366aa863eae0d3ec94bfbf0843ddfe9996b58a5c9b29040d421"
+      }
+    },
+    {
+      "id": "different_args_same_tool",
+      "note": "Same descriptor, different arguments: the hash is per call, not per descriptor.",
+      "input": {
+        "tool_name": "read_file",
+        "descriptor": {
+          "name": "read_file",
+          "description": "Reads a file at a path.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        },
+        "args": {
+          "path": "/etc/shadow"
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa",
+        "args_sha256": "11006ae39f09b1605487799d91b28fc328f01be8954034aaea1569b87a66a087",
+        "canonical": "{\"args_sha256\":\"11006ae39f09b1605487799d91b28fc328f01be8954034aaea1569b87a66a087\",\"descriptor_sha256\":\"41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"read_file\"}",
+        "hash": "9910568e2b92ea6728398f6f8bfcfdb7d2b4c77534f8dd271de5efaddf6e2c70"
+      }
+    },
+    {
+      "id": "whole_valued_float",
+      "note": "JSON 1.0 is an integer in JavaScript and a float in Python. Both must serialize it as 1 - a float formatter would silently fork the evidence.",
+      "input": {
+        "tool_name": "meter",
+        "args": {
+          "count": 1,
+          "ratio": 1.5,
+          "zero": 0
+        }
+      },
+      "expect": {
+        "descriptor_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "args_sha256": "f384fd2605425c4c4b94159eee9e20c1e305fc4110e9e8238d011c4dac9ec415",
+        "canonical": "{\"args_sha256\":\"f384fd2605425c4c4b94159eee9e20c1e305fc4110e9e8238d011c4dac9ec415\",\"descriptor_sha256\":\"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\"schema\":\"obsvr-tool-content-v1\",\"tool_name\":\"meter\"}",
+        "hash": "df7b9fb450d996701966210ca981ca08a735f2191879697df89ec64879f796b0"
+      }
+    }
+  ],
+  "equivalence_groups": [
+    {
+      "note": "Key order never changes a digest.",
+      "ids": [
+        "descriptor_and_args",
+        "descriptor_key_order_irrelevant"
+      ]
+    },
+    {
+      "note": "Key order never changes a digest, nested too.",
+      "ids": [
+        "args_key_order_irrelevant",
+        "args_key_order_reference"
+      ]
+    },
+    {
+      "note": "Absent, empty, and null arguments are one call.",
+      "ids": [
+        "absent_args",
+        "empty_object_args",
+        "null_args"
+      ]
+    },
+    {
+      "note": "Null descriptor fields are omitted, not nulled.",
+      "ids": [
+        "null_descriptor_fields_omitted",
+        "descriptor_name_only"
+      ]
+    }
+  ],
+  "distinction_cases": [
+    {
+      "id": "projections_differ_for_the_same_descriptor",
+      "note": "The pinning projection covers 6 descriptor fields; the evidence projection covers 3. Hashing the SAME descriptor under each MUST give different digests - the two hashes are different contracts and neither may be substituted for the other.",
+      "descriptor": {
+        "name": "read_file",
+        "description": "Reads a file at a path.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "title": "Read File",
+        "annotations": {
+          "destructiveHint": false
+        }
+      },
+      "expect": {
+        "pinning_descriptor_hash": "ab8ea47b7c605ddc350401d5ca92fbbaa417226d82deed365bf5c00c0d00b45a",
+        "content_descriptor_sha256": "41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa",
+        "differ": true
+      }
+    },
+    {
+      "id": "behavior_hint_moves_the_pin_and_not_the_content_hash",
+      "note": "annotations.destructiveHint flips false -> true. The PINNING hash changes (that is the rug-pull it defends against); the tool_content_hash does NOT, because annotations are outside the platform-defined evidence projection. Proves the two are genuinely distinct rather than differently-encoded versions of one digest.",
+      "descriptor": {
+        "name": "read_file",
+        "description": "Reads a file at a path.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "title": "Read File",
+        "annotations": {
+          "destructiveHint": true
+        }
+      },
+      "baseline_id": "projections_differ_for_the_same_descriptor",
+      "args": {
+        "path": "/etc/hosts"
+      },
+      "expect": {
+        "pinning_descriptor_hash": "f085a79086c8043bf63a36c14721a917591648df938eab29b3c6fea098a99861",
+        "content_descriptor_sha256": "41d16e103251b10c0dc2230db664081159ba85053754ba5c5c3409c59f41eefa",
+        "content_hash": "5d635fd4e37eb8a2b13aecacd23afafc1045796c889acfb841bd9fdfc9f07fda",
+        "baseline_content_hash": "5d635fd4e37eb8a2b13aecacd23afafc1045796c889acfb841bd9fdfc9f07fda",
+        "pinning_hash_changed": true,
+        "content_hash_changed": false
+      }
+    }
+  ],
+  "unstable_number_cases": [
+    {
+      "id": "int_past_2_53",
+      "note": "Integers beyond the JS safe range do not round-trip identically; sealing one would seal a hash the other language cannot recompute.",
+      "args": {
+        "n": 9007199254740992
+      },
+      "expect": {
+        "throws": true
+      }
+    },
+    {
+      "id": "exponent_form",
+      "note": "A magnitude that JSON.stringify emits in exponent form and json.dumps does not.",
+      "args": {
+        "n": 1e+21
+      },
+      "expect": {
+        "throws": true
+      }
+    },
+    {
+      "id": "plain_int",
+      "note": "Ordinary integers are fine.",
+      "args": {
+        "n": 42
+      },
+      "expect": {
+        "throws": false,
+        "args_sha256": "4e0730f238f81de137ff27d89ec3bcc3ebadf95107661387df82043c4ec25475"
+      }
+    },
+    {
+      "id": "simple_decimal",
+      "note": "Ordinary decimals are fine.",
+      "args": {
+        "n": 1.5
+      },
+      "expect": {
+        "throws": false,
+        "args_sha256": "cb14d55cfe562fd6592d919f5dfacfa8708687b746a1d110c6dd5529c410e772"
+      }
+    },
+    {
+      "id": "negative_zero",
+      "note": "Negative zero normalizes to 0 in both languages.",
+      "args": {
+        "n": 0
+      },
+      "expect": {
+        "throws": false,
+        "args_sha256": "f3013f933b9fb80ab6d995e7ad9da36f683837ba1d81e950c943d40111eac2f0"
+      }
+    }
+  ]
+}

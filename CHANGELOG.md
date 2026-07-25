@@ -44,6 +44,15 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **`tool_content_hash` is pinned by a shared fixture.**
+  `conformance/fixtures/tool_content_hash.json` fixes the exact canonical
+  document and digest for sixteen cases — key ordering, unicode, absent versus
+  empty arguments, omitted null fields, schema widening, and the numbers that
+  must refuse to hash rather than seal a value the two languages format
+  differently. It also pins, in both directions, that this hash is not the
+  descriptor-pinning hash: the two projections digest the same descriptor
+  differently, and flipping a behavior hint moves the pin while leaving the
+  content hash alone.
 - **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` now installs an
   `obsvr-verify` console script with the same two tiers, the same exit codes
   (0 verified / 1 broken / 2 usage), the same accepted bundle shapes, and the
