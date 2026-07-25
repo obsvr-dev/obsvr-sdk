@@ -448,6 +448,26 @@ def _reset_detector_errors() -> None:
     _detector_errors = 0
 
 
+def safe_policy_version(config: ResolvedConfig) -> str:
+    """Derive the policy version for a failure record WITHOUT trusting the
+    inputs that just failed.
+
+    The version is a hash over the same rules a detector may have choked on, so
+    a resolver that recomputed it naively raises out of its own except block -
+    turning the guard back into the unguarded propagation it exists to replace.
+    Same lesson as the stored-copy fallback: nothing on the failure path may
+    re-run the code that failed and assume it works this time.
+
+    Twin: sdk/src/policy/detector-guard.ts (`safePolicyVersion`).
+    """
+    try:
+        from .rules import derive_policy_version
+
+        return derive_policy_version(getattr(config, "policy_rules", None) or [])
+    except Exception:  # noqa: BLE001 - the failure path must not fail
+        return "unknown"
+
+
 def record_detector_failure(
     layer: str, exc: BaseException, config: ResolvedConfig
 ) -> bool:
@@ -492,7 +512,6 @@ def _resolve_post_call_detector_failure(
     """
     record_detector_failure(layer, exc, config)
     from .decision_record import ENGINE_VERSION
-    from .rules import derive_policy_version
 
     return {
         # "flag", never "redact_response": the caller's value is untouched.
@@ -500,7 +519,7 @@ def _resolve_post_call_detector_failure(
         "redacted_response": UNSCANNED_PLACEHOLDER,
         "compliance": {
             "event_type": "policy_flag",
-            "policy_version": derive_policy_version(getattr(config, "policy_rules", None) or []),
+            "policy_version": safe_policy_version(config),
             "action_taken": "allowed",
             "action_reason": "none",
             "action_source": "builtin",
@@ -557,11 +576,10 @@ def _resolve_detector_failure(
     )
 
     from .decision_record import ENGINE_VERSION
-    from .rules import derive_policy_version
 
     compliance: Dict[str, Any] = {
         "event_type": "blocked_call" if fail_closed else "policy_flag",
-        "policy_version": derive_policy_version(getattr(config, "policy_rules", None) or []),
+        "policy_version": safe_policy_version(config),
         # NOT a new action_taken value: that field is a closed wire enum.
         "action_taken": "blocked" if fail_closed else "allowed",
         "action_reason": "policy_violation" if fail_closed else "none",
@@ -1502,7 +1520,6 @@ def explain(
             "Governance not initialized. Call obsvr.init() first or pass config."
         )
     from .rules import (
-        derive_policy_version,
         evaluate_policy_rules,
         evaluate_shadow_rules,
     )
@@ -1512,7 +1529,7 @@ def explain(
         "decision": "allow",
         "rule_id": None,
         "reason": None,
-        "rules_hash": derive_policy_version(rules),
+        "rules_hash": safe_policy_version(cfg),
         "pii": {"detected": False, "types": []},
         "shadow_outcome": None,
         "not_evaluated": ["customer_hook", "multi_turn_injection"],

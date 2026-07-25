@@ -222,7 +222,7 @@ def resolve_response_scan_failure(
     result from the model. The canary layer carries its own closed disposition
     on the request side independently.
     """
-    from .policy import record_detector_failure
+    from .policy import record_detector_failure, safe_policy_version
 
     fail_closed = record_detector_failure("tool_result_scan", exc, config)
     return {
@@ -231,7 +231,7 @@ def resolve_response_scan_failure(
         "action_taken": "blocked" if fail_closed else "allowed",
         "action_reason": "policy_violation" if fail_closed else "none",
         "action_source": "builtin",
-        "policy_version": derive_policy_version(getattr(config, "policy_rules", None) or []),
+        "policy_version": safe_policy_version(config),
         "redacted_types": [],
         "blocked_types": [],
         "detected_types": [],

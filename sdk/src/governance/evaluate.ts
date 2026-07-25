@@ -18,7 +18,7 @@ import {
 } from '../policy/decision-record.js';
 import type { HookDisposition } from '../policy/decision-record.js';
 import { evaluatePolicyHook, resolvePiiPolicy } from '../policy/hook.js';
-import { describeError, recordDetectorFailure } from '../policy/detector-guard.js';
+import { describeError, recordDetectorFailure, safePolicyVersion } from '../policy/detector-guard.js';
 import { runConfiguredPiiScan, escalateViewOnlyAction, redactForStorage } from '../policy/deobfuscate.js';
 import type { DeobfuscationView } from '../policy/deobfuscate.js';
 import { sendAuditAsync } from '../proxy/sender/fire-and-forget.js';
@@ -315,8 +315,15 @@ export interface ExplainResult {
     via?: DeobfuscationView['method'];
   };
   shadow_outcome: ShadowOutcome | null;
-  /** Steps explain() deliberately does not execute (advisory scope). */
-  not_evaluated: Array<'customer_hook' | 'multi_turn_injection'>;
+  /**
+   * Steps explain() did not execute: the ones outside its advisory scope by
+   * design, plus any detector layer that RAISED while predicting - a
+   * prediction the SDK could not compute is reported as one it could not
+   * compute, never as a confident "allow".
+   */
+  not_evaluated: Array<
+    'customer_hook' | 'multi_turn_injection' | 'builtin_pii_scan' | 'policy_floor' | 'policy_rules'
+  >;
 }
 
 /**
@@ -342,84 +349,103 @@ export function explain(
   const rules = cfg.policyRules ?? [];
   const result: ExplainResult = {
     decision: 'allow',
-    rules_hash: derivePolicyVersion(rules),
+    rules_hash: safePolicyVersion(() => derivePolicyVersion(rules)),
     pii: { detected: false, types: [] },
     shadow_outcome: null,
     not_evaluated: ['customer_hook', 'multi_turn_injection'],
   };
 
-  const piiResult = runConfiguredPiiScan(text, cfg.deobfuscation);
-  result.pii = {
-    detected: piiResult.pii_detected,
-    types: piiResult.detected_types,
-    ...(piiResult.via !== undefined ? { via: piiResult.via } : {}),
-  };
-  if (piiResult.pii_detected && cfg.pii_policy) {
-    const piiDecision = resolvePiiPolicy(piiResult.detected_types, cfg.pii_policy);
-    // Mirror the live pipeline: a view-only redact resolution escalates to
-    // block (no locatable span), so explain() predicts the real outcome.
-    const piiAction = escalateViewOnlyAction(piiDecision.action, piiResult.via);
-    if (piiAction === 'block') {
-      result.decision = 'block';
-      result.reason = `PII detected: ${piiResult.detected_types.join(', ')}${
-        piiResult.via !== undefined ? ` (via ${piiResult.via})` : ''
-      }`;
-    } else if (piiAction === 'redact') {
-      result.decision = 'redact';
-      result.reason = `PII would be redacted: ${piiResult.detected_types.join(', ')}`;
+  // --- guarded detector section (CHECK-ONLY) -------------------------
+  // explain() decides nothing and sends nothing, so there is no call to
+  // block and no stored copy to withhold: the response-phase rule reduces
+  // to "never raise". A prediction the SDK could not compute is reported as
+  // one it could not compute - `not_evaluated` gains the lost layer - rather
+  // than as a confident "allow", which would be the fake enforcement of a
+  // read-only surface.
+  let layer: 'builtin_pii_scan' | 'policy_floor' | 'policy_rules' | '' = '';
+  try {
+    layer = 'builtin_pii_scan';
+    const piiResult = runConfiguredPiiScan(text, cfg.deobfuscation);
+    result.pii = {
+      detected: piiResult.pii_detected,
+      types: piiResult.detected_types,
+      ...(piiResult.via !== undefined ? { via: piiResult.via } : {}),
+    };
+    if (piiResult.pii_detected && cfg.pii_policy) {
+      const piiDecision = resolvePiiPolicy(piiResult.detected_types, cfg.pii_policy);
+      // Mirror the live pipeline: a view-only redact resolution escalates to
+      // block (no locatable span), so explain() predicts the real outcome.
+      const piiAction = escalateViewOnlyAction(piiDecision.action, piiResult.via);
+      if (piiAction === 'block') {
+        result.decision = 'block';
+        result.reason = `PII detected: ${piiResult.detected_types.join(', ')}${
+          piiResult.via !== undefined ? ` (via ${piiResult.via})` : ''
+        }`;
+      } else if (piiAction === 'redact') {
+        result.decision = 'redact';
+        result.reason = `PII would be redacted: ${piiResult.detected_types.join(', ')}`;
+      }
     }
-  }
 
-  // Anti-tamper policy floor: predicted exactly the way the live pipeline
-  // enforces it (before the customer rules, coercing shadow/disabled floor
-  // rules to enforce), so explain() never reports "allow" for an action a
-  // floor would block. Present the sealed floor hash when a floor is active.
-  const floorActive = !!(cfg.policyFloor && cfg.policyFloor.length > 0);
-  if (floorActive) {
-    result.floor_version = deriveFloorVersion(cfg.policyFloor);
-    if (result.decision !== 'block') {
-      const floorResult = evaluateFloor(cfg.policyFloor, text, options?.target ?? 'prompt', {
+    layer = 'policy_floor';
+    // Anti-tamper policy floor: predicted exactly the way the live pipeline
+    // enforces it (before the customer rules, coercing shadow/disabled floor
+    // rules to enforce), so explain() never reports "allow" for an action a
+    // floor would block. Present the sealed floor hash when a floor is active.
+    const floorActive = !!(cfg.policyFloor && cfg.policyFloor.length > 0);
+    if (floorActive) {
+      result.floor_version = deriveFloorVersion(cfg.policyFloor);
+      if (result.decision !== 'block') {
+        const floorResult = evaluateFloor(cfg.policyFloor, text, options?.target ?? 'prompt', {
+          actionName: options?.actionName,
+          currentEnvironment: cfg.environment,
+          metadata: options?.metadata ?? {},
+        });
+        if (floorResult.decision === 'block' || floorResult.decision === 'redact') {
+          result.decision = floorResult.decision;
+          result.rule_id = floorResult.rule_id;
+          result.reason = floorResult.reason;
+        }
+      }
+    }
+
+    layer = 'policy_rules';
+    if (result.decision !== 'block' && rules.length > 0) {
+      const evalCtx: PolicyEvalContext = {
         actionName: options?.actionName,
         currentEnvironment: cfg.environment,
         metadata: options?.metadata ?? {},
-      });
-      if (floorResult.decision === 'block' || floorResult.decision === 'redact') {
-        result.decision = floorResult.decision;
-        result.rule_id = floorResult.rule_id;
-        result.reason = floorResult.reason;
+      };
+      const rulesResult = evaluatePolicyRules(
+        rules,
+        text,
+        options?.target ?? 'prompt',
+        evalCtx,
+        { checkOnly: true },
+      );
+      if (rulesResult.decision === 'block' || rulesResult.decision === 'redact') {
+        result.decision = rulesResult.decision;
+        result.rule_id = rulesResult.rule_id;
+        result.reason = rulesResult.reason;
+      } else if (rulesResult.rule_id && !result.rule_id) {
+        result.rule_id = rulesResult.rule_id;
+        result.reason = rulesResult.reason;
       }
     }
-  }
 
-  if (result.decision !== 'block' && rules.length > 0) {
-    const evalCtx: PolicyEvalContext = {
-      actionName: options?.actionName,
-      currentEnvironment: cfg.environment,
-      metadata: options?.metadata ?? {},
-    };
-    const rulesResult = evaluatePolicyRules(
+    result.shadow_outcome = evaluateShadowRules(
       rules,
       text,
       options?.target ?? 'prompt',
-      evalCtx,
-      { checkOnly: true },
+      { actionName: options?.actionName, currentEnvironment: cfg.environment, metadata: options?.metadata ?? {} },
     );
-    if (rulesResult.decision === 'block' || rulesResult.decision === 'redact') {
-      result.decision = rulesResult.decision;
-      result.rule_id = rulesResult.rule_id;
-      result.reason = rulesResult.reason;
-    } else if (rulesResult.rule_id && !result.rule_id) {
-      result.rule_id = rulesResult.rule_id;
-      result.reason = rulesResult.reason;
-    }
+  } catch (err) {
+    recordDetectorFailure(layer, err, cfg);
+    if (layer !== '' && !result.not_evaluated.includes(layer)) result.not_evaluated.push(layer);
+    result.rule_id = 'sdk:detector_error';
+    result.reason =
+      `Prediction incomplete: detector layer '${layer || 'unknown'}' raised ${describeError(err)}`.slice(0, 256);
   }
-
-  result.shadow_outcome = evaluateShadowRules(
-    rules,
-    text,
-    options?.target ?? 'prompt',
-    { actionName: options?.actionName, currentEnvironment: cfg.environment, metadata: options?.metadata ?? {} },
-  );
 
   return result;
 }

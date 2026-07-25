@@ -530,10 +530,25 @@ def _build_governed_mcp_callables(
             )
 
         # SANITIZE: redact the offending spans from the result before returning.
+        # The sanitizer is the same layer's application half, so it resolves the
+        # same way. Open means the model sees the unsanitized result with this
+        # layer's enforcement lost, which is what "open" means everywhere else;
+        # closed withholds it, and that IS available here because the sanitized
+        # value has not reached the caller yet.
         final_result = result_obj
         if resp_scan["action"] == "sanitize":
-            final_result = sanitize_mcp_result(result_obj)
-            response_text = _render_result_text(final_result)
+            try:
+                final_result = sanitize_mcp_result(result_obj)
+                response_text = _render_result_text(final_result)
+            except Exception as _sanitize_exc:  # noqa: BLE001 - deliberate catch-all
+                from ..policy import record_detector_failure
+
+                if record_detector_failure("tool_result_scan", _sanitize_exc, cfg):
+                    raise McpToolBlockedError(
+                        f"[obsvr] MCP tool result blocked by policy: {tool_name} "
+                        "(tool_result_scan sanitizer failed, fail_mode=closed)"
+                    ) from None
+                final_result = result_obj
 
         event_compliance = compliance or {
             "event_type": "tool_call",

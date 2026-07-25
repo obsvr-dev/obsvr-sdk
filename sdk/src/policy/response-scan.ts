@@ -36,6 +36,7 @@ import type { DeobfuscationView } from "./deobfuscate.js";
 import { scanForCanary, canaryRegistrySize, canaryLeakTelemetry } from "./canary.js";
 import { evaluatePolicyRules, derivePolicyVersion } from "./rules.js";
 import type { PolicyEvalContext } from "./rules.js";
+import { describeError, recordDetectorFailure, safePolicyVersion } from "./detector-guard.js";
 
 /**
  * Authenticated caller identity, when the MCP layer resolved one. Threaded into
@@ -52,7 +53,9 @@ export interface McpPrincipal {
 export interface McpResponseScan {
   /** What to do with the result before it reaches the caller. */
   action: "allow" | "block" | "sanitize";
-  event_type: "tool_call" | "blocked_call";
+  /** "policy_flag" only when the scan itself was lost and resolved open: the
+   *  result is forwarded, but the event must not read as a clean "tool_call". */
+  event_type: "tool_call" | "blocked_call" | "policy_flag";
   action_taken: "allowed" | "blocked" | "redacted";
   action_reason: "none" | "pii_detected" | "policy_violation";
   action_source: "unknown" | "builtin" | "policy_rules";
@@ -77,6 +80,42 @@ export interface McpResponseScan {
    * Rides `metadata.obsvr_telemetry.canary_leak`; never the raw token.
    */
   canaryTelemetry?: Record<string, unknown>;
+}
+
+/**
+ * Resolve an exception raised by the tool-result scanner.
+ *
+ * Never re-raises: an SDK defect must not surface as an unhandled error in the
+ * calling application. Resolves by failMode - and, unlike the floor class,
+ * defaults OPEN even though this layer also sees canary tokens, because the
+ * tool has ALREADY RUN by the time its result is scanned. Blocking here would
+ * not undo the side effect, it would only withhold the result from the model.
+ * The canary layer carries its own closed disposition on the request side
+ * independently.
+ *
+ * Twin: sdk-python/obsvr/response_scan.py (`resolve_response_scan_failure`).
+ */
+export function resolveResponseScanFailure(
+  err: unknown,
+  config: ResolvedConfig,
+): McpResponseScan {
+  const failClosed = recordDetectorFailure("tool_result_scan", err, config);
+  const why = failClosed
+    ? "resolved closed (failMode)"
+    : "resolved open, scan lost for this result";
+  return {
+    action: failClosed ? "block" : "allow",
+    event_type: failClosed ? "blocked_call" : "policy_flag",
+    action_taken: failClosed ? "blocked" : "allowed",
+    action_reason: failClosed ? "policy_violation" : "none",
+    action_source: "builtin",
+    policy_version: safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+    redacted_types: [],
+    blocked_types: [],
+    detected_types: [],
+    rule_id: "sdk:detector_error",
+    policy_reason: `Tool-result scan raised ${describeError(err)}; ${why}`.slice(0, 256),
+  };
 }
 
 /**

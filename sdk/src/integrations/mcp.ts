@@ -32,7 +32,14 @@ import {
 } from "./core.js";
 import { extractMcpPrompt, extractMcpResponse } from "../proxy/extractors/mcp.js";
 import { derivePolicyVersion } from "../policy/rules.js";
-import { scanMcpToolResult, sanitizeMcpResult, type McpPrincipal } from "../policy/response-scan.js";
+import {
+  scanMcpToolResult,
+  sanitizeMcpResult,
+  resolveResponseScanFailure,
+  type McpPrincipal,
+  type McpResponseScan,
+} from "../policy/response-scan.js";
+import { recordDetectorFailure } from "../policy/detector-guard.js";
 import { isPolicyEnforcementDegraded } from "../proxy/config.js";
 import { normalizeForMatching } from "../policy/normalize.js";
 import { canaryRegistrySize } from "../policy/canary.js";
@@ -793,7 +800,15 @@ async function runGovernedCallTool(
     //    channel. Scan it for PII/secrets/injection and BLOCK / SANITIZE / LOG
     //    before it reaches the caller — mirrors the request-side scanner, with
     //    the caller principal threaded into the decision + audit.
-    const respScan = scanMcpToolResult(extractMcpResponse(result), currentConfig, principal);
+    let respScan: McpResponseScan;
+    try {
+      respScan = scanMcpToolResult(extractMcpResponse(result), currentConfig, principal);
+    } catch (scanErr) {
+      // The tool has ALREADY RUN, so this resolves by failMode rather than
+      // fail-closed: blocking here cannot undo the side effect, it only
+      // withholds the result from the model.
+      respScan = resolveResponseScanFailure(scanErr, currentConfig);
+    }
     const latencyMs = Math.round(performance.now() - startTime);
 
     if (respScan.action === "block") {
@@ -840,7 +855,24 @@ async function runGovernedCallTool(
     }
 
     // SANITIZE: redact the offending spans from the result before returning.
-    const finalResult = respScan.action === "sanitize" ? sanitizeMcpResult(result) : result;
+    // The sanitizer is the same layer's application half, so it resolves the
+    // same way. Open means the model sees the unsanitized result with this
+    // layer's enforcement lost, which is what "open" means everywhere else;
+    // closed withholds it, and that IS available here because the sanitized
+    // value has not reached the caller yet.
+    let finalResult = result;
+    if (respScan.action === "sanitize") {
+      try {
+        finalResult = sanitizeMcpResult(result);
+      } catch (sanitizeErr) {
+        if (recordDetectorFailure("tool_result_scan", sanitizeErr, currentConfig)) {
+          throw new Error(
+            `[obsvr] MCP tool result blocked by policy: ${toolName} ` +
+              "(tool_result_scan sanitizer failed, failMode=closed)",
+          );
+        }
+      }
+    }
     const responseText = extractMcpResponse(finalResult);
 
     // Merge the request-side compliance (PII in args) with the response-side

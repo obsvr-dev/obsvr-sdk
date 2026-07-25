@@ -23,7 +23,11 @@ import { createPolicyError, type ObsvrPolicyError } from "../policy/policy-error
 import {
   preCallFailureCompliance,
   recordDetectorFailure,
+  responsePhaseFailureCompliance,
+  safePolicyVersion,
   safeStoredCopy,
+  UNSCANNED_PLACEHOLDER,
+  type DetectorFailure,
 } from "../policy/detector-guard.js";
 import { getConfig, isInitialized, getTenantConfig, isPolicyEnforcementDegraded } from "../proxy/config.js";
 import {
@@ -134,6 +138,12 @@ export interface ComplianceInfo {
   engine_version?: string;
   /** Inbound external policy backend provenance (ADR-4); additive. */
   external_backend?: ExternalBackendRecord;
+  /**
+   * Which detector layer was lost on this call and how it resolved. Rides the
+   * reserved obsvr_telemetry channel on the event rather than minting a new
+   * action_taken value, which is a closed wire enum. Additive.
+   */
+  detector_failure?: DetectorFailure;
 }
 
 /** Default compliance context (mirrors proxy wrapper defaults) */
@@ -891,7 +901,7 @@ export async function applyPreCallPolicy(
     return {
       decision: failClosed ? "block" : "allow",
       compliance: preCallFailureCompliance(
-        layer, err, failClosed, derivePolicyVersion(config.policyRules ?? []),
+        layer, err, failClosed, safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
       ) as unknown as ComplianceInfo,
       redactedPrompt: safeStoredCopy(() => redactForStorage(promptText, undefined)),
     };
@@ -942,167 +952,218 @@ export async function applyPostCallPolicy(
   let decision: 'pass' | 'flag' | 'redact_response' = 'pass';
   let ruleId: string | undefined;
   let reason: string | undefined;
-
-  // 0. Anti-tamper policy FLOOR on the RESPONSE (applies_to 'response'|'both').
-  //    Evaluated first and re-asserted at the very end (below) so it is
-  //    unsuppressible: neither the customer rules, the onPostCall hook (which
-  //    can otherwise downgrade redact_response → flag), nor anything else may
-  //    weaken it. The response already came back and cannot be un-sent, so a
-  //    floor match fails closed to redact_response (the STORED copy is
-  //    redacted). Twin: apply_post_call_policy in Python policy.py.
-  let floorResponseLock = false;
-  let floorResponseRuleId: string | undefined;
-  let floorResponseReason: string | undefined;
-  if (config.policyFloor && config.policyFloor.length > 0) {
-    const floorCtx: PolicyEvalContext = {
-      metadata: {
-        ...((event.metadata as Record<string, unknown>) ?? {}),
-        ...(event.user_id ? { user_id: event.user_id } : {}),
-        ...(event.service_name ? { service_name: event.service_name } : {}),
-        ...(event.tenant_id ? { tenant_id: event.tenant_id } : {}),
-      },
-    };
-    const floorResult = evaluateFloor(config.policyFloor, responseText, 'response', floorCtx);
-    if (floorResult.decision === 'block' || floorResult.decision === 'redact') {
-      decision = 'redact_response';
-      ruleId = floorResult.rule_id;
-      reason = floorResult.reason;
-      floorResponseLock = true;
-      floorResponseRuleId = floorResult.rule_id;
-      floorResponseReason = floorResult.reason;
-    }
-  }
-
-  // 1. Evaluate rules against response. Identity context (user/service/
-  // tenant) rides along so response-scoped quota rules meter the SAME
-  // bucket the request phase used — never a silent 'default' fallback.
-  if (config.policyRules && config.policyRules.length > 0) {
-    const evalContext: PolicyEvalContext = {
-      metadata: {
-        ...((event.metadata as Record<string, unknown>) ?? {}),
-        ...(event.user_id ? { user_id: event.user_id } : {}),
-        ...(event.service_name ? { service_name: event.service_name } : {}),
-        ...(event.tenant_id ? { tenant_id: event.tenant_id } : {}),
-      },
-    };
-    const rulesResult = evaluatePolicyRules(config.policyRules, responseText, 'response', evalContext);
-    if (rulesResult.decision === 'block') {
-      decision = 'redact_response';
-    } else if (rulesResult.decision === 'redact') {
-      decision = 'redact_response';
-    }
-    ruleId = rulesResult.rule_id;
-    reason = rulesResult.reason;
-  }
-
-  // 2. onPostCall hook (timeout + error handling same as onPreCall)
-  if (config.on_post_call) {
-    let hookResult: PostCallDecisionResult | 'hook_timeout';
-    try {
-      const timeoutMs = config.postCallTimeoutMs ?? 2000;
-      const raw = await (timeoutMs > 0
-        ? Promise.race([
-            config.on_post_call(responseText, event),
-            new Promise<'hook_timeout'>((res) => setTimeout(() => res('hook_timeout'), timeoutMs)),
-          ])
-        : config.on_post_call(responseText, event));
-      hookResult = raw === 'hook_timeout' ? 'hook_timeout' : normalizePostCallDecision(raw as PostCallDecisionResult);
-    } catch {
-      hookResult = { decision: 'pass' };
-    }
-    if (hookResult !== 'hook_timeout') {
-      const hd = (hookResult as PostCallDecisionResult).decision;
-      if (hd === 'redact_response' || hd === 'flag') {
-        decision = hd;
-        ruleId = (hookResult as PostCallDecisionResult).rule_id ?? ruleId;
-        reason = (hookResult as PostCallDecisionResult).reason ?? reason;
-      }
-    }
-  }
-
-  // 3. Built-in response-side PII scan (the response twin of the pre-call
-  // Step 1 scan). Only when a pii_policy is configured, matching pre-call
-  // behavior. Per-type resolution reuses resolvePiiPolicy; on the response
-  // side a "block" verdict cannot un-send the request, so block and redact
-  // both redact the STORED copy, and detect_only records the finding.
+  // Hoisted above the guard because the return below reads them.
   let responsePii: PostCallPolicyResult['responsePii'];
-  let storedRedactionVia: DeobfuscationView['method'] | undefined;
-  if (config.pii_policy && responseText) {
-    const scan = runConfiguredPiiScan(responseText, config.deobfuscation);
-    if (scan.pii_detected) {
-      const resolved = resolvePiiPolicy(scan.detected_types, config.pii_policy);
-      const mustRedact = resolved.action === 'block' || resolved.action === 'redact';
-      responsePii = {
-        detected: true,
-        types: scan.detected_types,
-        action: mustRedact ? 'redacted' : 'detected_only',
-        ...(scan.via !== undefined ? { via: scan.via } : {}),
+  let canaryTelemetry: Record<string, unknown> | undefined;
+  let redactedResponse: string | undefined;
+  const compliance: Partial<ComplianceInfo> = {};
+
+  // --- guarded detector section (RESPONSE phase) ---------------------
+  // A different rule from the pre-call span, deliberately: the provider has
+  // already answered, so "closed" is not an available action - not even for
+  // the floor class, because blocking cannot un-produce the answer and the
+  // published contract is that a response-side control never withholds the
+  // value returned to the caller. What DOES fail closed is the STORED audit
+  // copy, the one thing still in the SDK's hands: it becomes the unscanned
+  // marker rather than persisting text nothing vetted.
+  let layer = "";
+  try {
+    layer = "policy_floor";
+    // 0. Anti-tamper policy FLOOR on the RESPONSE (applies_to 'response'|'both').
+    //    Evaluated first and re-asserted at the very end (below) so it is
+    //    unsuppressible: neither the customer rules, the onPostCall hook (which
+    //    can otherwise downgrade redact_response → flag), nor anything else may
+    //    weaken it. The response already came back and cannot be un-sent, so a
+    //    floor match fails closed to redact_response (the STORED copy is
+    //    redacted). Twin: apply_post_call_policy in Python policy.py.
+    let floorResponseLock = false;
+    let floorResponseRuleId: string | undefined;
+    let floorResponseReason: string | undefined;
+    if (config.policyFloor && config.policyFloor.length > 0) {
+      const floorCtx: PolicyEvalContext = {
+        metadata: {
+          ...((event.metadata as Record<string, unknown>) ?? {}),
+          ...(event.user_id ? { user_id: event.user_id } : {}),
+          ...(event.service_name ? { service_name: event.service_name } : {}),
+          ...(event.tenant_id ? { tenant_id: event.tenant_id } : {}),
+        },
       };
-      if (mustRedact) {
+      const floorResult = evaluateFloor(config.policyFloor, responseText, 'response', floorCtx);
+      if (floorResult.decision === 'block' || floorResult.decision === 'redact') {
         decision = 'redact_response';
-        if (!reason) reason = 'pii_detected_in_response';
-        // View-only hit: the stored copy must become a whole-text placeholder
-        // (span redaction cannot locate an encoded payload).
-        storedRedactionVia = scan.via;
+        ruleId = floorResult.rule_id;
+        reason = floorResult.reason;
+        floorResponseLock = true;
+        floorResponseRuleId = floorResult.rule_id;
+        floorResponseReason = floorResult.reason;
       }
     }
-  }
 
-  // Canary-leak scan on the RESPONSE (the primary leak surface: a planted
-  // system-prompt/context token surfacing in the model's output). Evidential —
-  // the response already came back, so this forces redact_response and stores
-  // a placeholder (never the raw token), and stamps CRITICAL telemetry. Only
-  // when a canary has been minted (zero cost otherwise).
-  let canaryTelemetry: Record<string, unknown> | undefined;
-  let canaryLeaked = false;
-  if (canaryRegistrySize() > 0 && responseText) {
-    const leak = scanForCanary(responseText);
-    if (leak.leaked) {
-      canaryLeaked = true;
+    layer = "policy_rules";
+    // 1. Evaluate rules against response. Identity context (user/service/
+    // tenant) rides along so response-scoped quota rules meter the SAME
+    // bucket the request phase used — never a silent 'default' fallback.
+    if (config.policyRules && config.policyRules.length > 0) {
+      const evalContext: PolicyEvalContext = {
+        metadata: {
+          ...((event.metadata as Record<string, unknown>) ?? {}),
+          ...(event.user_id ? { user_id: event.user_id } : {}),
+          ...(event.service_name ? { service_name: event.service_name } : {}),
+          ...(event.tenant_id ? { tenant_id: event.tenant_id } : {}),
+        },
+      };
+      const rulesResult = evaluatePolicyRules(config.policyRules, responseText, 'response', evalContext);
+      if (rulesResult.decision === 'block') {
+        decision = 'redact_response';
+      } else if (rulesResult.decision === 'redact') {
+        decision = 'redact_response';
+      }
+      ruleId = rulesResult.rule_id;
+      reason = rulesResult.reason;
+    }
+
+    // 2. onPostCall hook (timeout + error handling same as onPreCall). Inside
+    //    the span but not a detector layer - it carries its own guard, so its
+    //    declared disposition still applies and `layer` is cleared for it.
+    layer = "";
+    if (config.on_post_call) {
+      let hookResult: PostCallDecisionResult | 'hook_timeout';
+      try {
+        const timeoutMs = config.postCallTimeoutMs ?? 2000;
+        const raw = await (timeoutMs > 0
+          ? Promise.race([
+              config.on_post_call(responseText, event),
+              new Promise<'hook_timeout'>((res) => setTimeout(() => res('hook_timeout'), timeoutMs)),
+            ])
+          : config.on_post_call(responseText, event));
+        hookResult = raw === 'hook_timeout' ? 'hook_timeout' : normalizePostCallDecision(raw as PostCallDecisionResult);
+      } catch {
+        hookResult = { decision: 'pass' };
+      }
+      if (hookResult !== 'hook_timeout') {
+        const hd = (hookResult as PostCallDecisionResult).decision;
+        if (hd === 'redact_response' || hd === 'flag') {
+          decision = hd;
+          ruleId = (hookResult as PostCallDecisionResult).rule_id ?? ruleId;
+          reason = (hookResult as PostCallDecisionResult).reason ?? reason;
+        }
+      }
+    }
+
+    layer = "builtin_pii_scan";
+    // 3. Built-in response-side PII scan (the response twin of the pre-call
+    // Step 1 scan). Only when a pii_policy is configured, matching pre-call
+    // behavior. Per-type resolution reuses resolvePiiPolicy; on the response
+    // side a "block" verdict cannot un-send the request, so block and redact
+    // both redact the STORED copy, and detect_only records the finding.
+    let storedRedactionVia: DeobfuscationView['method'] | undefined;
+    if (config.pii_policy && responseText) {
+      const scan = runConfiguredPiiScan(responseText, config.deobfuscation);
+      if (scan.pii_detected) {
+        const resolved = resolvePiiPolicy(scan.detected_types, config.pii_policy);
+        const mustRedact = resolved.action === 'block' || resolved.action === 'redact';
+        responsePii = {
+          detected: true,
+          types: scan.detected_types,
+          action: mustRedact ? 'redacted' : 'detected_only',
+          ...(scan.via !== undefined ? { via: scan.via } : {}),
+        };
+        if (mustRedact) {
+          decision = 'redact_response';
+          if (!reason) reason = 'pii_detected_in_response';
+          // View-only hit: the stored copy must become a whole-text placeholder
+          // (span redaction cannot locate an encoded payload).
+          storedRedactionVia = scan.via;
+        }
+      }
+    }
+
+    layer = "canary";
+    // Canary-leak scan on the RESPONSE (the primary leak surface: a planted
+    // system-prompt/context token surfacing in the model's output). Evidential —
+    // the response already came back, so this forces redact_response and stores
+    // a placeholder (never the raw token), and stamps CRITICAL telemetry. Only
+    // when a canary has been minted (zero cost otherwise).
+    let canaryLeaked = false;
+    if (canaryRegistrySize() > 0 && responseText) {
+      const leak = scanForCanary(responseText);
+      if (leak.leaked) {
+        canaryLeaked = true;
+        decision = 'redact_response';
+        canaryTelemetry = canaryLeakTelemetry(leak.hits, 'response');
+        if (!ruleId) ruleId = 'sdk:canary_leak';
+        reason = `Canary token leaked in response (${leak.hits.map((h) => h.id).join(', ')})`;
+      }
+    }
+
+    layer = "policy_floor";
+    // Re-assert the floor (unsuppressible): nothing above may downgrade a
+    // floor-forced response redaction. Keep the floor's attribution unless a
+    // canary also leaked (canary is likewise critical and carries its own
+    // telemetry, so its rule_id/reason stay).
+    if (floorResponseLock) {
       decision = 'redact_response';
-      canaryTelemetry = canaryLeakTelemetry(leak.hits, 'response');
-      if (!ruleId) ruleId = 'sdk:canary_leak';
-      reason = `Canary token leaked in response (${leak.hits.map((h) => h.id).join(', ')})`;
+      if (!canaryLeaked) {
+        ruleId = floorResponseRuleId;
+        reason = floorResponseReason;
+      }
     }
-  }
 
-  // Re-assert the floor (unsuppressible): nothing above may downgrade a
-  // floor-forced response redaction. Keep the floor's attribution unless a
-  // canary also leaked (canary is likewise critical and carries its own
-  // telemetry, so its rule_id/reason stay).
-  if (floorResponseLock) {
-    decision = 'redact_response';
-    if (!canaryLeaked) {
-      ruleId = floorResponseRuleId;
-      reason = floorResponseReason;
+    if (decision === 'flag') {
+      compliance.event_type = 'policy_flag';
     }
-  }
+    if (ruleId) compliance.rule_id = ruleId;
+    if (reason) compliance.policy_reason = reason;
 
-  const compliance: Partial<ComplianceInfo> = {};
-  if (decision === 'flag') {
-    compliance.event_type = 'policy_flag';
-  }
-  if (ruleId) compliance.rule_id = ruleId;
-  if (reason) compliance.policy_reason = reason;
-
-  return {
-    decision,
     // A canary leak replaces the whole stored response (the surface carries the
     // raw token / an encoded copy). A floor match likewise replaces the whole
     // stored response: a floor rule match (keyword/regex/topic) has no locatable
     // span the PII redactor could target, so span-redaction would leave the
     // matched content intact — the floor must store a placeholder, never a
     // silently-intact "redacted" record. Otherwise the PII redaction path.
-    redactedResponse: decision === 'redact_response'
+    // Inside the span: the redactor is the same module that may have just
+    // failed, so a throw here resolves the same way rather than escaping.
+    layer = "deobfuscation_views";
+    redactedResponse = decision === 'redact_response'
       ? (canaryLeaked
           ? CANARY_REDACTION_PLACEHOLDER
           : floorResponseLock
             ? FLOOR_REDACTION_PLACEHOLDER
             : redactForStorage(responseText, storedRedactionVia))
-      : undefined,
+      : undefined;
+  } catch (err) {
+    return responsePhaseFailure(layer, err, config);
+  }
+
+  return {
+    decision,
+    redactedResponse,
     compliance,
     ...(responsePii ? { responsePii } : {}),
     ...(canaryTelemetry !== undefined ? { canaryTelemetry } : {}),
+  };
+}
+
+/**
+ * The post-call site's own return shape for a detector failure: "flag", never
+ * "redact_response", because the caller's value is not being changed - only
+ * the stored copy is withheld, and only because the scan that would have
+ * vetted it is the thing that raised.
+ */
+function responsePhaseFailure(
+  layer: string,
+  err: unknown,
+  config: ResolvedConfig,
+): PostCallPolicyResult {
+  recordDetectorFailure(layer, err, config);
+  return {
+    decision: 'flag',
+    redactedResponse: UNSCANNED_PLACEHOLDER,
+    compliance: responsePhaseFailureCompliance(
+      layer,
+      err,
+      safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+    ) as Partial<ComplianceInfo>,
   };
 }
 
@@ -1221,40 +1282,64 @@ export function applyObservePolicy(
    * locate an encoded payload.
    */
   storedRedactionVia?: DeobfuscationView["method"];
+  /**
+   * The scan that decides the stored copy RAISED. The caller must persist
+   * `UNSCANNED_PLACEHOLDER` rather than any redactor's output: nothing vetted
+   * this text, and the redactor shares the module that just failed. Distinct
+   * from `shouldRedactStored`, which means "a scan ran and found something".
+   */
+  storedUnscanned?: true;
 } {
   if (!config.pii_policy) {
     return { shouldRedactStored: false, compliance: observeCompliance(config) };
   }
-  const scan = runConfiguredPiiScan(promptText, config.deobfuscation);
-  const { pii_detected, detected_types } = scan;
-  if (!pii_detected) {
-    return { shouldRedactStored: false, compliance: observeCompliance(config) };
-  }
-  const resolved = resolvePiiPolicy(detected_types, config.pii_policy);
-  if (resolved.action === "detect_only") {
+  // Check-only, but on a live host path: this runs on framework callbacks and
+  // tool calls, so a defect here reached the host from paths that never touch
+  // the policy engine. Response-phase rule - never raise, and fail closed on
+  // the stored copy only.
+  try {
+    const scan = runConfiguredPiiScan(promptText, config.deobfuscation);
+    const { pii_detected, detected_types } = scan;
+    if (!pii_detected) {
+      return { shouldRedactStored: false, compliance: observeCompliance(config) };
+    }
+    const resolved = resolvePiiPolicy(detected_types, config.pii_policy);
+    if (resolved.action === "detect_only") {
+      return {
+        shouldRedactStored: false,
+        compliance: {
+          ...observeCompliance(config),
+          action_reason: "pii_detected",
+          action_source: "builtin",
+        },
+        ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
+      };
+    }
+    // redact OR block (downgraded): redact the stored copy
     return {
-      shouldRedactStored: false,
+      shouldRedactStored: true,
       compliance: {
         ...observeCompliance(config),
+        action_taken: "redacted",
         action_reason: "pii_detected",
         action_source: "builtin",
+        redacted_types: [...resolved.redactedTypes, ...resolved.blockedTypes],
+        blocked_types: [],
       },
       ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
     };
+  } catch (err) {
+    recordDetectorFailure("builtin_pii_scan", err, config);
+    return {
+      shouldRedactStored: true,
+      storedUnscanned: true,
+      compliance: responsePhaseFailureCompliance(
+        "builtin_pii_scan",
+        err,
+        safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+      ) as ComplianceInfo,
+    };
   }
-  // redact OR block (downgraded): redact the stored copy
-  return {
-    shouldRedactStored: true,
-    compliance: {
-      ...observeCompliance(config),
-      action_taken: "redacted",
-      action_reason: "pii_detected",
-      action_source: "builtin",
-      redacted_types: [...resolved.redactedTypes, ...resolved.blockedTypes],
-      blocked_types: [],
-    },
-    ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
-  };
 }
 
 // ============================================================================
@@ -1325,6 +1410,7 @@ export function buildIntegrationEvent(
   let scrubbedResponse = params.response ?? "";
   let scrubbedUserInput = params.userInput;
   let canaryEventTelemetry: Record<string, unknown> | undefined;
+  let canaryScanFailed = false;
   if (canaryRegistrySize() > 0) {
     const hits: CanaryHit[] = [];
     let leakSurface: string | undefined;
@@ -1337,9 +1423,22 @@ export function buildIntegrationEvent(
       }
       return v;
     };
-    scrubbedPrompt = scrub(scrubbedPrompt, "prompt");
-    scrubbedResponse = scrub(scrubbedResponse, "response");
-    if (scrubbedUserInput !== undefined) scrubbedUserInput = scrub(scrubbedUserInput, "user_input");
+    // This net runs on EVERY emitted event on EVERY path, so an exception here
+    // would reach the host from places that never touch the policy engine. It
+    // is building a stored record, not deciding a call, so the resolution is
+    // the response-phase one: never raise, and withhold the stored copy rather
+    // than persist text no canary scan ever vetted.
+    try {
+      scrubbedPrompt = scrub(scrubbedPrompt, "prompt");
+      scrubbedResponse = scrub(scrubbedResponse, "response");
+      if (scrubbedUserInput !== undefined) scrubbedUserInput = scrub(scrubbedUserInput, "user_input");
+    } catch (err) {
+      recordDetectorFailure("canary", err, config);
+      canaryScanFailed = true;
+      scrubbedPrompt = UNSCANNED_PLACEHOLDER;
+      scrubbedResponse = scrubbedResponse ? UNSCANNED_PLACEHOLDER : scrubbedResponse;
+      if (scrubbedUserInput !== undefined) scrubbedUserInput = UNSCANNED_PLACEHOLDER;
+    }
     if (hits.length > 0) canaryEventTelemetry = canaryLeakTelemetry(hits, leakSurface ?? "response");
   }
 
@@ -1460,6 +1559,31 @@ export function buildIntegrationEvent(
   // stream on every integration path. The call-specific floor_override_ignored
   // still rides params.floorTelemetry (only the block path carries it), and is
   // merged on top so it wins where present.
+  // A lost detector layer is recorded on the call's OWN event (never a second
+  // event, which would break the one-event-per-call correspondence): the
+  // caller's failure when a guarded site reported one, plus the event
+  // builder's own canary net when that is what raised.
+  const detectorFailure: DetectorFailure | undefined =
+    compliance.detector_failure ??
+    (canaryScanFailed
+      ? {
+          layer: "canary",
+          error: "canary scan failed during event build",
+          resolution: "open",
+          floor_class: true,
+          phase: "event_build",
+          stored_unscanned: true,
+        }
+      : undefined);
+  if (detectorFailure) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      detector_failure: detectorFailure,
+    };
+    event.metadata = metadata;
+  }
+
   const canaryTel = params.canaryTelemetry ?? canaryEventTelemetry;
   const floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
   if (floorActive || params.floorTelemetry) {

@@ -172,6 +172,56 @@ export function preCallFailureCompliance(
 }
 
 /**
+ * The compliance block a guarded RESPONSE-phase site returns.
+ *
+ * `action_taken` stays "allowed" and the resolution stays "open" even for the
+ * floor class: once the provider has answered, "closed" is not an available
+ * action, and the published contract is that a response-side control never
+ * withholds the value returned to the caller. The one thing that DID fail
+ * closed - the stored audit copy - is recorded by `stored_unscanned`, so an
+ * auditor can find it without string-matching content.
+ */
+export function responsePhaseFailureCompliance(
+  layer: string,
+  err: unknown,
+  policyVersion: string,
+): DetectorFailureCompliance {
+  const why =
+    `Response-phase detector layer '${layer || "unknown"}' raised ${describeError(err)}; ` +
+    "response delivered unchanged, stored copy withheld";
+  return {
+    event_type: "policy_flag",
+    policy_version: policyVersion,
+    action_taken: "allowed",
+    action_reason: "none",
+    action_source: "builtin",
+    redacted_types: [],
+    blocked_types: [],
+    rule_id: "sdk:detector_error",
+    policy_reason: why.slice(0, 256),
+    detector_failure: detectorFailureRecord(layer, err, "open", "response", true),
+  };
+}
+
+/**
+ * Derive the policy version for a failure record WITHOUT trusting the inputs
+ * that just failed.
+ *
+ * The version is a hash over the same rules a detector may have choked on, so
+ * a resolver that recomputed it naively throws out of its own catch block -
+ * turning the guard back into the unguarded propagation it exists to replace.
+ * Same lesson as `safeStoredCopy`: nothing on the failure path may re-run the
+ * code that failed and assume it works this time.
+ */
+export function safePolicyVersion(derive: () => string): string {
+  try {
+    return derive();
+  } catch {
+    return "unknown";
+  }
+}
+
+/**
  * Redact a stored copy without trusting the redactor: the scan that would have
  * produced it may be exactly what just failed. Falls back to the unscanned
  * marker rather than persisting text nothing vetted.
