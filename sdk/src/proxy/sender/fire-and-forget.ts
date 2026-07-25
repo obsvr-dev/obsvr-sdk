@@ -65,6 +65,39 @@ function classifyStatus(status: number, path: string): SendVerdict {
   return "retryable";
 }
 
+/** The reject code ingest returns for an event it has already recorded. */
+const DUPLICATE_EVENT_ERROR = "duplicate_event";
+
+/**
+ * Whether a 409 body is ingest's duplicate response.
+ *
+ * A duplicate means a retry raced a lost 2xx: the event is ALREADY durably
+ * recorded, so this is idempotent success. Counting it as a drop would
+ * fabricate a coverage gap for evidence that exists - the worst direction for
+ * an audit counter to be wrong in. Only this exact code is absorbed: a 409
+ * `sequence_fork` means that chain position belongs to a DIFFERENT signature
+ * and must stay a failure. (Twin of the platform emitter's isDuplicateConflict
+ * and of the Python sender's _is_duplicate_conflict.)
+ */
+function isDuplicateConflict(body: unknown): boolean {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    (body as { error?: unknown }).error === DUPLICATE_EVENT_ERROR
+  );
+}
+
+/** Read a 409 body and report whether it is the duplicate response. An
+ * unreadable or non-JSON body is NOT a duplicate: absorbing an unparseable
+ * conflict would silently turn real failures into phantom successes. */
+async function isDuplicateResponse(response: { json(): Promise<unknown> }): Promise<boolean> {
+  try {
+    return isDuplicateConflict(await response.json());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Backoff state
  */
@@ -177,7 +210,10 @@ async function sendEvent(
 
     clearTimeout(timeoutId);
     verdict = classifyStatus(response.status, INGEST_PATH);
-    if (verdict === "ok") {
+    if (response.status === 409 && (await isDuplicateResponse(response))) {
+      verdict = "ok";
+      debugLog(config, "info", `Audit event already recorded (duplicate): ${event.request_id}`);
+    } else if (verdict === "ok") {
       debugLog(config, "info", `Audit event sent: ${event.request_id}`);
     } else {
       debugLog(config, "warn", `Audit request failed (${verdict}): ${response.status}`);
@@ -245,21 +281,30 @@ async function sendEventBatch(
         if (body.rejected && body.rejected.length > 0) {
           // Count them, do not just log them: SECURITY.md promises every drop
           // is visible in the per-client delivery counters, and a reject that
-          // only reaches the debug log is an invisible one.
-          rejected = Math.min(body.rejected.length, events.length);
+          // only reaches the debug log is an invisible one. Duplicates are the
+          // one exception - the event is already recorded, so it counts as
+          // sent and must never land in the drop bucket.
+          const drops = body.rejected.filter((r) => r.error !== DUPLICATE_EVENT_ERROR);
+          rejected = Math.min(drops.length, events.length);
           for (const r of body.rejected) {
             const ev = events[r.index];
-            debugLog(
-              config,
-              "warn",
-              `Audit event rejected by server (${r.error}) - dropping: ${ev?.request_id ?? `index ${r.index}`}`
-            );
+            const id = ev?.request_id ?? `index ${r.index}`;
+            if (r.error === DUPLICATE_EVENT_ERROR) {
+              debugLog(config, "info", `Audit event already recorded (duplicate): ${id}`);
+            } else {
+              debugLog(config, "warn", `Audit event rejected by server (${r.error}) - dropping: ${id}`);
+            }
           }
         }
         debugLog(config, "info", `Audit batch sent: ${body.count ?? events.length} accepted`);
       } catch {
         debugLog(config, "info", `Audit batch sent: ${events.length} events`);
       }
+    } else if (response.status === 409 && (await isDuplicateResponse(response))) {
+      // A re-submitted batch is itself the duplicate: every event in it was
+      // already recorded on the earlier attempt.
+      verdict = "ok";
+      debugLog(config, "info", `Audit batch already recorded (duplicate): ${events.length} events`);
     } else {
       debugLog(config, "warn", `Audit batch request failed (${verdict}): ${response.status}`);
     }

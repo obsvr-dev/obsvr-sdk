@@ -109,6 +109,33 @@ describe('delivery counters: per-event rejects inside an accepted batch', () => 
     expect(stats.sent).toBe(0);
   });
 
+  it('counts a per-event duplicate_event reject as sent, never as a drop', async () => {
+    globalThis.fetch = (async (url: string) => ({
+      status: 200,
+      ok: true,
+      json: async () =>
+        String(url).includes('/batch')
+          ? {
+              count: 1,
+              rejected: [
+                { index: 0, error: 'duplicate_event' },
+                { index: 1, error: 'policy_blocked' },
+              ],
+            }
+          : { count: 1 },
+    })) as unknown as typeof fetch;
+
+    init({ api_key: 'test-key', ingest_url: 'https://ingest.example.com' });
+    await sendOneThenBatchOf(3, getConfig());
+
+    const stats = getSenderStats();
+    // The duplicate is already recorded, so it is a delivery: 1 single + the
+    // duplicate + the one clean event = 3 sent, 1 refused.
+    expect(stats.sent).toBe(3);
+    expect(stats.dropped_rejected).toBe(1);
+    expect(stats.sent + stats.dropped_rejected).toBe(stats.enqueued);
+  });
+
   it('reports dropped_rejected as its own bucket in the X-Obsvr-Counters poll header', async () => {
     const headers: Array<Record<string, string>> = [];
     globalThis.fetch = (async (url: string, opts?: { headers?: Record<string, string> }) => {
@@ -138,5 +165,82 @@ describe('delivery counters: per-event rejects inside an accepted batch', () => 
     expect(counters).toContain('dropped_rejected=1');
     // The never-delivered aggregate stays separate from the refused bucket.
     expect(counters).toContain('dropped=0');
+  });
+});
+
+/**
+ * HTTP 409 duplicate_event.
+ *
+ * A duplicate means a retry raced a lost 2xx: the event is already durably
+ * recorded. Classifying it as a permanent drop - which every other 4xx is -
+ * would fabricate a coverage gap for evidence that exists, so it counts as
+ * idempotent success. Only that exact code: a 409 sequence_fork means the
+ * chain position belongs to a different signature and must stay a failure.
+ * The platform's own reference emitter absorbs 409 the same way.
+ */
+describe('delivery counters: 409 duplicate_event is idempotent success', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    stopPolicyPolling();
+  });
+
+  const conflict = (body: unknown) =>
+    (async () => ({ status: 409, ok: false, json: async () => body })) as unknown as typeof fetch;
+
+  it('counts a single-event 409 duplicate as sent, with no drop counted', async () => {
+    globalThis.fetch = conflict({ ok: false, error: 'duplicate_event', reason: 'replay' });
+    init({ api_key: 'test-key', ingest_url: 'https://ingest.example.com' });
+    enqueueAuditEvent(getConfig(), auditEvent('dup'));
+    await flushQueue(getConfig(), 2000);
+
+    const stats = getSenderStats();
+    expect(stats.sent).toBe(1);
+    expect(stats.dropped_permanent).toBe(0);
+    expect(stats.dropped_rejected).toBe(0);
+    expect(stats.retries).toBe(0);
+  });
+
+  it('counts a whole-batch 409 duplicate as sent for every event in it', async () => {
+    globalThis.fetch = conflict({ ok: false, error: 'duplicate_event' });
+    init({ api_key: 'test-key', ingest_url: 'https://ingest.example.com' });
+    await sendOneThenBatchOf(3, getConfig());
+
+    const stats = getSenderStats();
+    expect(stats.sent).toBe(4);
+    expect(stats.dropped_permanent).toBe(0);
+    expect(stats.dropped_rejected).toBe(0);
+  });
+
+  it('keeps a non-duplicate 409 permanent (sequence_fork must surface)', async () => {
+    globalThis.fetch = conflict({ ok: false, error: 'sequence_fork' });
+    init({ api_key: 'test-key', ingest_url: 'https://ingest.example.com' });
+    enqueueAuditEvent(getConfig(), auditEvent('fork'));
+    await flushQueue(getConfig(), 2000);
+
+    const stats = getSenderStats();
+    expect(stats.sent).toBe(0);
+    expect(stats.dropped_permanent).toBe(1);
+  });
+
+  it('does not absorb a 409 whose body cannot be read', async () => {
+    globalThis.fetch = (async () => ({
+      status: 409,
+      ok: false,
+      json: async () => {
+        throw new Error('not json');
+      },
+    })) as unknown as typeof fetch;
+    init({ api_key: 'test-key', ingest_url: 'https://ingest.example.com' });
+    enqueueAuditEvent(getConfig(), auditEvent('opaque'));
+    await flushQueue(getConfig(), 2000);
+
+    const stats = getSenderStats();
+    expect(stats.sent).toBe(0);
+    expect(stats.dropped_permanent).toBe(1);
   });
 });

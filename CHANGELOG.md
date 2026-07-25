@@ -48,6 +48,16 @@ cut, when it is renamed to that version.
   worse, counted as sent. Server-refused events are no longer included in
   `sent`; the existing `dropped` aggregate is unchanged and still means
   never-delivered.
+- **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** Both senders
+  classified every 4xx other than the documented single-event 403 as a
+  permanent failure without ever looking at the body, so a retry that raced a
+  lost 2xx was dead-lettered - fabricating a coverage gap for an event the
+  server had already sealed. A 409 whose body carries `duplicate_event` is now
+  idempotent success on both the single-event and batch paths, and a per-event
+  `duplicate_event` inside a 2xx batch counts as sent rather than
+  `dropped_rejected`. Only that exact code: a 409 `sequence_fork` stays a
+  failure, because that chain position belongs to a different signature and has
+  to surface. A 409 body that cannot be read is not absorbed.
 - **The Python sender reads batch responses.** It previously discarded the
   response body entirely, so when a batch POST returned 2xx while refusing
   individual events inside it, those events were silently counted as sent -

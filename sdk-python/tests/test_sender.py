@@ -374,3 +374,119 @@ def test_poll_header_reports_dropped_rejected_as_its_own_key(monkeypatch):
     assert "dropped=0" in counters
     assert "sent=5" in counters
     sender._reset_sender()
+
+
+# ── HTTP 409 duplicate_event ────────────────────────────────────────────────
+#
+# A duplicate means a retry raced a lost 2xx: the event is already durably
+# recorded. Classifying it as a permanent drop - which every other 4xx is -
+# would fabricate a coverage gap for evidence that exists, so it counts as
+# idempotent success. Only that exact code: a 409 sequence_fork means the chain
+# position belongs to a different signature and must stay a failure.
+
+
+def _conflict_response(body: dict) -> MagicMock:
+    resp = _make_response(409)
+    resp.read.return_value = json.dumps(body).encode("utf-8")
+    return resp
+
+
+def test_single_event_409_duplicate_counts_as_sent(monkeypatch):
+    sender._reset_sender()
+    sender._reset_backoff()
+    monkeypatch.setattr(
+        sender,
+        "urlopen",
+        lambda req, timeout=None: _conflict_response(
+            {"ok": False, "error": "duplicate_event", "reason": "replay"}
+        ),
+    )
+    assert sender._send_event(_cfg(), {"request_id": "dup"}) == "ok"
+    assert sender._backoff["until"] == 0.0
+    sender._reset_sender()
+
+
+def test_409_duplicate_raised_as_httperror_counts_as_sent(monkeypatch):
+    """urllib normally surfaces a 4xx as HTTPError, so the check lives on both
+    paths; HTTPError carries the body, which is what makes this decidable."""
+    from urllib.error import HTTPError
+
+    sender._reset_sender()
+    sender._reset_backoff()
+
+    def raise_conflict(req, timeout=None):
+        raise HTTPError(
+            req.full_url,
+            409,
+            "Conflict",
+            {},
+            BytesIO(json.dumps({"ok": False, "error": "duplicate_event"}).encode()),
+        )
+
+    monkeypatch.setattr(sender, "urlopen", raise_conflict)
+    assert sender._send_event(_cfg(), {"request_id": "dup"}) == "ok"
+    sender._reset_sender()
+
+
+def test_non_duplicate_409_stays_permanent(monkeypatch):
+    """A sequence_fork is a real conflict: that chain position belongs to a
+    DIFFERENT signature, and absorbing it would hide a chain fork."""
+    sender._reset_sender()
+    sender._reset_backoff()
+    monkeypatch.setattr(
+        sender,
+        "urlopen",
+        lambda req, timeout=None: _conflict_response({"ok": False, "error": "sequence_fork"}),
+    )
+    assert sender._send_event(_cfg(), {"request_id": "fork"}) == "permanent"
+    sender._reset_sender()
+
+
+def test_409_with_unreadable_body_stays_permanent(monkeypatch):
+    """Absorbing an unparseable conflict would turn real failures into phantom
+    successes, so only a body that positively says duplicate_event counts."""
+    sender._reset_sender()
+    sender._reset_backoff()
+    resp = _make_response(409)
+    resp.read.return_value = b"<html>gateway</html>"
+    monkeypatch.setattr(sender, "urlopen", lambda req, timeout=None: resp)
+    assert sender._send_event(_cfg(), {"request_id": "opaque"}) == "permanent"
+    sender._reset_sender()
+
+
+def test_whole_batch_409_duplicate_counts_every_event_as_sent(monkeypatch):
+    sender._reset_sender()
+    _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"d{i}", "prompt": "p", "response": ""} for i in range(4)],
+        lambda url, payload, idx: _conflict_response({"ok": False, "error": "duplicate_event"}),
+    )
+    stats = sender.get_sender_stats()
+    assert stats["sent"] == 4
+    assert stats["dropped_permanent"] == 0
+    assert stats["dropped_rejected"] == 0
+    sender._reset_sender()
+
+
+def test_per_event_duplicate_reject_counts_as_sent_not_dropped(monkeypatch):
+    sender._reset_sender()
+    body = {
+        "count": 1,
+        "rejected": [
+            {"index": 0, "error": "duplicate_event"},
+            {"index": 1, "error": "policy_blocked"},
+        ],
+    }
+    _drain_single_then_batch(
+        monkeypatch,
+        [{"request_id": f"x{i}", "prompt": "p", "response": ""} for i in range(4)],
+        lambda url, payload, idx: (
+            _batch_response(200, body) if url.endswith("/ingest/batch") else _make_response(200)
+        ),
+    )
+    stats = sender.get_sender_stats()
+    # 1 single + the duplicate + the one clean event = 3 sent, 1 refused.
+    assert stats["sent"] == 3
+    assert stats["dropped_rejected"] == 1
+    assert stats["sent"] + stats["dropped_rejected"] == stats["enqueued"]
+    sender._reset_sender()

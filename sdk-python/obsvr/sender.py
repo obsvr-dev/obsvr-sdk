@@ -207,6 +207,28 @@ def _classify_status(status: int, path: str) -> str:
     return "retryable"
 
 
+#: The reject code ingest returns for an event it has already recorded.
+DUPLICATE_EVENT_ERROR = "duplicate_event"
+
+
+def _is_duplicate_conflict(raw: Any) -> bool:
+    """Whether a 409 body is ingest's duplicate response.
+
+    A duplicate means a retry raced a lost 2xx: the event is ALREADY durably
+    recorded, so this is idempotent success. Counting it as a drop would
+    fabricate a coverage gap for evidence that exists - the worst direction for
+    an audit counter to be wrong in. Only this exact code is absorbed: a 409
+    `sequence_fork` means that chain position belongs to a DIFFERENT signature
+    and must stay a failure. An unreadable or non-JSON body is NOT a duplicate.
+    (Twin of the TS sender's isDuplicateConflict.)
+    """
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return False
+    return isinstance(body, dict) and body.get("error") == DUPLICATE_EVENT_ERROR
+
+
 def _count_rejects(config: ResolvedConfig, body: Any, events: list) -> int:
     """Per-event rejects inside an ACCEPTED batch response.
 
@@ -220,18 +242,25 @@ def _count_rejects(config: ResolvedConfig, body: Any, events: list) -> int:
     rejected = body.get("rejected")
     if not isinstance(rejected, list) or not rejected:
         return 0
+    drops = 0
     for entry in rejected:
         if not isinstance(entry, dict):
+            drops += 1
             continue
         idx = entry.get("index")
         event = events[idx] if isinstance(idx, int) and 0 <= idx < len(events) else None
         label = (event or {}).get("request_id") or f"index {idx}"
+        if entry.get("error") == DUPLICATE_EVENT_ERROR:
+            # Already recorded: counts as sent, never as a drop.
+            _debug_warn(config, f"Audit event already recorded (duplicate): {label}")
+            continue
+        drops += 1
         _debug_warn(
             config,
             f"Audit event rejected by server ({entry.get('error')}) - dropping: {label}",
         )
     # Never exceed the batch: a malformed body cannot inflate the counter.
-    return min(len(rejected), len(events))
+    return min(drops, len(events))
 
 
 def _debug_warn(config: ResolvedConfig, message: str) -> None:
@@ -271,7 +300,15 @@ def _post(config: ResolvedConfig, path: str, payload: Any, events: Optional[list
         if status is None and hasattr(resp, "getcode"):
             status = resp.getcode()
         verdict = _classify_status(status or 0, path)
-        if verdict == "ok" and events is not None:
+        if status == 409:
+            # A 409 can arrive here rather than as an HTTPError depending on the
+            # opener in use, so the duplicate check lives on both paths.
+            try:
+                if _is_duplicate_conflict(resp.read()):
+                    verdict = "ok"
+            except Exception:
+                pass
+        elif verdict == "ok" and events is not None:
             # Best-effort: a body that is absent, truncated, or not JSON means
             # no rejects were reported, never a failed delivery.
             try:
@@ -281,6 +318,13 @@ def _post(config: ResolvedConfig, path: str, payload: Any, events: Optional[list
                 rejected = 0
     except HTTPError as err:
         verdict = _classify_status(err.code, path)
+        if err.code == 409:
+            try:
+                if _is_duplicate_conflict(err.read()):
+                    # Single event or whole re-submitted batch: already recorded.
+                    verdict = "ok"
+            except Exception:
+                pass
     except Exception:
         verdict = "retryable"
     if verdict == "ok":
