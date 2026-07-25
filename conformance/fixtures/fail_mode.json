@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "name": "fail_mode",
+  "description": "Central failure-disposition registry, shared by both SDKs. TS source: sdk/src/policy/failure-dispositions.ts. Python twin: sdk-python/obsvr/failure_dispositions.py. Both staleness suites (sdk/tests/unit/fail-mode.test.ts, sdk-python/tests/test_fail_mode.py) assert their registry equals `layers` here, that every layer declares all three failure states, and that the declarations match observed behavior for the states a unit test can drive. This table DESCRIBES shipped behavior and is read by no call path. A new detector class must appear here, in both registries, before it can land: the gate test fails on any detector module without a declaration. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",
+  "vocabulary": {
+    "states": [
+      "timeout",
+      "error",
+      "degraded"
+    ],
+    "dispositions": {
+      "open": "the call proceeds; the failure is logged and counted, and that layer's enforcement is lost for this call",
+      "closed": "the call is blocked",
+      "fail_mode": "resolved by the configured fail mode: open by default, closed when the operator opts in",
+      "unguarded": "no error channel exists: an exception propagates to the host application. Neither fail-open nor fail-closed - the absence of a decision, recorded so it is visible rather than assumed",
+      "not_applicable": "the state cannot arise for this layer"
+    },
+    "qualifiers": {
+      "shadow_exempt": "closed, unless that unit is configured observe-only (shadow)",
+      "warn_mode_flags": "closed in block mode, flags in warn mode; never silent"
+    }
+  },
+  "layers": [
+    {
+      "id": "enforcement_integrity_gate",
+      "module_ts": "sdk/src/proxy/config.ts",
+      "module_py": "sdk-python/obsvr/remote.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "open"
+      },
+      "degraded": {
+        "disposition": "closed"
+      },
+      "hook_overridable": false,
+      "notes": "A failed policy poll does not block by itself; it counts toward staleness. Degraded state blocks: a revoked key or paused project always, and stale sync when the fail mode is closed. Not overridable by any means - the server has withdrawn authorization."
+    },
+    {
+      "id": "session_taint",
+      "module_ts": "sdk/src/policy/session-taint.ts",
+      "module_py": "sdk-python/obsvr/session_taint.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": true,
+      "notes": "Pure in-process latch over a bounded store. No timeout channel, no error channel."
+    },
+    {
+      "id": "canary",
+      "module_ts": "sdk/src/policy/canary.ts",
+      "module_py": "sdk-python/obsvr/canary.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": false,
+      "notes": "A canary leak is unsuppressible: the hook-override branch excludes it explicitly, because a leaked canary is proof of exfiltration in progress."
+    },
+    {
+      "id": "builtin_pii_scan",
+      "module_ts": "sdk/src/policy/hook.ts",
+      "module_py": "sdk-python/obsvr/policy.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": true,
+      "notes": "Regex tier, bounded by the ReDoS-checked matcher rather than a timeout. An explicit hook allow can override its block; a hook timeout or error cannot."
+    },
+    {
+      "id": "presidio_merge",
+      "module_ts": "sdk/src/policy/presidio.ts",
+      "module_py": "sdk-python/obsvr/presidio.py",
+      "timeout": {
+        "disposition": "open"
+      },
+      "error": {
+        "disposition": "open"
+      },
+      "degraded": {
+        "disposition": "open"
+      },
+      "hook_overridable": true,
+      "notes": "Out-of-process NER sidecar. Timeout or transport error yields no findings and the builtin regex tier still decides, so the layer degrades rather than disappears."
+    },
+    {
+      "id": "deobfuscation_views",
+      "module_ts": "sdk/src/policy/deobfuscate.ts",
+      "module_py": "sdk-python/obsvr/deobfuscate.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": true,
+      "notes": "Findings-only view producer; malformed encodings are handled internally (an undecodable view is simply not produced) rather than raised."
+    },
+    {
+      "id": "multi_turn_injection",
+      "module_ts": "sdk/src/policy/injection-session.ts",
+      "module_py": "sdk-python/obsvr/injection_session.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": true,
+      "notes": "In-process accumulator over a bounded store; scoring is arithmetic with no failure channel."
+    },
+    {
+      "id": "policy_floor",
+      "module_ts": "sdk/src/policy/rules.ts",
+      "module_py": "sdk-python/obsvr/rules.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": false,
+      "notes": "The non-overridable baseline. A floor redact the pipeline cannot guarantee fails CLOSED to a block rather than forward content under a false redacted record. Hook attempts to override are refused and recorded on the event."
+    },
+    {
+      "id": "policy_rules",
+      "module_ts": "sdk/src/policy/rules.ts",
+      "module_py": "sdk-python/obsvr/rules.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": true,
+      "notes": "Deterministic rule evaluation; regex conditions are ReDoS-checked rather than timed out."
+    },
+    {
+      "id": "customer_hook",
+      "module_ts": "sdk/src/proxy/wrapper.ts",
+      "module_py": "sdk-python/obsvr/policy.py",
+      "timeout": {
+        "disposition": "fail_mode"
+      },
+      "error": {
+        "disposition": "fail_mode"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": false,
+      "notes": "The one layer whose disposition the operator chooses: open by default, closed on opt-in. A timeout or error is recorded as its own hook disposition and can never un-block builtin enforcement - only an explicit allow verdict does that."
+    },
+    {
+      "id": "external_backend",
+      "module_ts": "sdk/src/policy/external-backend.ts",
+      "module_py": "sdk-python/obsvr/external_backend.py",
+      "timeout": {
+        "disposition": "closed",
+        "qualifier": "shadow_exempt"
+      },
+      "error": {
+        "disposition": "closed",
+        "qualifier": "shadow_exempt"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": false,
+      "notes": "An external decision point that cannot answer is a deny, because the operator asked for its verdict on every call. Observe-only (shadow) backends are exempt: they were never load-bearing."
+    },
+    {
+      "id": "mcp_tool_policy",
+      "module_ts": "sdk/src/integrations/mcp.ts",
+      "module_py": "sdk-python/obsvr/integrations/mcp.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "fail_mode"
+      },
+      "degraded": {
+        "disposition": "closed"
+      },
+      "hook_overridable": false,
+      "notes": "The tool-call path guards its own policy evaluation and resolves failure by the configured fail mode - the posture the provider pipeline states but does not yet implement. Degraded enforcement blocks tool calls like any other governed call."
+    },
+    {
+      "id": "tool_pinning",
+      "module_ts": "sdk/src/policy/tool-pinning.ts",
+      "module_py": "sdk-python/obsvr/tool_pinning.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "closed",
+        "qualifier": "warn_mode_flags"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": false,
+      "notes": "A descriptor that cannot be hashed is treated as a mismatch, never as a pass. Enforcement follows the configured pinning mode (block blocks, warn flags); neither is silent. Contained per tool so one unhashable entry cannot abort discovery."
+    },
+    {
+      "id": "tool_result_scan",
+      "module_ts": "sdk/src/policy/response-scan.ts",
+      "module_py": "sdk-python/obsvr/response_scan.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "unguarded"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": false,
+      "notes": "Response-side scan of tool results, the exfiltration channel. Runs outside the tool-call path's policy guard, so an exception here reaches the caller."
+    }
+  ]
+}

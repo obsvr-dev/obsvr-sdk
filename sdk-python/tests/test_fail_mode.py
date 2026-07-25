@@ -131,3 +131,199 @@ class TestKillSwitchNotHookOverridable:
             )
         assert result["decision"] == "block"
         assert result["compliance"]["action_source"] == "customer_hook"
+
+
+# ── Central failure-disposition registry ─────────────────────────────────────
+#
+# The registry declares what every governance layer does when it cannot render
+# a verdict. These tests assert three things: the Python registry matches the
+# shared fixture (which the TypeScript twin also pins to, so this is the parity
+# check), every detector module has a declaration (so a new detector cannot land
+# without stating its posture), and the declarations match what the code
+# actually does for every state a unit test can drive.
+
+import json
+from pathlib import Path
+
+from obsvr.failure_dispositions import (
+    DECLARED_LAYER_IDS,
+    FAILURE_DISPOSITIONS,
+    disposition_for,
+    get_failure_disposition,
+    unguarded_layer_ids,
+)
+
+FIXTURE_PATH = (
+    Path(__file__).parent / "../../conformance/fixtures/fail_mode.json"
+).resolve()
+
+
+def _fixture():
+    with open(FIXTURE_PATH) as f:
+        return json.load(f)
+
+
+class TestRegistryPinnedToFixture:
+    def test_declares_exactly_the_pinned_layers_in_order(self):
+        assert DECLARED_LAYER_IDS == [layer["id"] for layer in _fixture()["layers"]]
+
+    def test_matches_the_fixture_on_every_field(self):
+        for expected in _fixture()["layers"]:
+            entry = get_failure_disposition(expected["id"])
+            assert entry is not None, expected["id"]
+            assert entry["module"] == expected["module_py"], expected["id"]
+            assert entry["hook_overridable"] == expected["hook_overridable"], expected["id"]
+            assert entry["notes"] == expected["notes"], expected["id"]
+            for state in _fixture()["vocabulary"]["states"]:
+                assert entry[state] == expected[state], f"{expected['id']}.{state}"
+
+    def test_every_layer_declares_all_states_with_pinned_vocabulary(self):
+        vocab = _fixture()["vocabulary"]
+        for entry in FAILURE_DISPOSITIONS:
+            for state in vocab["states"]:
+                declared = entry[state]
+                assert declared["disposition"] in vocab["dispositions"]
+                if declared.get("qualifier"):
+                    assert declared["qualifier"] in vocab["qualifiers"]
+
+    def test_no_duplicate_layer_ids(self):
+        assert len(set(DECLARED_LAYER_IDS)) == len(DECLARED_LAYER_IDS)
+
+
+class TestRegistryGate:
+    """Modules that are NOT governance layers and need no declaration. Adding a
+    name here is a deliberate statement that it decides nothing; adding a
+    detector without a declaration fails this gate."""
+
+    NON_DETECTOR_MODULES = {
+        "__init__.py",
+        "_version.py",
+        "agent_run.py",
+        "auto.py",
+        "config.py",
+        "decision_record.py",
+        "escrow.py",
+        "events.py",
+        "failure_dispositions.py",
+        "normalize.py",
+        "otel_mirror.py",
+        "pii_types.py",
+        "policy_log.py",
+        "reason_codes.py",
+        "register.py",
+        "safe_regex.py",
+        "sender.py",
+        "span.py",
+        "span_attributes.py",
+        "ssrf.py",
+        "verify_chain.py",
+        "wrap.py",
+    }
+
+    def test_every_detector_module_is_declared(self):
+        pkg_dir = Path(__file__).parent.parent / "obsvr"
+        declared = {Path(str(e["module"])).name for e in FAILURE_DISPOSITIONS}
+        undeclared = sorted(
+            p.name
+            for p in pkg_dir.glob("*.py")
+            if p.name not in self.NON_DETECTOR_MODULES and p.name not in declared
+        )
+        assert undeclared == [], (
+            f"detector modules with no failure disposition declared: {undeclared}"
+        )
+
+    def test_unguarded_layers_are_counted_so_the_number_cannot_grow_unnoticed(self):
+        assert sorted(unguarded_layer_ids()) == sorted(
+            [
+                "builtin_pii_scan",
+                "canary",
+                "deobfuscation_views",
+                "multi_turn_injection",
+                "policy_floor",
+                "policy_rules",
+                "session_taint",
+                "tool_result_scan",
+            ]
+        )
+
+
+class TestDeclarationsMatchObservedBehavior:
+    def test_customer_hook_is_fail_mode_and_behaves_that_way(self):
+        assert disposition_for("customer_hook", "timeout") == {"disposition": "fail_mode"}
+        assert disposition_for("customer_hook", "error") == {"disposition": "fail_mode"}
+
+        def boom(_event):
+            raise RuntimeError("hook exploded")
+
+        _reset()
+        obsvr.init(api_key="test", on_pre_call=boom)
+        assert apply_pre_call_policy(
+            "hello", get_config(), provider="openai", operation="chat"
+        )["decision"] == "allow"
+
+        _reset()
+        obsvr.init(api_key="test", fail_mode="closed", on_pre_call=boom)
+        assert apply_pre_call_policy(
+            "hello", get_config(), provider="openai", operation="chat"
+        )["decision"] == "block"
+
+    def test_external_backend_is_closed_with_a_shadow_exemption(self, monkeypatch):
+        assert disposition_for("external_backend", "error") == {
+            "disposition": "closed",
+            "qualifier": "shadow_exempt",
+        }
+        from obsvr import external_backend as eb
+
+        def boom(*_a):
+            raise RuntimeError("ECONNREFUSED")
+
+        backend = {"type": "opa", "url": "https://8.8.8.8/v1/data/obsvr/allow"}
+
+        _reset()
+        monkeypatch.setattr(eb, "_urllib_transport", boom)
+        obsvr.init(api_key="t", external_policy_backend=dict(backend))
+        assert apply_pre_call_policy(
+            "hello world", get_config(), provider="openai", operation="chat.completions.create"
+        )["decision"] == "block"
+
+        _reset()
+        obsvr.init(api_key="t", external_policy_backend={**backend, "shadow": True})
+        assert apply_pre_call_policy(
+            "hello world", get_config(), provider="openai", operation="chat.completions.create"
+        )["decision"] == "allow"
+
+    def test_integrity_gate_is_closed_when_degraded(self):
+        from unittest.mock import patch
+
+        assert disposition_for("enforcement_integrity_gate", "degraded") == {
+            "disposition": "closed"
+        }
+        _reset()
+        obsvr.init(api_key="test")
+        with patch(
+            "obsvr.remote.is_enforcement_degraded",
+            return_value={"degraded": True, "reason": "project_paused_or_key_revoked"},
+        ):
+            assert apply_pre_call_policy(
+                "hello", get_config(), provider="openai", operation="chat"
+            )["decision"] == "block"
+
+    def test_an_unguarded_layer_really_is_unguarded(self, monkeypatch):
+        """The declaration says an exception escapes to the host. Prove it, so
+        the day someone adds a guard this test tells them to update the table."""
+        import pytest
+
+        from obsvr import policy as policy_mod
+
+        assert disposition_for("builtin_pii_scan", "error") == {"disposition": "unguarded"}
+
+        def boom(*_a, **_k):
+            raise RuntimeError("detector bug")
+
+        _reset()
+        obsvr.init(api_key="test", pii_policy={"action": "block", "types": ["email"]})
+        monkeypatch.setattr(policy_mod, "run_builtin_pii_scan", boom)
+        with pytest.raises(RuntimeError, match="detector bug"):
+            apply_pre_call_policy(
+                "hello a@b.com", get_config(), provider="openai", operation="chat"
+            )

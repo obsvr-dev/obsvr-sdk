@@ -1,13 +1,31 @@
 /**
- * Security regression tests: failMode ('open' | 'closed') enforcement.
+ * Security regression tests: failMode ('open' | 'closed') enforcement, and the
+ * central failure-disposition registry that declares what every governance
+ * layer does when it cannot render a verdict.
  *
  * fail_open (default): hook timeout/error → allow (audit-friendly).
  * fail_closed: hook timeout/error → block (a policy engine that cannot
  * render a verdict must not be treated as approval).
+ *
+ * The registry half asserts three things: the TS registry matches the shared
+ * fixture (which is also what the Python twin pins to, so this is the parity
+ * check), every detector module has a declaration (so a new detector cannot
+ * land without stating its posture), and the declarations match what the code
+ * actually does for every state a unit test can drive.
  */
-import { init, _reset, getConfig } from '../../src/proxy/config';
+import * as fs from 'fs';
+import * as path from 'path';
+import { init, _reset, getConfig, _getPolicySyncState } from '../../src/proxy/config';
 import { applyPreCallPolicy } from '../../src/integrations/core';
 import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
+import {
+  FAILURE_DISPOSITIONS,
+  DECLARED_LAYER_IDS,
+  dispositionFor,
+  getFailureDisposition,
+  unguardedLayerIds,
+  type FailureState,
+} from '../../src/policy/failure-dispositions';
 
 beforeEach(() => { _reset(); _resetSender(); });
 
@@ -99,4 +117,178 @@ describe('failMode: closed', () => {
     });
     expect(result.decision).toBe('allow');
   });
+});
+
+// ── Central failure-disposition registry ─────────────────────────────────────
+
+function findFixture(rel: string): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, rel);
+    if (fs.existsSync(candidate)) return candidate;
+    dir = path.dirname(dir);
+  }
+  throw new Error(`fixture not found upward from ${process.cwd()}: ${rel}`);
+}
+
+interface FixtureLayer {
+  id: string;
+  module_ts: string;
+  module_py: string;
+  timeout: { disposition: string; qualifier?: string };
+  error: { disposition: string; qualifier?: string };
+  degraded: { disposition: string; qualifier?: string };
+  hook_overridable: boolean;
+  notes: string;
+}
+
+const fixture = JSON.parse(
+  fs.readFileSync(findFixture('conformance/fixtures/fail_mode.json'), 'utf-8'),
+) as {
+  vocabulary: { states: FailureState[]; dispositions: Record<string, string>; qualifiers: Record<string, string> };
+  layers: FixtureLayer[];
+};
+
+describe('failure-disposition registry: pinned to the shared fixture', () => {
+  it('declares exactly the layers the fixture pins, in the same order', () => {
+    expect(DECLARED_LAYER_IDS).toEqual(fixture.layers.map((l) => l.id));
+  });
+
+  it('matches the fixture on every field, for every layer', () => {
+    for (const expected of fixture.layers) {
+      const entry = getFailureDisposition(expected.id);
+      expect(entry).toBeDefined();
+      expect(entry!.module).toBe(expected.module_ts);
+      expect(entry!.hookOverridable).toBe(expected.hook_overridable);
+      expect(entry!.notes).toBe(expected.notes);
+      for (const state of fixture.vocabulary.states) {
+        expect(entry![state]).toEqual(expected[state]);
+      }
+    }
+  });
+
+  it('declares all three failure states for every layer, using the pinned vocabulary', () => {
+    const validDispositions = Object.keys(fixture.vocabulary.dispositions);
+    const validQualifiers = Object.keys(fixture.vocabulary.qualifiers);
+    for (const entry of FAILURE_DISPOSITIONS) {
+      for (const state of fixture.vocabulary.states) {
+        const declared = entry[state];
+        expect(validDispositions).toContain(declared.disposition);
+        if (declared.qualifier) expect(validQualifiers).toContain(declared.qualifier);
+      }
+    }
+  });
+
+  it('has no duplicate layer ids', () => {
+    expect(new Set(DECLARED_LAYER_IDS).size).toBe(DECLARED_LAYER_IDS.length);
+  });
+});
+
+describe('failure-disposition registry: the gate', () => {
+  /**
+   * Modules under src/policy/ that are NOT governance layers, and therefore
+   * need no declaration. Adding a file here is a deliberate statement that it
+   * decides nothing; adding a detector without a declaration fails below.
+   */
+  const NON_DETECTOR_MODULES = new Set([
+    'approvals.ts', // approval bookkeeping consumed by the rules engine
+    'decision-record.ts', // canonical decision document + hashing
+    'normalize.ts', // text normalization primitives
+    'pii-types.ts', // the PII type vocabulary
+    'policy-log.ts', // policy-change audit emission
+    'rego-export.ts', // one-way policy export, never an evaluator
+    'tool-content-hash.ts', // evidence producer, decides nothing
+    'failure-dispositions.ts', // this registry
+  ]);
+
+  it('declares every detector module in src/policy/', () => {
+    const policyDir = path.dirname(findFixture('sdk/src/policy/hook.ts'));
+    const declaredModules = new Set(FAILURE_DISPOSITIONS.map((e) => path.basename(e.module)));
+    const undeclared = fs
+      .readdirSync(policyDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+      .map((entry) => entry.name)
+      .filter((name) => !NON_DETECTOR_MODULES.has(name) && !declaredModules.has(name));
+
+    // A new detector must declare its failure disposition before it can land.
+    expect(undeclared).toEqual([]);
+  });
+
+  it('counts the layers whose failure escapes to the host, so the number cannot grow unnoticed', () => {
+    expect(unguardedLayerIds().sort()).toEqual(
+      [
+        'builtin_pii_scan',
+        'canary',
+        'deobfuscation_views',
+        'multi_turn_injection',
+        'policy_floor',
+        'policy_rules',
+        'session_taint',
+        'tool_result_scan',
+      ].sort(),
+    );
+  });
+});
+
+describe('failure-disposition registry: declarations match observed behavior', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('customer_hook is declared fail_mode, and behaves that way in both modes', async () => {
+    expect(dispositionFor('customer_hook', 'timeout')).toEqual({ disposition: 'fail_mode' });
+    expect(dispositionFor('customer_hook', 'error')).toEqual({ disposition: 'fail_mode' });
+
+    init({ api_key: 'test', on_pre_call: () => { throw new Error('boom'); } });
+    expect((await applyPreCallPolicy('hello', {
+      config: getConfig(), provider: 'openai', operation: 'chat',
+    })).decision).toBe('allow');
+
+    _reset();
+    init({ api_key: 'test', fail_mode: 'closed', on_pre_call: () => { throw new Error('boom'); } });
+    expect((await applyPreCallPolicy('hello', {
+      config: getConfig(), provider: 'openai', operation: 'chat',
+    })).decision).toBe('block');
+  });
+
+  it('external_backend is declared closed with a shadow exemption, and behaves that way', async () => {
+    expect(dispositionFor('external_backend', 'error')).toEqual({
+      disposition: 'closed',
+      qualifier: 'shadow_exempt',
+    });
+
+    const failingFetch = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+
+    global.fetch = failingFetch;
+    init({ api_key: 't', external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow' } });
+    expect((await applyPreCallPolicy('hello world', {
+      config: getConfig(), provider: 'openai', operation: 'chat.completions.create',
+    })).decision).toBe('block');
+
+    _reset();
+    global.fetch = failingFetch;
+    init({
+      api_key: 't',
+      external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow', shadow: true },
+    });
+    expect((await applyPreCallPolicy('hello world', {
+      config: getConfig(), provider: 'openai', operation: 'chat.completions.create',
+    })).decision).toBe('allow');
+  });
+
+  it('enforcement_integrity_gate is declared closed when degraded, and blocks when degraded', async () => {
+    expect(dispositionFor('enforcement_integrity_gate', 'degraded')).toEqual({ disposition: 'closed' });
+
+    init({ api_key: 'test' });
+    _getPolicySyncState().remoteDisabled = true;
+    try {
+      expect((await applyPreCallPolicy('hello', {
+        config: getConfig(), provider: 'openai', operation: 'chat',
+      })).decision).toBe('block');
+    } finally {
+      _getPolicySyncState().remoteDisabled = false;
+    }
+  });
+
 });
