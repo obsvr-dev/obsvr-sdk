@@ -234,7 +234,7 @@ Event signatures are derived from your API key inside the SDK. They prove captur
 
 ### Fail mode
 
-Default is fail-open: if a pre-call hook times out or throws, the call is allowed (and the failure recorded). Set `failMode: 'closed'` for policies that must never fail open. If the obsvr backend is unreachable, cached policy rules keep enforcing; only rule updates degrade.
+Default is fail-open: if a hook times out or throws, or a detector layer fails while deciding, the call is allowed, that layer's enforcement is lost for it, and the failure is counted and recorded on the call's own event. Set `failMode: 'closed'` for policies that must never fail open. `failMode` deliberately cannot move three things: `policy_floor` and `canary` always fail **closed** (a floor that cannot run must not wave a call through), a `redact` decision whose redactor then throws **blocks** rather than forwarding the content it was told to strip, and after the provider has answered nothing is withheld from your application — a response-side failure falls closed only on the stored audit copy. If the obsvr backend is unreachable, cached policy rules keep enforcing; only rule updates degrade.
 
 ### PII scanning scope
 

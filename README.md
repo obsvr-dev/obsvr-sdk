@@ -180,7 +180,8 @@ obsvr.init({
   onPreCall: async (event) =>
     isHighRisk(event.prompt) ? await waitForHumanApproval(event) : "allow",
   hookTimeoutMs: 2000,
-  failMode: "open", // 'open' (default) allows on hook timeout/throw; 'closed' blocks
+  failMode: "open", // 'open' (default) allows on hook/detector failure; 'closed' blocks.
+                    // Floors, canary, and a failed redaction block either way.
 });
 ```
 
@@ -426,13 +427,13 @@ Documented plainly, from the code. For the full threat model — what the signat
 - **Streaming.** With `stream: true`, PII scanning and policy hooks run **before** the LLM is contacted, so a blocked call never opens the stream. But **post-call** response scanning on streamed output is audit-time, not enforcement-time: tokens reach the caller as they arrive.
 - **Signing model.** The client chain is symmetric (API-key-derived): it proves capture order and detects modification, but a key-holder could construct validly-signed events. The service's countersignature and Ed25519 root are what give external, public verifiability. Integrity, not non-repudiation against a key-holder.
 - **Enforcement vs. sampling.** `sampleRate` gates audit-event _emission_ only — enforcement (PII, rules, hooks) runs on **every** call regardless of the sample rate.
-- **Fail mode.** Default is **fail-open**: if a pre-call hook times out or throws, the call is allowed and the failure is recorded. Set `failMode: 'closed'` for policies that must never fail open (and note that a closed policy with rule-polling disabled degrades to last-good rules).
+- **Fail mode.** Default is **fail-open**: if a hook times out or throws, or a detector layer fails while deciding, the call is allowed, that layer's enforcement is lost for it, and the failure is counted (`detector_errors` on the fleet poll) and recorded on the call's own event. Set `failMode: 'closed'` for policies that must never fail open (and note that a closed policy with rule-polling disabled degrades to last-good rules). Three things `failMode` deliberately cannot move: `policy_floor` and `canary` always fail **closed** (a floor that cannot run must not wave a call through — that is what a floor is for); a `redact` decision whose redactor then throws **blocks** rather than forwarding the content it was told to strip; and once the provider has answered, nothing is withheld from your application, so a response-side failure falls closed only on the *stored audit copy*, which becomes `[UNSCANNED:detector_error]` rather than content nothing scanned. Every layer's posture per failure state is pinned by `conformance/fixtures/fail_mode.json` and asserted in both SDKs.
 - **PII scope.** Policy decisions scan the last user message; `name`, `address`, `person`, `location`, `medical`, `national_id` require Presidio and never fire on the built-in regex.
 - **Budget scope.** In-process token/request budgets are enforced **per SDK instance**, and token usage is recorded post-call, so N instances can allow up to N× a limit and budgets lag by one call. Fleet-wide quota escrow is coordinated by the ingest service; enforce hard global caps upstream if you need them.
 - **Serverless.** Each cold start begins a fresh integrity session (`sdk_session_id`, `seq_no` reset). Multiple sessions starting at `seq_no=1` are expected and verify correctly. Call `await obsvr.flush()` before the runtime freezes.
 - **SDK bypass.** Not calling `init()` means no coverage — there is no post-hoc runtime check; assert `obsvr.isInitialized()` at startup. `disabled: true` in production emits a `governance_disabled` event so the bypass is on the record.
 - **Two copies of the SDK in one process.** If the SDK is installed twice — directly and again as a transitive dependency — the first copy to `init()` governs and the second logs a warning and stands down, so one call is never governed or emitted twice. A copy that stood down does **not** wrap: clients wrapped only through it are **not governed**. The warning names the fix (deduplicate the dependency); do not treat it as cosmetic.
-- **Internal detector failure.** A detector that throws unexpectedly is not currently converted into an allow or a block on the in-process pipeline — the exception propagates to your call. Hook timeouts and errors *are* resolved by `failMode`, as is MCP tool-call policy evaluation. Every layer's declared posture per failure state is recorded in `conformance/fixtures/fail_mode.json` and asserted in both SDKs, including the layers where this gap exists.
+- **Audit-sender serialization.** An exception inside a detector layer never reaches your application (see "Fail mode" above), but one obsvr path is still unguarded and is named rather than buried: the audit sender serializes host-supplied `metadata` with a plain `JSON.stringify`, so metadata carrying a throwing property getter, a throwing `toJSON`, or a circular reference can surface from the sender. It is tracked with its own posture decision. Pass plain, serializable metadata until it is closed.
 
 ---
 
