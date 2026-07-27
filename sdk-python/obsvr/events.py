@@ -13,6 +13,23 @@ from . import sender
 from .agent_run import with_run_metadata
 from .config import ResolvedConfig
 from .policy import DEFAULT_COMPLIANCE
+from .reason_codes import ReasonCode
+
+
+def _resolved_reason_code(comp):
+    """The event's registry reason code: the deciding layer's explicit code
+    when it supplied one, PERMITTED for a clean or overridden allow, else the
+    same derivation ``create_policy_error`` uses — one resolution rule for the
+    record and the exception alike. Always the wire string, never an enum
+    member, so the serialized event is stable."""
+    explicit = comp.get("reason_code")
+    if explicit:
+        return explicit.value if isinstance(explicit, ReasonCode) else str(explicit)
+    if comp.get("action_reason") in ("none", "customer_override"):
+        return ReasonCode.PERMITTED.value
+    from .errors import _resolve_reason_code
+
+    return _resolve_reason_code(comp.get("action_reason"), comp.get("action_source"), None)
 
 if TYPE_CHECKING:  # import cycle: errors -> reason_codes is fine, events -> errors at runtime is not
     from .errors import ObsvrPolicyError
@@ -259,6 +276,11 @@ def build_audit_event(
         "policy_version": comp["policy_version"],
         "action_taken": comp["action_taken"],
         "action_reason": comp["action_reason"],
+        # Registry reason code for the classification the decision rests on.
+        # Callers that resolved a fine-grained code pass it through; the rest
+        # derive here exactly the way the raised error derives, so the record
+        # and the exception cannot disagree.
+        "reason_code": _resolved_reason_code(comp),
         "action_source": comp["action_source"],
         "redacted_types": comp["redacted_types"],
         "blocked_types": comp["blocked_types"],

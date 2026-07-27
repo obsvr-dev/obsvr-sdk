@@ -738,6 +738,13 @@ export interface AuditEvent {
   policy_version: string;
   action_taken: "allowed" | "blocked" | "redacted" | "hook_error" | "hook_timeout";
   action_reason: "pii_detected" | "policy_violation" | "customer_override" | "none";
+  /** Registry reason code (governance/reason-codes.ts) for the classification
+   * this decision rests on: the deciding layer's fine-grained code (e.g. the
+   * rules engine's KEYWORD_BLOCKED), never re-collapsed to a coarse category.
+   * PERMITTED on a clean allow; on a flagged-but-allowed call it carries the
+   * classifying code. Matches the reason_code on the thrown ObsvrPolicyError
+   * for the same decision. */
+  reason_code?: string;
   action_source: "builtin" | "builtin+presidio" | "customer_hook" | "policy_rules" | "external_backend" | "unknown";
   redacted_types: string[];
   blocked_types?: string[];

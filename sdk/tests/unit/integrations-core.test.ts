@@ -71,6 +71,28 @@ describe('applyPreCallPolicy', () => {
     expect(result.compliance.event_type).toBe('blocked_call');
     expect(result.compliance.action_reason).toBe('pii_detected');
     expect(result.compliance.blocked_types).toContain('ssn');
+    expect(result.compliance.reason_code).toBe('PII_DETECTED');
+  });
+
+  it('keeps the rules engine fine-grained reason code on the compliance', async () => {
+    // Regression: only rule_id/reason used to survive the rules result — the
+    // engine's KEYWORD_BLOCKED was re-derived as POLICY_VIOLATION downstream.
+    init({
+      api_key: 'test',
+      policy_rules: [
+        {
+          id: 'kw1', name: 'no magic word', enabled: true,
+          action: 'block', type: 'keyword', conditions: { keywords: ['xyzzy'] },
+        } as any,
+      ],
+    });
+    const result = await applyPreCallPolicy('please say xyzzy', {
+      config: getConfig(),
+      provider: 'bedrock',
+      operation: 'test',
+    });
+    expect(result.decision).toBe('block');
+    expect(result.compliance.reason_code).toBe('KEYWORD_BLOCKED');
   });
 
   it('redacts email by default severity', async () => {

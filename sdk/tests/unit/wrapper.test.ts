@@ -437,3 +437,103 @@ describe('wrap provenance_source labeling', () => {
     expect(sentEvents[0].provenance_source).toBeUndefined();
   });
 });
+
+describe('reason_code reaches the audit event un-collapsed', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+  });
+  afterEach(() => {
+    delete (global as any).fetch;
+  });
+
+  const captureEvents = () => {
+    const sentEvents: any[] = [];
+    (global as any).fetch = async (_url: any, opts: any) => {
+      const body = JSON.parse(opts.body);
+      Array.isArray(body) ? sentEvents.push(...body) : sentEvents.push(body);
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    return sentEvents;
+  };
+  const waitFor = async (events: any[], n: number) => {
+    for (let i = 0; i < 100 && events.length < n; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+
+  it('a rules-engine block carries the engine fine-grained code, matching the thrown error', async () => {
+    // Regression: the wrapper used to lift only rule_id/reason off the rules
+    // result and re-derive the code as POLICY_VIOLATION — the engine's
+    // KEYWORD_BLOCKED never reached the record or the error.
+    const sentEvents = captureEvents();
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      policy_rules: [
+        {
+          id: 'kw1', name: 'no magic word', enabled: true,
+          action: 'block', type: 'keyword', conditions: { keywords: ['xyzzy'] },
+        } as any,
+      ],
+    });
+    const wrapped = wrap({ chat: { completions: { create: async (_args: any) => ({}) } } });
+
+    let thrown: any;
+    try {
+      await wrapped.chat.completions.create({
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: 'please say xyzzy' }],
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeDefined();
+    expect(thrown.reason_code).toBe('KEYWORD_BLOCKED');
+
+    await waitFor(sentEvents, 1);
+    expect(sentEvents.length).toBe(1);
+    expect(sentEvents[0].event_type).toBe('blocked_call');
+    expect(sentEvents[0].reason_code).toBe('KEYWORD_BLOCKED');
+    // The record and the exception name the same classification, always.
+    expect(sentEvents[0].reason_code).toBe(thrown.reason_code);
+  });
+
+  it('a PII block derives PII_DETECTED on event and error alike', async () => {
+    const sentEvents = captureEvents();
+    init({ api_key: 'test', ingest_url: 'https://x', pii_policy: {} });
+    const wrapped = wrap({ chat: { completions: { create: async (_args: any) => ({}) } } });
+
+    let thrown: any;
+    try {
+      await wrapped.chat.completions.create({
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: 'my ssn is 123-45-6789' }],
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown.reason_code).toBe('PII_DETECTED');
+    await waitFor(sentEvents, 1);
+    expect(sentEvents[0].reason_code).toBe('PII_DETECTED');
+  });
+
+  it('a clean allow is PERMITTED', async () => {
+    const sentEvents = captureEvents();
+    init({ api_key: 'test', ingest_url: 'https://x', sample_rate: 1 });
+    const wrapped = wrap({
+      chat: {
+        completions: {
+          create: async (_args: any) => ({ choices: [{ message: { content: 'ok' } }], model: 'gpt-4' }),
+        },
+      },
+    });
+    await wrapped.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'hi there' }],
+    });
+    await waitFor(sentEvents, 1);
+    expect(sentEvents[0].action_taken).toBe('allowed');
+    expect(sentEvents[0].reason_code).toBe('PERMITTED');
+  });
+});

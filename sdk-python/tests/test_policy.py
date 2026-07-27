@@ -311,3 +311,70 @@ def test_scan_text_defaults_to_full_prompt():
         provider="openai", operation="chat",
     )
     assert r["decision"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# reason_code on the pre-call compliance (un-collapsed)
+# ---------------------------------------------------------------------------
+
+
+def test_pre_call_rules_block_keeps_engine_fine_grained_code():
+    # Regression: the pre-call assembly used to lift only rule_id/reason off
+    # the rules result - the engine's KEYWORD_BLOCKED never reached the
+    # compliance dict, so events and errors re-derived POLICY_VIOLATION.
+    from obsvr.rules import PolicyRule
+
+    cfg = _cfg(policy_rules=[PolicyRule(
+        id="kw1", name="no magic word", enabled=True, action="block",
+        type="keyword", conditions={"keywords": ["xyzzy"]},
+    )])
+    r = apply_pre_call_policy("please say xyzzy", cfg)
+    assert r["decision"] == "block"
+    assert r["compliance"]["reason_code"] == "KEYWORD_BLOCKED"
+
+
+def test_pre_call_pii_block_resolves_pii_detected():
+    r = apply_pre_call_policy("ssn 123-45-6789", _cfg(pii_policy={}))
+    assert r["compliance"]["reason_code"] == "PII_DETECTED"
+
+
+def test_pre_call_clean_allow_is_permitted():
+    r = apply_pre_call_policy("hello world", _cfg(pii_policy={}))
+    assert r["compliance"]["reason_code"] == "PERMITTED"
+
+
+def test_pre_call_customer_override_is_permitted():
+    cfg = _cfg(pii_policy={}, on_pre_call=lambda e: "allow")
+    r = apply_pre_call_policy("ssn 123-45-6789", cfg)
+    assert r["compliance"]["reason_code"] == "PERMITTED"
+
+
+def test_pre_call_hook_block_resolves_hook_blocked():
+    cfg = _cfg(pii_policy={}, on_pre_call=lambda e: "block")
+    r = apply_pre_call_policy("hello world", cfg)
+    assert r["compliance"]["reason_code"] == "HOOK_BLOCKED"
+
+
+def test_event_and_error_carry_the_same_reason_code():
+    # One resolution rule, two consumers: the audit event and the raised
+    # error must always name the same classification.
+    from obsvr.events import build_audit_event, blocked_call_error
+    from obsvr.rules import PolicyRule
+
+    cfg = _cfg(policy_rules=[PolicyRule(
+        id="kw1", name="no magic word", enabled=True, action="block",
+        type="keyword", conditions={"keywords": ["xyzzy"]},
+    )])
+    r = apply_pre_call_policy("please say xyzzy", cfg)
+    event = build_audit_event(
+        cfg,
+        provider="openai",
+        model="gpt-4o",
+        operation="chat.completion",
+        source="test",
+        prompt="please say xyzzy",
+        compliance=r["compliance"],
+    )
+    err = blocked_call_error(r["compliance"])
+    assert event["reason_code"] == "KEYWORD_BLOCKED"
+    assert event["reason_code"] == err.reason_code

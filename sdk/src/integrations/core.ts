@@ -19,7 +19,8 @@ import {
 import { spanEnvelopeFor, withSpanMetadata } from "../proxy/span.js";
 import { withRunMetadata } from "../proxy/agent-run.js";
 import { getCurrentSubject } from "../proxy/subject.js";
-import { createPolicyError, type ObsvrPolicyError } from "../policy/policy-error.js";
+import { createPolicyError, resolveReasonCode, type ObsvrPolicyError } from "../policy/policy-error.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 import {
   preCallFailureCompliance,
   recordDetectorFailure,
@@ -128,6 +129,10 @@ export interface ComplianceInfo {
     | "policy_violation"
     | "customer_override"
     | "none";
+  /** Registry reason code for the classification the decision rests on (the
+   * deciding layer's fine-grained code). When absent, buildIntegrationEvent
+   * derives it the same way the thrown error does. */
+  reason_code?: string;
   action_source: "builtin" | "builtin+presidio" | "customer_hook" | "policy_rules" | "external_backend" | "unknown";
   redacted_types: string[];
   blocked_types: string[];
@@ -634,6 +639,7 @@ export async function applyPreCallPolicy(
     let floorBlock = false;
     let floorRuleId: string | undefined;
     let floorPolicyReason: string | undefined;
+    let floorReasonCode: string | undefined;
     let floorOverrideIgnored: { rule_id?: string; attempted: "allow" | "redact" } | undefined;
     const floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
     if (config.policyFloor && config.policyFloor.length > 0 && actionTaken !== "blocked") {
@@ -659,6 +665,7 @@ export async function applyPreCallPolicy(
         floorBlock = true;
         floorRuleId = floorResult.rule_id;
         floorPolicyReason = floorResult.reason ?? "Blocked by policy floor";
+        floorReasonCode = floorResult.reason_code;
         actionTaken = "blocked";
         actionReason = "policy_violation";
         actionSource = "policy_rules";
@@ -673,6 +680,10 @@ export async function applyPreCallPolicy(
     //      wrapper and the Python shared pre-call use.
     let rulesRuleId: string | undefined = floorRuleId ?? mtRuleId;
     let rulesPolicyReason: string | undefined = floorPolicyReason ?? mtPolicyReason;
+    // The fine-grained code from whichever structured evaluation decided —
+    // floor first, customer rules when they run. Survives to the event and
+    // the thrown error; never re-collapsed to a coarse category downstream.
+    let rulesReasonCode: string | undefined = floorReasonCode;
     let quotaUnmetered: QuotaUnmetered | undefined;
     if (config.policyRules && config.policyRules.length > 0 && actionTaken !== "blocked") {
       const rulesResult = evaluatePolicyRules(config.policyRules, promptText, "prompt", {
@@ -691,11 +702,17 @@ export async function applyPreCallPolicy(
       }
       rulesRuleId = rulesResult.rule_id;
       rulesPolicyReason = rulesResult.reason;
+      // A no-match PERMITTED (no rule engaged) must not erase an earlier
+      // layer's classification (a detect-only PII finding, a taint flag).
+      if (rulesResult.decision !== 'allow' || rulesResult.rule_id) {
+        rulesReasonCode = rulesResult.reason_code;
+      }
     }
 
     // 2. Customer hook - fires according to hookTrigger config (M-2).
     let hookRuleId: string | undefined;
     let hookPolicyReason: string | undefined;
+    let hookReasonCode: string | undefined;
     // Hook disposition for the decision record (ADR-2): configured-but-not-run
     // is "skipped"; outcomes overwrite it below.
     let hookDisposition: HookDisposition = config.on_pre_call ? 'skipped' : 'not_configured';
@@ -764,6 +781,11 @@ export async function applyPreCallPolicy(
         actionTaken = "blocked";
         actionReason = "policy_violation";
         actionSource = "customer_hook";
+        // A timeout resolved closed is its own classification; a real hook
+        // block derives HOOK_BLOCKED from the source at event build. Either
+        // way an earlier layer's code no longer describes this decision.
+        hookReasonCode = hookDisposition === "timeout" ? ReasonCode.HOOK_TIMEOUT : undefined;
+        rulesReasonCode = undefined;
       } else if (
         hookDecision === "allow" &&
         hookDisposition === "allow" &&
@@ -783,6 +805,7 @@ export async function applyPreCallPolicy(
           actionTaken = "allowed";
           actionReason = "customer_override";
           actionSource = "customer_hook";
+          rulesReasonCode = undefined; // the overridden block's code no longer applies
         }
       } else if (
         hookDecision === "redact" &&
@@ -874,6 +897,15 @@ export async function applyPreCallPolicy(
       policy_version: rulesHash,
       action_taken: actionTaken,
       action_reason: actionReason,
+      // Same precedence as rule_id below; anything still unresolved derives
+      // at event build exactly the way the thrown error derives, so the
+      // record and the exception cannot disagree.
+      reason_code:
+        hookReasonCode ??
+        rulesReasonCode ??
+        (actionReason === "none" || actionReason === "customer_override"
+          ? ReasonCode.PERMITTED
+          : resolveReasonCode({ action_reason: actionReason, action_source: actionSource })),
       action_source: actionSource,
       redacted_types: redactedTypes,
       blocked_types: blockedTypes,
@@ -1575,6 +1607,17 @@ export function buildIntegrationEvent(
     policy_version: compliance.policy_version,
     action_taken: compliance.action_taken,
     action_reason: compliance.action_reason,
+    // Callers that resolved a fine-grained code pass it through; the rest
+    // derive here, the same way blockedCallError derives, so every event
+    // carries a registry code and it always matches the thrown error's.
+    reason_code:
+      compliance.reason_code ??
+      (compliance.action_reason === "none" || compliance.action_reason === "customer_override"
+        ? ReasonCode.PERMITTED
+        : resolveReasonCode({
+            action_reason: compliance.action_reason,
+            action_source: compliance.action_source,
+          })),
     action_source: compliance.action_source,
     redacted_types: compliance.redacted_types,
     blocked_types: compliance.blocked_types,
@@ -1706,6 +1749,7 @@ export function blockedCallError(compliance: ComplianceInfo): ObsvrPolicyError {
     policy_version: compliance.policy_version,
     policy_reason: compliance.policy_reason,
     rule_id: compliance.rule_id,
+    reason_code: compliance.reason_code,
   });
 }
 

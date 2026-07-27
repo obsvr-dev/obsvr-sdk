@@ -115,7 +115,8 @@ import {
 } from "./sender/index.js";
 import { truncate } from "../utils/truncate.js";
 import { debugLog } from "../utils/logger.js";
-import { createPolicyError } from "../policy/policy-error.js";
+import { createPolicyError, resolveReasonCode } from "../policy/policy-error.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 import { generateUUID } from "../client.js";
 
 /**
@@ -128,6 +129,9 @@ type ComplianceCtx = {
   policyVersion: string;
   actionTaken: "allowed" | "blocked" | "redacted";
   actionReason: "pii_detected" | "policy_violation" | "customer_override" | "none";
+  /** Registry reason code for the classification the decision rests on; the
+   * deciding layer's own fine-grained code, never re-collapsed downstream. */
+  reasonCode?: string;
   actionSource: "builtin" | "builtin+presidio" | "customer_hook" | "policy_rules" | "external_backend" | "unknown";
   redactedTypes: string[];
   blockedTypes: string[];
@@ -149,6 +153,7 @@ const DEFAULT_COMPLIANCE: ComplianceCtx = {
   policyVersion: "v1",
   actionTaken: "allowed",
   actionReason: "none",
+  reasonCode: ReasonCode.PERMITTED,
   actionSource: "unknown",
   redactedTypes: [],
   blockedTypes: [],
@@ -657,6 +662,7 @@ function buildAuditEvent(
     policy_version: compliance.policyVersion,
     action_taken: compliance.actionTaken,
     action_reason: compliance.actionReason,
+    reason_code: compliance.reasonCode,
     action_source: compliance.actionSource,
     redacted_types: compliance.redactedTypes,
     blocked_types: compliance.blockedTypes,
@@ -925,6 +931,7 @@ function wrapStreamingIterator(
           policy_version: compliance.policyVersion,
           action_taken: compliance.actionTaken,
           action_reason: compliance.actionReason,
+          reason_code: compliance.reasonCode,
           action_source: compliance.actionSource,
           redacted_types: compliance.redactedTypes,
           blocked_types: compliance.blockedTypes,
@@ -1020,6 +1027,11 @@ function createAuditedMethod(
     let actionTaken: ComplianceCtx["actionTaken"] = "allowed";
     let actionReason: ComplianceCtx["actionReason"] = "none";
     let actionSource: ComplianceCtx["actionSource"] = "unknown";
+    // The deciding layer's own registry code. Set wherever a layer knows its
+    // classification (the rules engine returns one per rule type); anything
+    // still undecided at event-build time falls back to the same derivation
+    // the thrown error uses, so the two can never disagree.
+    let reasonCode: string | undefined;
     let redactedTypes: string[] = [];
     let blockedTypes: string[] = [];
     let ruleIdOverride: string | undefined;
@@ -1311,6 +1323,7 @@ function createAuditedMethod(
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "policy_rules";
+          reasonCode = floorResult.reason_code;
           debugLog(config, "warn", `Floor block (${floorResult.decision} → block): ${policyReasonOverride}`);
         }
       }
@@ -1335,6 +1348,13 @@ function createAuditedMethod(
         });
         ruleId = result.rule_id;
         policyReason = result.reason;
+        // The engine's own fine-grained code survives to the event and the
+        // thrown error — it is not re-derived into a coarse category further
+        // down. A no-match PERMITTED (no rule engaged) must not erase an
+        // earlier layer's classification, e.g. a detect-only PII finding.
+        if (result.decision !== "allow" || result.rule_id) {
+          reasonCode = result.reason_code;
+        }
         // A quota rule the bounded meter could not count is declared on this
         // call's own event, on the same reserved channel detector_failure and
         // canary evidence take. Without it an unenforced quota rule is
@@ -1470,6 +1490,10 @@ function createAuditedMethod(
         actionTaken = "blocked";
         actionReason = "policy_violation";
         actionSource = "customer_hook";
+        // A timeout resolved closed is its own classification; a real hook
+        // block derives HOOK_BLOCKED from the source at event build. Either
+        // way an earlier layer's code no longer describes this decision.
+        reasonCode = hookDisposition === "timeout" ? ReasonCode.HOOK_TIMEOUT : undefined;
       } else if (
         hookDecision === "allow" &&
         hookDisposition === "allow" &&
@@ -1488,6 +1512,7 @@ function createAuditedMethod(
           actionTaken = "allowed";
           actionReason = "customer_override";
           actionSource = "customer_hook";
+          reasonCode = undefined; // the overridden block's code no longer applies
         }
       } else if (
         hookDecision === "redact" &&
@@ -1612,6 +1637,7 @@ function createAuditedMethod(
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "external_backend";
+          reasonCode = undefined; // derives EXTERNAL_BACKEND_DENY from the source
           ruleId = `backend:${step.record.type}`;
           policyReason =
             step.record.reasons && step.record.reasons.length > 0
@@ -1626,6 +1652,7 @@ function createAuditedMethod(
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "external_backend";
+          reasonCode = undefined; // derives EXTERNAL_BACKEND_DENY from the source
           ruleId = `backend:${config.external_policy_backend.type}`;
           policyReason = `Denied by external ${config.external_policy_backend.type} policy backend (evaluation error, fail-closed)`;
         }
@@ -1672,12 +1699,23 @@ function createAuditedMethod(
       hook: hookDisposition,
     });
 
+    // One reason-code resolution for the event AND the thrown error: the
+    // deciding layer's explicit code wins, a clean or overridden allow is
+    // PERMITTED, and anything else derives exactly the way the error
+    // constructor derives — so the record and the exception cannot disagree.
+    const resolvedReasonCode =
+      reasonCode ??
+      (actionReason === "none" || actionReason === "customer_override"
+        ? ReasonCode.PERMITTED
+        : resolveReasonCode({ action_reason: actionReason, action_source: actionSource }));
+
     // Build compliance context - shared by all events in this call
     const compliance: ComplianceCtx = {
       eventType: "llm_call",
       policyVersion,
       actionTaken,
       actionReason,
+      reasonCode: resolvedReasonCode,
       actionSource,
       redactedTypes,
       blockedTypes,
@@ -1755,6 +1793,7 @@ function createAuditedMethod(
         policy_version: policyVersion,
         action_taken: "blocked",
         action_reason: actionReason,
+        reason_code: resolvedReasonCode,
         action_source: actionSource,
         redacted_types: redactedTypes,
         blocked_types: blockedTypes,
@@ -1779,6 +1818,7 @@ function createAuditedMethod(
         policy_version: policyVersion,
         policy_reason: policyReason,
         rule_id: ruleId,
+        reason_code: resolvedReasonCode,
       });
     }
 

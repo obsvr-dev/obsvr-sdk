@@ -25,6 +25,7 @@ import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypedDict
 
 from .config import ResolvedConfig
+from .reason_codes import ReasonCode
 from .deobfuscate import (
     escalate_view_only_action,
     redact_for_storage,
@@ -773,6 +774,7 @@ def apply_pre_call_policy(
     blocked_types: List[str] = []
     hook_rule_id: Optional[str] = None
     hook_reason: Optional[str] = None
+    hook_reason_code: Optional[str] = None
     hook_policy_version: Optional[str] = None
     gate_rule_id: Optional[str] = None
     gate_reason: Optional[str] = None
@@ -968,6 +970,7 @@ def apply_pre_call_policy(
         floor_block = False
         floor_rule_id: Optional[str] = None
         floor_reason: Optional[str] = None
+        floor_reason_code: Optional[str] = None
         floor_override_ignored: Optional[Dict[str, Any]] = None
         floor_active = bool(getattr(config, "policy_floor", None))
         if floor_active and action_taken != "blocked":
@@ -997,6 +1000,7 @@ def apply_pre_call_policy(
                 floor_block = True
                 floor_rule_id = floor_result.get("rule_id")
                 floor_reason = floor_result.get("reason") or "Blocked by policy floor"
+                floor_reason_code = floor_result.get("reason_code")
                 action_taken = "blocked"
                 action_reason = "policy_violation"
                 action_source = "policy_rules"
@@ -1005,6 +1009,10 @@ def apply_pre_call_policy(
         # 1.5. Structured policy rules
         rules_rule_id: Optional[str] = floor_rule_id or gate_rule_id
         rules_reason: Optional[str] = floor_reason or gate_reason
+        # The fine-grained code from whichever structured evaluation decided —
+        # floor first, customer rules when they run. Survives to the event and
+        # the raised error; never re-collapsed to a coarse category downstream.
+        rules_reason_code: Optional[str] = floor_reason_code
         quota_unmetered: Optional[Dict[str, Any]] = None
         if getattr(config, 'policy_rules', None) and action_taken != "blocked":
             from .rules import evaluate_policy_rules
@@ -1022,6 +1030,10 @@ def apply_pre_call_policy(
             rules_decision = rules_result.get("decision", "allow")
             rules_rule_id = rules_result.get("rule_id")
             rules_reason = rules_result.get("reason")
+            # A no-match PERMITTED (no rule engaged) must not erase an earlier
+            # layer's classification (a detect-only PII finding, a taint flag).
+            if rules_decision != "allow" or rules_result.get("rule_id"):
+                rules_reason_code = rules_result.get("reason_code")
             # A quota rule the bounded meter could not count is declared on
             # this call's own event, on the same reserved channel
             # detector_failure and canary evidence take. Without it an
@@ -1133,12 +1145,24 @@ def apply_pre_call_policy(
             action_taken = "blocked"
             action_reason = "policy_violation"
             action_source = "customer_hook"
+            # A timeout resolved closed is its own classification (TS parity);
+            # an error resolved closed derives HOOK_BLOCKED from the source.
+            hook_reason_code = (
+                ReasonCode.HOOK_TIMEOUT.value if hook_disposition == "timeout" else None
+            )
+            rules_reason_code = None
 
         if action_taken not in ("hook_error", "hook_timeout"):
             if hook_decision == "block":
                 action_taken = "blocked"
                 action_reason = "policy_violation"
                 action_source = "customer_hook"
+                # An earlier layer's code no longer describes this decision;
+                # HOOK_BLOCKED derives from the source at event build.
+                hook_reason_code = (
+                    ReasonCode.HOOK_TIMEOUT.value if hook_disposition == "timeout" else None
+                )
+                rules_reason_code = None
             elif (
                 hook_decision == "allow"
                 and hook_disposition == "allow"
@@ -1160,6 +1184,8 @@ def apply_pre_call_policy(
                     action_taken = "allowed"
                     action_reason = "customer_override"
                     action_source = "customer_hook"
+                    # The overridden block's code no longer applies.
+                    rules_reason_code = None
             elif (
                 hook_decision == "redact"
                 and action_taken != "redacted"
@@ -1292,11 +1318,23 @@ def apply_pre_call_policy(
         hook=hook_disposition,
     )
 
+    # Same precedence as rule_id below; anything still unresolved derives in
+    # the event builder exactly the way the raised error derives, so the
+    # record and the exception cannot disagree.
+    from .errors import _resolve_reason_code
+    explicit_reason_code = hook_reason_code or rules_reason_code
+    resolved_reason_code = explicit_reason_code or (
+        ReasonCode.PERMITTED.value
+        if action_reason in ("none", "customer_override")
+        else _resolve_reason_code(action_reason, action_source, None)
+    )
+
     compliance = {
         "event_type": "blocked_call" if action_taken == "blocked" else "llm_call",
         "policy_version": policy_ver,
         "action_taken": action_taken,
         "action_reason": action_reason,
+        "reason_code": resolved_reason_code,
         "action_source": action_source,
         "redacted_types": redacted_types,
         "blocked_types": blocked_types,

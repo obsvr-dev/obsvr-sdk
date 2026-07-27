@@ -142,8 +142,12 @@ export function policyBlockMessage(actionReason: string | undefined): string {
  * Resolve the reason code for a block from what the deciding layer recorded.
  * An explicit code from the layer always wins; otherwise it is derived from
  * the reason and the deciding source.
+ *
+ * Exported so the event-assembly paths stamp the SAME resolution on the
+ * audit event that the thrown error carries — one derivation, two consumers,
+ * no way for the record and the error to disagree.
  */
-function resolveReasonCode(input: PolicyErrorInput): string {
+export function resolveReasonCode(input: PolicyErrorInput): string {
   if (input.reason_code) return input.reason_code;
   if (input.action_reason === "pii_detected") return ReasonCode.PII_DETECTED;
   if (!KNOWN_REASONS.has(input.action_reason ?? "")) return ReasonCode.UNKNOWN_BLOCKED;

@@ -252,6 +252,9 @@ export async function evaluate(
         action_taken: decision === 'PERMITTED' ? 'allowed' : 'blocked',
         action_reason: reasonCode === ReasonCode.PII_DETECTED ? 'pii_detected' :
                        decision === 'BLOCKED' ? 'policy_violation' : 'none',
+        // The response's own code, not a re-derivation: the event and the
+        // returned decision must name the same classification.
+        reason_code: reasonCode,
         action_source: ruleId ? 'policy_rules' : 'unknown',
         policy_version: cfg.policyRules ? derivePolicyVersion(cfg.policyRules) : '',
         redacted_types: [],
