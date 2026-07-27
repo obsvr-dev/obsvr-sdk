@@ -165,14 +165,15 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   CLI, so a Python-only team can verify its own evidence without a Node
   toolchain. CI drives both binaries over one export so they cannot drift.
   ([`1756930`](https://github.com/obsvr-dev/obsvr-sdk/commit/1756930))
-- **Tool-call events carry `tool_content_hash` (TypeScript).** Events from an MCP
-  tool boundary or `obsvrGovernTool` carry a digest binding the tool name, the
-  descriptor the caller held, and the call arguments, so a descriptor swap is
-  attributable after the fact. Blocked tool calls are stamped too, and the
-  digest is omitted rather than guessed when a value cannot be canonicalized
-  identically in both languages.
+- **Tool-call events carry `tool_content_hash`.** Events from an MCP tool
+  boundary (both SDKs) or `obsvrGovernTool` (TypeScript) carry a digest binding
+  the tool name, the descriptor the caller held, and the call arguments, so a
+  descriptor swap is attributable after the fact. Blocked tool calls are
+  stamped too, and the digest is omitted rather than guessed when a value
+  cannot be canonicalized identically in both languages.
   ([`407186f`](https://github.com/obsvr-dev/obsvr-sdk/commit/407186f),
-  [`5ab19ec`](https://github.com/obsvr-dev/obsvr-sdk/commit/5ab19ec))
+  [`5ab19ec`](https://github.com/obsvr-dev/obsvr-sdk/commit/5ab19ec),
+  [`fd05442`](https://github.com/obsvr-dev/obsvr-sdk/commit/fd05442))
 - **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** A retry that
   raced a lost 2xx was dead-lettered, fabricating a coverage gap for an event
   the server had already sealed. Only that code: `409 sequence_fork` stays a
