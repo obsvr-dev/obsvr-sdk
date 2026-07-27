@@ -186,7 +186,7 @@ obsvr.init({
 });
 ```
 
-**Shadow mode** — set `mode: 'shadow'` on any rule to evaluate it against live traffic and record a would-have outcome without altering the response. Every verdict also carries a stable **`reason_code`** from a closed registry (alongside the free-form `reason`), so downstream tooling classifies decisions without string-matching.
+**Shadow mode** — set `mode: 'shadow'` on any rule to evaluate it against live traffic and record a would-have outcome without altering the response. Every verdict — and every audit **event** — also carries a stable **`reason_code`** from a closed registry (alongside the free-form `reason`): the deciding layer's own fine-grained code, identical on the event and the thrown error, so downstream tooling classifies decisions without string-matching.
 
 **Catching a block.** A blocked call throws `ObsvrPolicyError` (both SDKs), carrying a stable `type`, the `reason_code`, the deciding `rule_id`, and the decision metadata — so "refused on purpose" is distinguishable from a provider outage without matching on a message. A reason category the SDK doesn't recognize (a newer control plane) yields `ObsvrUnknownPolicyError` rather than an untyped throw. The Python class subclasses `RuntimeError`, and the message string is unchanged from earlier versions, so existing `except` blocks and string matches keep working.
 
@@ -282,7 +282,7 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   ```typescript
   mcpToolPolicy: { pinning: { enabled: true, mode: "block" } },
   ```
-- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
 
 ---
