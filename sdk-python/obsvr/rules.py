@@ -402,6 +402,11 @@ def compute_grounding_score(output: str, sources: List[str]) -> float:
 # request-unit rules the server escrows on the /policies poll — this meter is
 # the fallback for rules the server does not escrow. Server-side limits at
 # ingest remain authoritative.
+#
+# Memory bound: both meters cap how many distinct scopes they track, and past
+# the cap they refuse new scopes rather than evicting live counters — see
+# _make_room for why a quota store makes that call differently from the taint
+# latch.
 
 import threading as _threading
 import time as _time
@@ -409,6 +414,73 @@ import time as _time
 _quota_store: Dict[str, Dict[str, float]] = {}
 _token_store: Dict[str, Dict[str, float]] = {}
 _quota_lock = _threading.Lock()
+
+# Distinct scopes either meter can track. Both stores are process-global and
+# keyed by a CALLER-SUPPLIED scope value -- quota_scope "user_id" is one entry
+# per distinct end user -- so without a cap they grow for the life of the
+# process. Bounded like the other process-global stores (session taint, tool
+# pins, canaries).
+MAX_QUOTA_SCOPES = 10_000
+
+_quota_saturated = False
+_quota_warned = False
+
+
+def _make_room(store: Dict[str, Dict[str, float]], now: float) -> bool:
+    """Make room for a NEW key, or report that there is none. Caller holds
+    ``_quota_lock``.
+
+    Eviction policy -- expired windows only, never a live one. Expiry is judged
+    against the window stored ON the entry, so an entry that goes is one the
+    next touch would have overwritten with a fresh counter anyway: dropping it
+    changes no decision. An entry still
+    inside its window IS the enforcement state, and dropping it would reset
+    that scope's counter to zero. Since scope values are caller-supplied, a
+    caller able to mint them could then flood the store with fresh keys to
+    evict a live counter -- their own, or a victim's -- and buy a full fresh
+    quota. That is a rate-limit bypass, so this store refuses instead, the same
+    call tool_pinning.py and canary.py make where eviction would silently
+    disable the control. (session_taint.py does evict oldest-first: a taint
+    latch is advisory-leaning and an ancient session is the least valuable
+    thing it holds. A quota counter is not advisory.)
+
+    A refused scope is UNMETERED, not blocked. The meter cannot say the scope
+    exceeded its limit, only that it has nowhere to count; turning "no counter
+    slots" into a denial would hand the same flooder a way to block every new
+    identity, and the SDK's default posture elsewhere is fail-open. Saturation
+    warns once and is readable via ``quota_store_saturated()``.
+    """
+    global _quota_saturated, _quota_warned
+    if len(store) < MAX_QUOTA_SCOPES:
+        return True
+    for k in [k for k, v in store.items() if (now - v["window_start"]) >= v["window_ms"]]:
+        del store[k]
+    if len(store) < MAX_QUOTA_SCOPES:
+        return True
+    _quota_saturated = True
+    if not _quota_warned:
+        _quota_warned = True
+        import logging
+
+        logging.getLogger("obsvr").warning(
+            "quota store is full (%d scopes with live windows); NEW scopes are "
+            "NOT metered until a window elapses. Counters already tracked are "
+            "unaffected.",
+            MAX_QUOTA_SCOPES,
+        )
+    return False
+
+
+def quota_store_size() -> Dict[str, int]:
+    """Scopes currently tracked by each meter (diagnostics, tests)."""
+    with _quota_lock:
+        return {"requests": len(_quota_store), "tokens": len(_token_store)}
+
+
+def quota_store_saturated() -> bool:
+    """True once either meter refused a new scope because every tracked window
+    was still live -- some scopes are going unmetered until a window elapses."""
+    return _quota_saturated
 
 
 def quota_scope_value(
@@ -450,7 +522,11 @@ def check_token_budget(
     with _quota_lock:
         entry = _token_store.get(key)
         if entry is None or (now - entry["window_start"]) >= window_ms:
-            entry = {"count": 0.0, "window_start": now}
+            # An expired entry reuses its own slot, so an already-tracked scope
+            # is never turned away; only a NEW scope can be refused.
+            if entry is None and not _make_room(_token_store, now):
+                return {"allowed": True, "remaining": limit, "reset_at": now + window_ms}
+            entry = {"count": 0.0, "window_start": now, "window_ms": float(window_ms)}
             _token_store[key] = entry
         return {
             "allowed": entry["count"] < limit,
@@ -472,7 +548,9 @@ def record_token_usage(
     with _quota_lock:
         entry = _token_store.get(key)
         if entry is None or (now - entry["window_start"]) >= window_ms:
-            entry = {"count": 0.0, "window_start": now}
+            if entry is None and not _make_room(_token_store, now):
+                return
+            entry = {"count": 0.0, "window_start": now, "window_ms": float(window_ms)}
             _token_store[key] = entry
         entry["count"] += tokens
 
@@ -488,7 +566,9 @@ def increment_quota(
     with _quota_lock:
         entry = _quota_store.get(key)
         if entry is None or (now - entry["window_start"]) >= window_ms:
-            entry = {"count": 0.0, "window_start": now}
+            if entry is None and not _make_room(_quota_store, now):
+                return {"allowed": True, "remaining": limit, "reset_at": now + window_ms}
+            entry = {"count": 0.0, "window_start": now, "window_ms": float(window_ms)}
             _quota_store[key] = entry
         if entry["count"] >= limit:
             return {
@@ -507,9 +587,12 @@ def increment_quota(
 
 def _reset_quota() -> None:
     """Test helper."""
+    global _quota_saturated, _quota_warned
     with _quota_lock:
         _quota_store.clear()
         _token_store.clear()
+        _quota_saturated = False
+        _quota_warned = False
 
 
 def _canonical_rule(r: PolicyRule) -> Dict[str, Any]:

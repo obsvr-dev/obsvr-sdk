@@ -191,3 +191,111 @@ def test_token_quota_is_separate_from_request_quota():
     # Consuming request-quota does not touch the token budget.
     increment_quota("project", "project", 1, 60000)
     assert evaluate_policy_rules([tok], "hi", context={"metadata": {}})["decision"] == "allow"
+
+
+# ── quota store bound (parity with sdk/tests/unit/governance-quota.test.ts) ──
+# Both meters are keyed by a caller-supplied scope value, so they must not grow
+# for the life of the process. Past the cap they refuse NEW scopes rather than
+# evicting live counters — see _make_room for why.
+
+class TestQuotaStoreBound:
+    def setup_method(self):
+        from obsvr.rules import _reset_quota
+        _reset_quota()
+
+    def test_request_meter_caps_under_distinct_key_pressure(self):
+        from obsvr.rules import (
+            MAX_QUOTA_SCOPES, increment_quota, quota_store_saturated, quota_store_size,
+        )
+        for i in range(MAX_QUOTA_SCOPES * 2):
+            increment_quota("user_id", "u%d" % i, 5, 60_000)
+        assert quota_store_size()["requests"] == MAX_QUOTA_SCOPES
+        assert quota_store_saturated() is True
+
+    def test_token_meter_caps_under_distinct_key_pressure(self):
+        from obsvr.rules import (
+            MAX_QUOTA_SCOPES, quota_store_saturated, quota_store_size, record_token_usage,
+        )
+        for i in range(MAX_QUOTA_SCOPES * 2):
+            record_token_usage("user_id", "u%d" % i, 10, 60_000)
+        assert quota_store_size()["tokens"] == MAX_QUOTA_SCOPES
+        assert quota_store_saturated() is True
+
+    def test_warns_once_not_once_per_refused_scope(self, caplog):
+        from obsvr.rules import MAX_QUOTA_SCOPES, increment_quota
+        with caplog.at_level("WARNING", logger="obsvr"):
+            for i in range(MAX_QUOTA_SCOPES + 50):
+                increment_quota("user_id", "u%d" % i, 5, 60_000)
+        full = [r for r in caplog.records if "quota store is full" in r.getMessage()]
+        assert len(full) == 1
+
+    def test_never_resets_a_live_counter_to_make_room(self):
+        # A tracked scope at its limit stays at its limit no matter how many
+        # fresh scopes arrive. Evicting oldest-first here would hand a caller
+        # who can mint scope values a free quota reset.
+        from obsvr.rules import MAX_QUOTA_SCOPES, increment_quota
+        for _ in range(5):
+            increment_quota("user_id", "victim", 5, 60_000)
+        assert increment_quota("user_id", "victim", 5, 60_000)["allowed"] is False
+
+        for i in range(MAX_QUOTA_SCOPES * 2):
+            increment_quota("user_id", "flood%d" % i, 5, 60_000)
+
+        assert increment_quota("user_id", "victim", 5, 60_000)["allowed"] is False
+
+    def test_refused_scope_is_unmetered_not_blocked(self):
+        from obsvr.rules import (
+            MAX_QUOTA_SCOPES, increment_quota, quota_store_saturated, quota_store_size,
+        )
+        for i in range(MAX_QUOTA_SCOPES):
+            increment_quota("user_id", "u%d" % i, 5, 60_000)
+        assert quota_store_saturated() is False  # exactly at cap, nothing refused
+
+        # Past the cap: allowed (fail-open) but not counted, so repeated calls
+        # for the same refused scope never accumulate toward the limit.
+        for _ in range(20):
+            assert increment_quota("user_id", "newcomer", 5, 60_000)["allowed"] is True
+        assert quota_store_saturated() is True
+        assert quota_store_size()["requests"] == MAX_QUOTA_SCOPES
+
+    def test_admits_new_scopes_again_once_tracked_windows_expire(self):
+        import time
+        from obsvr.rules import MAX_QUOTA_SCOPES, increment_quota, quota_store_size
+        for i in range(MAX_QUOTA_SCOPES):
+            increment_quota("user_id", "u%d" % i, 1, 1)  # 1ms window
+        assert quota_store_size()["requests"] == MAX_QUOTA_SCOPES
+        time.sleep(0.02)
+
+        # The sweep drops only entries the next touch would have reset anyway,
+        # so the newcomer is tracked for real: its second call is refused.
+        assert increment_quota("user_id", "newcomer", 1, 60_000)["allowed"] is True
+        assert increment_quota("user_id", "newcomer", 1, 60_000)["allowed"] is False
+        assert quota_store_size()["requests"] <= MAX_QUOTA_SCOPES
+
+    def test_reopens_an_already_tracked_scope_with_the_store_full(self):
+        import time
+        from obsvr.rules import MAX_QUOTA_SCOPES, increment_quota, quota_store_size
+        for i in range(MAX_QUOTA_SCOPES - 1):
+            increment_quota("user_id", "u%d" % i, 5, 60_000)
+        increment_quota("user_id", "known", 1, 5)  # fills the last slot, 5ms window
+        assert quota_store_size()["requests"] == MAX_QUOTA_SCOPES
+
+        time.sleep(0.02)
+        # No free slot, but 'known' is already tracked: its expired entry reuses
+        # its own slot, so it stays metered rather than falling through
+        # unmetered.
+        assert increment_quota("user_id", "known", 1, 5)["allowed"] is True
+        assert increment_quota("user_id", "known", 1, 5)["allowed"] is False
+        assert quota_store_size()["requests"] == MAX_QUOTA_SCOPES
+
+    def test_token_meter_refusal_does_not_block_a_budget(self):
+        from obsvr.rules import (
+            MAX_QUOTA_SCOPES, check_token_budget, quota_store_size, record_token_usage,
+        )
+        for i in range(MAX_QUOTA_SCOPES):
+            record_token_usage("user_id", "u%d" % i, 10, 60_000)
+        record_token_usage("user_id", "newcomer", 5_000, 60_000)
+        assert quota_store_size()["tokens"] == MAX_QUOTA_SCOPES
+        budget = check_token_budget("user_id", "newcomer", 1_000, 60_000)
+        assert budget["allowed"] is True
+        assert budget["remaining"] == 1_000
