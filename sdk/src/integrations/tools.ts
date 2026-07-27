@@ -42,6 +42,7 @@ import {
   type ToolContentDescriptor,
 } from "../policy/tool-content-hash.js";
 import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "obsvr_tool";
 
@@ -52,6 +53,8 @@ interface ToolBlock {
   rule_id: string;
   policy_reason: string;
   message: string;
+  /** Registry code for the classification; absent derives at event build. */
+  reason_code?: string;
 }
 
 /** Verdict for a tool that was blocked by policy (so it reads as BLOCKED, not
@@ -190,7 +193,10 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
               reason: denied ? "tool_denied" : "tool_not_in_allowlist",
               ...toolContentMeta,
             },
-            compliance: BLOCKED_COMPLIANCE,
+            // TOOL_DENIED covers both refusal shapes: an explicit deny list
+            // hit and absence from a configured allowlist are the same
+            // classification — this tool may not run.
+            compliance: { ...BLOCKED_COMPLIANCE, reason_code: ReasonCode.TOOL_DENIED },
             options,
           });
           throw new Error(`[obsvr] Tool blocked by agent policy: ${toolName}`);
@@ -223,6 +229,9 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
                 rule_id: "sdk:session_tainted",
                 policy_reason: `Session previously compromised (${verdict.reason}); tool call escalated`,
                 message: `[obsvr] Tool blocked: session tainted (${verdict.reason})`,
+                // A taint-gated refusal of outbound egress (a tool call is the
+                // most side-effecting transmission there is).
+                reason_code: ReasonCode.TRANSMISSION_BLOCKED,
               };
             } else {
               toolTaintFlag = verdict.reason; // flag mode: annotate below
@@ -261,6 +270,9 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             ...BLOCKED_COMPLIANCE,
             rule_id: toolBlock.rule_id,
             policy_reason: toolBlock.policy_reason,
+            ...(toolBlock.reason_code !== undefined
+              ? { reason_code: toolBlock.reason_code }
+              : {}),
           },
           options,
         });

@@ -26,7 +26,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .. import sender as _sender
 from ..config import try_get_config
-from ..events import emit_event
+from ..events import emit_event, tool_denied_compliance
 
 SOURCE = "openai_agents_py"
 
@@ -185,6 +185,7 @@ class ObsvrTracingProcessor:
                                 "reason": reason,
                                 "step_index": step_index,
                             },
+                            compliance=tool_denied_compliance(),
                         )
                         raise RuntimeError(
                             f"[obsvr] Tool blocked by agent policy: {tool_name}"

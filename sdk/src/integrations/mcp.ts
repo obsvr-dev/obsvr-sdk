@@ -32,6 +32,7 @@ import {
 } from "./core.js";
 import { extractMcpPrompt, extractMcpResponse } from "../proxy/extractors/mcp.js";
 import { derivePolicyVersion } from "../policy/rules.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 import {
   scanMcpToolResult,
   sanitizeMcpResult,
@@ -657,6 +658,7 @@ async function runGovernedCallTool(
           policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
           action_taken: "blocked",
           action_reason: "policy_violation",
+          reason_code: ReasonCode.MCP_TOOL_DENIED,
           action_source: "builtin",
           redacted_types: [],
           blocked_types: [],
@@ -842,6 +844,9 @@ async function runGovernedCallTool(
           policy_version: respScan.policy_version,
           action_taken: "blocked",
           action_reason: respScan.action_reason === "none" ? "policy_violation" : respScan.action_reason,
+          // The withheld-tool-result classification, whatever detector inside
+          // the scan tripped it — the surface is what the code names.
+          reason_code: ReasonCode.MCP_RESULT_BLOCKED,
           action_source: respScan.action_source === "unknown" ? "policy_rules" : respScan.action_source,
           redacted_types: respScan.redacted_types,
           blocked_types: respScan.blocked_types,

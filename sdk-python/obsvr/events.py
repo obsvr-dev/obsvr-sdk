@@ -370,6 +370,27 @@ def build_audit_event(
     return {k: v for k, v in _event.items() if v is not None}
 
 
+def tool_denied_compliance() -> Dict[str, Any]:
+    """Blocked-tool verdict shared by the agent-framework integrations.
+
+    TOOL_DENIED covers both refusal shapes - an explicit deny-list hit and
+    absence from a configured allowlist are the same classification: this
+    tool may not run. Returned fresh per call so a caller mutating one
+    event's compliance cannot bleed into the next (twin of the TS
+    integrations' BLOCKED_COMPLIANCE + TOOL_DENIED spread).
+    """
+    return {
+        "event_type": "blocked_call",
+        "policy_version": "none",
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "reason_code": ReasonCode.TOOL_DENIED.value,
+        "action_source": "policy_rules",
+        "redacted_types": [],
+        "blocked_types": [],
+    }
+
+
 def emit_event(config: ResolvedConfig, **params: Any) -> Optional[Dict[str, Any]]:
     """Build and fire-and-forget send an audit event. Never raises."""
     if config.disabled:

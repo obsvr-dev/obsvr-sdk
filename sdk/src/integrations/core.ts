@@ -445,6 +445,10 @@ export async function applyPreCallPolicy(
   let blockedTypes: string[] = [];
   let gateRuleId: string | undefined;
   let gatePolicyReason: string | undefined;
+  // Explicit classification from a detector layer (taint, PII/injection,
+  // multi-turn) when one blocked. Lowest precedence of the explicit codes:
+  // when a detector blocked, floor/rules never ran and a hook block clears it.
+  let detectorReasonCode: string | undefined;
 
   // 0. Enforcement-integrity gate (EV-3): blocks when the project is paused /
   //    the key is revoked (kill switch) or fail-closed staleness. A gate block
@@ -498,6 +502,8 @@ export async function applyPreCallPolicy(
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "policy_rules";
+          // A taint-gated refusal of outbound egress (wrapper parity).
+          detectorReasonCode = ReasonCode.TRANSMISSION_BLOCKED;
           debugLog(config, "warn", `Call blocked: ${taintPolicyReason}`);
         } else if (actionReason === "none") {
           actionReason = "policy_violation";
@@ -568,6 +574,11 @@ export async function applyPreCallPolicy(
           actionTaken = "blocked";
           blockedTypes = resolved.blockedTypes;
           redactedTypes = resolved.redactedTypes;
+          // The prompt_injection label rides the PII pipeline, but a block it
+          // drove is an injection finding, not a PII finding (wrapper parity).
+          detectorReasonCode = resolved.blockedTypes.includes("prompt_injection")
+            ? ReasonCode.INJECTION_DETECTED
+            : ReasonCode.PII_DETECTED;
         } else if (piiAction === "redact") {
           actionTaken = "redacted";
           redactedTypes = resolved.redactedTypes;
@@ -620,6 +631,8 @@ export async function applyPreCallPolicy(
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "policy_rules";
+          // Accumulated multi-turn injection IS an injection finding.
+          detectorReasonCode = ReasonCode.INJECTION_DETECTED;
           debugLog(config, "warn", `Call blocked: ${mtPolicyReason}`);
         } else {
           if (actionReason === "none") actionReason = "policy_violation";
@@ -786,6 +799,7 @@ export async function applyPreCallPolicy(
         // way an earlier layer's code no longer describes this decision.
         hookReasonCode = hookDisposition === "timeout" ? ReasonCode.HOOK_TIMEOUT : undefined;
         rulesReasonCode = undefined;
+        detectorReasonCode = undefined;
       } else if (
         hookDecision === "allow" &&
         hookDisposition === "allow" &&
@@ -806,6 +820,7 @@ export async function applyPreCallPolicy(
           actionReason = "customer_override";
           actionSource = "customer_hook";
           rulesReasonCode = undefined; // the overridden block's code no longer applies
+          detectorReasonCode = undefined;
         }
       } else if (
         hookDecision === "redact" &&
@@ -903,6 +918,7 @@ export async function applyPreCallPolicy(
       reason_code:
         hookReasonCode ??
         rulesReasonCode ??
+        detectorReasonCode ??
         (actionReason === "none" || actionReason === "customer_override"
           ? ReasonCode.PERMITTED
           : resolveReasonCode({ action_reason: actionReason, action_source: actionSource })),
@@ -1793,6 +1809,17 @@ export function applyLoopDetection(
     compliance: {
       ...DEFAULT_COMPLIANCE,
       event_type: 'loop_detected',
+      // The classification is the same whether the threshold escalates or
+      // blocks: an iteration loop was detected. The caller enforces the
+      // block (this event records the finding either way).
+      reason_code: ReasonCode.LOOP_DETECTED,
+      ...(result.action === 'block'
+        ? {
+            action_taken: 'blocked' as const,
+            action_reason: 'policy_violation' as const,
+            action_source: 'policy_rules' as const,
+          }
+        : {}),
     },
   });
 
@@ -1859,6 +1886,7 @@ export function applyDelegationPolicy(
       event_type: 'delegation',
       action_taken: 'blocked',
       action_reason: 'policy_violation',
+      reason_code: ReasonCode.DELEGATION_BLOCKED,
       action_source: 'policy_rules',
       policy_reason: violation.message,
     },

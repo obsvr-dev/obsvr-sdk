@@ -147,6 +147,8 @@ class TestCallToolGovernance:
         assert s.calls == []  # never executed
         assert captured[0]["event_type"] == "blocked_call"
         assert captured[0]["policy_reason"] == "tool_denied"
+        # Reachability pin for MCP_TOOL_DENIED (named in test_reason_codes.py).
+        assert captured[0]["reason_code"] == "MCP_TOOL_DENIED"
 
     def test_allowlist_blocks_unlisted_tool(self, monkeypatch):
         _init(mcp_tool_policy={"allowed_tools": ["read_file"]})

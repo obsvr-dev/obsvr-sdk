@@ -36,7 +36,7 @@ import json
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from ..config import try_get_config
-from ..events import emit_event
+from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
 
 try:  # real FunctionResult when SK is installed; a marker is used otherwise
@@ -124,7 +124,8 @@ async def _govern(context: Any, options: Dict[str, Any]) -> bool:
             cfg, provider=PROVIDER, model="unknown",
             operation="semantic_kernel.function.policy.tool_blocked", source=SOURCE,
             prompt="", response="", success=False, status_code=403,
-            metadata={"function_name": tool_name, "reason": reason}, options=opts,
+            metadata={"function_name": tool_name, "reason": reason},
+            compliance=tool_denied_compliance(), options=opts,
         )
         try:
             context.result = _blocked_function_result(

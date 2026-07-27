@@ -219,5 +219,7 @@ describe('tool_content_hash on the framework tool boundary', () => {
     const ev = sentEvents.find((e) => e.event_type === 'blocked_call');
     expect(hashOf(ev.metadata)).toBeDefined();
     expect(ev.metadata.reason).toBe('tool_denied');
+    // Reachability pin for TOOL_DENIED (named in reason-codes.test.ts).
+    expect(ev.reason_code).toBe('TOOL_DENIED');
   });
 });

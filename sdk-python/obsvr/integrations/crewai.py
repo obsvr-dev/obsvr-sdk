@@ -35,7 +35,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from .. import sender as _sender
 from ..config import try_get_config
-from ..events import emit_event
+from ..events import emit_event, tool_denied_compliance
 from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
 
@@ -179,6 +179,7 @@ def make_step_callback(
                             "reason": reason,
                             "step_index": step_index,
                         },
+                        compliance=tool_denied_compliance(),
                     )
                     raise RuntimeError(
                         f"[obsvr] Tool blocked by agent policy: {tool_name}"

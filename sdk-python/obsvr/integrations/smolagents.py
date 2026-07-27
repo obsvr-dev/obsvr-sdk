@@ -34,7 +34,7 @@ import json
 from typing import Any, Dict, Optional, Tuple
 
 from ..config import try_get_config
-from ..events import emit_event
+from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
 
 try:  # real Tool reference when smolagents is installed
@@ -113,7 +113,8 @@ class ObsvrGovernedTool:
                 cfg, provider=PROVIDER, model="unknown",
                 operation="smolagents.tool.policy.tool_blocked", source=SOURCE,
                 prompt="", response="", success=False, status_code=403,
-                metadata={"tool_name": tool_name, "reason": reason}, options=opts,
+                metadata={"tool_name": tool_name, "reason": reason},
+                compliance=tool_denied_compliance(), options=opts,
             )
             raise SmolagentsToolBlockedError(
                 f"[obsvr] Tool blocked by policy: {tool_name} ({reason})"

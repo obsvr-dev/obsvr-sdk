@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import sender as _sender
 from ..config import try_get_config
-from ..events import emit_event, infer_provider_from_string
+from ..events import emit_event, infer_provider_from_string, tool_denied_compliance
 from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
 from ..span import emit_span
@@ -311,6 +311,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                             "reason": reason,
                             "step_index": step_index,
                         },
+                        compliance=tool_denied_compliance(),
                         options=self._options or None,
                     )
                     raise ValueError(

@@ -32,6 +32,7 @@ import {
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "openai_agents_js";
 
@@ -240,6 +241,19 @@ export class ObsvrTraceProcessor {
                 tool_name: toolName,
                 reason,
                 step_index: stepIndex,
+              },
+              // Previously emitted with no compliance at all, so the refusal
+              // was recorded as an ordinary allowed llm_call. A blocked tool
+              // is a blocked_call with the TOOL_DENIED classification.
+              compliance: {
+                event_type: "blocked_call",
+                policy_version: "none",
+                action_taken: "blocked",
+                action_reason: "policy_violation",
+                reason_code: ReasonCode.TOOL_DENIED,
+                action_source: "policy_rules",
+                redacted_types: [],
+                blocked_types: [],
               },
               options: this.opts,
             });

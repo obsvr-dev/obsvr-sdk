@@ -51,7 +51,7 @@ import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from ..config import try_get_config
-from ..events import emit_event
+from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage, blocked_user_input_for_storage
 
 try:  # real LlmResponse when ADK is installed; a dict short-circuits otherwise
@@ -160,7 +160,8 @@ def make_before_tool_callback(**options: Any) -> Callable[[Any, Any, Any], Optio
                 cfg, provider=PROVIDER, model="unknown",
                 operation="adk.tool.policy.tool_blocked", source=SOURCE,
                 prompt="", response="", success=False, status_code=403,
-                metadata={"tool_name": tool_name, "reason": reason}, options=opts,
+                metadata={"tool_name": tool_name, "reason": reason},
+                compliance=tool_denied_compliance(), options=opts,
             )
             return {"obsvr_blocked": True, "error": f"Tool '{tool_name}' blocked by policy: {reason}"}
 

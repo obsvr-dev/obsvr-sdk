@@ -33,6 +33,7 @@ from ..config import ResolvedConfig, get_config, try_get_config
 from ..events import build_audit_event
 from ..normalize import normalize_for_matching
 from ..policy import apply_pre_call_policy
+from ..reason_codes import ReasonCode
 from ..remote import is_enforcement_degraded
 from ..response_scan import sanitize_mcp_result, resolve_response_scan_failure, scan_mcp_tool_result
 from ..tool_pinning import (
@@ -373,6 +374,7 @@ def _build_governed_mcp_callables(
                         "policy_version": derive_policy_version(cfg.policy_rules or []),
                         "action_taken": "blocked",
                         "action_reason": "policy_violation",
+                        "reason_code": ReasonCode.MCP_TOOL_DENIED.value,
                         "action_source": "builtin",
                         "redacted_types": [],
                         "blocked_types": [],
@@ -514,6 +516,9 @@ def _build_governed_mcp_callables(
                         if resp_scan["action_reason"] == "none"
                         else resp_scan["action_reason"]
                     ),
+                    # The withheld-tool-result classification, whatever detector
+                    # inside the scan tripped it (TS parity: mcp.ts).
+                    "reason_code": ReasonCode.MCP_RESULT_BLOCKED.value,
                     "action_source": (
                         "policy_rules"
                         if resp_scan["action_source"] == "unknown"

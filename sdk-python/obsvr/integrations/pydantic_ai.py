@@ -36,7 +36,7 @@ import json
 from typing import Any, Dict, Optional, Tuple
 
 from ..config import try_get_config
-from ..events import emit_event
+from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
 
 SOURCE = "pydantic_ai"
@@ -120,7 +120,8 @@ class ObsvrToolset(_WrapperToolset):  # type: ignore[misc]
                 cfg, provider=PROVIDER, model="unknown",
                 operation="pydantic_ai.tool.policy.tool_blocked", source=SOURCE,
                 prompt="", response="", success=False, status_code=403,
-                metadata={"tool_name": tool_name, "reason": reason}, options=opts,
+                metadata={"tool_name": tool_name, "reason": reason},
+                compliance=tool_denied_compliance(), options=opts,
             )
             raise PydanticAIToolBlockedError(
                 f"[obsvr] Tool blocked by policy: {tool_name} ({reason})"

@@ -59,6 +59,10 @@ def test_denied_tool_blocked_before_execution(sent):
         governed(q="import os; os.system('rm -rf /')")
     assert tool.ran is False  # never executed
     assert sent[0]["operation"] == "smolagents.tool.policy.tool_blocked"
+    # Reachability pin for TOOL_DENIED (named in test_reason_codes.py): the
+    # refusal reads as a blocked_call carrying its own classification.
+    assert sent[0]["event_type"] == "blocked_call"
+    assert sent[0]["reason_code"] == "TOOL_DENIED"
 
 
 def test_pii_in_args_blocked(sent):

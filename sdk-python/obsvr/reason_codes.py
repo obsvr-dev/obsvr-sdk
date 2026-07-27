@@ -66,6 +66,23 @@ class ReasonCode(str, Enum):
 REASON_CODES = tuple(sorted(rc.value for rc in ReasonCode))
 
 
+# Codes RESERVED in this SDK: kept in the closed registry (deleting from a
+# closed enum is breaking and buys nothing) but with no Python emission site,
+# because the control that would emit them ships TypeScript-only today. Each
+# entry names its owning control; the reachability test in
+# tests/test_reason_codes.py exempts exactly this set, so removing a control
+# without updating this tuple - or wiring one without removing its entry -
+# fails CI. Recorded in conformance/known-divergences.md.
+RESERVED_REASON_CODES = (
+    # Emitted by delegation tracking (circular/depth/allowlist violations);
+    # the tracker exists only in the TS SDK (policy/industry/agentic.ts).
+    ReasonCode.DELEGATION_BLOCKED.value,
+    # Emitted by agent loop detection (iteration thresholds); the detector
+    # exists only in the TS SDK (policy/industry/devops.ts).
+    ReasonCode.LOOP_DETECTED.value,
+)
+
+
 # Canonical PolicyRule-type -> ReasonCode mapping. Every enforceable rule type
 # has an explicit entry; this is pinned in the shared fixture so TS and Python
 # classify a fired rule identically. Adding a rule type without adding a

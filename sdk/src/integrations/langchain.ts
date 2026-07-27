@@ -49,6 +49,7 @@ import {
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 import { emitSpan } from "../proxy/span.js";
 import { SPAN_ATTR } from "../proxy/span-attributes.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -482,7 +483,7 @@ export class ObsvrCallbackHandler {
               reason,
               step_index: stepIndex,
             },
-            compliance: BLOCKED_COMPLIANCE,
+            compliance: { ...BLOCKED_COMPLIANCE, reason_code: ReasonCode.TOOL_DENIED },
             options: this.opts,
           });
           throw new Error(`[obsvr] Tool blocked by agent policy: ${toolName}`);

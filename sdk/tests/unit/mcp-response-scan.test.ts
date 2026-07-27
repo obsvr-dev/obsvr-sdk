@@ -163,6 +163,26 @@ describe('obsvrGovernMCP response-side governance', () => {
     const ev = sentEvents.find((e) => e.event_type === 'blocked_call');
     expect(ev).toBeDefined();
     expect(ev.action_taken).toBe('blocked');
+    // A withheld tool result carries its own classification (reachability
+    // for MCP_RESULT_BLOCKED lives HERE — reason-codes.test.ts names this
+    // suite as the site pin).
+    expect(ev.reason_code).toBe('MCP_RESULT_BLOCKED');
+  });
+
+  it('emits MCP_TOOL_DENIED when the tool policy refuses a call', async () => {
+    init({ apiKey: 'k', sampleRate: 1, mcpToolPolicy: { deniedTools: ['lookup'] } } as any);
+    const governed = obsvrGovernMCP(
+      fakeClient({ content: [{ type: 'text', text: 'never reached' }] }),
+      getConfig(),
+    );
+    await expect(governed.callTool({ name: 'lookup', arguments: { id: 1 } })).rejects.toThrow(
+      /\[obsvr\] MCP tool blocked by policy/,
+    );
+    await waitForEvents(1);
+    const ev = sentEvents.find((e) => e.event_type === 'blocked_call');
+    expect(ev).toBeDefined();
+    // Reachability pin for MCP_TOOL_DENIED (named in reason-codes.test.ts).
+    expect(ev.reason_code).toBe('MCP_TOOL_DENIED');
   });
 
   it('emits the mcp.tools.list inventory event on a CLEAN discovery (parity: Python twin)', async () => {

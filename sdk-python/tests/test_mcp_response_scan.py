@@ -166,6 +166,8 @@ class TestGovernedResponse:
             _run(s.call_tool("lookup", {"id": 1}))
         blocked = [e for e in captured if e.get("event_type") == "blocked_call"]
         assert blocked and blocked[0]["action_taken"] == "blocked"
+        # Reachability pin for MCP_RESULT_BLOCKED (named in test_reason_codes.py).
+        assert blocked[0]["reason_code"] == "MCP_RESULT_BLOCKED"
 
     def test_audits_with_principal(self, monkeypatch):
         _init(pii_policy={})

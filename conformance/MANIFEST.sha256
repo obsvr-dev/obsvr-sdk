@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = d893c4a3b51cd26a1f7febe35b538d8d930631416c4669a22e889e849d65e817
+# corpus_sha256 = 6ca5d9e46f5827cc8dc4264f8469f3ec76cb30e859252d24f0519da3c078a327
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -40,4 +40,4 @@ d5f9f211701a51fbd4978b9d718d3bdc5b017d033b1dadc3e0fe3719f2e48496  fixtures/rules
 4eda04a77cba98a5ff0f3e7ac5e9a1b3c1845405d5ea38aaea7e03845f0e79ff  fixtures/signing_vectors.json
 39855bf3f83ad61f63f3958b18952519aef3ec7da5aebe1c978e7bbff5647d92  fixtures/tool_content_hash.json
 427e57fb28b7fbab698ca32baddb25878bb096e2ffd95ce89fda5cc834c9cf24  fixtures/tool_pinning.json
-4cf8f0f8ca10f4092c6a94acd08f322910af07bd5d42e5930f60cec131e19fa3  known-divergences.md
+2b2e7e2677c69da26d53e9594440860251f4f87c95a8ab937ddbc44861430c49  known-divergences.md

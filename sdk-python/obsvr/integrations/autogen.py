@@ -19,7 +19,7 @@ from typing import Any, Dict, Tuple
 
 from .. import sender as _sender
 from ..config import try_get_config
-from ..events import blocked_call_error, emit_event
+from ..events import blocked_call_error, emit_event, tool_denied_compliance
 from ..deobfuscate import redact_for_storage, run_configured_pii_scan
 from ..policy import (
     apply_pre_call_policy,
@@ -166,6 +166,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
                         response="",
                         success=False,
                         metadata={**meta, "tool_name": func_name, "reason": reason},
+                        compliance=tool_denied_compliance(),
                         options=options or None,
                     )
                     raise RuntimeError(

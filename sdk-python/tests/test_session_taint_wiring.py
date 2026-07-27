@@ -43,6 +43,10 @@ class TestTaintSetEnforce:
         t2 = _pre_call("what is the weather?", "alice")
         assert t2["decision"] == "block"
         assert t2["compliance"]["rule_id"] == "sdk:session_tainted"
+        # Reachability pin for TRANSMISSION_BLOCKED (named in
+        # test_reason_codes.py): a taint-gated egress refusal is a refusal
+        # to transmit, and the classification says so.
+        assert t2["compliance"]["reason_code"] == "TRANSMISSION_BLOCKED"
         # A different session is unaffected.
         assert _pre_call("what is the weather?", "bob")["decision"] == "allow"
 

@@ -1115,6 +1115,9 @@ function createAuditedMethod(
             actionTaken = "blocked";
             actionReason = "policy_violation";
             actionSource = "policy_rules";
+            // A taint-gated refusal of outbound egress: the session is
+            // compromised, so this transmission does not leave the process.
+            reasonCode = ReasonCode.TRANSMISSION_BLOCKED;
             debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
           } else {
             if (actionReason === "none") actionReason = "policy_violation";
@@ -1194,6 +1197,13 @@ function createAuditedMethod(
             actionTaken = "blocked";
             blockedTypes = resolved.blockedTypes;
             redactedTypes = resolved.redactedTypes; // medium-risk types present alongside block-level types
+            // The prompt_injection label rides the PII pipeline, but a block
+            // it drove is an injection finding, not a PII finding — the
+            // classification refines whenever the injection label is among
+            // the block-level types.
+            reasonCode = resolved.blockedTypes.includes("prompt_injection")
+              ? ReasonCode.INJECTION_DETECTED
+              : ReasonCode.PII_DETECTED;
           } else if (piiAction === "redact") {
             // Enforcement APPLICATION, not detection: the scan already found
             // something and policy already said remove it, so a failure here
@@ -1279,6 +1289,8 @@ function createAuditedMethod(
             actionTaken = "blocked";
             actionReason = "policy_violation";
             actionSource = "policy_rules";
+            // Accumulated multi-turn injection IS an injection finding.
+            reasonCode = ReasonCode.INJECTION_DETECTED;
             debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
           } else {
             if (actionReason === "none") actionReason = "policy_violation";

@@ -807,6 +807,11 @@ def apply_pre_call_policy(
     # enforcement-integrity gate above.
     _layer = ""
     try:
+        # Explicit classification from a detector layer (taint, PII/injection,
+        # multi-turn) when one blocked. Lowest precedence of the explicit
+        # codes: when a detector blocked, floor/rules never ran and a hook
+        # block clears it (TS parity).
+        detector_reason_code: Optional[str] = None
         _layer = "session_taint"
         # 0.5 Session taint latch: a session compromised on an earlier turn has its
         #     later egress escalated. ENFORCE runs on PRIOR taint; SET happens at
@@ -836,6 +841,8 @@ def apply_pre_call_policy(
                     action_taken = "blocked"
                     action_reason = "policy_violation"
                     action_source = "policy_rules"
+                    # A taint-gated refusal of outbound egress (TS parity).
+                    detector_reason_code = ReasonCode.TRANSMISSION_BLOCKED.value
                 elif action_reason == "none":
                     action_reason = "policy_violation"
                     action_source = "policy_rules"
@@ -904,6 +911,14 @@ def apply_pre_call_policy(
                     action_taken = "blocked"
                     blocked_types = resolved["blocked_types"]
                     redacted_types = resolved["redacted_types"]
+                    # The prompt_injection label rides the PII pipeline, but a
+                    # block it drove is an injection finding, not a PII finding
+                    # (TS parity).
+                    detector_reason_code = (
+                        ReasonCode.INJECTION_DETECTED.value
+                        if "prompt_injection" in resolved["blocked_types"]
+                        else ReasonCode.PII_DETECTED.value
+                    )
                 elif pii_action == "redact":
                     action_taken = "redacted"
                     redacted_types = resolved["redacted_types"]
@@ -956,6 +971,8 @@ def apply_pre_call_policy(
                     # "policy_rules": parity with the TS wrapper and integrations
                     # core (rule_id sdk:multi_turn_injection names the gate).
                     action_source = "policy_rules"
+                    # Accumulated multi-turn injection IS an injection finding.
+                    detector_reason_code = ReasonCode.INJECTION_DETECTED.value
                 else:
                     # flag: annotate without changing the action (TS parity).
                     if action_reason == "none":
@@ -1151,6 +1168,7 @@ def apply_pre_call_policy(
                 ReasonCode.HOOK_TIMEOUT.value if hook_disposition == "timeout" else None
             )
             rules_reason_code = None
+            detector_reason_code = None
 
         if action_taken not in ("hook_error", "hook_timeout"):
             if hook_decision == "block":
@@ -1163,6 +1181,7 @@ def apply_pre_call_policy(
                     ReasonCode.HOOK_TIMEOUT.value if hook_disposition == "timeout" else None
                 )
                 rules_reason_code = None
+                detector_reason_code = None
             elif (
                 hook_decision == "allow"
                 and hook_disposition == "allow"
@@ -1186,6 +1205,7 @@ def apply_pre_call_policy(
                     action_source = "customer_hook"
                     # The overridden block's code no longer applies.
                     rules_reason_code = None
+                    detector_reason_code = None
             elif (
                 hook_decision == "redact"
                 and action_taken != "redacted"
@@ -1322,7 +1342,7 @@ def apply_pre_call_policy(
     # the event builder exactly the way the raised error derives, so the
     # record and the exception cannot disagree.
     from .errors import _resolve_reason_code
-    explicit_reason_code = hook_reason_code or rules_reason_code
+    explicit_reason_code = hook_reason_code or rules_reason_code or detector_reason_code
     resolved_reason_code = explicit_reason_code or (
         ReasonCode.PERMITTED.value
         if action_reason in ("none", "customer_override")

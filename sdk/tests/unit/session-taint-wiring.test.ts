@@ -66,6 +66,10 @@ describe('session taint: SET on injection, ENFORCE on later egress', () => {
     const t2 = await preCall('what is the weather?', 'alice');
     expect(t2.decision).toBe('block');
     expect(t2.compliance.rule_id).toBe('sdk:session_tainted');
+    // Reachability pin for TRANSMISSION_BLOCKED (named in
+    // reason-codes.test.ts): a taint-gated egress refusal is a refusal to
+    // transmit, and the classification says so.
+    expect(t2.compliance.reason_code).toBe('TRANSMISSION_BLOCKED');
     // A DIFFERENT session is unaffected.
     const other = await preCall('what is the weather?', 'bob');
     expect(other.decision).toBe('allow');
