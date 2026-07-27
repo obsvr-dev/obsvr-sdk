@@ -18,6 +18,12 @@ The checks, in the order a break is reported:
 Verification is offline and off the hot path, so it does the thorough thing:
 every event is re-signed from scratch rather than trusting any stored digest.
 
+It also TALLIES what the chain admits it is missing: gap markers the sender
+signed to record events the bounded queue dropped before they could be chained.
+Those events left no hole to detect - they never got a sequence number - so the
+marker is the only evidence they existed, and a verifier that returns valid
+without surfacing it reports a lossy run as a complete one.
+
 Cross-language determinism: nothing here sorts or collates text, so there is
 no locale surface. Where ordering matters it is the numeric ``seq_no``, which
 cannot diverge between languages the way locale-aware string collation can.
@@ -39,6 +45,7 @@ import hmac as hmac_mod
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence
 
+from .audit_gap import parse_audit_gap_prompt
 from .sender import derive_signing_key
 
 __all__ = ["ChainVerificationResult", "verify_chain"]
@@ -58,6 +65,15 @@ class ChainVerificationResult:
     events_verified: int
     broken_at: Optional[int] = None
     reason: Optional[str] = None
+    #: Gap markers found in the verified prefix - events the SDK signed to say
+    #: it had dropped events before them (see audit_gap.py).
+    gap_markers: int = 0
+    #: Total events those markers declare lost. A chain can be perfectly valid
+    #: and still be missing this many events: ``valid`` means what is here is
+    #: genuine and in order, NOT that it is everything. Reporting them
+    #: separately is the point - a caller that ignores this reads a saturated
+    #: burst as a clean run.
+    events_declared_lost: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-friendly view using the cross-language field names."""
@@ -66,6 +82,8 @@ class ChainVerificationResult:
             out["brokenAt"] = self.broken_at
         if self.reason is not None:
             out["reason"] = self.reason
+        out["gapMarkers"] = self.gap_markers
+        out["eventsDeclaredLost"] = self.events_declared_lost
         return out
 
 
@@ -113,6 +131,20 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
 
     An empty chain is vacuously valid: there is nothing to contradict.
     """
+    gap_markers = 0
+    events_declared_lost = 0
+
+    def broken(index: int, reason: str) -> ChainVerificationResult:
+        """A break: the gap tally covers only the prefix that verified."""
+        return ChainVerificationResult(
+            valid=False,
+            broken_at=index,
+            reason=reason,
+            events_verified=index,
+            gap_markers=gap_markers,
+            events_declared_lost=events_declared_lost,
+        )
+
     if not events:
         return ChainVerificationResult(valid=True, events_verified=0)
 
@@ -120,12 +152,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
     session_id = events[0].get("sdk_session_id")
 
     if not session_id:
-        return ChainVerificationResult(
-            valid=False,
-            broken_at=0,
-            reason="First event missing sdk_session_id",
-            events_verified=0,
-        )
+        return broken(0, "First event missing sdk_session_id")
 
     last_sig: Optional[str] = None
     last_seq = 0
@@ -133,48 +160,29 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
 
     for i, event in enumerate(events):
         if event.get("sdk_session_id") != session_id:
-            return ChainVerificationResult(
-                valid=False,
-                broken_at=i,
-                reason=(
-                    f"Session ID mismatch at event {i}: expected {session_id}, "
-                    f"got {event.get('sdk_session_id')}"
-                ),
-                events_verified=i,
+            return broken(
+                i,
+                f"Session ID mismatch at event {i}: expected {session_id}, "
+                f"got {event.get('sdk_session_id')}",
             )
 
         seq_no = event.get("seq_no")
         if seq_no is None:
-            return ChainVerificationResult(
-                valid=False, broken_at=i, reason=f"Missing seq_no at event {i}", events_verified=i
-            )
+            return broken(i, f"Missing seq_no at event {i}")
         if i == 0:
             if seq_no < 1:
-                return ChainVerificationResult(
-                    valid=False,
-                    broken_at=i,
-                    reason=f"Invalid initial seq_no: {seq_no}",
-                    events_verified=i,
-                )
+                return broken(i, f"Invalid initial seq_no: {seq_no}")
         elif seq_no != last_seq + 1:
-            return ChainVerificationResult(
-                valid=False,
-                broken_at=i,
-                reason=f"seq_no gap at event {i}: expected {last_seq + 1}, got {seq_no}",
-                events_verified=i,
+            return broken(
+                i, f"seq_no gap at event {i}: expected {last_seq + 1}, got {seq_no}"
             )
         last_seq = seq_no
 
         timestamp_sdk = event.get("timestamp_sdk")
         if timestamp_sdk is not None:
             if timestamp_sdk < last_timestamp:
-                return ChainVerificationResult(
-                    valid=False,
-                    broken_at=i,
-                    reason=(
-                        f"Timestamp decreased at event {i}: {timestamp_sdk} < {last_timestamp}"
-                    ),
-                    events_verified=i,
+                return broken(
+                    i, f"Timestamp decreased at event {i}: {timestamp_sdk} < {last_timestamp}"
                 )
             last_timestamp = timestamp_sdk
 
@@ -182,14 +190,10 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             # An absent prev_sig and an empty one are the same claim ("no
             # predecessor"), which is a break anywhere but the first event.
             if (event.get("prev_sig") or None) != last_sig:
-                return ChainVerificationResult(
-                    valid=False,
-                    broken_at=i,
-                    reason=(
-                        f"Chain break at event {i}: prev_sig does not match "
-                        "prior event's sdk_sig"
-                    ),
-                    events_verified=i,
+                return broken(
+                    i,
+                    f"Chain break at event {i}: prev_sig does not match "
+                    "prior event's sdk_sig",
                 )
 
         expected_sig = _compute_signature(
@@ -206,13 +210,20 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
         # signatures, and a timing oracle on the comparison is free to give
         # away otherwise.
         if not hmac_mod.compare_digest(str(event.get("sdk_sig") or ""), expected_sig):
-            return ChainVerificationResult(
-                valid=False,
-                broken_at=i,
-                reason=f"Signature mismatch at event {i}",
-                events_verified=i,
-            )
+            return broken(i, f"Signature mismatch at event {i}")
 
         last_sig = event.get("sdk_sig")
 
-    return ChainVerificationResult(valid=True, events_verified=len(events))
+        # Counted only after the event's own signature verified: an unverified
+        # marker's count is an unverified claim.
+        gap = parse_audit_gap_prompt(event.get("prompt"))
+        if gap:
+            gap_markers += 1
+            events_declared_lost += gap["dropped"]
+
+    return ChainVerificationResult(
+        valid=True,
+        events_verified=len(events),
+        gap_markers=gap_markers,
+        events_declared_lost=events_declared_lost,
+    )

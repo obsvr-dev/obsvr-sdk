@@ -31,6 +31,13 @@ from typing import Any, Dict, Optional
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from .audit_gap import (
+    AUDIT_GAP_GOVERNANCE_EVENT,
+    AUDIT_GAP_METADATA_KEY,
+    AUDIT_GAP_OPERATION,
+    AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+    format_audit_gap_prompt,
+)
 from .config import ResolvedConfig
 
 MAX_QUEUE_SIZE = 1000
@@ -69,6 +76,10 @@ _stats: Dict[str, int] = {
     # never-delivered event are different audit stories, and only the first
     # means the server saw the event and said no. Name matches the TS sender.
     "dropped_rejected": 0,
+    # Signed gap markers emitted (see audit_gap.py), and the dropped events
+    # those markers have put on the record.
+    "gap_markers": 0,
+    "gap_events_declared": 0,
 }
 _stats_lock = threading.Lock()
 _worker = None
@@ -95,6 +106,17 @@ _signing_key_source: Optional[str] = None
 # Reentrant: send_audit_async holds it across sign + enqueue (atomic chain
 # advance), and the public sign_event() re-acquires it inside that scope.
 _sign_lock = threading.RLock()
+# Overflow drops that no gap marker has declared yet. Incremented at the drop
+# point, zeroed when a marker carrying them is signed into the chain. Guarded
+# by _sign_lock, like the chain head it will be written into.
+_gap_pending = 0
+# Markers emitted this session - the ordinal in a marker's request_id.
+_gap_marker_ordinal = 0
+# The most recent config an event was enqueued under, so flush() can sign an
+# outstanding marker at shutdown. flush() takes no config (atexit has none to
+# give it), and a gap that is never declared because the process was on its way
+# out is exactly the gap most worth recording.
+_last_config: Optional[ResolvedConfig] = None
 
 
 def derive_signing_key(api_key: str) -> bytes:
@@ -475,6 +497,117 @@ def _stamp_integrity_flags(event: Dict[str, Any]) -> None:
     event["metadata"] = md
 
 
+def _build_gap_marker(config: ResolvedConfig, dropped: int) -> Dict[str, Any]:
+    """Build the gap-marker event declaring ``dropped`` lost events.
+
+    Shaped after the ``governance_disabled`` event: an SDK-authored
+    ``policy_flag`` carrying its identity in ``metadata.governance_event``,
+    since ingest's ``event_type`` enum has no member for a delivery-layer
+    record and inventing one would get the marker rejected as malformed -
+    losing the record of loss to the same failure it exists to report.
+
+    ``policy_version`` is "none" rather than the live ruleset hash: no policy
+    evaluated this event, and stamping a hash would assert that one did.
+    Field-for-field twin of the TS ``buildGapMarker``.
+    """
+    global _gap_marker_ordinal
+    _gap_marker_ordinal += 1
+    return {
+        "request_id": f"audit-gap-{_sdk_session_id}-{_gap_marker_ordinal}",
+        "environment": getattr(config, "environment", None),
+        "region": getattr(config, "default_region", None) or "unknown",
+        "provider": "unknown",
+        "model": "none",
+        "operation": AUDIT_GAP_OPERATION,
+        "source": "obsvr_sdk",
+        # The claim itself, in the signed content preimage (see audit_gap.py).
+        "prompt": format_audit_gap_prompt(dropped, AUDIT_GAP_REASON_QUEUE_OVERFLOW),
+        "response": "",
+        "success": True,
+        "latency_ms": 0,
+        "event_type": "policy_flag",
+        "policy_version": "none",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "builtin",
+        "redacted_types": [],
+        "blocked_types": [],
+        "metadata": {
+            "governance_event": AUDIT_GAP_GOVERNANCE_EVENT,
+            # Structured copy for querying. Unsigned - `prompt` is authoritative.
+            AUDIT_GAP_METADATA_KEY: {
+                "dropped": dropped,
+                "reason": AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+            },
+        },
+    }
+
+
+def _declare_pending_gap(
+    config: Optional[ResolvedConfig], force: bool = False
+) -> Optional[Dict[str, Any]]:
+    """Put any undeclared overflow drops on the record. Caller holds ``_sign_lock``.
+
+    Unforced, this needs room for the marker AND the event whose arrival proved
+    there was room: a marker that displaced that event would drop it, re-open
+    the gap, and emit one marker per event for as long as the burst lasted.
+
+    ``force`` is for the flush path, and it is the case that matters most - a
+    shutdown after a saturated burst finds the queue FULL, which is precisely
+    when the capacity rule would refuse and the loss would die with the
+    process. Forcing overshoots the bound by exactly one item, on a queue that
+    is already draining, to keep the one event that says the others are gone.
+
+    Returns the marker it enqueued, so the caller can mirror it to OTel once it
+    is no longer holding the lock.
+    """
+    global _gap_pending
+    if _gap_pending == 0 or config is None:
+        return None
+    if not force and _queue.qsize() + 2 > MAX_QUEUE_SIZE:
+        return None
+
+    dropped = _gap_pending
+    marker = _build_gap_marker(config, dropped)
+    sign_event(marker, config.api_key)
+    try:
+        if force:
+            # Deliberately past maxsize: `put_nowait` would raise on the full
+            # queue this path exists to handle. One item, on a draining queue.
+            with _queue.mutex:
+                _queue.queue.append((config, marker, 0))
+                _queue.unfinished_tasks += 1
+                _queue.not_empty.notify()
+        else:
+            _queue.put_nowait((config, marker, 0))
+    except Full:
+        # Lost the last slot to a racing producer. Leave the pending count
+        # intact and let the next opportunity carry it - but the chain head
+        # cannot stay advanced past an event that was never delivered.
+        _rewind_chain_to(marker)
+        return None
+    _gap_pending = 0
+    _bump("enqueued")
+    _bump("gap_markers")
+    _bump("gap_events_declared", dropped)
+    _debug_warn(
+        config,
+        f"Recording audit gap in the signed chain: {dropped} dropped event(s)",
+    )
+    return marker
+
+
+def _rewind_chain_to(event: Dict[str, Any]) -> None:
+    """Undo the chain advance a signed-but-undelivered event caused.
+
+    Caller holds ``_sign_lock``. Restores the head to the event's predecessor,
+    which its own ``prev_sig`` still names.
+    """
+    global _seq_no, _last_sig
+    _seq_no = int(event.get("seq_no") or 1) - 1
+    _last_sig = event.get("prev_sig") or None
+
+
 def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     """Enqueue an audit event for fire-and-forget sending.
 
@@ -482,7 +615,7 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     Every accepted event is signed into the SDK integrity chain before
     enqueueing, matching the TS SDK behavior.
     """
-    global _dropped, _seq_no, _last_sig
+    global _dropped, _seq_no, _last_sig, _gap_pending, _last_config
     if config.disabled:
         return
     _stamp_integrity_flags(event)
@@ -494,26 +627,51 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     # chain fails verification. Holding the lock across check+sign+put lets us
     # roll the chain head back cleanly on Full.
     with _sign_lock:
+        _last_config = config
         if _queue.full():
             _dropped += 1
             _bump("dropped_overflow")
+            # Counted AND remembered: the counter is process-local and dies
+            # with the process, so until a marker carries it into the signed
+            # chain the loss is not on the record (see audit_gap.py).
+            _gap_pending += 1
             return
+        # The queue has room, so the gap that just ended can be declared.
+        # Emitted BEFORE this event so the marker sits between the last event
+        # that survived and the first one after the loss.
+        marker = _declare_pending_gap(config)
         prev_seq, prev_sig = _seq_no, _last_sig
         # Public entry point (re-acquires the reentrant lock) so tests and
         # callers that hook sign_event still see every signed event.
         sign_event(event, config.api_key)
         try:
             _queue.put_nowait((config, event, 0))
+            enqueued = True
         except Full:
             _seq_no, _last_sig = prev_seq, prev_sig  # roll back: never entered the chain
             _dropped += 1
             _bump("dropped_overflow")
-            return
-        _bump("enqueued")
+            _gap_pending += 1
+            enqueued = False
+        if enqueued:
+            _bump("enqueued")
     # Optional OTel mirror - fire-and-forget, never affects the audit path.
-    from .otel_mirror import mirror_to_otel
-    mirror_to_otel(config, event)
+    # Marker first: that is its order in the chain. A marker that made it into
+    # the queue is mirrored even when the event behind it did not.
+    if marker is not None:
+        _mirror(config, marker)
+    if not enqueued:
+        return
+    _mirror(config, event)
     _ensure_worker()
+
+
+def _mirror(config: ResolvedConfig, event: Dict[str, Any]) -> None:
+    """OTel mirror, done outside the sign lock so a slow exporter cannot stall
+    the chain."""
+    from .otel_mirror import mirror_to_otel
+
+    mirror_to_otel(config, event)
 
 
 def get_queue_size() -> int:
@@ -524,8 +682,25 @@ def get_dropped_count() -> int:
     return _dropped
 
 
+def get_pending_gap_count() -> int:
+    """Overflow drops not yet declared by a gap marker. Non-zero only between a
+    drop and the next moment the queue had room; a flush drives it to zero."""
+    return _gap_pending
+
+
 def flush(timeout: float = 5.0) -> None:
-    """Wait until all queued events are processed (graceful shutdown)."""
+    """Wait until all queued events are processed (graceful shutdown).
+
+    Declares any outstanding gap first, so a shutdown that follows a saturated
+    burst still leaves the loss on the record. Forced (reserve 0): the queue is
+    about to drain, and a marker that misses this flush may never be written at
+    all.
+    """
+    with _sign_lock:
+        marker = _declare_pending_gap(_last_config, force=True)
+    if marker is not None and _last_config is not None:
+        _mirror(_last_config, marker)
+        _ensure_worker()
     deadline = time.time() + timeout
     while time.time() < deadline:
         if _queue.unfinished_tasks == 0:
@@ -536,6 +711,7 @@ def flush(timeout: float = 5.0) -> None:
 def _reset_sender() -> None:
     """Reset sender state (tests only). The worker thread stays alive."""
     global _dropped, _seq_no, _last_sig, _signing_key, _signing_key_source
+    global _gap_pending, _gap_marker_ordinal, _last_config
     while True:
         try:
             _queue.get_nowait()
@@ -553,3 +729,6 @@ def _reset_sender() -> None:
         _last_sig = None
         _signing_key = None
         _signing_key_source = None
+        _gap_pending = 0
+        _gap_marker_ordinal = 0
+        _last_config = None

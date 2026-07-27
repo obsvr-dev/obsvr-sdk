@@ -81,6 +81,11 @@ class TestValidChains:
         assert verify_chain(events, api_key).to_dict() == {
             "valid": True,
             "eventsVerified": len(events),
+            # Always present, even at zero: a consumer that never sees these
+            # keys cannot tell "this chain declares no loss" from "this
+            # verifier is too old to report loss".
+            "gapMarkers": 0,
+            "eventsDeclaredLost": 0,
         }
 
 

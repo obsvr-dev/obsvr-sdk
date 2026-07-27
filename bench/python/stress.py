@@ -6,9 +6,10 @@ throughput + latency metric), memory sampled on a cadence with a leak
 assertion, streaming chain verification (retaining nothing), a signing-vector
 cross-check, per-call error accounting, and a sender-stats dump. Then a burst
 phase (tight loop with a 10ms-per-POST transport stub) proves bounded-queue
-overflow: drops are counted, RSS stays bounded, and the chain of the events
-that WERE enqueued still verifies (drops happen before signing, so they never
-create chain gaps).
+overflow: drops are counted, RSS stays bounded, the chain of the events that
+WERE enqueued still verifies, and the loss is DECLARED in that chain by a
+signed gap marker (drops happen before signing, so they leave no hole of their
+own - the marker is what puts them on the record).
 
 Usage:
   python stress.py [--calls N] [--tier L0|L1|L2|L3|all] [--burst-calls N]
@@ -120,9 +121,16 @@ def _run_sequential(tier: str, calls: int, mem_interval: int) -> Dict[str, Any]:
     leak = _leak_assessment(mem_curve, calls)
     signing = bl.verify_signing_vectors()
     v = verifier
+    # Gap markers are signed events the SDK adds on its own behalf, so they are
+    # enqueued without a call behind them: accounting closes once they are on
+    # the left-hand side. `declared` closing on `dropped` is the check that no
+    # run ends with loss still off the record.
+    markers = stats.get("gap_markers", 0)
+    declared = stats.get("gap_events_declared", 0)
     passed = (
         v.events > 0 and v.clean and errlog.count == 0
-        and (calls == enqueued + dropped) and (v.events == enqueued)
+        and (calls + markers == enqueued + dropped) and (v.events == enqueued)
+        and (declared == dropped)
         and signing["passed"]
     )
     return {
@@ -134,8 +142,10 @@ def _run_sequential(tier: str, calls: int, mem_interval: int) -> Dict[str, Any]:
         "chain": v.to_dict(),
         "signing_vectors_crosscheck": signing,
         "sender_stats": stats, "enqueued": enqueued, "dropped_overflow": dropped,
-        "invariant_calls_eq_enqueued_plus_dropped": (calls == enqueued + dropped),
+        "gap_markers": markers, "gap_events_declared": declared,
+        "invariant_calls_eq_enqueued_plus_dropped": (calls + markers == enqueued + dropped),
         "invariant_verified_eq_enqueued": (v.events == enqueued),
+        "invariant_drops_all_declared": (declared == dropped),
         "errors": errlog.to_dict(),
         "tier_pass": passed,
     }
@@ -176,10 +186,15 @@ def _run_burst(tier: str, burst_calls: int) -> Dict[str, Any]:
     enqueued = stats.get("enqueued", 0)
     dropped = stats.get("dropped_overflow", 0)
     v = verifier
+    markers = stats.get("gap_markers", 0)
+    declared = stats.get("gap_events_declared", 0)
     rss_growth = (rss_after - rss_before) if (rss_before and rss_after) else None
     passed = (
         dropped > 0 and v.events > 0 and v.clean and errlog.count == 0
-        and (burst_calls == enqueued + dropped) and (v.events == enqueued)
+        and (burst_calls + markers == enqueued + dropped) and (v.events == enqueued)
+        # This phase exists to force drops, so it is also the phase that must
+        # prove every one of them reached the signed chain.
+        and (declared == dropped) and markers > 0
         and (rss_growth is None or rss_growth < 60.0)
     )
     return {
@@ -187,11 +202,13 @@ def _run_burst(tier: str, burst_calls: int) -> Dict[str, Any]:
         "post_delay_ms": BURST_POST_DELAY_S * 1000,
         "chain": v.to_dict(), "sender_stats": stats,
         "enqueued": enqueued, "dropped_overflow": dropped,
+        "gap_markers": markers, "gap_events_declared": declared,
         "rss_before_mb": round(rss_before, 2) if rss_before else None,
         "rss_after_mb": round(rss_after, 2) if rss_after else None,
         "rss_growth_mb": round(rss_growth, 2) if rss_growth is not None else None,
-        "invariant_calls_eq_enqueued_plus_dropped": (burst_calls == enqueued + dropped),
+        "invariant_calls_eq_enqueued_plus_dropped": (burst_calls + markers == enqueued + dropped),
         "invariant_verified_eq_enqueued": (v.events == enqueued),
+        "invariant_drops_all_declared": (declared == dropped),
         "errors": errlog.to_dict(),
         "burst_pass": passed,
     }

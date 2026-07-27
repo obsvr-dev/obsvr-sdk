@@ -15,6 +15,27 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **Dropped events are declared in the signed chain.** When the bounded sender
+  queue overflows, both SDKs now sign a **gap marker** into the chain at the
+  position the loss occurred: one chain-linked event stating how many events
+  were dropped there. Previously those drops were counted in
+  `getSenderStats()` / `get_sender_stats()` and nothing else — and because they
+  happen *before* a sequence number is assigned, the surviving events formed a
+  contiguous chain that verified clean. A burst that lost 90% of its events
+  produced a record that looked complete, and the only evidence otherwise was a
+  process-local counter that died with the process. The declared count lives in
+  the signature preimage (`prompt`), not in metadata, so editing it down breaks
+  verification like any other tamper; `metadata.obsvr_audit_gap` carries an
+  unsigned structured copy for querying. One marker covers a whole contiguous
+  gap rather than one per dropped event, and a `flush()` (including the exit
+  handlers) declares an outstanding gap before draining, so a shutdown mid-burst
+  still leaves the loss on the record. Both verifiers report it — new
+  `gapMarkers` / `eventsDeclaredLost` result fields (`gap_markers` /
+  `events_declared_lost` in Python) and a line in both `obsvr-verify` CLIs — so
+  a chain that is valid *and* incomplete is reported as both. New
+  `gap_markers` / `gap_events_declared` sender counters. Marker format and
+  verdicts are pinned cross-language by
+  `conformance/fixtures/audit_gap.json`.
 - **Typed policy-block error.** A call refused by policy now throws
   `ObsvrPolicyError` (TypeScript) / raises `ObsvrPolicyError` (Python) carrying
   a stable `type`, a `reason_code` from the closed registry, the deciding

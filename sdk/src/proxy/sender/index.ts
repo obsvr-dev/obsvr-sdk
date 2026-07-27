@@ -9,6 +9,7 @@ export {
   sendAuditAsync,
   getQueueSize,
   getDroppedCount,
+  getPendingGapCount,
   getSenderStats,
   flushQueue,
   setupExitHandlers,

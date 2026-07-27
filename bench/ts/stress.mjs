@@ -143,8 +143,15 @@ async function runTier(tier) {
 
   const totalMade = CALLS + burstMade;
   const invariants = {
-    calls_eq_enqueued_plus_overflow: totalMade === stats.enqueued + stats.dropped_overflow,
+    // Gap markers are signed events the SDK adds on its own behalf, so they
+    // are enqueued without a call behind them. Accounting closes once they
+    // are on the left-hand side, and this is also the check that a burst
+    // which dropped events produced markers to say so.
+    calls_eq_enqueued_plus_overflow:
+      totalMade + stats.gap_markers === stats.enqueued + stats.dropped_overflow,
     verified_eq_enqueued: chain.events === stats.enqueued,
+    // Every drop is declared: no burst ends with loss still off the record.
+    drops_all_declared: stats.gap_events_declared === stats.dropped_overflow,
     chain_valid: chain.valid,
     cross_check_agrees: cross.agrees,
     no_errors: errors.count === 0,
@@ -183,6 +190,8 @@ async function runTier(tier) {
       width: BURST_WIDTH,
       made: burstMade,
       dropped_overflow_total: stats.dropped_overflow,
+      gap_markers: stats.gap_markers,
+      gap_events_declared: stats.gap_events_declared,
       chain_valid_after_burst: chain.valid,
     },
     sender_stats: stats,
@@ -234,7 +243,8 @@ async function main() {
 
   const fail = rows.some(
     (r) => r.errors.count > 0 || !r.chain.valid || !r.cross_check.agrees ||
-      !r.invariants.calls_eq_enqueued_plus_overflow || !r.invariants.verified_eq_enqueued || !r.memory.leak_ok,
+      !r.invariants.calls_eq_enqueued_plus_overflow || !r.invariants.verified_eq_enqueued ||
+        !r.invariants.drops_all_declared || !r.memory.leak_ok,
   );
   if (fail) {
     console.error(`\nWARNING: one or more tiers failed (errors / chain / cross-check / invariant / leak).`);

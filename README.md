@@ -327,6 +327,8 @@ flowchart LR
 
 **What leaves your process is your choice.** With redaction configured, raw prompts and responses can stay entirely in your environment; the SDK can emit only content hashes, signatures, and verdicts.
 
+**What a dropped event leaves behind.** Delivery is bounded: if the queue fills faster than it drains, events are dropped rather than growing memory without limit. Those drops happen before a sequence number is assigned, so they leave no hole for the chain to expose — which is exactly why the SDK does not rely on the chain to expose them. It signs a **gap marker**: one chain-linked event, at the position the loss happened, stating how many events were dropped there. The count is inside the signature preimage, so editing it breaks verification, and `obsvr-verify` reports it alongside the verdict. A chain carrying markers is valid and incomplete at once; both are reported, because reporting only the first is how a lossy run gets read as a clean one.
+
 ---
 
 ## Verifying the record
@@ -341,9 +343,10 @@ obsvr-verify ./bundle.json          # Python (console script from obsvr-sdk)
 # full client HMAC-chain re-verification
 npx obsvr-verify ./bundle.json --api-key <key>
 obsvr-verify ./bundle.json --api-key <key>
+
 ```
 
-Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error — identical in both, along with the accepted bundle shapes and the verdicts. CI drives both binaries over one export built from the shared signing vectors and compares exit codes and output, so the two cannot drift apart.
+Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error — identical in both, along with the accepted bundle shapes and the verdicts. CI drives both binaries over one export built from the shared fixtures and compares exit codes and output, so the two cannot drift apart.
 
 Python also exposes verification as a library call:
 
@@ -355,7 +358,14 @@ if not result.valid:
     print(f"broken at event {result.broken_at}: {result.reason}")
 ```
 
-Both verifiers recompute every signature and check sequence continuity, chain linkage, session consistency, and timestamp monotonicity, and return the **same verdict on the same input** — pinned case by case in `conformance/fixtures/signing_vectors.json`. One documented limit, identical in both: verification proves the events it is given are genuine, in order, and unmodified; it cannot prove they are *all* of them, because a chain truncated from the front is internally consistent. A dropped prefix is caught by the service's sequence guard and the sealed root, not by the client chain.
+Both verifiers recompute every signature and check sequence continuity, chain linkage, session consistency, and timestamp monotonicity, and return the **same verdict on the same input** — pinned case by case in `conformance/fixtures/signing_vectors.json`. They also report any **gap markers** the chain carries (`conformance/fixtures/audit_gap.json`), so a chain that dropped events under load says so instead of reading as a complete one:
+
+```text
+✓ CONTENT + CHAIN verification passed: 4,002 signature(s) recomputed and chain-linked across 1 session(s).
+! 8999 event(s) declared LOST by 1 gap marker(s) in this chain.
+```
+
+One documented limit, identical in both: verification proves the events it is given are genuine, in order, and unmodified; it cannot prove they are *all* of them, because a chain truncated from the front is internally consistent. Gap markers close the case the SDK can see — its own queue overflow — but not this one. A dropped prefix is caught by the service's sequence guard and the sealed root, not by the client chain.
 
 This re-checks the **client HMAC chain** — capture order and content integrity — with your key, independently of obsvr. The **public-key-only** check (recompute the Merkle root from raw events and verify the Ed25519 root signature with the published public key, no obsvr account) is performed by your obsvr ingest service's bundle verifier over an exported audit bundle; the SDK's job is to produce events that verify identically wherever they're checked, which the [conformance fixtures](#cross-language-parity-conformance-is-the-contract) pin.
 

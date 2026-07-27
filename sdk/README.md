@@ -178,7 +178,7 @@ Governance covers all three MCP phases: **discovery** (`listTools()` is scanned 
 
 ## Tamper-Evident Audit Trail
 
-Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers the prompt/response **content** and event **order**, so tampering with captured content — or dropping/reordering events — breaks the chain. The decision/attribution fields (verdict, rule, tenant) are not in the client preimage; their integrity is sealed at ingest, which verifies the client signature on acceptance and **countersigns the full canonical event** with a server-held key.
+Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers the prompt/response **content** and event **order**, so tampering with captured content — or dropping/reordering events once they are in the chain — breaks it. Events the bounded sender queue drops under load never enter the chain and so hole nothing; those are declared instead by a signed **gap marker** stating how many were lost at that point, which both verifiers report alongside the verdict. The decision/attribution fields (verdict, rule, tenant) are not in the client preimage; their integrity is sealed at ingest, which verifies the client signature on acceptance and **countersigns the full canonical event** with a server-held key.
 
 Verify an exported bundle offline with the shipped `obsvr-verify` CLI — no network, no trust in obsvr's servers:
 

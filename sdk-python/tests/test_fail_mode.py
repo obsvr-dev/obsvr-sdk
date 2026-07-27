@@ -199,6 +199,7 @@ class TestRegistryGate:
         "__init__.py",
         "_version.py",
         "agent_run.py",
+        "audit_gap.py",
         "auto.py",
         "cli_verify.py",
         "config.py",

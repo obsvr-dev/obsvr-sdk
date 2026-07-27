@@ -66,11 +66,14 @@ RSS/heap sampled every 5k calls with a leak assertion, **streaming verification
 of the full signed event chain** (monotonic seq, prev-sig linkage, per-event HMAC
 recomputation; cross-checked against the TS SDK's exported `verifyAuditChain`
 and the shared `conformance/fixtures/signing_vectors.json`), drop accounting
-(`calls == enqueued + dropped_overflow`, `verified == enqueued`), and zero
-unhandled errors. A burst phase deliberately slows the stubbed transport to
-force queue overflow and proves drops are counted while the delivered chain
-still verifies (drops happen before a sequence number is assigned, so they can
-never silently hole the chain).
+(`calls + gap_markers == enqueued + dropped_overflow`, `verified == enqueued`),
+and zero unhandled errors. A burst phase deliberately slows the stubbed
+transport to force queue overflow and proves three things: drops are counted,
+the delivered chain still verifies, and every dropped event is **declared** in
+that chain by a signed gap marker (`gap_events_declared == dropped_overflow`).
+The third is the one worth being strict about — drops happen before a sequence
+number is assigned, so they hole nothing on their own, and without the marker a
+burst that lost most of its events would report as a clean run.
 
 ## Requirements
 

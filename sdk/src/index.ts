@@ -132,6 +132,11 @@ export type {
 export { useSubject, getCurrentSubject, parseSubject } from "./proxy/subject.js";
 export type { Subject } from "./proxy/subject.js";
 export { verifyAuditChain } from "./governance/verify-chain.js";
+// Gap markers: a verified chain can still declare events the bounded sender
+// queue dropped. `verifyAuditChain` totals them; this identifies which events
+// carry the claim, for callers processing their own exports.
+export { parseAuditGapPrompt } from "./proxy/audit-gap.js";
+export type { AuditGapClaim } from "./proxy/audit-gap.js";
 // Typed policy-block error: catch this to tell "refused by policy" apart
 // from a provider or transport failure without matching on the message.
 export {

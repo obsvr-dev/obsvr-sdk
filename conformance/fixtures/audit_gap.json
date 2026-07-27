@@ -1,0 +1,179 @@
+{
+  "description": "Audit gap markers: the signed record of events the bounded sender queue dropped before they could be chained. Because those drops happen BEFORE a sequence number is assigned, the surviving chain is contiguous and verifies clean - the loss leaves no hole to find. A marker is one real, signed, chain-linked event stating how many events were lost immediately before it. This fixture pins the part that must be byte-identical across both SDKs: the canonical statement that goes into the signature preimage. Producers: sdk/src/proxy/audit-gap.ts, sdk-python/obsvr/audit_gap.py. Consumers: sdk/tests/unit/audit-gap-conformance.test.ts, sdk-python/tests/test_audit_gap_conformance.py.",
+
+  "constants": {
+    "format": "obsvr:audit-gap/1",
+    "reason_queue_overflow": "queue_overflow",
+    "metadata_key": "obsvr_audit_gap",
+    "governance_event": "audit_gap",
+    "operation": "audit.gap"
+  },
+
+  "preimage_note": "The count lives in `prompt` because the HMAC preimage is session|seq|timestamp|sha256(prompt+response)|prev_sig and metadata is deliberately not in it. A count carried only in metadata could be edited from 10000 to 1 without breaking a signature - a tamper-evident record whose one load-bearing number is not tamper-evident. One character of drift here makes the two SDKs sign different markers, which is why it is pinned rather than described.",
+
+  "preimage_cases": [
+    {
+      "id": "single_drop",
+      "dropped": 1,
+      "reason": "queue_overflow",
+      "prompt": "obsvr:audit-gap/1 dropped=1 reason=queue_overflow"
+    },
+    {
+      "id": "burst",
+      "dropped": 8734,
+      "reason": "queue_overflow",
+      "prompt": "obsvr:audit-gap/1 dropped=8734 reason=queue_overflow"
+    },
+    {
+      "id": "large_count_no_grouping",
+      "desc": "no thousands separators, no locale formatting - the number is written the same way in both languages",
+      "dropped": 1000000,
+      "reason": "queue_overflow",
+      "prompt": "obsvr:audit-gap/1 dropped=1000000 reason=queue_overflow"
+    }
+  ],
+
+  "parse_rejects": [
+    {
+      "id": "empty",
+      "prompt": "",
+      "desc": "an ordinary event with no prompt is not a marker"
+    },
+    {
+      "id": "ordinary_prompt",
+      "prompt": "summarize this document",
+      "desc": "the overwhelmingly common case: real content"
+    },
+    {
+      "id": "missing_reason",
+      "prompt": "obsvr:audit-gap/1 dropped=12",
+      "desc": "a truncated marker is not read as a partial one"
+    },
+    {
+      "id": "unknown_format_version",
+      "prompt": "obsvr:audit-gap/2 dropped=1 reason=queue_overflow",
+      "desc": "a newer format is not guessed at by an older reader"
+    },
+    {
+      "id": "negative_count",
+      "prompt": "obsvr:audit-gap/1 dropped=-1 reason=queue_overflow",
+      "desc": "a loss count cannot be negative"
+    },
+    {
+      "id": "uppercase_reason",
+      "prompt": "obsvr:audit-gap/1 dropped=1 reason=Queue_Overflow",
+      "desc": "reasons are a lowercase token set; case is not normalized away"
+    },
+    {
+      "id": "leading_text",
+      "prompt": "note: obsvr:audit-gap/1 dropped=1 reason=queue_overflow",
+      "desc": "a real prompt that merely quotes the format is not a marker",
+      "attack": "otherwise any caller could mint a loss claim by putting the string in a prompt"
+    },
+    {
+      "id": "trailing_text",
+      "prompt": "obsvr:audit-gap/1 dropped=1 reason=queue_overflow and more",
+      "desc": "the statement is the whole content or it is not the statement"
+    }
+  ],
+
+  "marker_event_fields": {
+    "desc": "Fixed fields both SDKs stamp on a marker. event_type is `policy_flag`, not a new enum member: ingest's event_type enum has no member for a delivery-layer record, and a marker rejected as malformed would lose the record of loss to the same failure it exists to report. The marker identifies itself through metadata.governance_event, following the governance_disabled precedent. policy_version is `none` because no policy evaluated this event - stamping a ruleset hash would assert that one did.",
+    "provider": "unknown",
+    "model": "none",
+    "operation": "audit.gap",
+    "source": "obsvr_sdk",
+    "response": "",
+    "success": true,
+    "event_type": "policy_flag",
+    "policy_version": "none",
+    "action_taken": "allowed",
+    "action_reason": "none",
+    "action_source": "builtin",
+    "redacted_types": [],
+    "blocked_types": [],
+    "metadata_governance_event": "audit_gap"
+  },
+
+  "signing": {
+    "desc": "A chain whose middle event is a marker. Both SDKs must recompute these signatures exactly: the marker is signed by the ordinary signing path, with no special case, so its claim is covered by the same HMAC as any prompt. Derivation is the one in signing_vectors.json.",
+    "api_key": "test-api-key",
+    "session_id": "22222222-2222-2222-2222-222222222222",
+    "signing_key_hex": "82063a1c5c8964553bf0ff6f9957e7b8063424a0d8aaaa09299a1ffd7ed468fd",
+    "events": [
+      {
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000000,
+        "prompt": "hello",
+        "response": "world",
+        "prev_sig": "",
+        "sdk_sig": "3a78d6e45cde3ea97091229c3dcea2b4e6b1935aa65cec823be61d756bdf756f"
+      },
+      {
+        "seq_no": 2,
+        "timestamp_sdk": 1700000000005,
+        "prompt": "obsvr:audit-gap/1 dropped=1234 reason=queue_overflow",
+        "response": "",
+        "prev_sig": "3a78d6e45cde3ea97091229c3dcea2b4e6b1935aa65cec823be61d756bdf756f",
+        "sdk_sig": "88b4528cb87d9553979f88eb163259cd31b5050cfa30ceb2a3764fd536506fd3"
+      },
+      {
+        "seq_no": 3,
+        "timestamp_sdk": 1700000000009,
+        "prompt": "after the gap",
+        "response": "ok",
+        "prev_sig": "88b4528cb87d9553979f88eb163259cd31b5050cfa30ceb2a3764fd536506fd3",
+        "sdk_sig": "094aec96703b0aace9b7b9364572ddd76229e102c0b5158cd0d5b761f45d7658"
+      }
+    ]
+  },
+
+  "verification": {
+    "desc": "Verdicts both verifiers must return over the `signing.events` chain. The first case is the one that matters: a chain carrying a marker is VALID and simultaneously incomplete, and a verifier that reports only the first half reports a lossy run as a clean one.",
+    "cases": [
+      {
+        "id": "valid_chain_declares_its_loss",
+        "mutations": [],
+        "expect": {
+          "valid": true,
+          "events_verified": 3,
+          "gap_markers": 1,
+          "events_declared_lost": 1234
+        }
+      },
+      {
+        "id": "edited_count_breaks_the_signature",
+        "desc": "the whole point of signing the count: rewriting 1234 to 1 does not survive verification",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "prompt",
+            "value": "obsvr:audit-gap/1 dropped=1 reason=queue_overflow"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "gap_markers": 0,
+          "events_declared_lost": 0
+        }
+      },
+      {
+        "id": "tally_covers_only_the_verified_prefix",
+        "desc": "a break before the marker means its claim was never verified, so it is not counted",
+        "mutations": [{ "op": "set", "index": 0, "field": "prompt", "value": "hello (edited)" }],
+        "expect": {
+          "valid": false,
+          "broken_at": 0,
+          "reason": "Signature mismatch at event 0",
+          "events_verified": 0,
+          "gap_markers": 0,
+          "events_declared_lost": 0
+        }
+      }
+    ]
+  }
+}

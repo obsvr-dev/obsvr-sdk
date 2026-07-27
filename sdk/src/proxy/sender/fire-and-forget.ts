@@ -12,6 +12,13 @@ import type { AuditEvent, QueueItem, BackoffState, ResolvedConfig } from "../typ
 import { debugLog } from "../../utils/logger.js";
 import { mirrorToOtel } from "../otel-mirror.js";
 import {
+  AUDIT_GAP_GOVERNANCE_EVENT,
+  AUDIT_GAP_METADATA_KEY,
+  AUDIT_GAP_OPERATION,
+  AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+  formatAuditGapPrompt,
+} from "../audit-gap.js";
+import {
   MAX_QUEUE_SIZE,
   SEND_BATCH_SIZE,
   MAX_BATCH_BYTES,
@@ -48,6 +55,10 @@ const senderStats = {
    * the first one means the server saw the event and said no.
    */
   dropped_rejected: 0,
+  /** Signed gap markers emitted (see audit-gap.ts). */
+  gap_markers: 0,
+  /** Dropped events those markers have put on the record. */
+  gap_events_declared: 0,
 };
 
 /** Snapshot of delivery counters (enqueued/sent/retries/drops). */
@@ -120,6 +131,15 @@ let isProcessing = false;
  * Number of events dropped due to a full queue
  */
 let droppedCount = 0;
+
+/**
+ * Overflow drops that no gap marker has declared yet. Incremented at the drop
+ * point, zeroed when a marker carrying them is signed into the chain.
+ */
+let gapPendingCount = 0;
+
+/** Markers emitted this session — the ordinal in a marker's request_id. */
+let gapMarkerOrdinal = 0;
 
 // ─── SDK integrity state (Phase 1 + 2 + 3) ───────────────────────────────────
 
@@ -466,6 +486,7 @@ const RESERVED_META_KEYS = [
   "obsvr_telemetry",
   "obsvr_external_backend",
   "obsvr_tool_content_hash",
+  AUDIT_GAP_METADATA_KEY,
 ];
 
 /**
@@ -498,6 +519,79 @@ function trimMetadataToBudget(event: AuditEvent): void {
 }
 
 /**
+ * Build the gap-marker event declaring `dropped` lost events.
+ *
+ * Shaped after the `governance_disabled` event: an SDK-authored `policy_flag`
+ * carrying its identity in `metadata.governance_event`, since ingest's
+ * `event_type` enum has no member for a delivery-layer record and inventing
+ * one would get the marker rejected as malformed — losing the record of loss
+ * to the same failure it exists to report.
+ *
+ * `policy_version` is "none" rather than the live ruleset hash: no policy
+ * evaluated this event, and stamping a hash would assert that one did.
+ */
+function buildGapMarker(config: ResolvedConfig, dropped: number): AuditEvent {
+  return {
+    request_id: `audit-gap-${sdkSessionId}-${++gapMarkerOrdinal}`,
+    environment: config.environment,
+    region: config.default_region ?? "unknown",
+    provider: "unknown",
+    model: "none",
+    operation: AUDIT_GAP_OPERATION,
+    source: "obsvr_sdk",
+    // The claim itself, in the signed content preimage (see audit-gap.ts).
+    prompt: formatAuditGapPrompt(dropped, AUDIT_GAP_REASON_QUEUE_OVERFLOW),
+    response: "",
+    success: true,
+    latency_ms: 0,
+    event_type: "policy_flag",
+    policy_version: "none",
+    action_taken: "allowed",
+    action_reason: "none",
+    action_source: "builtin",
+    redacted_types: [],
+    blocked_types: [],
+    metadata: {
+      governance_event: AUDIT_GAP_GOVERNANCE_EVENT,
+      // Structured copy for querying. Unsigned — `prompt` is authoritative.
+      [AUDIT_GAP_METADATA_KEY]: {
+        dropped,
+        reason: AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+      },
+    },
+  };
+}
+
+/**
+ * Put any undeclared overflow drops on the record.
+ *
+ * Unforced, this needs room for the marker AND the event whose arrival proved
+ * there was room: a marker that displaced that event would drop it, re-open
+ * the gap, and emit one marker per event for as long as the burst lasted.
+ *
+ * `force` is for the flush path, and it is the case that matters most — a
+ * shutdown after a saturated burst finds the queue FULL, which is precisely
+ * when the capacity rule would refuse and the loss would die with the process.
+ * Forcing overshoots the bound by exactly one item, on a queue that is already
+ * draining, to keep the one event that says the others are gone.
+ */
+function declarePendingGap(config: ResolvedConfig, force: boolean): void {
+  if (gapPendingCount === 0) return;
+  if (!force && pendingQueue.length + 2 > MAX_QUEUE_SIZE) return;
+
+  const dropped = gapPendingCount;
+  gapPendingCount = 0;
+  senderStats.gap_markers++;
+  senderStats.gap_events_declared += dropped;
+  debugLog(
+    config,
+    "warn",
+    `Recording audit gap in the signed chain: ${dropped} dropped event(s)`
+  );
+  signAndEnqueue(config, buildGapMarker(config, dropped));
+}
+
+/**
  * Enqueue an audit event for fire-and-forget sending
  *
  * @param config - Resolved configuration
@@ -507,14 +601,31 @@ export function enqueueAuditEvent(
   config: ResolvedConfig,
   event: AuditEvent
 ): void {
-  // Drop if queue is full (prevents memory growth)
+  // Drop if queue is full (prevents memory growth). The drop is counted AND
+  // remembered: the counter is process-local and dies with the process, so
+  // until a marker carries it into the signed chain the loss is not on the
+  // record (see audit-gap.ts).
   if (pendingQueue.length >= MAX_QUEUE_SIZE) {
     droppedCount++;
     senderStats.dropped_overflow++;
+    gapPendingCount++;
     debugLog(config, "warn", `Audit queue full, dropping event (total dropped: ${droppedCount})`);
     return;
   }
 
+  // The queue has room, so the gap that just ended can be declared. Emitted
+  // BEFORE this event so the marker sits between the last event that survived
+  // and the first one after the loss.
+  declarePendingGap(config, false);
+
+  signAndEnqueue(config, event);
+}
+
+/**
+ * Stamp, sign, chain-link, and queue an event. The caller has already
+ * established there is room for it.
+ */
+function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
   // Reconcile the event's wire shape with the ingest schema before signing.
   normalizeWireShape(event);
 
@@ -600,6 +711,14 @@ export function getDroppedCount(): number {
 }
 
 /**
+ * Overflow drops not yet declared by a gap marker. Non-zero only between a
+ * drop and the next moment the queue had room; a flush drives it to zero.
+ */
+export function getPendingGapCount(): number {
+  return gapPendingCount;
+}
+
+/**
  * Flush all pending events (for graceful shutdown)
  *
  * @param config - Resolved configuration
@@ -610,6 +729,11 @@ export async function flushQueue(
   timeoutMs: number = 5000
 ): Promise<void> {
   const startTime = Date.now();
+
+  // Declare any outstanding gap first, so a shutdown that follows a saturated
+  // burst still leaves the loss on the record. Forced: the queue is about to
+  // drain, and a marker that misses this flush may never be written at all.
+  declarePendingGap(config, true);
 
   // Deliberately REF'd timers: an explicit flush is a request to keep the
   // process alive until the queue drains (or the timeout hits). Unref'd
@@ -688,6 +812,8 @@ export function _resetSender(): void {
   backoffState.multiplier = 1;
   isProcessing = false;
   droppedCount = 0;
+  gapPendingCount = 0;
+  gapMarkerOrdinal = 0;
   for (const k of Object.keys(senderStats) as Array<keyof typeof senderStats>) {
     senderStats[k] = 0;
   }

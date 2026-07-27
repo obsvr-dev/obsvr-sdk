@@ -36,6 +36,7 @@ from .agent_run import (  # noqa: F401
 )
 from .sender import flush  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
+from .audit_gap import parse_audit_gap_prompt  # noqa: F401
 from .verify_chain import ChainVerificationResult, verify_chain  # noqa: F401
 # Typed policy-block error: catch this to tell "refused by policy" apart
 # from a provider or transport failure without matching on the message.
@@ -63,6 +64,10 @@ __all__ = [
     "current_agent_run_id",
     "generate_run_id",
     "verify_chain",
+    # Gap markers: a verified chain can still declare events the bounded sender
+    # queue dropped. verify_chain totals them; this identifies which events
+    # carry the claim, for callers processing their own exports.
+    "parse_audit_gap_prompt",
     "ObsvrPolicyError",
     "ObsvrUnknownPolicyError",
     "ChainVerificationResult",
