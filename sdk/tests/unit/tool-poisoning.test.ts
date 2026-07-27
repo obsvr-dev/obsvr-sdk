@@ -6,6 +6,8 @@
  * flags instruction-shaped content; `blockPoisonedTools` removes flagged
  * tools from the list the model sees.
  */
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { scanToolDescription, obsvrGovernMCP } from "../../src/integrations/mcp";
 import { init, _reset, getConfig } from "../../src/proxy/config";
 import { _resetSender } from "../../src/proxy/sender/fire-and-forget";
@@ -128,4 +130,36 @@ describe("patched listTools", () => {
     expect(result.tools).toHaveLength(1);
     expect(result.tools[0].name).toBe("read_file");
   });
+});
+
+describe('conformance: descriptor content scan (tool_descriptor_scan.json)', () => {
+  // The fixture pins the exact reason arrays (order included) for both SDKs:
+  // schema description/default surfaces, comment-concealment, bidi presence,
+  // the opt-in decoding boundary, and the loud walk cap. A divergence means
+  // one language's discovery scan sees hostile metadata the other misses.
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(dir, 'conformance/fixtures/tool_descriptor_scan.json'))) break;
+    dir = path.dirname(dir);
+  }
+  const fixture = JSON.parse(
+    fs.readFileSync(path.join(dir, 'conformance/fixtures/tool_descriptor_scan.json'), 'utf-8'),
+  ) as {
+    cases: Array<{
+      id: string;
+      deobfuscation_enabled?: boolean;
+      tool: { name?: string; description?: string; inputSchema?: unknown };
+      expect_reasons: string[];
+    }>;
+  };
+
+  for (const c of fixture.cases) {
+    it(c.id, () => {
+      const reasons = scanToolDescription(
+        c.tool,
+        c.deobfuscation_enabled ? { deobfuscation: { enabled: true } } : undefined,
+      );
+      expect(reasons).toEqual(c.expect_reasons);
+    });
+  }
 });

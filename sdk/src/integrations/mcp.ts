@@ -43,6 +43,7 @@ import {
 import { recordDetectorFailure } from "../policy/detector-guard.js";
 import { isPolicyEnforcementDegraded } from "../proxy/config.js";
 import { normalizeForMatching } from "../policy/normalize.js";
+import { deobfuscate, stripHtmlComments } from "../policy/deobfuscate.js";
 import { canaryRegistrySize } from "../policy/canary.js";
 import { sessionTaintSize } from "../policy/session-taint.js";
 import { safeToolContentHash, toolContentMetadata } from "../policy/tool-content-hash.js";
@@ -256,19 +257,120 @@ const TOOL_POISONING_PATTERNS: Array<{ reason: string; re: RegExp }> = [
 ];
 
 /**
- * Scan a tool definition (name + description) for poisoning patterns.
- * Returns the matched reasons (empty array = clean).
+ * Bidi control characters (LRE/RLE/PDF/LRO/RLO and the isolate set). A tool
+ * description has no legitimate reason to reorder display text, and bidi
+ * controls are the classic vehicle for making rendered text read differently
+ * from what a scanner (or a reviewer) sees — their PRESENCE is flagged, not
+ * just neutralized. Zero-width characters are deliberately NOT flagged the
+ * same way: emoji sequences carry ZWJ legitimately, so those are only
+ * stripped by normalization before matching.
  */
-export function scanToolDescription(tool: { name?: string; description?: string }): string[] {
-  // Normalize before matching (NFKC + confusable-fold + zero-width/bidi strip),
-  // exactly like the PII/rules scanners. A malicious server can otherwise hide a
-  // poisoning directive behind homoglyphs / zero-width chars and evade every
-  // pattern below.
-  const text = normalizeForMatching(`${tool?.name ?? ""} ${tool?.description ?? ""}`);
+const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069]/;
+
+/** Bounded schema walk (no silent caps: exceeding either emits its own reason). */
+const MAX_SCHEMA_STRINGS = 128;
+const MAX_SCHEMA_DEPTH = 16;
+
+/**
+ * Collect the attacker-writable text surfaces of a JSON Schema, in document
+ * order: every string-valued `description` and every string-valued `default`,
+ * at any depth. Instructions to the model hide in exactly these fields — the
+ * model reads them as part of the tool contract while a name-level review
+ * never looks. Only DIRECT string values are collected (a string nested
+ * inside an object-valued default is out of scope, and `default` values are
+ * not recursed into); everything else is walked.
+ */
+function collectSchemaSurfaces(
+  schema: unknown,
+): { surfaces: Array<{ where: "schema_description" | "schema_default"; text: string }>; truncated: boolean } {
+  const surfaces: Array<{ where: "schema_description" | "schema_default"; text: string }> = [];
+  let truncated = false;
+  const walk = (value: unknown, depth: number): void => {
+    if (depth > MAX_SCHEMA_DEPTH) {
+      truncated = true;
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const v of value) walk(v, depth + 1);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, v] of Object.entries(value)) {
+      if (surfaces.length >= MAX_SCHEMA_STRINGS) {
+        truncated = true;
+        return;
+      }
+      if (key === "description" && typeof v === "string") {
+        surfaces.push({ where: "schema_description", text: v });
+      } else if (key === "default") {
+        if (typeof v === "string") surfaces.push({ where: "schema_default", text: v });
+        // deliberately no recursion into non-string defaults
+      } else {
+        walk(v, depth + 1);
+      }
+    }
+  };
+  walk(schema, 0);
+  return { surfaces, truncated };
+}
+
+/**
+ * Scan a tool descriptor's CONTENT for poisoning: the description the model
+ * reads at discovery, plus the JSON Schema `description`/`default` strings
+ * (`inputSchema`) that ride the same contract. Returns the matched reasons
+ * (empty array = clean). Runs at discovery only — zero hot-path cost.
+ *
+ * Views per surface: the normalized text (NFKC + confusable-fold +
+ * zero-width/bidi strip, like every other scanner), plus the HTML/Markdown-
+ * comment-stripped normalization (a directive split by comments reads whole
+ * to the model and fragmented to a scanner), plus — when de-obfuscation is
+ * enabled — the decoded views (base64/hex payloads). A hit that only appears
+ * past the first view also emits `concealed_content`: the finding itself was
+ * hidden, which is its own signal.
+ *
+ * Reason vocabulary: the pattern reasons, suffixed `:schema_description` /
+ * `:schema_default` for schema surfaces; `bidi_controls_present`;
+ * `concealed_content`; `schema_scan_truncated` when a bounded walk stopped
+ * early (a cap that fired silently would read as "scanned everything").
+ * Pinned cross-language by conformance/fixtures/tool_descriptor_scan.json.
+ */
+export function scanToolDescription(
+  tool: { name?: string; description?: string; inputSchema?: unknown },
+  opts?: { deobfuscation?: { enabled?: boolean } },
+): string[] {
   const reasons: string[] = [];
-  for (const { reason, re } of TOOL_POISONING_PATTERNS) {
-    if (re.test(text)) reasons.push(reason);
-  }
+  const push = (r: string) => {
+    if (!reasons.includes(r)) reasons.push(r);
+  };
+  let bidiSeen = false;
+  let concealedSeen = false;
+  const deobEnabled = opts?.deobfuscation?.enabled === true;
+
+  const scanSurface = (raw: string, where: "" | "schema_description" | "schema_default") => {
+    if (BIDI_CONTROLS.test(raw)) bidiSeen = true;
+    const base = normalizeForMatching(raw);
+    const views: string[] = [base];
+    const uncommented = normalizeForMatching(stripHtmlComments(raw));
+    if (uncommented !== base) views.push(uncommented);
+    if (deobEnabled) {
+      for (const v of deobfuscate(raw)) views.push(normalizeForMatching(v.text));
+    }
+    for (const { reason, re } of TOOL_POISONING_PATTERNS) {
+      const inBase = re.test(base);
+      const inAny = inBase || views.some((v) => re.test(v));
+      if (!inAny) continue;
+      push(where === "" ? reason : `${reason}:${where}`);
+      if (!inBase) concealedSeen = true;
+    }
+  };
+
+  scanSurface(`${tool?.name ?? ""} ${tool?.description ?? ""}`, "");
+  const { surfaces, truncated } = collectSchemaSurfaces(tool?.inputSchema);
+  for (const s of surfaces) scanSurface(s.text, s.where);
+
+  if (bidiSeen) push("bidi_controls_present");
+  if (concealedSeen) push("concealed_content");
+  if (truncated) push("schema_scan_truncated");
   return reasons;
 }
 
@@ -289,7 +391,9 @@ function processListToolsResult(
 
   const flagged: Array<{ name: string; reasons: string[] }> = [];
   for (const tool of tools) {
-    const reasons = scanToolDescription(tool);
+    // Content inspection covers the schema surfaces too, and decoded views
+    // when de-obfuscation is enabled (discovery-time only — never per call).
+    const reasons = scanToolDescription(tool, { deobfuscation: currentConfig.deobfuscation });
     if (reasons.length > 0) {
       flagged.push({ name: mcpToolName(tool), reasons });
     }

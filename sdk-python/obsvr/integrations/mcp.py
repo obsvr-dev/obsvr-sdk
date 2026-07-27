@@ -89,19 +89,127 @@ TOOL_POISONING_PATTERNS: List[Dict[str, Any]] = [
 ]
 
 
-def scan_tool_description(tool: Any) -> List[str]:
-    """Scan one tool definition (name + description) for poisoning patterns."""
+# Bidi control characters (LRE/RLE/PDF/LRO/RLO and the isolate set). A tool
+# description has no legitimate reason to reorder display text, and bidi
+# controls are the classic vehicle for making rendered text read differently
+# from what a scanner (or a reviewer) sees - their PRESENCE is flagged, not
+# just neutralized. Zero-width characters are deliberately NOT flagged the
+# same way: emoji sequences carry ZWJ legitimately, so those are only
+# stripped by normalization before matching. Twin of the TS BIDI_CONTROLS.
+_BIDI_CONTROLS = re.compile("[\\u202a-\\u202e\\u2066-\\u2069]")
+
+# Bounded schema walk (no silent caps: exceeding either emits its own reason).
+_MAX_SCHEMA_STRINGS = 128
+_MAX_SCHEMA_DEPTH = 16
+
+
+def _collect_schema_surfaces(schema: Any) -> "tuple[List[tuple[str, str]], bool]":
+    """Attacker-writable text surfaces of a JSON Schema, in document order:
+    every string-valued ``description`` and every string-valued ``default``,
+    at any depth. Instructions to the model hide in exactly these fields -
+    the model reads them as part of the tool contract while a name-level
+    review never looks. Only DIRECT string values are collected (a string
+    nested inside an object-valued default is out of scope, and ``default``
+    values are not recursed into); everything else is walked. Twin of the TS
+    collectSchemaSurfaces."""
+    surfaces: List[tuple] = []
+    truncated = [False]
+
+    def walk(value: Any, depth: int) -> None:
+        if depth > _MAX_SCHEMA_DEPTH:
+            truncated[0] = True
+            return
+        if isinstance(value, list):
+            for v in value:
+                walk(v, depth + 1)
+            return
+        if not isinstance(value, dict):
+            return
+        for key, v in value.items():
+            if len(surfaces) >= _MAX_SCHEMA_STRINGS:
+                truncated[0] = True
+                return
+            if key == "description" and isinstance(v, str):
+                surfaces.append(("schema_description", v))
+            elif key == "default":
+                if isinstance(v, str):
+                    surfaces.append(("schema_default", v))
+                # deliberately no recursion into non-string defaults
+            else:
+                walk(v, depth + 1)
+
+    walk(schema, 0)
+    return surfaces, truncated[0]
+
+
+def scan_tool_description(tool: Any, deobfuscation: Any = None) -> List[str]:
+    """Scan a tool descriptor's CONTENT for poisoning (twin of the TS
+    scanToolDescription; vocabulary pinned by
+    conformance/fixtures/tool_descriptor_scan.json).
+
+    Surfaces: the description the model reads at discovery, plus the JSON
+    Schema ``description``/``default`` strings (``inputSchema``) that ride
+    the same contract. Views per surface: the normalized text, the
+    HTML/Markdown-comment-stripped normalization (a directive split by
+    comments reads whole to the model and fragmented to a scanner), and -
+    when de-obfuscation is enabled - the decoded views (base64/hex). A hit
+    that only appears past the first view also emits ``concealed_content``.
+    Runs at discovery only - zero hot-path cost.
+    """
+    from ..deobfuscate import deobfuscate, strip_html_comments
+
     name = getattr(tool, "name", None) or (tool.get("name") if isinstance(tool, dict) else "") or ""
     description = (
         getattr(tool, "description", None)
         or (tool.get("description") if isinstance(tool, dict) else "")
         or ""
     )
-    # Normalize before matching (NFKC + confusable-fold + zero-width/bidi strip),
-    # like the PII/rules scanners — otherwise a malicious server hides a poisoning
-    # directive behind homoglyphs / zero-width chars and evades every pattern.
-    text = normalize_for_matching(f"{name} {description}")
-    return [p["reason"] for p in TOOL_POISONING_PATTERNS if p["re"].search(text)]
+    input_schema = (
+        getattr(tool, "inputSchema", None)
+        if not isinstance(tool, dict)
+        else (tool.get("inputSchema") or tool.get("input_schema"))
+    )
+
+    reasons: List[str] = []
+    state = {"bidi": False, "concealed": False}
+    deob_enabled = bool(deobfuscation and deobfuscation.get("enabled"))
+
+    def push(r: str) -> None:
+        if r not in reasons:
+            reasons.append(r)
+
+    def scan_surface(raw: str, where: str) -> None:
+        if _BIDI_CONTROLS.search(raw):
+            state["bidi"] = True
+        base = normalize_for_matching(raw)
+        views = [base]
+        uncommented = normalize_for_matching(strip_html_comments(raw))
+        if uncommented != base:
+            views.append(uncommented)
+        if deob_enabled:
+            for v in deobfuscate(raw):
+                views.append(normalize_for_matching(v["text"]))
+        for p in TOOL_POISONING_PATTERNS:
+            in_base = bool(p["re"].search(base))
+            in_any = in_base or any(p["re"].search(v) for v in views)
+            if not in_any:
+                continue
+            push(p["reason"] if where == "" else f"{p['reason']}:{where}")
+            if not in_base:
+                state["concealed"] = True
+
+    scan_surface(f"{name} {description}", "")
+    surfaces, truncated = _collect_schema_surfaces(input_schema)
+    for where, text in surfaces:
+        scan_surface(text, where)
+
+    if state["bidi"]:
+        push("bidi_controls_present")
+    if state["concealed"]:
+        push("concealed_content")
+    if truncated:
+        push("schema_scan_truncated")
+    return reasons
 
 
 # ── Policy helpers ───────────────────────────────────────────────────────────
@@ -617,7 +725,12 @@ def _build_governed_mcp_callables(
 
             flagged = []
             for tool in tools:
-                reasons = scan_tool_description(tool)
+                # Content inspection covers the schema surfaces too, and
+                # decoded views when de-obfuscation is enabled (discovery-time
+                # only - never per call).
+                reasons = scan_tool_description(
+                    tool, getattr(cfg, "deobfuscation", None)
+                )
                 if reasons:
                     # Use the dual-access name (matches the strip filter and
                     # pin loop) so flag/strip/pin all resolve dict-shaped tools
