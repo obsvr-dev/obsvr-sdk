@@ -174,7 +174,9 @@ cut, when it is renamed to that version.
 ### Fixed
 
 - **The two SDKs could derive different `policy_version` values from the same
-  policy.** `policy_version` and `rules_hash` are SHA-256 over a canonical JSON
+  policy.** _(Also listed under Changed — a Python-computed `policy_version`
+  changes value for some rule sets, and approvals are pinned to
+  `policy_version`.)_ `policy_version` and `rules_hash` are SHA-256 over a canonical JSON
   form that both SDKs must produce byte for byte. The Python side computed it
   with `json.dumps(sort_keys=True, separators=(",", ":"),
   ensure_ascii=False)`, which agrees with the TypeScript `JSON.stringify`-based
@@ -233,6 +235,36 @@ cut, when it is renamed to that version.
   publish workflows run that check before publishing.
 
 ### Changed
+
+- **A Python-computed `policy_version` changes value for rule sets containing
+  certain numbers.** The canonicalizer fix described under Fixed ("The two SDKs
+  could derive different `policy_version` values from the same policy") is
+  listed here as well because of what depends on that hash. Approvals are
+  pinned to the rule hash, and the `/policies` poll sends `X-Obsvr-Rules-Hash`,
+  so a rule set containing a whole-valued float, negative zero, an exponent-form
+  number, an unpaired surrogate, or an astral object key hashes to a different
+  value in Python than it did before — to the value TypeScript was already
+  producing. No hash the two SDKs agreed on has changed. _Migration: if a
+  Python process holds outstanding approvals for such a rule set, they are void
+  and must be re-granted; a mixed-language fleet stops reporting two different
+  versions for one policy._
+
+- **BREAKING: `QUOTA_UNMETERED` added to the closed `ReasonCode` registry.**
+  A quota rule whose scope the bounded meter has no counter slot for is not
+  enforced on that call, and now says so: the verdict carries
+  `metered: false`, the call's event carries
+  `metadata.obsvr_telemetry.quota_unmetered` (the channel `detector_failure`
+  and canary evidence already use), and `failMode` decides whether the call
+  proceeds — `open` (the default) allows it, `closed` blocks it with the new
+  code. Previously such a call was allowed with no signal at all and was
+  byte-identical on the wire to one that had been counted and found under
+  limit, so an auditor replaying it read a quota rule that was in force and
+  never exceeded. The `policyFloor` always resolves closed here, floor-class
+  rules being non-overridable; shadow rules never do, being non-decisional.
+  _Migration: this is additive to a closed enum, so an exhaustive `switch` over
+  `ReasonCode` in consumer code needs a `QUOTA_UNMETERED` arm. Operators
+  running `failMode: "closed"` should note that a saturated quota store now
+  blocks new scopes rather than admitting them unmetered._
 
 - **BREAKING (Python): `ingest_url` no longer defaults to
   `http://localhost:3000`.** Unset, it is now empty: the SDK logs a loud

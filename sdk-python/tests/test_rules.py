@@ -249,14 +249,35 @@ class TestQuotaStoreBound:
         )
         for i in range(MAX_QUOTA_SCOPES):
             increment_quota("user_id", "u%d" % i, 5, 60_000)
-        assert quota_store_saturated() is False  # exactly at cap, nothing refused
-
-        # Past the cap: allowed (fail-open) but not counted, so repeated calls
-        # for the same refused scope never accumulate toward the limit.
-        for _ in range(20):
-            assert increment_quota("user_id", "newcomer", 5, 60_000)["allowed"] is True
+        # Full of live windows IS saturated: a new scope arriving now would be
+        # refused. quota_store_saturated() answers "now", not "ever".
         assert quota_store_saturated() is True
+
+        # Past the cap: allowed (the meter cannot say the limit was passed) but
+        # not counted, and the verdict says metered False so no caller can
+        # mistake it for an under-limit count.
+        for _ in range(20):
+            verdict = increment_quota("user_id", "newcomer", 5, 60_000)
+            assert verdict["allowed"] is True
+            assert verdict["metered"] is False
         assert quota_store_size()["requests"] == MAX_QUOTA_SCOPES
+
+    def test_saturation_is_a_current_state_not_a_permanent_latch(self):
+        from obsvr.rules import (
+            MAX_QUOTA_SCOPES, increment_quota, quota_store_saturated,
+        )
+        for i in range(MAX_QUOTA_SCOPES):
+            increment_quota("user_id", "u%d" % i, 1, 60_000)
+        assert quota_store_saturated() is True
+        assert increment_quota("user_id", "refused", 1, 60_000)["metered"] is False
+
+        # Free one slot. A latch would still be reporting the refusal above;
+        # the question worth answering is whether a scope arriving NOW gets
+        # metered.
+        from obsvr.rules import _quota_store
+        del _quota_store["user_id:u0"]
+        assert quota_store_saturated() is False
+        assert increment_quota("user_id", "admitted", 1, 60_000)["metered"] is True
 
     def test_admits_new_scopes_again_once_tracked_windows_expire(self):
         import time
@@ -299,3 +320,103 @@ class TestQuotaStoreBound:
         budget = check_token_budget("user_id", "newcomer", 1_000, 60_000)
         assert budget["allowed"] is True
         assert budget["remaining"] == 1_000
+
+
+# ── unmetered quota: declared, and resolved by fail_mode ────────────────────
+# A scope the bounded store refuses is NOT enforced. Both halves matter: the
+# call's own event has to say so (otherwise it is byte-identical to a call
+# that was counted and found under limit), and whether it proceeds is the
+# operator's fail_mode choice, not a silent default.
+
+class TestUnmeteredQuotaIsDeclared:
+    def setup_method(self):
+        from obsvr.rules import _reset_quota
+        _reset_quota()
+
+    def _saturate(self):
+        from obsvr.rules import MAX_QUOTA_SCOPES, increment_quota
+        for i in range(MAX_QUOTA_SCOPES):
+            increment_quota("user_id", "filler%d" % i, 5, 60_000)
+
+    def _rule(self):
+        return make_rule(
+            type="quota", action="block",
+            conditions={"quota_limit": 5, "quota_window_ms": 60_000,
+                        "quota_scope": "user_id"},
+        )
+
+    def test_fail_open_allows_but_declares_the_unmetered_rule(self):
+        self._saturate()
+        result = evaluate_policy_rules(
+            [self._rule()], "hi", "prompt", {"metadata": {"user_id": "newcomer"}}
+        )
+        assert result["decision"] == "allow"
+        declared = result["quota_unmetered"]
+        assert declared["rule_id"] == "r1"
+        assert declared["scope"] == "user_id"
+        assert declared["unit"] == "requests"
+        assert declared["resolution"] == "open"
+
+    def test_fail_closed_blocks_with_its_own_reason_code(self):
+        from obsvr.reason_codes import ReasonCode
+        self._saturate()
+        result = evaluate_policy_rules(
+            [self._rule()], "hi", "prompt", {"metadata": {"user_id": "newcomer"}},
+            fail_mode="closed",
+        )
+        assert result["decision"] == "block"
+        # NOT quota_exceeded: that would assert the limit was passed, which is
+        # not known and probably false.
+        assert result["reason_code"] == ReasonCode.QUOTA_UNMETERED.value
+        assert result["reason_code"] != ReasonCode.QUOTA_EXCEEDED.value
+        assert result["quota_unmetered"]["resolution"] == "closed"
+
+    def test_a_metered_call_declares_nothing(self):
+        result = evaluate_policy_rules(
+            [self._rule()], "hi", "prompt", {"metadata": {"user_id": "alice"}}
+        )
+        assert result["decision"] == "allow"
+        assert "quota_unmetered" not in result
+
+    def test_declaration_survives_a_later_rule_deciding(self):
+        # The fact "this call's quota rule did not run" is true of the call
+        # whatever ends up deciding it.
+        self._saturate()
+        rules = [
+            self._rule(),
+            make_rule(id="kw", type="keyword", action="block",
+                      conditions={"keywords": ["badword"]}),
+        ]
+        result = evaluate_policy_rules(
+            rules, "this is badword", "prompt", {"metadata": {"user_id": "newcomer"}}
+        )
+        assert result["decision"] == "block"
+        assert result["rule_id"] == "kw"
+        assert result["quota_unmetered"]["rule_id"] == "r1"
+
+    def test_the_floor_blocks_regardless_of_fail_mode(self):
+        # Floor class: a baseline that CANNOT RUN is the strongest form of
+        # "cannot guarantee", so it never fails open.
+        from obsvr.rules import evaluate_floor
+        self._saturate()
+        result = evaluate_floor(
+            [self._rule()], "hi", "prompt", {"metadata": {"user_id": "newcomer"}}
+        )
+        assert result["decision"] == "block"
+        assert result["quota_unmetered"]["resolution"] == "closed"
+
+    def test_no_would_have_block_from_a_shadow_rule_it_could_not_meter(self):
+        # Shadow mode promises it cannot affect the call, and
+        # evaluate_shadow_rules deliberately passes no fail_mode. Were it to
+        # leak in, the unmeterable scope would surface as would "block" here.
+        from obsvr.rules import evaluate_shadow_rules
+        self._saturate()
+        shadow = make_rule(
+            id="sh", type="quota", action="block", mode="shadow",
+            conditions={"quota_limit": 5, "quota_window_ms": 60_000,
+                        "quota_scope": "user_id"},
+        )
+        outcome = evaluate_shadow_rules(
+            [shadow], "hi", "prompt", {"metadata": {"user_id": "newcomer"}}
+        )
+        assert outcome is None

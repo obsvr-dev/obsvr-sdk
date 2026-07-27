@@ -44,6 +44,7 @@ def evaluate_policy_rules(
     target: str = "prompt",
     context: Optional[Dict[str, Any]] = None,
     check_only: bool = False,
+    fail_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Evaluate rules against text (+ optional context).
 
@@ -52,8 +53,33 @@ def evaluate_policy_rules(
       current_environment, source_documents, metadata.
     check_only (EV-22): identical decision logic, but no quota
     consumption. Used by shadow evaluation and explain().
+    fail_mode: the operator's failure posture, for the one case this engine
+    can hit an enforcement layer that cannot run -- a quota scope the bounded
+    store had no slot for. None behaves as "open", the SDK-wide default.
     Returns PolicyDecisionResult dict.
     """
+    # The unmetered record is collected here and attached to whatever verdict
+    # comes out, including one produced by a LATER rule: the fact "this call's
+    # quota rule did not run" is true of the call regardless of what decided
+    # it. Parity with TS evaluatePolicyRules.
+    unmetered: Dict[str, Any] = {}
+    result = _evaluate_rules(rules, text, target, context, check_only, fail_mode, unmetered)
+    if unmetered.get("record") is not None:
+        result = {**result, "quota_unmetered": unmetered["record"]}
+    return result
+
+
+def _evaluate_rules(
+    rules: List[PolicyRule],
+    text: str,
+    target: str = "prompt",
+    context: Optional[Dict[str, Any]] = None,
+    check_only: bool = False,
+    fail_mode: Optional[str] = None,
+    unmetered: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if unmetered is None:
+        unmetered = {}
     # §6: normalize once, up front, so every text-matching rule sees the same
     # confusable/zero-width-folded copy. Matching-only: the engine returns a
     # decision + rule_id, never modified text, so stored/forwarded content is
@@ -150,6 +176,45 @@ def evaluate_policy_rules(
                     scope, scope_value, int(limit), int(window_ms),
                     record=not check_only,
                 )
+            # The bounded meter had no counter slot for this scope, so this
+            # rule was NOT enforced on this call. Resolve it the way every
+            # other enforcement layer that cannot run resolves -- by fail_mode
+            # (policy.py record_detector_failure: every internal failure
+            # resolves by fail_mode EXCEPT the floor class, and a quota rule is
+            # not floor class). Declaring it is not optional either way: an
+            # allowed call whose quota rule never ran is byte-identical on the
+            # wire to one that was counted and found under limit, and an
+            # auditor replaying it would read a rule that was in force and
+            # never exceeded.
+            #
+            # Why fail_mode rather than always allowing: "closed" means "never
+            # fail open", and an unmeterable scope is precisely a case where
+            # the SDK cannot say whether the limit holds. It does cost
+            # availability -- a caller who can mint scope values can saturate
+            # the store and have new identities refused -- but that is the
+            # trade the operator selected, and under "open" that same flood
+            # buys the flooder UNMETERED quota, which is the worse outcome for
+            # someone who asked for fail-closed. "open" stays the default.
+            if quota.get("metered") is False:
+                fail_closed = fail_mode == "closed"
+                unmetered["record"] = {
+                    "rule_id": rule.id,
+                    "scope": scope,
+                    "unit": unit,
+                    "resolution": "closed" if fail_closed else "open",
+                }
+                if fail_closed:
+                    return {
+                        "decision": "block",
+                        "rule_id": rule.id,
+                        "reason_code": ReasonCode.QUOTA_UNMETERED.value,
+                        "reason": (
+                            f"Quota rule '{rule.id}' could not be metered: the quota store "
+                            f"has no counter slot for scope '{scope}'. Blocked because "
+                            f"fail_mode is 'closed'"
+                        ),
+                    }
+                continue
             if not quota["allowed"]:
                 decision = "allow" if rule.action == "flag" else rule.action
                 return {
@@ -423,8 +488,62 @@ _quota_lock = _threading.Lock()
 # pins, canaries).
 MAX_QUOTA_SCOPES = 10_000
 
-_quota_saturated = False
+# ``min(window_start + window_ms)`` per meter, or inf when empty. Only ever a
+# LOWER bound: inserts lower it, and deletions can leave it pointing at an
+# entry that is gone. Stale-low is the safe direction -- it costs one sweep
+# that finds nothing, and can never skip a sweep while something is expired.
+_earliest_expiry: Dict[str, float] = {"requests": float("inf"), "tokens": float("inf")}
+
+# True while a saturation episode is being warned about; reset when it clears.
 _quota_warned = False
+
+
+def _meter_name(store: Dict[str, Dict[str, float]]) -> str:
+    return "requests" if store is _quota_store else "tokens"
+
+
+def _sweep_expired(store: Dict[str, Dict[str, float]], now: float) -> None:
+    """Drop every entry whose own window has elapsed and re-derive the bound.
+    Caller holds ``_quota_lock``."""
+    global _quota_warned
+    earliest = float("inf")
+    for k in list(store):
+        expires_at = store[k]["window_start"] + store[k]["window_ms"]
+        if expires_at <= now:
+            del store[k]
+        elif expires_at < earliest:
+            earliest = expires_at
+    _earliest_expiry[_meter_name(store)] = earliest
+    # A recovered meter must be able to warn again if it saturates a second
+    # time: one warning per episode, not one per process.
+    if len(store) < MAX_QUOTA_SCOPES:
+        _quota_warned = False
+
+
+def _saturated_now(store: Dict[str, Dict[str, float]], now: float) -> bool:
+    """Is this meter full of LIVE windows right now? Caller holds the lock.
+
+    The ``_earliest_expiry`` bound is what makes this cheap. Once full, the
+    naive check re-scans all MAX_QUOTA_SCOPES entries on every new scope and
+    deletes nothing while every window is live -- a per-call O(n) scan on the
+    in-process hot path, triggered by exactly the flood the cap exists to
+    survive. When ``now`` has not reached the earliest possible expiry, no
+    entry CAN be expired, so the scan is skipped and the answer is O(1).
+    """
+    if len(store) < MAX_QUOTA_SCOPES:
+        return False
+    if now < _earliest_expiry[_meter_name(store)]:
+        return True
+    _sweep_expired(store, now)
+    return len(store) >= MAX_QUOTA_SCOPES
+
+
+def _track_expiry(store: Dict[str, Dict[str, float]], now: float, window_ms: int) -> None:
+    """Record a newly opened window against the meter's expiry bound."""
+    name = _meter_name(store)
+    expires_at = now + window_ms
+    if expires_at < _earliest_expiry[name]:
+        _earliest_expiry[name] = expires_at
 
 
 def _make_room(store: Dict[str, Dict[str, float]], now: float) -> bool:
@@ -445,20 +564,17 @@ def _make_room(store: Dict[str, Dict[str, float]], now: float) -> bool:
     latch is advisory-leaning and an ancient session is the least valuable
     thing it holds. A quota counter is not advisory.)
 
-    A refused scope is UNMETERED, not blocked. The meter cannot say the scope
-    exceeded its limit, only that it has nowhere to count; turning "no counter
-    slots" into a denial would hand the same flooder a way to block every new
-    identity, and the SDK's default posture elsewhere is fail-open. Saturation
-    warns once and is readable via ``quota_store_saturated()``.
+    A refused scope is UNMETERED, and the verdict says so (``metered`` False)
+    rather than being indistinguishable from a scope that was counted and
+    found under limit. What happens next is NOT decided here: the rules engine
+    resolves it by fail_mode, the same way every other enforcement layer that
+    cannot run resolves (policy.py record_detector_failure), and declares it on
+    the call's own event either way. A meter that quietly stops metering is the
+    enforcement-side twin of a dropped event that leaves no gap marker.
     """
-    global _quota_saturated, _quota_warned
-    if len(store) < MAX_QUOTA_SCOPES:
+    global _quota_warned
+    if not _saturated_now(store, now):
         return True
-    for k in [k for k, v in store.items() if (now - v["window_start"]) >= v["window_ms"]]:
-        del store[k]
-    if len(store) < MAX_QUOTA_SCOPES:
-        return True
-    _quota_saturated = True
     if not _quota_warned:
         _quota_warned = True
         import logging
@@ -466,7 +582,8 @@ def _make_room(store: Dict[str, Dict[str, float]], now: float) -> bool:
         logging.getLogger("obsvr").warning(
             "quota store is full (%d scopes with live windows); NEW scopes are "
             "NOT metered until a window elapses. Counters already tracked are "
-            "unaffected.",
+            "unaffected. Each affected call declares this on its own event; "
+            "fail_mode decides whether it proceeds.",
             MAX_QUOTA_SCOPES,
         )
     return False
@@ -479,9 +596,19 @@ def quota_store_size() -> Dict[str, int]:
 
 
 def quota_store_saturated() -> bool:
-    """True once either meter refused a new scope because every tracked window
-    was still live -- some scopes are going unmetered until a window elapses."""
-    return _quota_saturated
+    """Is either meter full of live windows RIGHT NOW -- i.e. would a new scope
+    be refused if one arrived this instant?
+
+    Deliberately a current-state question, not a latch. "This process once
+    refused a scope, possibly hours ago and for one call" and "new scopes are
+    going unmetered as of now" call for different responses, and a flag that
+    never clears can only answer the first while looking like it answers the
+    second. Saturation is transient: it ends on its own the moment a tracked
+    window elapses.
+    """
+    now = _time.time() * 1000
+    with _quota_lock:
+        return _saturated_now(_quota_store, now) or _saturated_now(_token_store, now)
 
 
 def quota_scope_value(
@@ -526,13 +653,22 @@ def check_token_budget(
             # An expired entry reuses its own slot, so an already-tracked scope
             # is never turned away; only a NEW scope can be refused.
             if entry is None and not _make_room(_token_store, now):
-                return {"allowed": True, "remaining": limit, "reset_at": now + window_ms}
+                # metered False: the caller must not read this as "counted and
+                # under budget". Parity with TS `unmetered`.
+                return {
+                    "allowed": True,
+                    "remaining": limit,
+                    "reset_at": now + window_ms,
+                    "metered": False,
+                }
             entry = {"count": 0.0, "window_start": now, "window_ms": float(window_ms)}
             _token_store[key] = entry
+            _track_expiry(_token_store, now, window_ms)
         return {
             "allowed": entry["count"] < limit,
             "remaining": max(0, int(limit - entry["count"])),
             "reset_at": entry["window_start"] + window_ms,
+            "metered": True,
         }
 
 
@@ -553,6 +689,7 @@ def record_token_usage(
                 return
             entry = {"count": 0.0, "window_start": now, "window_ms": float(window_ms)}
             _token_store[key] = entry
+            _track_expiry(_token_store, now, window_ms)
         entry["count"] += tokens
 
 
@@ -568,14 +705,23 @@ def increment_quota(
         entry = _quota_store.get(key)
         if entry is None or (now - entry["window_start"]) >= window_ms:
             if entry is None and not _make_room(_quota_store, now):
-                return {"allowed": True, "remaining": limit, "reset_at": now + window_ms}
+                # metered False: the caller must not read this as "counted and
+                # under limit". Parity with TS `unmetered`.
+                return {
+                    "allowed": True,
+                    "remaining": limit,
+                    "reset_at": now + window_ms,
+                    "metered": False,
+                }
             entry = {"count": 0.0, "window_start": now, "window_ms": float(window_ms)}
             _quota_store[key] = entry
+            _track_expiry(_quota_store, now, window_ms)
         if entry["count"] >= limit:
             return {
                 "allowed": False,
                 "remaining": 0,
                 "reset_at": entry["window_start"] + window_ms,
+                "metered": True,
             }
         if record:
             entry["count"] += 1
@@ -583,16 +729,18 @@ def increment_quota(
             "allowed": True,
             "remaining": int(limit - entry["count"]),
             "reset_at": entry["window_start"] + window_ms,
+            "metered": True,
         }
 
 
 def _reset_quota() -> None:
     """Test helper."""
-    global _quota_saturated, _quota_warned
+    global _quota_warned
     with _quota_lock:
         _quota_store.clear()
         _token_store.clear()
-        _quota_saturated = False
+        _earliest_expiry["requests"] = float("inf")
+        _earliest_expiry["tokens"] = float("inf")
         _quota_warned = False
 
 
@@ -840,7 +988,13 @@ def evaluate_floor(
         dataclasses.replace(_as_policy_rule(r), enabled=True, mode="enforce")
         for r in floor_rules
     ]
-    return evaluate_policy_rules(enforced, text, target, context)
+    # The floor always resolves closed, fail_mode or not -- the same rule
+    # policy.py applies to the floor class: a floor is the operator's
+    # non-overridable baseline, so a floor rule that CANNOT RUN is the
+    # strongest form of "cannot guarantee". A floor quota the meter has no slot
+    # for therefore blocks, where the same rule in policy_rules follows
+    # fail_mode. Parity with TS evaluate_floor.
+    return evaluate_policy_rules(enforced, text, target, context, fail_mode="closed")
 
 
 def derive_floor_version(floor_rules: Optional[List[Any]]) -> str:
@@ -879,6 +1033,12 @@ def evaluate_shadow_rules(
         return None
     import dataclasses
     active_shaped = [dataclasses.replace(r, mode=None) for r in shadow_rules]
+    # No fail_mode here, deliberately: a shadow rule is defined as never
+    # decision-affecting, and this surface is structurally always open (the
+    # same reasoning record_check_only_failure states). Honouring fail_mode
+    # would let a check-only unit block a call, which is the one thing shadow
+    # mode promises it cannot do -- so an unmeterable shadow quota stays a
+    # would-have record. Parity with TS evaluateShadowRules.
     result = evaluate_policy_rules(active_shaped, text, target, context, check_only=True)
     rule_id = result.get("rule_id")
     if not rule_id:

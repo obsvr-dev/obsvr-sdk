@@ -69,6 +69,13 @@ def scan_mcp_tool_result(
             meta["service_name"] = principal["service_name"]
         if principal.get("tenant_id"):
             meta["tenant_id"] = principal["tenant_id"]
+        # No fail_mode, and no quota_unmetered carried onward: this is the
+        # response phase, where "closed" is not an available action (the
+        # provider has already answered) and this result has no compliance
+        # block to hang telemetry on. Only a rule explicitly scoped
+        # applies_to="response" meters here, so an unmeterable one goes
+        # undeclared on this path alone. The TS twin does the same,
+        # deliberately, so the two stay in parity.
         rules_result = evaluate_policy_rules(
             policy_rules, response_text, "response", {"metadata": meta}
         )

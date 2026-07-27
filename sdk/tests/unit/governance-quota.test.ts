@@ -132,17 +132,33 @@ describe('quota store bound', () => {
 
   it('leaves a refused scope unmetered rather than blocking it', () => {
     for (let i = 0; i < CAP; i++) incrementQuota('user_id', `u${i}`, 5, 60_000);
-    expect(quotaStoreSaturated()).toBe(false); // exactly at cap, nothing refused
-
-    // Past the cap: allowed (fail-open) but not counted, so repeated calls for
-    // the same refused scope never accumulate toward the limit.
-    for (let i = 0; i < 20; i++) {
-      expect(incrementQuota('user_id', 'newcomer', 5, 60_000).allowed).toBe(true);
-    }
+    // Full of live windows IS saturated: a new scope arriving now would be
+    // refused. quotaStoreSaturated() answers "now", not "ever".
     expect(quotaStoreSaturated()).toBe(true);
+
+    // Past the cap: allowed (the meter cannot say the limit was passed) but not
+    // counted, and the verdict says metered:false so no caller can mistake it
+    // for an under-limit count.
+    for (let i = 0; i < 20; i++) {
+      const verdict = incrementQuota('user_id', 'newcomer', 5, 60_000);
+      expect(verdict.allowed).toBe(true);
+      expect(verdict.metered).toBe(false);
+    }
     expect(quotaStoreSize().requests).toBe(CAP);
     expect(checkQuota('user_id', 'newcomer', 5, 60_000).allowed).toBe(true);
     expect(getQuotaStatus('user_id', 'newcomer', 5, 60_000).used).toBe(0);
+  });
+
+  it('reports saturation as a current state, not a permanent latch', () => {
+    for (let i = 0; i < CAP; i++) incrementQuota('user_id', `u${i}`, 1, 60_000);
+    expect(quotaStoreSaturated()).toBe(true);
+    expect(incrementQuota('user_id', 'refused', 1, 60_000).metered).toBe(false);
+
+    // Free one slot. A latch would still be reporting the refusal above; the
+    // question worth answering is whether a scope arriving NOW gets metered.
+    resetQuota('user_id', 'u0');
+    expect(quotaStoreSaturated()).toBe(false);
+    expect(incrementQuota('user_id', 'admitted', 1, 60_000).metered).toBe(true);
   });
 
   it('admits new scopes again once the tracked windows expire', async () => {

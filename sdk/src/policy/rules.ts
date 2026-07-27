@@ -3,7 +3,7 @@
  * @packageDocumentation
  */
 import { createHash } from 'node:crypto';
-import type { PolicyDecisionResult } from './hook.js';
+import type { PolicyDecisionResult, QuotaUnmetered } from './hook.js';
 import { hasApproval } from './approvals.js';
 import { recordCheckOnlyFailure } from './detector-guard.js';
 import { incrementQuota, checkQuota, checkTokenBudget } from '../governance/quota.js';
@@ -130,7 +130,29 @@ export function evaluatePolicyRules(
     /** Check-only evaluation (EV-22): identical decision logic but no
      * quota consumption. Used by shadow evaluation and explain(). */
     checkOnly?: boolean;
+    /**
+     * The operator's failure posture, for the one case the rules engine can
+     * hit an enforcement layer that cannot run: a quota scope the bounded
+     * store had no slot for. Absent behaves as "open", the SDK-wide default.
+     */
+    failMode?: 'open' | 'closed';
   },
+): PolicyDecisionResult {
+  // The unmetered record is collected here and attached to whatever verdict
+  // comes out, including one produced by a LATER rule: the fact "this call's
+  // quota rule did not run" is true of the call regardless of what decided it.
+  const unmetered: { record?: QuotaUnmetered } = {};
+  const result = evaluateRules(rules, text, target, context, opts, unmetered);
+  return unmetered.record ? { ...result, quota_unmetered: unmetered.record } : result;
+}
+
+function evaluateRules(
+  rules: PolicyRule[],
+  text: string,
+  target: 'prompt' | 'response' = 'prompt',
+  context?: PolicyEvalContext,
+  opts?: { checkOnly?: boolean; failMode?: 'open' | 'closed' },
+  unmetered: { record?: QuotaUnmetered } = {},
 ): PolicyDecisionResult {
   // §6: normalize once, up front, so every text-matching rule (keyword, regex,
   // topic, action_gate, destructive_op, source_grounding) sees the same
@@ -200,7 +222,7 @@ export function evaluatePolicyRules(
           ?? ((context as unknown as Record<string, unknown> | undefined)?.[rule.conditions.quota_scope] as string)
           ?? 'default');
       const unit = rule.conditions.quota_unit ?? 'requests';
-      let result: { allowed: boolean; remaining: number };
+      let result: { allowed: boolean; remaining: number; metered?: boolean };
       if (unit === 'tokens') {
         result = checkTokenBudget(
           rule.conditions.quota_scope,
@@ -226,6 +248,44 @@ export function evaluatePolicyRules(
           rule.conditions.quota_limit,
           rule.conditions.quota_window_ms,
         );
+      }
+      // The bounded meter had no counter slot for this scope, so this rule was
+      // NOT enforced on this call. Resolve it the way every other enforcement
+      // layer that cannot run resolves — by failMode (policy/detector-guard.ts:
+      // "every internal failure resolves by failMode, EXCEPT the floor class",
+      // and a quota rule is not floor class). Declaring it is not optional
+      // either way: an allowed call whose quota rule never ran is
+      // byte-identical on the wire to one that was counted and found under
+      // limit, and an auditor replaying it would read a rule that was in force
+      // and never exceeded.
+      //
+      // Why failMode rather than always allowing: "closed" means "never fail
+      // open", and an unmeterable scope is precisely a case where the SDK
+      // cannot say whether the limit holds. It does cost availability — a
+      // caller who can mint scope values can saturate the store and have new
+      // identities refused — but that is the trade the operator selected, and
+      // under "open" that same flood buys the flooder UNMETERED quota, which
+      // is the worse outcome for someone who asked for fail-closed. "open"
+      // stays the default, so this only reaches operators who opted in.
+      if (result.metered === false) {
+        const failClosed = opts?.failMode === 'closed';
+        unmetered.record = {
+          rule_id: rule.id,
+          scope: rule.conditions.quota_scope,
+          unit,
+          resolution: failClosed ? 'closed' : 'open',
+        };
+        if (failClosed) {
+          return {
+            decision: 'block',
+            rule_id: rule.id,
+            reason_code: ReasonCode.QUOTA_UNMETERED,
+            reason:
+              `Quota rule '${rule.id}' could not be metered: the quota store has no counter ` +
+              `slot for scope '${rule.conditions.quota_scope}'. Blocked because failMode is 'closed'`,
+          };
+        }
+        continue;
       }
       if (!result.allowed) {
         return {
@@ -640,7 +700,12 @@ export function evaluateFloor(
     return { decision: 'allow', reason_code: ReasonCode.PERMITTED };
   }
   const enforced = floorRules.map((r) => ({ ...r, enabled: true, mode: 'enforce' as const }));
-  return evaluatePolicyRules(enforced, text, target, context);
+  // The floor always resolves closed, failMode or not — the same rule
+  // detector-guard.ts applies to the floor class: a floor is the operator's
+  // non-overridable baseline, so a floor rule that CANNOT RUN is the strongest
+  // form of "cannot guarantee". A floor quota the meter has no slot for
+  // therefore blocks, where the same rule in policyRules would follow failMode.
+  return evaluatePolicyRules(enforced, text, target, context, { failMode: 'closed' });
 }
 
 /**
@@ -687,6 +752,11 @@ export function evaluateShadowRules(
   // Re-mark as enforce so the evaluator does not skip them; checkOnly
   // guarantees the run is side-effect free.
   const activeShaped = shadowRules.map((r) => ({ ...r, mode: 'enforce' as const }));
+  // No failMode here, deliberately: a shadow rule is defined as never
+  // decision-affecting, and this surface is structurally always open (the same
+  // reasoning recordCheckOnlyFailure states). Honouring failMode would let a
+  // check-only unit block a call, which is the one thing shadow mode promises
+  // it cannot do — so an unmeterable shadow quota stays a would-have record.
   const result = evaluatePolicyRules(activeShaped, text, target, context, { checkOnly: true });
   if (!result.rule_id) return null;
   const fired = shadowRules.find((r) => r.id === result.rule_id);

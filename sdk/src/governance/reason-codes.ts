@@ -20,6 +20,14 @@ export enum ReasonCode {
   TRANSMISSION_BLOCKED = 'TRANSMISSION_BLOCKED',
   DESTRUCTIVE_OPERATION_BLOCKED = 'DESTRUCTIVE_OPERATION_BLOCKED',
   QUOTA_EXCEEDED = 'QUOTA_EXCEEDED',
+  /**
+   * The quota meter had no counter slot for this scope, so the rule could not
+   * be enforced on this call. Distinct from QUOTA_EXCEEDED on purpose: that
+   * code asserts the limit was passed, which here is not known and probably
+   * false. Emitted only when failMode is "closed"; under the default "open"
+   * the call proceeds and the fact rides the event's telemetry instead.
+   */
+  QUOTA_UNMETERED = 'QUOTA_UNMETERED',
   PII_DETECTED = 'PII_DETECTED',
   POLICY_VIOLATION = 'POLICY_VIOLATION',
   NAMESPACE_VIOLATION = 'NAMESPACE_VIOLATION',

@@ -41,6 +41,36 @@ export interface PolicyDecisionResult {
   approval_required?: boolean;
   /** Canonical hash of the fired rule's definition (approval pinning). */
   rule_hash?: string;
+  /**
+   * Set when a quota rule could not be metered on this call because the
+   * bounded store had no counter slot for the scope. Present on BOTH
+   * resolutions — the caller stamps it on the event either way, so an
+   * unenforced quota rule is never indistinguishable from one that passed.
+   */
+  quota_unmetered?: QuotaUnmetered;
+}
+
+/**
+ * The declared record of a quota rule that went unenforced.
+ *
+ * Rides `metadata.obsvr_telemetry.quota_unmetered` on the call's own event,
+ * the same channel `detector_failure` and `canary_leak` take, rather than
+ * minting a new `action_taken` (a closed wire enum) or a second event (which
+ * would break the one-event-per-call correspondence).
+ *
+ * Carries the scope NAME ("user_id"), never the scope VALUE. The value is an
+ * end-user identifier, and the event already carries it in metadata — that is
+ * where it came from. Copying it here would put an identifier on a second
+ * channel for no added information.
+ */
+export interface QuotaUnmetered {
+  rule_id: string;
+  /** quota_scope the rule meters by, e.g. "user_id" or "project". */
+  scope: string;
+  /** "requests" or "tokens". */
+  unit: string;
+  /** How failMode resolved it: "open" allowed the call, "closed" blocked it. */
+  resolution: 'open' | 'closed';
 }
 
 /** Result returned by a post-call hook */

@@ -148,6 +148,12 @@ export function scanMcpToolResult(
         ...(principal?.tenant_id ? { tenant_id: principal.tenant_id } : {}),
       },
     };
+    // No failMode, and no quota_unmetered carried onward: this is the response
+    // phase, where "closed" is not an available action (the provider has
+    // already answered) and this result has no compliance block to hang
+    // telemetry on. Only a rule explicitly scoped applies_to:"response" meters
+    // here, so an unmeterable one goes undeclared on this path alone. The
+    // Python twin does the same, deliberately, so the two stay in parity.
     const rulesResult = evaluatePolicyRules(config.policyRules, responseText, "response", evalContext);
     if (rulesResult.decision === "block") {
       action = "block";

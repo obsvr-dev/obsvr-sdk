@@ -24,6 +24,21 @@
  * latch.
  */
 
+/**
+ * A meter's answer about one scope.
+ *
+ * `metered` is the load-bearing addition: `allowed: true` alone cannot
+ * distinguish "counted, under limit" from "could not count at all", and those
+ * are different facts about whether the rule was enforced.
+ */
+export interface QuotaVerdict {
+  allowed: boolean;
+  remaining: number;
+  resetAt: number;
+  /** False when the bounded store had no slot for this scope. */
+  metered: boolean;
+}
+
 interface QuotaEntry {
   count: number;
   windowStart: number;
@@ -36,8 +51,25 @@ interface QuotaEntry {
   windowMs: number;
 }
 
+/**
+ * A bounded meter: the entries, plus a lower bound on when the next one can
+ * expire. The bound is what keeps the cap cheap — see `makeRoom`.
+ */
+interface BoundedMeter {
+  entries: Map<string, QuotaEntry>;
+  /**
+   * `min(windowStart + windowMs)` over the entries, or Infinity when empty.
+   *
+   * Only ever a LOWER bound: inserts lower it, and deletions can leave it
+   * pointing at an entry that is gone. Stale-low is the safe direction — it
+   * costs one sweep that finds nothing, and can never skip a sweep while
+   * something is actually expired.
+   */
+  earliestExpiry: number;
+}
+
 /** In-memory quota store: key = "scope:scopeValue" */
-const quotaStore = new Map<string, QuotaEntry>();
+const requestMeter: BoundedMeter = { entries: new Map(), earliestExpiry: Infinity };
 
 /**
  * Distinct scopes either meter can track. Both stores are process-global and
@@ -48,7 +80,7 @@ const quotaStore = new Map<string, QuotaEntry>();
  */
 const MAX_QUOTA_SCOPES = 10_000;
 
-let saturated = false;
+/** True while a saturation episode is being warned about; reset when it clears. */
 let warned = false;
 
 /**
@@ -67,42 +99,82 @@ let warned = false;
  * taint latch is advisory-leaning and an ancient session is the least valuable
  * thing it holds. A quota counter is not advisory.)
  *
- * A refused scope is UNMETERED, not blocked. The meter cannot say the scope
- * exceeded its limit, only that it has nowhere to count; turning "no counter
- * slots" into a denial would hand the same flooder a way to block every new
- * identity, and the SDK's default posture elsewhere is fail-open. Saturation
- * warns once and is readable via `quotaStoreSaturated()`.
+ * A refused scope is UNMETERED, and the verdict says so (`metered: false`)
+ * rather than being indistinguishable from a scope that was counted and found
+ * under limit. What happens next is NOT decided here: the rules engine
+ * resolves it by failMode, the same way every other enforcement layer that
+ * cannot run resolves (policy/detector-guard.ts), and declares it on the
+ * call's own event either way. A meter that quietly stops metering is the
+ * enforcement-side twin of a dropped event that leaves no gap marker.
  */
-function makeRoom(store: Map<string, QuotaEntry>, now: number): boolean {
-  if (store.size < MAX_QUOTA_SCOPES) return true;
-  for (const [k, v] of store) {
-    if ((now - v.windowStart) >= v.windowMs) store.delete(k);
-  }
-  if (store.size < MAX_QUOTA_SCOPES) return true;
-  saturated = true;
+function makeRoom(meter: BoundedMeter, now: number): boolean {
+  if (!saturatedNow(meter, now)) return true;
   if (!warned) {
     warned = true;
     // eslint-disable-next-line no-console
     console.warn(
       `[obsvr] quota store is full (${MAX_QUOTA_SCOPES} scopes with live windows); ` +
-        `NEW scopes are NOT metered until a window elapses. Counters already tracked are unaffected.`,
+        `NEW scopes are NOT metered until a window elapses. Counters already tracked are unaffected. ` +
+        `Each affected call declares this on its own event; failMode decides whether it proceeds.`,
     );
   }
   return false;
 }
 
-/** Verdict for a scope the bounded store could not admit: allowed, uncounted. */
-function unmetered(limit: number, windowMs: number): { allowed: boolean; remaining: number; resetAt: number } {
-  return { allowed: true, remaining: limit, resetAt: Date.now() + windowMs };
+/**
+ * Is this meter full of LIVE windows right now?
+ *
+ * The `earliestExpiry` bound is what makes this cheap. Once full, the naive
+ * check re-scans all MAX_QUOTA_SCOPES entries on every new scope and deletes
+ * nothing while every window is live — a per-call O(n) scan on the in-process
+ * hot path, triggered by exactly the flood the cap exists to survive. When
+ * `now` has not reached the earliest possible expiry, no entry CAN be expired,
+ * so the scan is skipped and the answer is O(1).
+ */
+function saturatedNow(meter: BoundedMeter, now: number): boolean {
+  if (meter.entries.size < MAX_QUOTA_SCOPES) return false;
+  if (now < meter.earliestExpiry) return true;
+  // The bound has been reached or is stale: settle it with one real sweep.
+  sweepExpired(meter, now);
+  return meter.entries.size >= MAX_QUOTA_SCOPES;
+}
+
+/** Drop every entry whose own window has elapsed and re-derive the bound. */
+function sweepExpired(meter: BoundedMeter, now: number): void {
+  let earliest = Infinity;
+  for (const [k, v] of meter.entries) {
+    const expiresAt = v.windowStart + v.windowMs;
+    if (expiresAt <= now) meter.entries.delete(k);
+    else if (expiresAt < earliest) earliest = expiresAt;
+  }
+  meter.earliestExpiry = earliest;
+  // A recovered meter must be able to warn again if it saturates a second
+  // time: one warning per episode, not one per process.
+  if (meter.entries.size < MAX_QUOTA_SCOPES) warned = false;
+}
+
+/** Record a newly opened window against the meter's expiry bound. */
+function trackExpiry(meter: BoundedMeter, now: number, windowMs: number): void {
+  const expiresAt = now + windowMs;
+  if (expiresAt < meter.earliestExpiry) meter.earliestExpiry = expiresAt;
+}
+
+/**
+ * Verdict for a scope the bounded store could not admit: allowed here, but
+ * `metered: false` so the caller can neither mistake it for an under-limit
+ * count nor pass it on silently.
+ */
+function unmetered(limit: number, windowMs: number): QuotaVerdict {
+  return { allowed: true, remaining: limit, resetAt: Date.now() + windowMs, metered: false };
 }
 
 function makeKey(scope: string, scopeValue: string): string {
   return `${scope}:${scopeValue}`;
 }
 
-function getOrCreate(key: string, windowMs: number): QuotaEntry | undefined {
+function getOrCreate(meter: BoundedMeter, key: string, windowMs: number): QuotaEntry | undefined {
   const now = Date.now();
-  const existing = quotaStore.get(key);
+  const existing = meter.entries.get(key);
 
   if (existing && (now - existing.windowStart) < windowMs) {
     return existing;
@@ -110,9 +182,10 @@ function getOrCreate(key: string, windowMs: number): QuotaEntry | undefined {
 
   // Window expired or doesn't exist - start fresh. An expired entry reuses its
   // own slot, so an already-tracked scope is never turned away.
-  if (!existing && !makeRoom(quotaStore, now)) return undefined;
+  if (!existing && !makeRoom(meter, now)) return undefined;
   const entry: QuotaEntry = { count: 0, windowStart: now, windowMs };
-  quotaStore.set(key, entry);
+  meter.entries.set(key, entry);
+  trackExpiry(meter, now, windowMs);
   return entry;
 }
 
@@ -124,15 +197,16 @@ export function checkQuota(
   scopeValue: string,
   limit: number,
   windowMs: number
-): { allowed: boolean; remaining: number; resetAt: number } {
+): QuotaVerdict {
   const key = makeKey(scope, scopeValue);
-  const entry = getOrCreate(key, windowMs);
+  const entry = getOrCreate(requestMeter, key, windowMs);
   if (!entry) return unmetered(limit, windowMs);
   const remaining = Math.max(0, limit - entry.count);
   return {
     allowed: entry.count < limit,
     remaining,
     resetAt: entry.windowStart + windowMs,
+    metered: true,
   };
 }
 
@@ -144,9 +218,9 @@ export function incrementQuota(
   scopeValue: string,
   limit: number,
   windowMs: number
-): { allowed: boolean; remaining: number; resetAt: number } {
+): QuotaVerdict {
   const key = makeKey(scope, scopeValue);
-  const entry = getOrCreate(key, windowMs);
+  const entry = getOrCreate(requestMeter, key, windowMs);
   if (!entry) return unmetered(limit, windowMs);
 
   entry.count++;
@@ -156,6 +230,7 @@ export function incrementQuota(
     allowed: entry.count <= limit,
     remaining,
     resetAt: entry.windowStart + windowMs,
+    metered: true,
   };
 }
 
@@ -163,7 +238,7 @@ export function incrementQuota(
  * Reset quota for a specific scope/value.
  */
 export function resetQuota(scope: string, scopeValue: string): void {
-  quotaStore.delete(makeKey(scope, scopeValue));
+  requestMeter.entries.delete(makeKey(scope, scopeValue));
 }
 
 /**
@@ -176,7 +251,7 @@ export function getQuotaStatus(
   windowMs: number
 ): { used: number; remaining: number; resetAt: number } {
   const key = makeKey(scope, scopeValue);
-  const entry = getOrCreate(key, windowMs);
+  const entry = getOrCreate(requestMeter, key, windowMs);
   if (!entry) return { used: 0, remaining: limit, resetAt: Date.now() + windowMs };
   return {
     used: entry.count,
@@ -192,19 +267,7 @@ export function getQuotaStatus(
 // approximate cutoffs, not exact. Per-process, same caveat as request quotas.
 
 /** Token-usage store: key = "tokens:scope:scopeValue" */
-const tokenStore = new Map<string, QuotaEntry>();
-
-function getOrCreateTokens(key: string, windowMs: number): QuotaEntry | undefined {
-  const now = Date.now();
-  const existing = tokenStore.get(key);
-  if (existing && (now - existing.windowStart) < windowMs) {
-    return existing;
-  }
-  if (!existing && !makeRoom(tokenStore, now)) return undefined;
-  const entry: QuotaEntry = { count: 0, windowStart: now, windowMs };
-  tokenStore.set(key, entry);
-  return entry;
-}
+const tokenMeter: BoundedMeter = { entries: new Map(), earliestExpiry: Infinity };
 
 /**
  * Pre-call check: has this scope already consumed its token budget?
@@ -215,15 +278,16 @@ export function checkTokenBudget(
   scopeValue: string,
   limit: number,
   windowMs: number
-): { allowed: boolean; remaining: number; resetAt: number } {
+): QuotaVerdict {
   const key = `tokens:${makeKey(scope, scopeValue)}`;
-  const entry = getOrCreateTokens(key, windowMs);
+  const entry = getOrCreate(tokenMeter, key, windowMs);
   if (!entry) return unmetered(limit, windowMs);
   const remaining = Math.max(0, limit - entry.count);
   return {
     allowed: entry.count < limit,
     remaining,
     resetAt: entry.windowStart + windowMs,
+    metered: true,
   };
 }
 
@@ -239,30 +303,39 @@ export function recordTokenUsage(
 ): void {
   if (!Number.isFinite(tokens) || tokens <= 0) return;
   const key = `tokens:${makeKey(scope, scopeValue)}`;
-  const entry = getOrCreateTokens(key, windowMs);
+  const entry = getOrCreate(tokenMeter, key, windowMs);
   if (!entry) return;
   entry.count += tokens;
 }
 
 /** Scopes currently tracked by each meter (diagnostics, tests). */
 export function quotaStoreSize(): { requests: number; tokens: number } {
-  return { requests: quotaStore.size, tokens: tokenStore.size };
+  return { requests: requestMeter.entries.size, tokens: tokenMeter.entries.size };
 }
 
 /**
- * True once either meter refused a new scope because every tracked window was
- * still live — some scopes are going unmetered until a window elapses.
+ * Is either meter full of live windows RIGHT NOW — i.e. would a new scope be
+ * refused if one arrived this instant?
+ *
+ * Deliberately a current-state question, not a latch. "This process once
+ * refused a scope, possibly hours ago and for one call" and "new scopes are
+ * going unmetered as of now" call for different responses, and a flag that
+ * never clears can only answer the first while looking like it answers the
+ * second. Saturation is a transient condition: it ends on its own the moment
+ * a tracked window elapses.
  */
 export function quotaStoreSaturated(): boolean {
-  return saturated;
+  const now = Date.now();
+  return saturatedNow(requestMeter, now) || saturatedNow(tokenMeter, now);
 }
 
 /**
  * Clear all quota entries (for testing).
  */
 export function _resetAllQuotas(): void {
-  quotaStore.clear();
-  tokenStore.clear();
-  saturated = false;
+  requestMeter.entries.clear();
+  requestMeter.earliestExpiry = Infinity;
+  tokenMeter.entries.clear();
+  tokenMeter.earliestExpiry = Infinity;
   warned = false;
 }

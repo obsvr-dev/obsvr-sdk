@@ -302,6 +302,16 @@ def build_audit_event(
         _tel["detector_failure"] = _detector_failure
         _md["obsvr_telemetry"] = _tel
         _event["metadata"] = _md
+    # Same route, same reason: a quota rule the bounded meter had no slot for
+    # did not run on this call, and an allowed call that says nothing about it
+    # reads as a rule that was in force and never exceeded.
+    _quota_unmetered = comp.get("quota_unmetered")
+    if _quota_unmetered is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel["quota_unmetered"] = _quota_unmetered
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
     if bool(getattr(config, "policy_floor", None)):
         # Anti-tamper floor evidence: floor_version is a pure function of
         # config.policy_floor, so it is stamped HERE for EVERY event under an

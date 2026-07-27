@@ -60,7 +60,7 @@ import {
 } from "../policy/session-taint.js";
 import { presidioScan, presidioRedactText } from "../policy/presidio.js";
 import { scoreTurn } from "../policy/injection-session.js";
-import type { PolicyDecisionResult, PostCallDecisionResult } from "../policy/hook.js";
+import type { PolicyDecisionResult, PostCallDecisionResult, QuotaUnmetered } from "../policy/hook.js";
 import { normalizePostCallDecision } from "../policy/hook.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
@@ -145,6 +145,12 @@ export interface ComplianceInfo {
    * action_taken value, which is a closed wire enum. Additive.
    */
   detector_failure?: DetectorFailure;
+  /**
+   * A quota rule the bounded meter could not count on this call, and how
+   * failMode resolved it. Same channel and same reason as detector_failure:
+   * an enforcement layer that did not run has to say so on the record.
+   */
+  quota_unmetered?: QuotaUnmetered;
 }
 
 /** Default compliance context (mirrors proxy wrapper defaults) */
@@ -667,11 +673,13 @@ export async function applyPreCallPolicy(
     //      wrapper and the Python shared pre-call use.
     let rulesRuleId: string | undefined = floorRuleId ?? mtRuleId;
     let rulesPolicyReason: string | undefined = floorPolicyReason ?? mtPolicyReason;
+    let quotaUnmetered: QuotaUnmetered | undefined;
     if (config.policyRules && config.policyRules.length > 0 && actionTaken !== "blocked") {
       const rulesResult = evaluatePolicyRules(config.policyRules, promptText, "prompt", {
         provider,
         metadata: evalMetadata,
-      });
+      }, { failMode: config.failMode });
+      quotaUnmetered = rulesResult.quota_unmetered;
       if (rulesResult.decision === 'block') {
         actionTaken = 'blocked';
         actionReason = 'policy_violation';
@@ -876,6 +884,7 @@ export async function applyPreCallPolicy(
       decision_input_hash: computeDecisionInputHash(decisionInput),
       engine_version: ENGINE_VERSION,
       external_backend: externalBackend,
+      ...(quotaUnmetered !== undefined ? { quota_unmetered: quotaUnmetered } : {}),
     };
 
     // Presidio anonymizer produces the redacted copy when configured (typed
@@ -1608,6 +1617,18 @@ export function buildIntegrationEvent(
     metadata.obsvr_telemetry = {
       ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
       detector_failure: detectorFailure,
+    };
+    event.metadata = metadata;
+  }
+
+  // Same route, same reason: a quota rule the bounded meter had no slot for
+  // did not run on this call, and an allowed call that says nothing about it
+  // reads as a rule that was in force and never exceeded.
+  if (compliance.quota_unmetered) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      quota_unmetered: compliance.quota_unmetered,
     };
     event.metadata = metadata;
   }

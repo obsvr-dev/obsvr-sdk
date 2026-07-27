@@ -1330,9 +1330,24 @@ function createAuditedMethod(
           provider,
           ...(audit_fields.metadata as Record<string, unknown> ?? {}),
         };
-        const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx);
+        const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx, {
+          failMode: config.failMode,
+        });
         ruleId = result.rule_id;
         policyReason = result.reason;
+        // A quota rule the bounded meter could not count is declared on this
+        // call's own event, on the same reserved channel detector_failure and
+        // canary evidence take. Without it an unenforced quota rule is
+        // indistinguishable from one that was counted and found under limit.
+        if (result.quota_unmetered) {
+          audit_fields.metadata = {
+            ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
+            obsvr_telemetry: {
+              ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
+              quota_unmetered: result.quota_unmetered,
+            },
+          };
+        }
         if (result.decision === "block") {
           actionTaken = "blocked";
           actionReason = "policy_violation";

@@ -1005,6 +1005,7 @@ def apply_pre_call_policy(
         # 1.5. Structured policy rules
         rules_rule_id: Optional[str] = floor_rule_id or gate_rule_id
         rules_reason: Optional[str] = floor_reason or gate_reason
+        quota_unmetered: Optional[Dict[str, Any]] = None
         if getattr(config, 'policy_rules', None) and action_taken != "blocked":
             from .rules import evaluate_policy_rules
             rules_result = evaluate_policy_rules(
@@ -1016,10 +1017,17 @@ def apply_pre_call_policy(
                     "provider": provider,
                     "current_environment": getattr(config, "environment", None),
                 },
+                fail_mode=getattr(config, "fail_mode", None),
             )
             rules_decision = rules_result.get("decision", "allow")
             rules_rule_id = rules_result.get("rule_id")
             rules_reason = rules_result.get("reason")
+            # A quota rule the bounded meter could not count is declared on
+            # this call's own event, on the same reserved channel
+            # detector_failure and canary evidence take. Without it an
+            # unenforced quota rule is indistinguishable from one that was
+            # counted and found under limit. Parity with TS.
+            quota_unmetered = rules_result.get("quota_unmetered")
             if rules_decision == "block" and action_taken != "blocked":
                 action_taken = "blocked"
                 action_reason = "policy_violation"
@@ -1303,6 +1311,11 @@ def apply_pre_call_policy(
         # External policy backend provenance (ADR-4, additive)
         "external_backend": external_backend_record,
     }
+    # Mirrored onto metadata.obsvr_telemetry by the event builder, the same
+    # route detector_failure takes and for the same reason: an enforcement
+    # layer that did not run has to say so on the record.
+    if quota_unmetered is not None:
+        compliance["quota_unmetered"] = quota_unmetered
 
     if action_taken == "blocked":
         decision = "block"
