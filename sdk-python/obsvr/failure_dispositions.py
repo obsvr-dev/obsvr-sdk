@@ -238,6 +238,24 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "hook_overridable": False,
         "notes": "Guarded at its own call site, scan and sanitizer alike. Resolves by failMode with the default open even though it sees canary tokens, because the tool has ALREADY RUN: blocking cannot undo the side effect, it only withholds the result from the model.",
     },
+    {
+        "id": "loop_detection",
+        "module": "sdk-python/obsvr/agent_policy.py",
+        "timeout": _s("not_applicable"),
+        "error": _s("open"),
+        "degraded": _s("not_applicable"),
+        "hook_overridable": False,
+        "notes": "Sliding-window iteration counter, driven once per agent step by the framework integration. The integration's callback swallows every non-policy throw so a detector defect cannot break the host's agent run, which makes an internal error fail OPEN: the step proceeds and this layer's enforcement is lost for it. Off unless agentPolicy.loopDetection / agent_policy['loop_detection'] is configured, so the disposition only describes a run that opted in.",
+    },
+    {
+        "id": "delegation_tracking",
+        "module": "sdk-python/obsvr/agent_policy.py",
+        "timeout": _s("not_applicable"),
+        "error": _s("open"),
+        "degraded": _s("not_applicable"),
+        "hook_overridable": False,
+        "notes": "Depth / circularity / allowlist checks over an in-process delegation chain, driven once per delegation. Same guard and therefore the same open posture as loop_detection. No framework integration drives it in either SDK today; it is a public API a caller wires into its own handoff path, which is why its verdict semantics are fixture-pinned rather than integration-pinned.",
+    },
 ]
 
 #: Every declared layer id.

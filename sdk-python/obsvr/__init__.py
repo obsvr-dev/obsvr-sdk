@@ -34,6 +34,16 @@ from .agent_run import (  # noqa: F401
     current_agent_run_id,
     generate_run_id,
 )
+# Agent-run controls. Loop detection is driven for you by the LangChain and
+# OpenAI-Agents integrations when agent_policy declares it; the delegation
+# tracker is yours to drive from your own handoff path, as in TypeScript.
+from .agent_policy import (  # noqa: F401
+    DelegationTracker,
+    LoopDetector,
+    create_delegation_tracker,
+    create_loop_detector,
+    has_circular_delegation,
+)
 from .sender import flush  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
 from .audit_gap import parse_audit_gap_prompt  # noqa: F401
@@ -63,6 +73,11 @@ __all__ = [
     "current_agent_run",
     "current_agent_run_id",
     "generate_run_id",
+    "LoopDetector",
+    "create_loop_detector",
+    "DelegationTracker",
+    "create_delegation_tracker",
+    "has_circular_delegation",
     "verify_chain",
     # Gap markers: a verified chain can still declare events the bounded sender
     # queue dropped. verify_chain totals them; this identifies which events

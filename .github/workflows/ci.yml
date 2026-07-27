@@ -95,6 +95,7 @@ jobs:
           test -f conformance/fixtures/instance_guard.json
           test -f conformance/fixtures/tool_content_hash.json
           test -f conformance/fixtures/canonical_json.json
+          test -f conformance/fixtures/agent_controls.json
           grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/signing-vectors.test.ts
           grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/verify-chain-conformance.test.ts
           grep -q "conformance/fixtures/signing_vectors.json" sdk-python/tests/test_verify_chain.py
@@ -117,6 +118,8 @@ jobs:
           grep -q "conformance/fixtures/tool_content_hash.json" sdk/tests/unit/tool-content-hash-conformance.test.ts
           grep -q "conformance/fixtures/canonical_json.json" sdk/tests/unit/canonical-json-conformance.test.ts
           grep -q "conformance/fixtures/canonical_json.json" sdk-python/tests/test_canonical_json_conformance.py
+          grep -q "conformance/fixtures/agent_controls.json" sdk/tests/unit/agent-controls-conformance.test.ts
+          grep -q "conformance/fixtures/agent_controls.json" sdk-python/tests/test_agent_controls_conformance.py
 
       - name: Use Node.js 20.x
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -141,7 +144,7 @@ jobs:
         working-directory: sdk
 
       - name: TypeScript fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
-        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/verify-chain-conformance.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts tests/unit/fail-mode.test.ts tests/unit/policy-verify.test.ts tests/unit/policy-error.test.ts tests/unit/instance-guard.test.ts tests/unit/tool-content-hash-conformance.test.ts tests/unit/canonical-json-conformance.test.ts
+        run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/verify-chain-conformance.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts tests/unit/fail-mode.test.ts tests/unit/policy-verify.test.ts tests/unit/policy-error.test.ts tests/unit/instance-guard.test.ts tests/unit/tool-content-hash-conformance.test.ts tests/unit/canonical-json-conformance.test.ts tests/unit/agent-controls-conformance.test.ts
         working-directory: sdk
         env:
           NODE_ENV: test
@@ -151,7 +154,7 @@ jobs:
         working-directory: sdk-python
 
       - name: Python fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
-        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py tests/test_cli_verify.py tests/test_canonical_json_conformance.py -q
+        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py tests/test_cli_verify.py tests/test_canonical_json_conformance.py tests/test_agent_controls_conformance.py -q
         working-directory: sdk-python
 
       # Both obsvr-verify CLIs, driven over ONE export built from the shared

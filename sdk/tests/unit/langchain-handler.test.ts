@@ -9,7 +9,9 @@ beforeEach(() => {
   _resetSender();
   sentEvents = [];
   (global as any).fetch = async (_url: any, opts: any) => {
-    sentEvents.push(JSON.parse(opts.body));
+    // Agent runs emit several events, which the sender batches into one body.
+    const body = JSON.parse(opts.body);
+    Array.isArray(body) ? sentEvents.push(...body) : sentEvents.push(body);
     return { ok: true, status: 200 };
   };
 });
@@ -154,5 +156,49 @@ describe('ObsvrCallbackHandler', () => {
     ).resolves.toBeUndefined();
     await handler.handleLLMEnd({ generations: [[{ text: 'x' }]] }, 'run-5');
     expect(sentEvents).toHaveLength(0);
+  });
+});
+
+// ── Loop detection wiring (twin: sdk-python/tests/test_integrations.py) ──────
+
+describe('ObsvrCallbackHandler: agent loop detection', () => {
+  const AGENT_SERIALIZED = { id: ['langchain', 'agents', 'AgentExecutor'] };
+  const ACTION = { tool: 'search', toolInput: 'q' };
+
+  it('blocks the run and emits LOOP_DETECTED past the iteration limit', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      agent_policy: { loopDetection: { maxIterations: 2, windowMs: 60_000, action: 'block' } },
+    });
+    const handler = new ObsvrCallbackHandler();
+    await handler.handleChainStart(AGENT_SERIALIZED, { input: 'go' }, 'run-loop');
+    await handler.handleAgentAction(ACTION, 'run-loop');
+    await handler.handleAgentAction(ACTION, 'run-loop');
+    await expect(handler.handleAgentAction(ACTION, 'run-loop')).rejects.toThrow(
+      /\[obsvr\] Loop detected/,
+    );
+
+    for (let i = 0; i < 100 && !sentEvents.some((e) => e.operation === 'langchain.agent.loop_detected'); i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const loop = sentEvents.filter((e) => e.operation === 'langchain.agent.loop_detected');
+    expect(loop).toHaveLength(1);
+    expect(loop[0].reason_code).toBe('LOOP_DETECTED');
+    expect(loop[0].event_type).toBe('loop_detected');
+    expect(loop[0].action_taken).toBe('blocked');
+    expect(loop[0].metadata.loop_iteration_count).toBe(3);
+    expect(loop[0].metadata.loop_action).toBe('block');
+  });
+
+  it('emits nothing when loopDetection is not configured', async () => {
+    init({ api_key: 'test', sample_rate: 1, agent_policy: {} });
+    const handler = new ObsvrCallbackHandler();
+    await handler.handleChainStart(AGENT_SERIALIZED, { input: 'go' }, 'run-noloop');
+    for (let i = 0; i < 5; i++) {
+      await handler.handleAgentAction(ACTION, 'run-noloop');
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sentEvents.filter((e) => String(e.operation).includes('loop_detected'))).toEqual([]);
   });
 });

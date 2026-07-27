@@ -146,6 +146,42 @@ _PINNED_ELSEWHERE = {
 }
 
 
+def _agent_control_reason_codes():
+    """Drive the loop detector and the delegation tracker and return the reason
+    codes their emitted events actually carried. Emission goes through the real
+    sender path, monkeypatched at the module the controls import, so this
+    collects from events rather than trusting the constants."""
+    from obsvr import agent_policy as ap
+    from obsvr.config import ResolvedConfig
+
+    emitted = []
+    original = ap.emit_event
+    ap.emit_event = lambda cfg, **params: emitted.append(params) or params
+    try:
+        cfg = ResolvedConfig(api_key="k", sample_rate=1)
+        detector = ap.create_loop_detector(
+            {"max_iterations": 1, "window_ms": 60000, "action": "block"}
+        )
+        detector.record_iteration()
+        ap.apply_loop_detection(
+            detector, cfg, agent_run_id="r", source="t", operation="op"
+        )
+        tracker = ap.create_delegation_tracker({"max_depth": 10, "block_circular": True})
+        ap.apply_delegation_policy(tracker, "a", "b", cfg, "r", "t", "op")
+        # b is already on the active chain, so delegating back TO b is circular.
+        ap.apply_delegation_policy(tracker, "b", "b", cfg, "r", "t", "op")
+    finally:
+        ap.emit_event = original
+
+    # Three events: the loop finding, the a->b delegation, the b->b violation.
+    assert len(emitted) == 3
+    return {
+        params["compliance"]["reason_code"]
+        for params in emitted
+        if params.get("compliance", {}).get("reason_code")
+    }
+
+
 def test_every_registry_code_is_reachable():
     from obsvr.config import ResolvedConfig
     from obsvr.errors import _resolve_reason_code
@@ -225,6 +261,11 @@ def test_every_registry_code_is_reachable():
     timed_out = apply_pre_call_policy("hello", cfg_timeout)
     if timed_out["compliance"].get("reason_code"):
         reachable.add(timed_out["compliance"]["reason_code"])
+
+    # 3b. The agent-run controls, driven the way a caller drives them. Twin of
+    #     the TS suite's step 4: both codes ride emitted events, so they are
+    #     collected from the events rather than asserted by name.
+    reachable |= _agent_control_reason_codes()
 
     # 4. The verdict: reachable + pinned-elsewhere + reserved is the registry,
     #    with no overlap between the reachable set and the reserved codes.

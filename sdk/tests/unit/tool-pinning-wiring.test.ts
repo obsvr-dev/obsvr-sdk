@@ -333,18 +333,18 @@ describe('review: per-client store scoping (patch path) + config-pin removal noi
 
 // ── Shared discovery-strip contract (conformance/fixtures/tool_pinning.json) ──
 
-function findFixture(name: string): string {
+function findFixture(rel: string): string {
   let dir = process.cwd();
   for (let i = 0; i < 6; i++) {
-    const candidate = path.join(dir, 'conformance/fixtures', name);
+    const candidate = path.join(dir, rel);
     if (fs.existsSync(candidate)) return candidate;
     dir = path.dirname(dir);
   }
-  throw new Error(`fixture not found upward from ${process.cwd()}: ${name}`);
+  throw new Error(`fixture not found upward from ${process.cwd()}: ${rel}`);
 }
 
 describe('discovery strip: the fixture contract', () => {
-  const fixture = JSON.parse(fs.readFileSync(findFixture('tool_pinning.json'), 'utf-8')) as {
+  const fixture = JSON.parse(fs.readFileSync(findFixture('conformance/fixtures/tool_pinning.json'), 'utf-8')) as {
     discovery_strip_cases: Array<{
       id: string;
       tools: Array<{ name: string; description: string }>;

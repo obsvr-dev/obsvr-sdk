@@ -17,6 +17,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import sender as _sender
+from ..agent_policy import apply_loop_detection, create_loop_detector, resolve_loop_detection
 from ..config import try_get_config
 from ..events import emit_event, infer_provider_from_string, tool_denied_compliance
 from ..deobfuscate import redact_for_storage
@@ -143,11 +144,15 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                 return
 
             agent_run_id = str(uuid.uuid4())
-            self._agent_runs[str(run_id)] = {
+            agent_state: Dict[str, Any] = {
                 "agent_run_id": agent_run_id,
                 "start_time": time.time(),
                 "step_count": 0,
             }
+            loop_block = resolve_loop_detection(getattr(config, "agent_policy", None))
+            if loop_block is not None:
+                agent_state["loop_detector"] = create_loop_detector(loop_block)
+            self._agent_runs[str(run_id)] = agent_state
 
             emit_event(
                 config,
@@ -324,6 +329,18 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
 
             if agent_state:
                 agent_state["step_count"] = count + 1
+                # Loop detection
+                detector = agent_state.get("loop_detector")
+                if detector is not None:
+                    loop_result = apply_loop_detection(
+                        detector,
+                        config,
+                        agent_run_id=agent_state["agent_run_id"],
+                        source=SOURCE,
+                        operation="langchain.agent",
+                    )
+                    if loop_result and loop_result["action"] == "block":
+                        raise ValueError("[obsvr] Loop detected: iteration limit exceeded")
 
             if step_action == "block":
                 emit_event(

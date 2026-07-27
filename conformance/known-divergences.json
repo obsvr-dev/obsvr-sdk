@@ -28,16 +28,6 @@
       "parity_scope": "All shared signature vectors resolve to identical verdicts once a backend is installed (pip install \"obsvr-sdk[crypto]\", included in the dev extra so CI runs them for real); Python still fails closed without one - the fetched policy is refused, last-good stays in force, and policy_verification_unavailable is stamped into reserved metadata on every subsequent event.",
       "allowed_difference": "The unverifiable-but-declared degraded state exists only in Python, only with a pinned key and no optional crypto backend.",
       "tracking": "sdk-python/obsvr/policy_verify.py. Closes if a stdlib Ed25519 ever lands or the dependency posture changes."
-    },
-    {
-      "id": "KD-8",
-      "sdk": "py",
-      "category": "capability",
-      "status": "intended",
-      "description": "LOOP_DETECTED / DELEGATION_BLOCKED emission: loop detection and delegation tracking (iteration thresholds, circular/depth/allowlist delegation violations) ship TypeScript-only (policy/industry/devops.ts, policy/industry/agentic.ts, wired through integrations/core.ts). TypeScript emits both codes on real events; Python has no emitting control, so both codes are RESERVED there (obsvr/reason_codes.py RESERVED_REASON_CODES) - kept in the shared closed registry, never emitted. Deleting from a closed enum is breaking; a reserved code with a named owning control is honest.",
-      "parity_scope": "The reason-code registry and rule-type mapping are identical and fixture-pinned in both SDKs; each language's reachability test exempts exactly its reserved set, so wiring or removing a control without updating the reservation fails CI.",
-      "allowed_difference": "LOOP_DETECTED and DELEGATION_BLOCKED appear on TypeScript events only.",
-      "tracking": "Python twins of the loop/delegation trackers; delete the two RESERVED_REASON_CODES entries (and this entry) when they land."
     }
   ]
 }

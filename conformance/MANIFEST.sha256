@@ -12,11 +12,12 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = a54dc0f08e38ce0c4ef7ea0499010f3d6648e6c58d38ea4b4e6b80f92a8b1dbb
+# corpus_sha256 = 1120116f53dea8fbec026271506de41dc586fc1768435a4f024bca559a98c7ae
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
 1c5d305c3281792dd865be4864be3edc57045300dc808d601f7828dd839947df  SPEC-evaluation.md
+356bce549150b6219ae488363e37ed4d96e553a7d6e2ddabbb3852f3abefc14a  fixtures/agent_controls.json
 9ad1b421f5f3bf05a5c5bc9276d0f311855f317326b49a194abf775a6982828f  fixtures/audit_gap.json
 31568301fcef270034bc708edfde517fcdbf047881dd19918a92a7a4df00223c  fixtures/canary.json
 cffed063abb9d7218c75b93d93321990d20b7c41ba050a46b95fe08702985e88  fixtures/canonical_json.json
@@ -26,7 +27,7 @@ fe24f48b8836defc598d4f69b4308b0305abfaa64a04a6e32687124461e5f595  fixtures/deobf
 399b085942b5490974fbfa2303dd417d1a7b44e34c2227a2f1f9cc326f89271f  fixtures/error_parity.json
 30edf0980364d6c26d66d5d32629e3833313f737f50aa9e4af6ac8b002f201c1  fixtures/eval_semantics.json
 dbba9144a45d71af6d2bc53ed0f5eba4319aed48d1c56fcb07a3e0c4ff8d7677  fixtures/external_backend.json
-73001390a95afef675b3122b52afa40c964e580a97f1a4c88daf10a7e62b1003  fixtures/fail_mode.json
+386f164b3d45fcbb494aa899f8fb4690eab8121283c171cce9780ef007dde88f  fixtures/fail_mode.json
 ba61d17ece61d5f2edde09ec1663e6897159bb89ecf0e43ae90203a42b178a4c  fixtures/injection_reason.json
 9cff66596c77de62984cbcfbdc8f5669c760480215ed23a7530019443fe99ba3  fixtures/instance_guard.json
 74a68e1b59d4a1f465c3ff3899aaf456834c89d0b010250e860957617d628580  fixtures/normalization.json
@@ -42,5 +43,5 @@ ebacaa25b3d59bef904b8fb81e8091479ccdd72ab7293fa165ff06e5ed3dc16b  fixtures/reaso
 caf2142a9638cc8fbdbca7ba3e5adc8683ffe382a7d73aa69c308dec0f9c0333  fixtures/tool_content_hash.json
 abdbfdb04fdbd379ee448ced45a8e349f05f0fd7881f153de8469658413b72b0  fixtures/tool_descriptor_scan.json
 7663bb1a53b2ce66e452be4c8537b30df2b28e07faa2a5c4c7fbda2e3ddf0d94  fixtures/tool_pinning.json
-cc4e5a25d9de08ebcf802d7f24727314f8ab91a4874c0dbaaccf0848a7320c9f  known-divergences.json
-8d5fbcc5fc51574db310a01670982a3c1978650a11cc82a402379d8738c51390  known-divergences.md
+2ba1c4354cc56a8e9a4ba5daf2dd1fb5d0fc212f3628b05176ff2432b3e75a65  known-divergences.json
+47c4065f804ee79aa8674ca80a9a7095065ab964c578153a2edb2a8fe58bdfe8  known-divergences.md

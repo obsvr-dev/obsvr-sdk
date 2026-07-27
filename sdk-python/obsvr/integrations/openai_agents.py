@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Dict, Optional, Tuple
 
 from .. import sender as _sender
+from ..agent_policy import apply_loop_detection, create_loop_detector, resolve_loop_detection
 from ..config import try_get_config
 from ..events import emit_event, tool_denied_compliance
 
@@ -100,6 +101,9 @@ class ObsvrTracingProcessor:
                 "step_count": 0,
                 "start_time": time.monotonic(),
             }
+            loop_block = resolve_loop_detection(getattr(config, "agent_policy", None))
+            if loop_block is not None:
+                self._run_context[trace_id]["loop_detector"] = create_loop_detector(loop_block)
             emit_event(
                 config,
                 provider="unknown",
@@ -193,6 +197,21 @@ class ObsvrTracingProcessor:
 
                     step_action = _check_steps(step_index, policy)
                     state["step_count"] = step_index + 1
+
+                    # Loop detection
+                    detector = state.get("loop_detector")
+                    if detector is not None:
+                        loop_result = apply_loop_detection(
+                            detector,
+                            config,
+                            agent_run_id=trace_id,
+                            source=SOURCE,
+                            operation="openai_agents.agent",
+                        )
+                        if loop_result and loop_result["action"] == "block":
+                            raise RuntimeError(
+                                "[obsvr] Loop detected: iteration limit exceeded"
+                            )
 
                     if step_action == "block":
                         emit_event(

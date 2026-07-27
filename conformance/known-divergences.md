@@ -17,6 +17,28 @@ FIXED rather than accepted, which the table never carried and which is the
 better half of the record.
 
 History:
+- 2026-07-28: KD-8 (LOOP_DETECTED / DELEGATION_BLOCKED) was FIXED by porting
+  the owning controls, and the row is gone. `obsvr/agent_policy.py` is the
+  Python twin of `policy/industry/devops.ts` + `policy/industry/agentic.ts`
+  plus the emitting halves from `integrations/core.ts`, decision semantics
+  pinned by the new `conformance/fixtures/agent_controls.json` (17 cases per
+  suite, message strings included - the circular-chain separator is U+2192 in
+  both). Loop detection is wired into the Python LangChain and OpenAI-Agents
+  paths at the same positions TypeScript wires it, so `RESERVED_REASON_CODES`
+  is now empty and both languages' reachability tests exempt nothing.
+  **One thing the row got wrong, verified in the source:** it said both codes
+  have a live TypeScript emission site, and for LOOP_DETECTED that is true
+  (`integrations/core.ts` `applyLoopDetection`, called from langchain.ts and
+  openai-agents.ts). `applyDelegationPolicy` is imported by both integrations
+  but called by NEITHER - the tracker is constructed from
+  `agentPolicy.delegationPolicy` and then nothing records a delegation, so no
+  framework path emits DELEGATION_BLOCKED in either SDK. It reaches the TS
+  reachability test only because that test drives the exported function
+  directly. So the real gap that closed here was a public API a caller wires
+  into its own handoff path, present in one language and not the other; the
+  fixture pins its verdicts in both, and the disposition registry now records
+  in `delegation_tracking`'s notes that no integration drives it. Wiring one is
+  a design decision, not a port, and was left alone.
 - 2026-07-28: KD-3 (block-mode discovery strip) was FIXED, and the row is gone.
   The row accepted a best-effort strip because Python cannot spread an
   arbitrary upstream listing model the way TypeScript spreads a plain object:

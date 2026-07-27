@@ -195,6 +195,69 @@ def test_langchain_step_limit_block_raises(sent):
         h.on_agent_action(_Action(), run_id="run-t3")
 
 
+class _LoopAction:
+    tool = "search"
+    tool_input = "q"
+
+
+def test_langchain_loop_detection_blocks_and_emits(sent):
+    """Twin: sdk/tests/unit/langchain-handler.test.ts. The detector is built at
+    chain start from agent_policy and driven once per agent step, so the third
+    step past a limit of 2 both emits LOOP_DETECTED and stops the run."""
+    obsvr.init(
+        api_key="test", sample_rate=1,
+        agent_policy={
+            "loop_detection": {"max_iterations": 2, "window_ms": 60000, "action": "block"}
+        },
+    )
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+
+    h = ObsvrCallbackHandler()
+    h.on_chain_start(AGENT_SERIALIZED, {"input": "go"}, run_id="run-t4")
+    h.on_agent_action(_LoopAction(), run_id="run-t4")
+    h.on_agent_action(_LoopAction(), run_id="run-t4")
+    with pytest.raises(ValueError, match=r"\[obsvr\] Loop detected"):
+        h.on_agent_action(_LoopAction(), run_id="run-t4")
+
+    loop_events = [e for e in sent if e["operation"] == "langchain.agent.loop_detected"]
+    assert len(loop_events) == 1
+    ev = loop_events[0]
+    assert ev["reason_code"] == "LOOP_DETECTED"
+    assert ev["event_type"] == "loop_detected"
+    assert ev["action_taken"] == "blocked"
+    assert ev["metadata"]["loop_iteration_count"] == 3
+    assert ev["metadata"]["loop_action"] == "block"
+
+
+def test_langchain_loop_detection_is_off_without_config(sent):
+    """No loop_detection block means no detector and no event - the control is
+    opt-in, and an unconfigured run must stay byte-identical to before."""
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+
+    h = ObsvrCallbackHandler()
+    h.on_chain_start(AGENT_SERIALIZED, {"input": "go"}, run_id="run-t5")
+    for _ in range(5):
+        h.on_agent_action(_LoopAction(), run_id="run-t5")
+    assert [e for e in sent if "loop_detected" in e["operation"]] == []
+
+
+def test_langchain_loop_detection_ignores_a_thresholdless_block(sent):
+    """A loop_detection block with no usable threshold builds no detector: a
+    control that silently enforces nothing is worse than an absent one."""
+    obsvr.init(
+        api_key="test", sample_rate=1,
+        agent_policy={"loop_detection": {"action": "block"}},
+    )
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+
+    h = ObsvrCallbackHandler()
+    h.on_chain_start(AGENT_SERIALIZED, {"input": "go"}, run_id="run-t6")
+    for _ in range(5):
+        h.on_agent_action(_LoopAction(), run_id="run-t6")
+    assert [e for e in sent if "loop_detected" in e["operation"]] == []
+
+
 # ---------------------------------------------------------------------------
 # LlamaIndex handler
 # ---------------------------------------------------------------------------

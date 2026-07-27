@@ -1,0 +1,178 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "agent_controls",
+  "description": "Cross-SDK agent-run control fixtures: the sliding-window loop detector (LoopDetector / LoopDetector, owning control for reason code LOOP_DETECTED) and the delegation tracker (DelegationTracker / DelegationTracker, owning control for DELEGATION_BLOCKED). loop_cases drive recordIteration/record_iteration N times against one detector and pin the ordered result list, null meaning 'within limits'; every case uses a window far wider than the test takes to run, so a case is a pure count threshold and never a wall-clock race - the time-based pruning inside the window is deliberately NOT pinned here, because a fixture cannot pin a clock. delegation_cases drive recordDelegation/record_delegation over one tracker in order and pin the ordered violation list, message strings included: an operator reading policy_reason on an audit event must not be able to tell which SDK wrote it, and the circular message uses U+2192 as the chain separator in both. Check ORDER is part of what these pin - allowlist, then circularity, then depth - so a delegation that breaks two rules reports the same one everywhere. circular_chain_cases pin hasCircularDelegation/has_circular_delegation, the standalone chain check both SDKs export. Harnesses: sdk/tests/unit/agent-controls-conformance.test.ts, sdk-python/tests/test_agent_controls_conformance.py. Fixture keys are snake_case; the TypeScript config fields are maxIterations / windowMs / maxDepth / allowedDelegates / blockCircular and its result field is iterationCount, so the TS harness maps them.",
+  "loop_cases": [
+    {
+      "id": "under_threshold_never_fires",
+      "detector": { "max_iterations": 3, "window_ms": 60000, "action": "block" },
+      "iterations": 3,
+      "expect": [null, null, null]
+    },
+    {
+      "id": "fires_on_the_iteration_past_the_threshold",
+      "note": "The detector fires when the count EXCEEDS max_iterations, so a limit of 2 first fires on the 3rd iteration, reporting 3.",
+      "detector": { "max_iterations": 2, "window_ms": 60000, "action": "block" },
+      "iterations": 4,
+      "expect": [
+        null,
+        null,
+        { "action": "block", "iteration_count": 3 },
+        { "action": "block", "iteration_count": 4 }
+      ]
+    },
+    {
+      "id": "escalate_action_is_carried_through_verbatim",
+      "note": "The detector reports the configured action; deciding what to do with it belongs to the caller, not the detector.",
+      "detector": { "max_iterations": 1, "window_ms": 60000, "action": "escalate" },
+      "iterations": 3,
+      "expect": [
+        null,
+        { "action": "escalate", "iteration_count": 2 },
+        { "action": "escalate", "iteration_count": 3 }
+      ]
+    },
+    {
+      "id": "a_zero_limit_fires_on_the_first_iteration",
+      "detector": { "max_iterations": 0, "window_ms": 60000, "action": "block" },
+      "iterations": 2,
+      "expect": [
+        { "action": "block", "iteration_count": 1 },
+        { "action": "block", "iteration_count": 2 }
+      ]
+    }
+  ],
+  "delegation_cases": [
+    {
+      "id": "a_chain_within_every_limit_is_recorded",
+      "tracker": { "max_depth": 3, "block_circular": true },
+      "delegations": [["root", "a"], ["a", "b"], ["b", "c"]],
+      "expect": [null, null, null]
+    },
+    {
+      "id": "depth_exceeded_reports_the_would_be_depth",
+      "note": "The violation describes the delegation that was REFUSED, so chain and depth include the agent that never joined.",
+      "tracker": { "max_depth": 2, "block_circular": true },
+      "delegations": [["root", "a"], ["a", "b"], ["b", "c"]],
+      "expect": [
+        null,
+        null,
+        {
+          "type": "depth_exceeded",
+          "message": "Delegation depth 3 exceeds max 2",
+          "chain": ["a", "b", "c"],
+          "depth": 3
+        }
+      ]
+    },
+    {
+      "id": "circular_delegation_is_refused_when_block_circular_is_set",
+      "tracker": { "max_depth": 10, "block_circular": true },
+      "delegations": [["root", "a"], ["a", "b"], ["b", "a"]],
+      "expect": [
+        null,
+        null,
+        {
+          "type": "circular",
+          "message": "Circular delegation detected: a → b → a",
+          "chain": ["a", "b", "a"],
+          "depth": 3
+        }
+      ]
+    },
+    {
+      "id": "circular_delegation_is_allowed_when_block_circular_is_off",
+      "tracker": { "max_depth": 10, "block_circular": false },
+      "delegations": [["root", "a"], ["a", "b"], ["b", "a"]],
+      "expect": [null, null, null]
+    },
+    {
+      "id": "an_agent_outside_the_allowlist_is_refused",
+      "tracker": { "max_depth": 10, "allowed_delegates": ["a", "b"], "block_circular": true },
+      "delegations": [["root", "a"], ["a", "c"]],
+      "expect": [
+        null,
+        {
+          "type": "not_allowed",
+          "message": "Agent \"c\" is not in the allowed delegates list",
+          "chain": ["a", "c"],
+          "depth": 2
+        }
+      ]
+    },
+    {
+      "id": "an_empty_allowlist_permits_nobody",
+      "note": "An empty list is a declared allowlist, not an absent one.",
+      "tracker": { "max_depth": 10, "allowed_delegates": [], "block_circular": true },
+      "delegations": [["root", "a"]],
+      "expect": [
+        {
+          "type": "not_allowed",
+          "message": "Agent \"a\" is not in the allowed delegates list",
+          "chain": ["a"],
+          "depth": 1
+        }
+      ]
+    },
+    {
+      "id": "the_allowlist_is_checked_before_depth",
+      "note": "This delegation is both off-allowlist and past the depth limit; the check order decides which one the audit event names, so it is pinned.",
+      "tracker": { "max_depth": 1, "allowed_delegates": ["a"], "block_circular": true },
+      "delegations": [["root", "a"], ["a", "z"]],
+      "expect": [
+        null,
+        {
+          "type": "not_allowed",
+          "message": "Agent \"z\" is not in the allowed delegates list",
+          "chain": ["a", "z"],
+          "depth": 2
+        }
+      ]
+    },
+    {
+      "id": "circularity_is_checked_before_depth",
+      "note": "At max depth AND circular: circular wins.",
+      "tracker": { "max_depth": 2, "block_circular": true },
+      "delegations": [["root", "a"], ["a", "b"], ["b", "a"]],
+      "expect": [
+        null,
+        null,
+        {
+          "type": "circular",
+          "message": "Circular delegation detected: a → b → a",
+          "chain": ["a", "b", "a"],
+          "depth": 3
+        }
+      ]
+    },
+    {
+      "id": "a_refused_delegation_does_not_join_the_chain",
+      "note": "After a refusal the chain is unchanged, so the next legal delegation sits at the depth it would have had.",
+      "tracker": { "max_depth": 2, "block_circular": true },
+      "delegations": [["root", "a"], ["a", "b"], ["b", "c"], ["b", "a"]],
+      "expect": [
+        null,
+        null,
+        {
+          "type": "depth_exceeded",
+          "message": "Delegation depth 3 exceeds max 2",
+          "chain": ["a", "b", "c"],
+          "depth": 3
+        },
+        {
+          "type": "circular",
+          "message": "Circular delegation detected: a → b → a",
+          "chain": ["a", "b", "a"],
+          "depth": 3
+        }
+      ]
+    }
+  ],
+  "circular_chain_cases": [
+    { "id": "empty_chain", "chain": [], "expect": false },
+    { "id": "no_repeat", "chain": ["a", "b", "c"], "expect": false },
+    { "id": "immediate_repeat", "chain": ["a", "a"], "expect": true },
+    { "id": "distant_repeat", "chain": ["a", "b", "c", "a"], "expect": true }
+  ]
+}
