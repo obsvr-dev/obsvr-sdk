@@ -1,0 +1,53 @@
+version: 2
+
+# Dependency updates for every ecosystem this repo actually consumes: the
+# TypeScript SDK's npm tree, the Python SDK's pyproject, and the pinned actions
+# in .github/workflows.
+#
+# This file schedules VERSION updates. The security updates that matter most —
+# a PR per open advisory — additionally require "Dependabot alerts" and
+# "Dependabot security updates" to be enabled in the repository's Settings ->
+# Advanced Security. Neither can be turned on from a file in the repo, so a
+# green checkout of this file is not by itself evidence that advisories are
+# being raised; check the settings.
+#
+# Grouping is deliberate. The npm dev tree is ~540 packages of test and lint
+# tooling, and ungrouped weekly updates would open enough PRs that they stop
+# being read — which is the same failure as not scanning at all. Minor and
+# patch bumps therefore land as one PR per ecosystem per week; majors stay
+# separate because they need a human to look at the changelog. Dependabot
+# raises security PRs outside these groups, so an advisory never waits behind
+# a routine bump.
+updates:
+  - package-ecosystem: npm
+    directory: /sdk
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /sdk-python
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      pip-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Covers .github/workflows. Actions are the one ecosystem here that runs with
+  # repository credentials, so a stale pinned action is a supply-chain risk to
+  # the release path itself, not just to a build.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]

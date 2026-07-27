@@ -1,0 +1,70 @@
+name: CodeQL
+
+# Static analysis of the code this repo actually ships, in both languages.
+#
+# WHAT BLOCKS WHAT (stated here so it is a decision, not an accident): this
+# workflow fails only when the ANALYSIS fails — a query pack that will not
+# load, a source tree it cannot resolve. Findings do not fail the job; they are
+# uploaded as code-scanning alerts, which GitHub surfaces inline on the pull
+# request that introduced them. That is where the obligation lives, and making
+# it a hard one is a repository setting, not a line in this file: turn on
+# "Require CodeQL analysis to pass" (or add this workflow to the required
+# checks) under branch protection for main. Until that is set, an alert is
+# advisory, and anyone reading this file should know that rather than assume
+# the presence of the workflow means a finding cannot merge.
+#
+# The weekly run is not redundant with the per-PR run: most new alerts on a
+# repo this size come from new QUERIES landing in the CodeQL packs, not from
+# new code, and those only surface on a scheduled re-scan of unchanged source.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Mondays, 07:00 UTC. Off-hours so a pack update that suddenly flags a
+    # hundred files does not land in the middle of a release.
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # build-mode none for both: the TypeScript SDK is analyzed from source
+      # (dist/ is generated and gitignored, so there is nothing compiled to
+      # trace), and Python needs no build at all.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          # security-extended over the default suite: this is a security
+          # product, and the extra queries trade some precision for coverage,
+          # which is the right trade here. Deliberately NOT
+          # security-and-quality — its maintainability queries would add
+          # volume to a set of alerts that nothing yet forces anyone to clear,
+          # and an alert list too long to read is the failure this whole
+          # change exists to avoid. Revisit once the current findings are at
+          # zero and staying there.
+          queries: security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

@@ -150,6 +150,79 @@ jobs:
           npm --prefix sdk run build
           node scripts/check-cli-verify-parity.mjs
 
+  supply-chain:
+    name: Dependency audit (npm + pip)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install TypeScript SDK deps
+        run: npm ci
+        working-directory: sdk
+
+      # WHAT FAILS THE BUILD, AND WHY IT IS SPLIT IN TWO.
+      #
+      # The gate below is the one that protects users, so it is a hard failure
+      # on anything low or above. @obsvr/sdk declares no runtime dependencies
+      # and ships dist/ only, so this tree is empty today and the step passes
+      # trivially — which is exactly the point. The first time a runtime
+      # dependency arrives carrying an advisory, this must stop the build
+      # rather than be noticed later, and a gate that only gets added once
+      # there is something to catch is a gate nobody remembers to add.
+      - name: npm audit (published tree — blocking)
+        run: npm audit --omit=dev --audit-level=low
+        working-directory: sdk
+
+      # The dev tree is ~540 packages of jest/eslint/msw tooling that never
+      # reaches a published artifact. Failing the build on it would mean a red
+      # main every time a transitive YAML parser in the test harness gets a DoS
+      # advisory, and a check that is red for reasons nobody can act on this
+      # week is a check people learn to click past — the dismissed-alert
+      # failure, arrived at from the other direction.
+      #
+      # So it reports instead. It is NOT unowned: .github/dependabot.yml has
+      # this ecosystem configured, so each advisory here also arrives as a pull
+      # request with a diff and a reviewer. This step exists to make the same
+      # information visible in the run that produced the artifact; the PR is
+      # what obliges someone to act.
+      - name: npm audit (dev tree — report only)
+        run: npm audit || true
+        working-directory: sdk
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      # Same split, same reasoning. obsvr-sdk also declares no mandatory
+      # runtime dependencies (the framework integrations and cryptography are
+      # extras the caller opts into), so this audits an empty set today.
+      # --strict makes a failed dependency resolution a failure too, so the
+      # step cannot go green by quietly resolving nothing.
+      - name: pip-audit (declared dependencies — blocking)
+        run: pip-audit --strict .
+        working-directory: sdk-python
+
+      # Report-only, and for one extra reason beyond the npm case: auditing an
+      # installed environment also audits the runner's own pip and setuptools,
+      # whose versions this repo does not choose. Failing on those would be
+      # failing on GitHub's image.
+      - name: pip-audit (dev environment — report only)
+        run: |
+          pip install -e ".[dev]"
+          pip-audit --skip-editable || true
+        working-directory: sdk-python
+
   lint:
     name: Lint (ESLint + Ruff)
     runs-on: ubuntu-latest
@@ -195,6 +268,6 @@ jobs:
   ci-complete:
     name: CI complete
     runs-on: ubuntu-latest
-    needs: [ts-test, py-test, conformance, lint, version-consistency]
+    needs: [ts-test, py-test, conformance, lint, version-consistency, supply-chain]
     steps:
       - run: echo "ok"
