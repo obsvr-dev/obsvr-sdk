@@ -25,12 +25,6 @@
         "default": "./dist/mcp.js"
       }
     },
-    "./client": {
-      "import": {
-        "types": "./dist/client.d.ts",
-        "default": "./dist/client.js"
-      }
-    },
     "./proxy": {
       "import": {
         "types": "./dist/proxy/index.d.ts",

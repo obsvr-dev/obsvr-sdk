@@ -117,7 +117,7 @@ import { truncate } from "../utils/truncate.js";
 import { debugLog } from "../utils/logger.js";
 import { createPolicyError, resolveReasonCode } from "../policy/policy-error.js";
 import { ReasonCode } from "../governance/reason-codes.js";
-import { generateUUID } from "../client.js";
+import { generateUUID } from "../utils/uuid.js";
 
 /**
  * Compliance context captured at the pre-LLM boundary.

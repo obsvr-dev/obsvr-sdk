@@ -8,7 +8,7 @@
  */
 
 import type { AuditEvent, ResolvedConfig } from '../../proxy/types.js';
-import { generateUUID } from '../../client.js';
+import { generateUUID } from '../../utils/uuid.js';
 
 /**
  * Namespace isolation: blocks when caller and target namespaces differ.

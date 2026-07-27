@@ -209,17 +209,6 @@ await obsvr.agentRun('support-agent', () => agent.run(userMessage), {
 
 Use it for frameworks governed at the tool level (LlamaIndex, Vercel AI) so their executions form runs. LangChain and the OpenAI Agents SDK integrations form runs on their own and do not need it. The run boundary is this explicit scope — deterministic and developer-declared, never inferred. (Python: `with obsvr.agent_run("support-agent", source="llamaindex_py"): ...`.)
 
-## Manual Tracking (no compliance controls)
-
-For explicit tracking without interception, `ObsvrClient` posts events directly (`LLMAuditClient` remains as a deprecated alias). Note: this path bypasses PII scanning, policy rules, and chain signing; events are flagged `compliance_bypass` server-side.
-
-```typescript
-import { ObsvrClient } from '@obsvr/sdk';
-
-const client = new ObsvrClient({ apiKey: '...', baseUrl: 'https://your-ingest-service' });
-await client.trackCompletion({ prompt: 'Hello!', response: 'Hi!', model: 'gpt-4o', region: 'us-east-1' });
-```
-
 ## Known Limitations & Architecture Notes
 
 We document enforcement limits honestly — what the signature chain does and does not prove, streaming semantics, fail-open/closed behavior, and the inherent bypass surface of any in-process library. The key ones:

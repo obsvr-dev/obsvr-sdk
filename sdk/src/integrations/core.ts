@@ -84,7 +84,7 @@ import {
 } from "../proxy/sender/index.js";
 import { truncate } from "../utils/truncate.js";
 import { debugLog } from "../utils/logger.js";
-import { generateUUID } from "../client.js";
+import { generateUUID } from "../utils/uuid.js";
 
 import { LoopDetector, createLoopDetector } from "../policy/industry/devops.js";
 import { DelegationTracker, createDelegationTracker } from "../policy/industry/agentic.js";

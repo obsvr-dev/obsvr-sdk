@@ -19,31 +19,12 @@
  *    });
  *    ```
  *
- * 2. **Manual Tracking**: Explicit tracking calls for full control
- *    ```typescript
- *    import { ObsvrClient } from '@obsvr/sdk';
- *
- *    const client = new ObsvrClient({ apiKey: 'your-api-key' });
- *    await client.trackCompletion({
- *      prompt: 'Hello!',
- *      response: 'Hi!',
- *      model: 'gpt-4',
- *      region: 'us-east-1'
- *    });
- *    ```
- *
  * @packageDocumentation
  */
 
-// Re-export manual tracking client (LLMAuditClient kept as deprecated alias)
-export {
-  ObsvrClient,
-  LLMAuditClient,
-  trackCompletion,
-  trackBatch,
-  generateUUID,
-  default,
-} from "./client.js";
+// Request-id generation, used by the governed paths and exported because a
+// caller supplying its own audit_fields.request_id needs the same shape.
+export { generateUUID } from "./utils/uuid.js";
 
 // Span primitive: a generic execution-graph node (M3). withSpan establishes a
 // deterministic parent scope; governed calls inside it link to it.
@@ -60,19 +41,6 @@ export type { AgentRunOptions } from "./integrations/agent-run.js";
 export { currentAgentRun, currentAgentRunId, generateRunId } from "./proxy/agent-run.js";
 export type { AgentRunContext } from "./proxy/agent-run.js";
 import { agentRun as _agentRun } from "./integrations/agent-run.js";
-
-// Re-export manual tracking types (LLMAuditClientConfig kept as deprecated alias)
-export type {
-  ObsvrClientConfig,
-  LLMAuditClientConfig,
-  TrackCompletionParams,
-  TrackBatchParams,
-  TrackResult,
-  TrackBatchResult,
-  TrackResponse,
-  TrackBatchResponse,
-  TrackErrorResponse,
-} from "./client.js";
 
 // Import proxy functions
 import { init as _init, wrap, getConfig, isInitialized, flushQueue, getQueueSize, getDroppedCount, _reset } from "./proxy/index.js";

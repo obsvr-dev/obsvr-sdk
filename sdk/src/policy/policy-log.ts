@@ -6,7 +6,7 @@
 
 import type { PolicyRule } from './rules.js';
 import { derivePolicyVersion } from './rules.js';
-import { generateUUID } from '../client.js';
+import { generateUUID } from '../utils/uuid.js';
 
 export interface PolicySnapshot {
   version: string;
