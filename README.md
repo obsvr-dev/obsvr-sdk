@@ -40,6 +40,7 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 - [Agentic & MCP controls](#agentic--mcp-controls)
 - [Cost & budget controls](#cost--budget-controls)
 - [The record: trust & cryptographic model](#the-record-trust--cryptographic-model)
+- [What's in this repo, what isn't, and why](#whats-in-this-repo-what-isnt-and-why)
 - [Verifying the record](#verifying-the-record)
 - [Framework & provider support](#framework--provider-support)
 - [Benchmarks](#benchmarks)
@@ -328,6 +329,29 @@ flowchart LR
 **What leaves your process is your choice.** With redaction configured, raw prompts and responses can stay entirely in your environment; the SDK can emit only content hashes, signatures, and verdicts.
 
 **What a dropped event leaves behind.** Delivery is bounded: if the queue fills faster than it drains, events are dropped rather than growing memory without limit. Those drops happen before a sequence number is assigned, so they leave no hole for the chain to expose — which is exactly why the SDK does not rely on the chain to expose them. It signs a **gap marker**: one chain-linked event, at the position the loss happened, stating how many events were dropped there. The count is inside the signature preimage, so editing it breaks verification, and `obsvr-verify` reports it alongside the verdict. A chain carrying markers is valid and incomplete at once; both are reported, because reporting only the first is how a lossy run gets read as a clean one.
+
+---
+
+## What's in this repo, what isn't, and why
+
+This repository is the **client half**, and it is the whole client half — Apache-2.0, no
+feature-gated build, nothing held back to make the hosted service necessary. The sealing
+half runs in the obsvr ingest service and is not published. Rather than let you infer that
+boundary from what you cannot find, here it is:
+
+| Capability | Where it runs | In this repo |
+| --- | --- | :---: |
+| Interception, policy engine, PII & injection detection, MCP/agent controls, budgets | your process | ✅ |
+| Client HMAC-SHA256 chain (session, `seq_no`, `prev_sig`), gap markers | your process | ✅ |
+| `obsvr-verify` CLI + `verifyAuditChain` / `verify_chain` libraries, both languages | anywhere | ✅ |
+| The cross-language behavioral contract ([`conformance/`](conformance/)) | CI | ✅ |
+| Server countersignature over the full canonical event | obsvr ingest service | ❌ |
+| Daily Merkle sealing, Ed25519 root signing, off-host anchoring (git / RFC 3161) | obsvr ingest service | ❌ |
+| Fleet registry, quota escrow allocator, coverage reporting | obsvr ingest service | ❌ |
+
+**Why the split is where it is.** The sealing layer's job is to be something *you cannot forge and neither can we, after the fact* — its value comes from keys and storage that live outside the runtime being audited. Shipping it as code you run in your own process would defeat it: a signer whose key sits next to the events it signs proves nothing a key-holder couldn't fabricate. That is the same reason the client chain is documented as [integrity, not non-repudiation](#what-this-guarantees-and-what-it-does-not). So the split is not a paywall drawn through the crypto; it is the trust boundary the crypto depends on.
+
+**What that means for evaluating it from the outside.** The parts that must be independently checkable are here and are checkable without an obsvr account: every signature the SDK produces, the algorithm that produces it, the shared vectors it is pinned to, and two verifier implementations that must agree. The service's Ed25519 root is verified against a **published public key**, so a sealed bundle can be checked by anyone holding that key and the raw events — including someone who does not trust obsvr and does not have the service's code. If you are evaluating the sealing layer specifically, that verification path — not source access — is the thing to ask us to demonstrate: **hello@obsvr.dev**.
 
 ---
 
