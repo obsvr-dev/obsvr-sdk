@@ -47,13 +47,15 @@ _MAX_SAFE_INT = 2 ** 53 - 1  # JS Number.MAX_SAFE_INTEGER
 
 def _canonical_number(n: Any) -> str:
     """Canonical number serialization BYTE-IDENTICAL to the TS twin
-    (``canonicalNumber``). The rules-hash canonicalizer delegates numbers to
-    json.dumps / JSON.stringify, which DISAGREE cross-language for legal JSON
-    numbers (whole-valued floats "1.0" vs "1", exponent forms, -0, ints past
-    2^53). A descriptor is attacker-controlled JSON, so that divergence would
-    make the same tool hash differently in the two SDKs. This formatter fixes
-    the agreeing cases and FAILS CLOSED (raises -> hash_error -> flag/block,
-    never a bypass) on values the two runtimes cannot represent identically.
+    (``canonicalNumber``). The rules-hash canonicalizer reaches cross-SDK
+    agreement by NORMALIZING: an integer past 2^53 is rounded to the float64
+    JS parsed it as, which is right for an operator-authored rule set but
+    wrong here. A descriptor is attacker-controlled JSON, and normalizing lets
+    two descriptors that differ only above 2^53 pin to one hash -- a rug-pull
+    the gate would never see. This formatter therefore keeps the agreeing
+    cases and FAILS CLOSED (raises -> hash_error -> flag/block, never a
+    bypass) on every value the two runtimes cannot represent identically,
+    rather than normalizing it away.
     """
     if isinstance(n, bool):
         raise ValueError("tool-pin: bool is not a number")

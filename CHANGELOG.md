@@ -173,6 +173,34 @@ cut, when it is renamed to that version.
 
 ### Fixed
 
+- **The two SDKs could derive different `policy_version` values from the same
+  policy.** `policy_version` and `rules_hash` are SHA-256 over a canonical JSON
+  form that both SDKs must produce byte for byte. The Python side computed it
+  with `json.dumps(sort_keys=True, separators=(",", ":"),
+  ensure_ascii=False)`, which agrees with the TypeScript `JSON.stringify`-based
+  form on strings, ordinary integers and simple decimals — and disagrees on a
+  good deal else. A differential property test (fast-check generating on the
+  TypeScript side, hypothesis on the Python side, both canonicalizing the same
+  JSON *text*) found roughly a third of randomly generated documents diverging,
+  in six classes: every whole-valued float (`1.0`, which Python wrote as `1.0`
+  and JS as `1`), negative zero, both exponent thresholds, exponent
+  zero-padding (`1e-07` vs `1e-7`), unpaired surrogates (Python produced a
+  string with no UTF-8 encoding at all, so hashing raised instead of returning
+  a hash), and the sort order of astral object keys (JS compares UTF-16 code
+  units, Python compares code points). In a fleet running both SDKs against one
+  policy server, the same policy therefore stamped two different
+  `policy_version` values on audit events, which reads as a policy change that
+  never happened. `_canonical_json` is now a faithful port of the TypeScript
+  `stableStringify` and all six classes are closed. _No hash the two SDKs
+  already agreed on has changed_ — every previously pinned conformance vector
+  is unmoved — but a Python-computed `policy_version` for a rule set containing
+  one of the above **will** change, to the value TypeScript was already
+  producing. Numbers past 2^53, which JS rounds while parsing the literal
+  rather than while serializing, are now rounded the same way in Python; the
+  attacker-facing tool-descriptor and tool-content hashers deliberately still
+  refuse those values rather than normalize them. Pinned cross-language by the
+  new `conformance/fixtures/canonical_json.json` and re-checked against freshly
+  generated documents on every CI run.
 - **A bug inside a detector layer could break the calling application.** Eight
   in-process detector layers - builtin PII scan, canary, de-obfuscation views,
   multi-turn injection, policy floor, policy rules, session taint, tool-result

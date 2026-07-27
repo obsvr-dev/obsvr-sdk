@@ -45,14 +45,15 @@
  * Reuses `canonicalJsonForHash` from tool-pinning.ts: RFC 8785-style sorted
  * keys, no insignificant whitespace, and - critically - the cross-SDK-stable
  * number formatter. Tool descriptors and call arguments are attacker-shaped
- * JSON, and the frozen rules-hash canonicalizer delegates numbers to
- * `JSON.stringify` / `json.dumps`, which disagree across the two languages on
- * legal JSON numbers (whole-valued floats, exponent forms, -0, ints past
- * 2^53). Hashing tool content with that canonicalizer would seal a hash the
- * Python twin cannot reproduce - permanently, since sealed evidence is not
- * re-issuable. Values neither runtime can represent identically make the
- * canonicalizer throw; callers treat a throw as a hash failure and omit the
- * field rather than seal a wrong one.
+ * JSON, so what matters here is not just that both SDKs agree but HOW they
+ * agree. The frozen rules-hash canonicalizer now agrees too, by NORMALIZING:
+ * an integer past 2^53 is rounded to the float64 JS already parsed it as, so
+ * two descriptors differing only above that boundary would seal the same
+ * hash. On an attacker-shaped boundary that is a rug-pull the pin cannot see,
+ * so this canonicalizer REFUSES those values instead - it throws, and callers
+ * treat a throw as a hash failure and omit the field rather than seal a wrong
+ * one. Sealed evidence is not re-issuable, so a missing hash beats a
+ * collidable one.
  *
  * Absent optional fields are OMITTED from the descriptor projection, never
  * serialized as null - the same convention as the canonical decision-input

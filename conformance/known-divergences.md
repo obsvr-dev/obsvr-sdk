@@ -9,12 +9,35 @@ here; silent divergence is never acceptable
 | ID | Area | Divergence | Reason accepted | Tracking |
 |----|------|------------|-----------------|----------|
 | KD-3 | MCP tool pinning (mode "block" discovery strip) | TS always returns a NEW result object with the offending tools filtered out; Python mutates `result.tools = kept` inside a try/except, so if the upstream `ListToolsResult` model forbids assignment (frozen / `validate_assignment`) the swapped tool remains in the listing the model sees. | The call-time gate still REFUSES execution of the tool on both SDKs (identity defense holds); only the discovery-time strip is best-effort in Python, and rebuilding an arbitrary upstream model object risks breaking the caller's type contract. | `sdk-python/obsvr/integrations/mcp.py` (`governed_list_tools`). Revisit if a real MCP result type is found frozen. |
-| KD-4 | `floor_version` numeric canonicalization | `deriveFloorVersion` / `derive_floor_version` reuse the rules-hash canonicalizer (`stableStringify` / `_canonical_json`), which agrees across SDKs for strings, unicode, and ordinary integers / simple decimals (verified) but can diverge on exotic numbers (integers beyond the JS safe range, scientific-notation floats) — `JSON.stringify` vs `json.dumps`. | Identical to the SHIPPING `policy_version` / frozen `rules_hash` canonicalization, which this deliberately reuses; floor rule conditions are operator-authored (not attacker-controlled arbitrary JSON like MCP tool descriptors, which DID get a dedicated number-safe canonicalizer). A floor whose `floor_version` differs across SDKs would still enforce identically; only the audit-seal hash string would differ for such exotic values. | `rules.ts` `deriveFloorVersion` / `rules.py` `derive_floor_version`. Adversarially reviewed 2026-07-20 (isReal=false — not a floor defect). |
 | KD-5 | Customer `policyRules` eval context on the TS integration path | On the TS integration path (`integrations/core.ts` `applyPreCallPolicy`) a **customer** `policyRules` rule receives `{provider, metadata}` — no top-level `model` / `currentEnvironment` — so a customer `model_gate` / `environment_gate` rule is inert there, while the Python shared pre-call and the TS proxy wrapper source both. (The anti-tamper **floor** is NOT affected: as of 2026-07-20 the floor threads `model` + `currentEnvironment` on all three paths.) | Enriching the customer-rules context on integrations would newly fire previously-inert `model_gate` / `environment_gate` customer rules — a behavior change for existing users, out of scope for the additive floor slice. The floor (the security baseline) is consistent; a customer who needs model/env gating on integrations can promote the rule into `policyFloor`. | `integrations/core.ts` `applyPreCallPolicy` rules context. Revisit as its own slice with a migration note. |
 | KD-6 | Signed-policy verification backend | TypeScript verifies Ed25519 with `node:crypto`, which is always present. Python has no stdlib Ed25519, so `policy_verify.py` resolves an OPTIONAL backend (`cryptography`, then PyNaCl). With `policy_public_key` pinned and neither installed, Python reaches a state TypeScript cannot: it cannot check the signature at all. | The package ships zero mandatory runtime dependencies, and the degraded state is declared rather than hidden - Python still fails closed (the fetched policy is refused, last-good stays in force) and stamps `policy_verification_unavailable` into reserved metadata on every subsequent event, so an auditor sees an unverifiable window instead of inferring one from silence. All shared vectors resolve identically once a backend is installed (`pip install "obsvr-sdk[crypto]"`, included in the `dev` extra so CI runs them for real). | `sdk-python/obsvr/policy_verify.py`. Closes if a stdlib Ed25519 ever lands or the dependency posture changes. |
 | KD-7 | CSS-hidden / aria-hidden stripping in the canonical view | TypeScript's de-obfuscation pipeline runs a `strip-hidden-HTML` pass (between strip-HTML-comments and collapse-whitespace) that removes `display:none` / `visibility:hidden` / `aria-hidden="true"` elements, tag and content. Python's pipeline does not yet, so the two canonical views differ for inputs containing hidden markup. | **Temporary, and the only reason it is a row instead of a fix: the Python port is the next scheduled change.** No shared fixture case covers hidden markup yet, so both suites still pass the same corpus; the content cases land with the port so neither language can pass them alone. Raw text is scanned first in both languages, so a payload hidden whole is detected either way - the divergence costs Python only the split-phrase case. | `sdk/src/policy/deobfuscate.ts` `stripHiddenHtml` / `sdk-python/obsvr/deobfuscate.py`. **DELETE this row when the Python twin lands.** |
 
 History:
+- 2026-07-27: KD-4 (numeric canonicalization) was FIXED, not re-argued, and
+  the row is gone. It had been an accepted risk pinned by hand-written
+  vectors, scoped to "exotic numbers" — integers past the JS safe range and
+  scientific-notation floats. A differential property test
+  (`scripts/check-canonical-json-parity.mjs`: fast-check generating on the TS
+  side, hypothesis on the Python side, both canonicalizing the same JSON TEXT)
+  showed the real scope was far wider — about a third of randomly generated
+  documents diverged — and named classes the row did not: every whole-valued
+  float (`1.0`), negative zero, both exponent thresholds and exponent
+  zero-padding, unpaired surrogates (where Python produced a string with no
+  UTF-8 encoding, so hashing raised rather than returning a hash), and the
+  sort order of astral object keys (JS compares UTF-16 code units, Python
+  compares code points). `_canonical_json` is now a faithful port of
+  `stableStringify` rather than a `json.dumps` call, and all of those are
+  closed; 22,000 generated documents across four seeds now agree byte for
+  byte. Every pinned vector in `rules_hash.json` is unmoved, which is the
+  evidence that the change only touched inputs the two SDKs already hashed
+  differently. The one case with no format-only fix — an integer past 2^53,
+  which JS rounds while PARSING, before any serializer runs — is closed by
+  Python taking the same rounding; that accepts a collision above 2^53 which
+  the TS SDK had regardless, in exchange for one policy no longer stamping two
+  policy_versions across a mixed fleet. The attacker-facing hashers
+  (`tool-pinning`, `tool-content-hash`) deliberately do NOT normalize and
+  still refuse those values. Pinned by `conformance/fixtures/canonical_json.json`.
 - 2026-07-11 (wave 2): the two remaining divergences were FIXED. KD-1 (scan
   scope): Python now scans the last user turn for the PII/rules DECISION via a
   new `scan_text` parameter (`policy.py`) fed by `_last_user_message_text`

@@ -523,12 +523,17 @@ export function computeGroundingScore(output: string, sources: string[]): number
 
 /**
  * JSON serialization with recursively sorted object keys and compact
- * separators. Byte-identical to Python's
- * json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
- * for the value shapes rules contain (strings, numbers, booleans, null,
- * arrays, plain objects). This is the canonical form both SDKs hash, so
- * any change here is a cross-language breaking change: update the shared
- * fixture in tests and the Python twin together.
+ * separators. This is the canonical form both SDKs hash (policy_version,
+ * rules_hash), so any change here is a cross-language breaking change: update
+ * the shared fixture and the Python twin together.
+ *
+ * THIS SIDE IS THE REFERENCE. The Python `_canonical_json` is a hand-written
+ * port of it, not a `json.dumps` call — `json.dumps` and `JSON.stringify`
+ * disagree on whole-valued floats, negative zero, exponent form, unpaired
+ * surrogates, and the sort order of astral keys, and a differential property
+ * test found about a third of random documents hitting one of those. Pinned by
+ * conformance/fixtures/canonical_json.json and re-checked against generated
+ * documents by scripts/check-canonical-json-parity.mjs.
  */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {

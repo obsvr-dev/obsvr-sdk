@@ -61,7 +61,7 @@ semantic-kernel = ["semantic-kernel>=1.0.0"]
 # without it a pinned policy key still fails closed, and events carry
 # policy_verification_unavailable. PyNaCl is accepted as an alternative.
 crypto = ["cryptography>=41.0.0"]
-dev = ["pytest>=7.0", "cryptography>=41.0.0"]
+dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "obsvr._version.__version__" }

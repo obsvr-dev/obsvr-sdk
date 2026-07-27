@@ -11,6 +11,7 @@ which keeps text-only callers fully backward compatible (same as TS).
 import dataclasses
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -617,12 +618,143 @@ def _canonical_rule(r: PolicyRule) -> Dict[str, Any]:
     return projected
 
 
+_INF = float("inf")
+_MAX_SAFE_INT = 2 ** 53 - 1  # JS Number.MAX_SAFE_INTEGER
+_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _js_number(f: float) -> str:
+    """Format a float exactly as ECMAScript ``Number::toString(10)`` does,
+    which is what ``JSON.stringify`` — and therefore the TS ``stableStringify``
+    — emits.
+
+    ``json.dumps`` and ``JSON.stringify`` disagree on legal JSON numbers, and
+    a differential property test (scripts/check-canonical-json-parity.mjs)
+    finds it in roughly a third of randomly generated documents. Python's
+    ``repr`` and JS's algorithm both produce the SHORTEST round-tripping
+    decimal, so the digits always agree; only the presentation differs, in
+    four ways, all of which this closes:
+
+      whole-valued floats   1.0     -> "1"        (Python: "1.0")
+      negative zero        -0.0     -> "0"        (Python: "-0.0")
+      exponent threshold    1e16    -> "10000000000000000"   (Python: "1e+16")
+                            3e-5    -> "0.00003"             (Python: "3e-05")
+      exponent padding      1e-7    -> "1e-7"                (Python: "1e-07")
+
+    What this does NOT close, because no formatter can: an int whose magnitude
+    exceeds 2**53 is already a different VALUE in JS, which rounded it while
+    parsing. Ints are therefore left exact rather than pushed through float —
+    see the divergence note in conformance/known-divergences.md.
+    """
+    if f != f or f in (_INF, -_INF):
+        # JSON.stringify emits null for non-finite numbers; json.dumps emits
+        # the non-standard NaN / Infinity literals.
+        return "null"
+    if f == 0:
+        return "0"  # also normalizes -0.0, which JS prints as "0"
+    sign = "-" if f < 0 else ""
+    mantissa, _, exponent = repr(abs(f)).partition("e")
+    exp = int(exponent) if exponent else 0
+    int_part, _, frac_part = mantissa.partition(".")
+    raw = int_part + frac_part
+    stripped = raw.lstrip("0")
+    # n is the decimal point's position in `digits`: value = 0.digits x 10**n.
+    n = len(int_part) + exp - (len(raw) - len(stripped))
+    digits = stripped.rstrip("0") or "0"
+    k = len(digits)
+
+    if k <= n <= 21:
+        return sign + digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return sign + digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return sign + "0." + "0" * (-n) + digits
+    e = n - 1
+    body = digits if k == 1 else digits[0] + "." + digits[1:]
+    return sign + body + "e" + ("+" if e >= 0 else "-") + str(abs(e))
+
+
+def _js_string(s: str) -> str:
+    """JSON string literal identical to ``JSON.stringify``'s.
+
+    ``json.dumps(ensure_ascii=False)` already agrees on every escape (the
+    \\b \\t \\n \\f \\r shortcuts, \\u00xx for the other C0 controls, raw
+    non-ASCII) except one: an UNPAIRED surrogate. JS escapes it; Python emits
+    it raw, and the raw form has no UTF-8 encoding at all, so hashing the
+    result raises instead of producing a hash. Any surrogate still present
+    after decoding is unpaired by construction — the JSON decoder has already
+    combined the valid pairs into astral characters.
+    """
+    out = json.dumps(s, ensure_ascii=False)
+    if _SURROGATE.search(out):
+        out = _SURROGATE.sub(lambda m: "\\u%04x" % ord(m.group()), out)
+    return out
+
+
+def _utf16_order(s: str) -> bytes:
+    """Sort key reproducing JS's ``Array.prototype.sort`` on object keys, which
+    compares UTF-16 CODE UNITS. Python's ``sorted`` compares code points, and
+    the two orders differ once an astral character meets a BMP character above
+    U+E000: JS sees the astral character's leading surrogate (U+D800..U+DBFF)
+    and sorts it FIRST, Python sees U+10000+ and sorts it LAST. Big-endian
+    UTF-16 bytes compare in code-unit order, which is what JS does."""
+    return s.encode("utf-16-be", errors="surrogatepass")
+
+
 def _canonical_json(value: Any) -> str:
     """Recursively key-sorted, compact, non-ASCII-preserving JSON.
     Byte-identical to the TS SDK's stableStringify. This is the canonical
     form both SDKs hash; changing it is a cross-language breaking change
-    (update the shared fixture and the TS twin together)."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    (update the shared fixture and the TS twin together).
+
+    Was a single ``json.dumps(sort_keys=True, separators=(",", ":"),
+    ensure_ascii=False)``. That call agrees with ``JSON.stringify`` on strings,
+    ordinary integers and simple decimals, and disagrees on whole-valued
+    floats, negative zero, exponent form, unpaired surrogates, and the sort
+    order of astral object keys — see _js_number / _js_string / _utf16_order.
+    Every case this now formats differently from the old call is a case the two
+    SDKs previously hashed DIFFERENTLY, so no rules hash the two agreed on has
+    changed; the pinned conformance vectors are unmoved.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float):
+        return _js_number(value)
+    if isinstance(value, int):
+        if -_MAX_SAFE_INT <= value <= _MAX_SAFE_INT:
+            return str(value)
+        # Past 2**53 JS has ALREADY lost the value — its parser rounded the
+        # literal to the nearest float64 before any serializer ran, so
+        # 9007199254740993 and ...92 are one number over there. Matching that
+        # rounding is a deliberate loss of precision Python did not have to
+        # take, and it is still the right one: the alternative is the same
+        # policy stamping two different policy_versions depending on which
+        # SDK polled it, which is a false signal of policy change on every
+        # audit event in a mixed fleet. The collision it accepts in exchange
+        # needs two rule sets differing ONLY in an integer above 2**53, and
+        # it exists in the TS SDK either way.
+        try:
+            return _js_number(float(value))
+        except OverflowError:
+            # Beyond float64 range entirely; JS parses the literal as Infinity
+            # and JSON.stringify writes null.
+            return "null"
+    if isinstance(value, str):
+        return _js_string(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_canonical_json(v) for v in value) + "]"
+    if isinstance(value, dict):
+        keys = sorted(value.keys(), key=_utf16_order)
+        return (
+            "{"
+            + ",".join("%s:%s" % (_js_string(k), _canonical_json(value[k])) for k in keys)
+            + "}"
+        )
+    # Anything else (Decimal, datetime, a dataclass) was never canonicalizable
+    # by the old json.dumps either; raise the same way it did.
+    raise TypeError("Object of type %s is not JSON serializable" % type(value).__name__)
 
 
 def derive_policy_version(rules: List[PolicyRule]) -> str:

@@ -80,13 +80,14 @@ export function canonicalToolDescriptor(
 /**
  * Canonical number serialization that is BYTE-IDENTICAL to the Python twin
  * (`_canonical_number`). The rules-hash canonicalizer (stableStringify /
- * _canonical_json) delegates numbers to `JSON.stringify` / `json.dumps`,
- * which DISAGREE across languages for legal JSON numbers (whole-valued
- * floats `1.0`→"1" vs "1.0", exponent forms, `-0`, ints past 2^53) — a
- * descriptor is attacker-controlled JSON, so that divergence would make the
- * same tool hash differently in the two SDKs. This dedicated formatter fixes
- * the agreeing cases and FAILS CLOSED (throws → hash_error → flag/block,
- * never a bypass) on the values the two runtimes cannot represent identically.
+ * _canonical_json) reaches cross-SDK agreement by NORMALIZING: an integer
+ * past 2^53 is rounded to the float64 JS parsed it as, which is right for an
+ * operator-authored rule set but wrong here. A descriptor is
+ * attacker-controlled JSON, and normalizing lets two descriptors that differ
+ * only above 2^53 pin to one hash — a rug-pull the gate would never see. This
+ * dedicated formatter therefore keeps the agreeing cases and FAILS CLOSED
+ * (throws → hash_error → flag/block, never a bypass) on every value the two
+ * runtimes cannot represent identically, rather than normalizing it away.
  *
  * Agreeing set: safe integers (|n| ≤ 2^53−1, exact in both) as a decimal
  * integer (−0 normalized to "0"); non-integers in [1e-4, 1e16) as their

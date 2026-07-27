@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "name": "canonical_json",
+  "description": "Cross-SDK vectors for the FROZEN rules-hash canonicalizer (stableStringify / _canonical_json), the serializer policy_version and rules_hash are SHA-256 over. input is JSON TEXT, not a value: policy rules reach both SDKs as bytes off the /policies poll, and some of these divergences live in the PARSE (JS rounds an integer past 2^53 before any serializer runs), so a fixture of in-memory values could not express them. Each case: parse input with the language stdlib JSON parser, canonicalize, and compare bytes to expect. The groups other than agreeing_baseline are divergence classes a differential property test found (scripts/check-canonical-json-parity.mjs, fast-check against hypothesis) and that are now closed; agreeing_baseline pins the shapes that already matched, so a future change to either canonicalizer has to show it moved only what was already broken. A divergence here is a release blocker.",
+  "cases": [
+    {
+      "group": "whole_valued_floats",
+      "note": "A decimal with a zero fraction is an integer in JS and a float in Python; json.dumps wrote \"1.0\" where JSON.stringify writes \"1\".",
+      "input": "1.0",
+      "expect": "1"
+    },
+    {
+      "group": "whole_valued_floats",
+      "note": "A decimal with a zero fraction is an integer in JS and a float in Python; json.dumps wrote \"1.0\" where JSON.stringify writes \"1\".",
+      "input": "0.0",
+      "expect": "0"
+    },
+    {
+      "group": "whole_valued_floats",
+      "note": "A decimal with a zero fraction is an integer in JS and a float in Python; json.dumps wrote \"1.0\" where JSON.stringify writes \"1\".",
+      "input": "-483226.0",
+      "expect": "-483226"
+    },
+    {
+      "group": "whole_valued_floats",
+      "note": "A decimal with a zero fraction is an integer in JS and a float in Python; json.dumps wrote \"1.0\" where JSON.stringify writes \"1\".",
+      "input": "100.0",
+      "expect": "100"
+    },
+    {
+      "group": "whole_valued_floats",
+      "note": "A decimal with a zero fraction is an integer in JS and a float in Python; json.dumps wrote \"1.0\" where JSON.stringify writes \"1\".",
+      "input": "[2.0]",
+      "expect": "[2]"
+    },
+    {
+      "group": "whole_valued_floats",
+      "note": "A decimal with a zero fraction is an integer in JS and a float in Python; json.dumps wrote \"1.0\" where JSON.stringify writes \"1\".",
+      "input": "{\"a\":1.0}",
+      "expect": "{\"a\":1}"
+    },
+    {
+      "group": "negative_zero",
+      "note": "JSON.stringify normalizes -0 to \"0\"; json.dumps wrote \"-0.0\".",
+      "input": "-0",
+      "expect": "0"
+    },
+    {
+      "group": "negative_zero",
+      "note": "JSON.stringify normalizes -0 to \"0\"; json.dumps wrote \"-0.0\".",
+      "input": "-0.0",
+      "expect": "0"
+    },
+    {
+      "group": "negative_zero",
+      "note": "JSON.stringify normalizes -0 to \"0\"; json.dumps wrote \"-0.0\".",
+      "input": "[-0.0]",
+      "expect": "[0]"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "1e16",
+      "expect": "10000000000000000"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "3e-5",
+      "expect": "0.00003"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "0.00003",
+      "expect": "0.00003"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "1e-6",
+      "expect": "0.000001"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "1e21",
+      "expect": "1e+21"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "1e-4",
+      "expect": "0.0001"
+    },
+    {
+      "group": "exponent_threshold",
+      "note": "The two languages switch to exponent notation at different magnitudes: JS at >=1e21 and <1e-6, Python at >=1e16 and <1e-4.",
+      "input": "5.708790003956074e+16",
+      "expect": "57087900039560740"
+    },
+    {
+      "group": "exponent_padding",
+      "note": "Python zero-pads a single-digit exponent (1e-07); JS does not (1e-7).",
+      "input": "1e-7",
+      "expect": "1e-7"
+    },
+    {
+      "group": "exponent_padding",
+      "note": "Python zero-pads a single-digit exponent (1e-07); JS does not (1e-7).",
+      "input": "1.192092896e-07",
+      "expect": "1.192092896e-7"
+    },
+    {
+      "group": "exponent_padding",
+      "note": "Python zero-pads a single-digit exponent (1e-07); JS does not (1e-7).",
+      "input": "2.5e-286",
+      "expect": "2.5e-286"
+    },
+    {
+      "group": "int_past_2_53",
+      "note": "JS loses the value while PARSING the literal, so Python must round to the same float64 to agree.",
+      "input": "9007199254740993",
+      "expect": "9007199254740992"
+    },
+    {
+      "group": "int_past_2_53",
+      "note": "JS loses the value while PARSING the literal, so Python must round to the same float64 to agree.",
+      "input": "-9007199254740993",
+      "expect": "-9007199254740992"
+    },
+    {
+      "group": "int_past_2_53",
+      "note": "JS loses the value while PARSING the literal, so Python must round to the same float64 to agree.",
+      "input": "18446744073709551617",
+      "expect": "18446744073709552000"
+    },
+    {
+      "group": "int_past_2_53",
+      "note": "JS loses the value while PARSING the literal, so Python must round to the same float64 to agree.",
+      "input": "76203584925889208137",
+      "expect": "76203584925889200000"
+    },
+    {
+      "group": "int_past_2_53",
+      "note": "JS loses the value while PARSING the literal, so Python must round to the same float64 to agree.",
+      "input": "1180591620717411303424",
+      "expect": "1.1805916207174113e+21"
+    },
+    {
+      "group": "int_past_2_53",
+      "note": "JS loses the value while PARSING the literal, so Python must round to the same float64 to agree.",
+      "input": "-855174480889211161476",
+      "expect": "-855174480889211100000"
+    },
+    {
+      "group": "astral_key_order",
+      "note": "Sorting object keys compares UTF-16 code units in JS and code points in Python; an astral key sorts before U+E000..U+FFFF in JS and after it in Python.",
+      "input": "{\"\\uffff\":1,\"\\ud83d\\ude00\":2}",
+      "expect": "{\"😀\":2,\"￿\":1}"
+    },
+    {
+      "group": "astral_key_order",
+      "note": "Sorting object keys compares UTF-16 code units in JS and code points in Python; an astral key sorts before U+E000..U+FFFF in JS and after it in Python.",
+      "input": "{\"\\ud800\\udc00\":1,\"\\ud7ff\":2,\"\\uffff\":3}",
+      "expect": "{\"퟿\":2,\"𐀀\":1,\"￿\":3}"
+    },
+    {
+      "group": "unpaired_surrogate",
+      "note": "JSON.stringify escapes an unpaired surrogate; json.dumps(ensure_ascii=False) emitted it raw, and the raw form has no UTF-8 encoding, so hashing it raised instead of producing a hash.",
+      "input": "\"\\ud800\"",
+      "expect": "\"\\ud800\""
+    },
+    {
+      "group": "unpaired_surrogate",
+      "note": "JSON.stringify escapes an unpaired surrogate; json.dumps(ensure_ascii=False) emitted it raw, and the raw form has no UTF-8 encoding, so hashing it raised instead of producing a hash.",
+      "input": "[\"a\\udfffb\"]",
+      "expect": "[\"a\\udfffb\"]"
+    },
+    {
+      "group": "unpaired_surrogate",
+      "note": "JSON.stringify escapes an unpaired surrogate; json.dumps(ensure_ascii=False) emitted it raw, and the raw form has no UTF-8 encoding, so hashing it raised instead of producing a hash.",
+      "input": "{\"\\ud800\":1}",
+      "expect": "{\"\\ud800\":1}"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "1",
+      "expect": "1"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "0.1",
+      "expect": "0.1"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "-17",
+      "expect": "-17"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "\"hello\"",
+      "expect": "\"hello\""
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "\"\\u00e9\\u2028\\t\"",
+      "expect": "\"é \\t\""
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "true",
+      "expect": "true"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "null",
+      "expect": "null"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "[]",
+      "expect": "[]"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "{}",
+      "expect": "{}"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "1e+100",
+      "expect": "1e+100"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "1.7976931348623157e+308",
+      "expect": "1.7976931348623157e+308"
+    },
+    {
+      "group": "agreeing_baseline",
+      "note": "Shapes the two languages always agreed on. These pin that the fix moved nothing that already matched.",
+      "input": "{\"b\":1,\"a\":[1,2,{\"z\":null}]}",
+      "expect": "{\"a\":[1,2,{\"z\":null}],\"b\":1}"
+    }
+  ]
+}
