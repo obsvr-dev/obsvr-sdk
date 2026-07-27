@@ -46,6 +46,7 @@ _RESERVED_META_KEYS = (
     "obsvr_telemetry",
     "obsvr_external_backend",
     "obsvr_integrity_flags",
+    "obsvr_tool_content_hash",
 )
 
 

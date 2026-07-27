@@ -114,8 +114,8 @@ jobs:
           grep -q "conformance/fixtures/error_parity.json" sdk-python/tests/test_policy_error.py
           grep -q "conformance/fixtures/instance_guard.json" sdk/tests/unit/instance-guard.test.ts
           grep -q "conformance/fixtures/instance_guard.json" sdk-python/tests/test_instance_guard.py
-          # The Python consumer of tool_content_hash.json lands with the Python producer.
           grep -q "conformance/fixtures/tool_content_hash.json" sdk/tests/unit/tool-content-hash-conformance.test.ts
+          grep -q "conformance/fixtures/tool_content_hash.json" sdk-python/tests/test_tool_content_hash_conformance.py
           grep -q "conformance/fixtures/canonical_json.json" sdk/tests/unit/canonical-json-conformance.test.ts
           grep -q "conformance/fixtures/canonical_json.json" sdk-python/tests/test_canonical_json_conformance.py
           grep -q "conformance/fixtures/agent_controls.json" sdk/tests/unit/agent-controls-conformance.test.ts
@@ -154,7 +154,7 @@ jobs:
         working-directory: sdk-python
 
       - name: Python fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
-        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py tests/test_cli_verify.py tests/test_canonical_json_conformance.py tests/test_agent_controls_conformance.py -q
+        run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py tests/test_cli_verify.py tests/test_canonical_json_conformance.py tests/test_agent_controls_conformance.py tests/test_tool_content_hash_conformance.py -q
         working-directory: sdk-python
 
       # Both obsvr-verify CLIs, driven over ONE export built from the shared

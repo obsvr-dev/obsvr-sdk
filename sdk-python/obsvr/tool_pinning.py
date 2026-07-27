@@ -77,6 +77,12 @@ def _canonical_json_for_hash(value: Any) -> str:
     native JSON string serializer (ensure_ascii=False, identical escaping to
     the TS JSON.stringify), numbers via _canonical_number. Raises on
     unsupported/undecidable values so the caller fails closed.
+
+    The leading underscore means SDK-internal, not tool_pinning-only: the
+    second hasher over the same attacker-controlled input class,
+    tool_content_hash.py, imports it. Both must canonicalize identically or one
+    of them is wrong, so there is exactly one implementation per language on
+    purpose (TS exports it as ``canonicalJsonForHash`` for the same reason).
     """
     if value is None:
         return "null"

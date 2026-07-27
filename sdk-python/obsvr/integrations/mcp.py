@@ -38,6 +38,7 @@ from ..policy import apply_pre_call_policy
 from ..reason_codes import ReasonCode
 from ..remote import is_enforcement_degraded
 from ..response_scan import sanitize_mcp_result, resolve_response_scan_failure, scan_mcp_tool_result
+from ..tool_content_hash import safe_tool_content_hash, tool_content_metadata
 from ..tool_pinning import (
     ToolPinStore,
     evaluate_tool_pin,
@@ -418,6 +419,17 @@ def _build_governed_mcp_callables(
     async def governed_call_tool(self: Any, name: str, arguments: Optional[Dict[str, Any]] = None, **kw: Any) -> Any:
         cfg = _current_config()
         tool_name = name or "unknown"
+        # Sealed evidence of WHICH tool content and arguments this call saw,
+        # applied LAST to every event below so a metadata key collision cannot
+        # overwrite it (same precedence as the pin and normalizer stamps).
+        # call_tool carries only (name, arguments) - the SDK retains descriptor
+        # HASHES from discovery, never descriptors - so the document commits to
+        # the name and arguments with the empty-descriptor digest. That is what
+        # this producer actually saw; see the module docs. TS parity:
+        # runGovernedCallTool, same seven emission sites.
+        tool_content_meta = tool_content_metadata(
+            safe_tool_content_hash(tool_name=tool_name, args=arguments)
+        )
         prompt_text = _extract_mcp_prompt(tool_name, arguments)
         start = time.monotonic()
         principal, identity_meta = _principal_and_meta()
@@ -439,7 +451,7 @@ def _build_governed_mcp_callables(
                 cfg,
                 provider="mcp", model="mcp", operation="mcp.tool.call",
                 source=SOURCE, prompt=prompt_text, response="", success=False,
-                metadata={"tool_name": tool_name}, options=event_options,
+                metadata={"tool_name": tool_name, **tool_content_meta}, options=event_options,
                 compliance={
                     "event_type": "blocked_call",
                     "policy_version": derive_policy_version(cfg.policy_rules or []),
@@ -506,6 +518,7 @@ def _build_governed_mcp_callables(
                     pin_block_meta["tool_pin_expected"] = pin_verdict["expected"]
                 if pin_verdict.get("observed") is not None:
                     pin_block_meta["tool_descriptor_hash"] = pin_verdict["observed"]
+                pin_block_meta.update(tool_content_meta)
                 _emit(
                     cfg,
                     provider="mcp", model="mcp", operation="mcp.tool.call",
@@ -535,7 +548,7 @@ def _build_governed_mcp_callables(
                     cfg,
                     provider="mcp", model="mcp", operation="mcp.tool.call",
                     source=SOURCE, prompt=prompt_text, response="", success=False,
-                    metadata={"tool_name": tool_name}, options=event_options,
+                    metadata={"tool_name": tool_name, **tool_content_meta}, options=event_options,
                     compliance={
                         "event_type": "blocked_call",
                         "policy_version": derive_policy_version(cfg.policy_rules or []),
@@ -582,6 +595,7 @@ def _build_governed_mcp_callables(
                     if result.get("canary_telemetry") is not None:
                         # CRITICAL canary leak evidence on the telemetry channel.
                         block_meta["obsvr_telemetry"] = result["canary_telemetry"]
+                    block_meta.update(tool_content_meta)
                     _emit(
                         cfg,
                         provider="mcp", model="mcp", operation="mcp.tool.call",
@@ -630,7 +644,7 @@ def _build_governed_mcp_callables(
                 provider="mcp", model="mcp", operation="mcp.tool.call",
                 source=SOURCE, prompt=final_prompt, response=str(e)[:500],
                 latency_ms=latency_ms, success=False, error=e,
-                metadata={"tool_name": tool_name}, options=event_options,
+                metadata={"tool_name": tool_name, **tool_content_meta}, options=event_options,
                 compliance=event_compliance,
             )
             raise
@@ -672,6 +686,7 @@ def _build_governed_mcp_callables(
                         if resp_scan.get("canary_telemetry") is not None
                         else {}
                     ),
+                    **tool_content_meta,
                 },
                 options=event_options,
                 compliance={
@@ -763,6 +778,7 @@ def _build_governed_mcp_callables(
                 event_metadata["tool_descriptor_hash"] = pin_verdict["observed"]
             if pin_verdict is not None and pin_verdict.get("enforcement") == "flag":
                 event_metadata["pin_violation"] = pin_verdict.get("reason") or pin_verdict["status"]
+        event_metadata.update(tool_content_meta)
         _emit(
             cfg,
             provider="mcp", model="mcp", operation="mcp.tool.call",

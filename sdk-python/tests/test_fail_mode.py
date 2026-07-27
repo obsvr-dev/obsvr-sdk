@@ -221,6 +221,10 @@ class TestRegistryGate:
         "span.py",
         "span_attributes.py",
         "ssrf.py",
+        # Evidence producer, decides nothing: it hashes what a tool call saw
+        # and its callers omit the field on failure. Matches the TS twin's
+        # exemption for tool-content-hash.ts.
+        "tool_content_hash.py",
         "verify_chain.py",
         "wrap.py",
     }
