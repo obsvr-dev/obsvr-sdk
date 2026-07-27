@@ -31,6 +31,10 @@ function findFixture(rel: string): string {
 interface ViewCase {
   id: string;
   note?: string;
+  /** Per-language support: "skip" marks a RECORDED gap (a case one SDK does
+   * not implement yet, tied to a known-divergences entry). Absent means
+   * required in both languages. */
+  sdk_support?: { ts?: string; py?: string };
   input: string;
   expect_views: DeobfuscationView[];
 }
@@ -85,7 +89,10 @@ const fixture = JSON.parse(
 
 describe('conformance: deobfuscation view derivation', () => {
   for (const c of fixture.view_cases) {
-    it(c.id, () => {
+    // sdk_support "skip" marks a recorded gap for THIS language (visible as
+    // a skipped test, never a silent absence); anything else runs.
+    const runner = (c.sdk_support?.ts ?? 'required') === 'skip' ? it.skip : it;
+    runner(c.id, () => {
       expect(deobfuscate(c.input)).toEqual(c.expect_views);
     });
   }

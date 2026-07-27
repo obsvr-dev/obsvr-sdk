@@ -1,4 +1,5 @@
 {
+  "claimable": true,
   "schema_version": 1,
   "name": "normalization",
   "description": "Cross-SDK matching-time normalization (§6). Each case pins the exact output of normalizeForMatching / normalize_for_matching (NFKC + zero-width strip + curated confusable fold) for a given input. Both SDK harnesses (sdk/tests/unit/normalization.test.ts, sdk-python/tests/test_normalization.py) feed every `input` through their normalizer and must produce the pinned `normalized` string byte-for-byte. `matches_override` additionally pins that a keyword rule for \"override\" fires on the normalized copy while the raw input would have dodged it. A divergence is a release blocker unless recorded in conformance/known-divergences.md. This is a MATCHING-only transform: it never mutates stored/forwarded content.",

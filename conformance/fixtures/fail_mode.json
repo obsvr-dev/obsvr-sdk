@@ -1,4 +1,5 @@
 {
+  "claimable": true,
   "schema_version": 1,
   "name": "fail_mode",
   "description": "Central failure-disposition registry, shared by both SDKs. TS source: sdk/src/policy/failure-dispositions.ts. Python twin: sdk-python/obsvr/failure_dispositions.py. Both staleness suites (sdk/tests/unit/fail-mode.test.ts, sdk-python/tests/test_fail_mode.py) assert their registry equals `layers` here, that every layer declares all three failure states, and that the declarations match observed behavior for the states a unit test can drive. This table DESCRIBES shipped behavior and is read by no call path. A new detector class must appear here, in both registries, before it can land: the gate test fails on any detector module without a declaration. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",

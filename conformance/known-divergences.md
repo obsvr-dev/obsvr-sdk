@@ -2,17 +2,19 @@
 
 Behavioral differences between the TypeScript and Python SDKs that are
 currently accepted, each with an owner and a tracking note. A fixture
-failing on ONE SDK requires either a fix in the same change or a row
-here; silent divergence is never acceptable
-(conformance discipline).
+failing on ONE SDK requires either a fix in the same change or a catalog
+entry; silent divergence is never acceptable (conformance discipline).
 
-| ID | Area | Divergence | Reason accepted | Tracking |
-|----|------|------------|-----------------|----------|
-| KD-3 | MCP tool pinning (mode "block" discovery strip) | TS always returns a NEW result object with the offending tools filtered out; Python mutates `result.tools = kept` inside a try/except, so if the upstream `ListToolsResult` model forbids assignment (frozen / `validate_assignment`) the swapped tool remains in the listing the model sees. | The call-time gate still REFUSES execution of the tool on both SDKs (identity defense holds); only the discovery-time strip is best-effort in Python, and rebuilding an arbitrary upstream model object risks breaking the caller's type contract. | `sdk-python/obsvr/integrations/mcp.py` (`governed_list_tools`). Revisit if a real MCP result type is found frozen. |
-| KD-5 | Customer `policyRules` eval context on the TS integration path | On the TS integration path (`integrations/core.ts` `applyPreCallPolicy`) a **customer** `policyRules` rule receives `{provider, metadata}` — no top-level `model` / `currentEnvironment` — so a customer `model_gate` / `environment_gate` rule is inert there, while the Python shared pre-call and the TS proxy wrapper source both. (The anti-tamper **floor** is NOT affected: as of 2026-07-20 the floor threads `model` + `currentEnvironment` on all three paths.) | Enriching the customer-rules context on integrations would newly fire previously-inert `model_gate` / `environment_gate` customer rules — a behavior change for existing users, out of scope for the additive floor slice. The floor (the security baseline) is consistent; a customer who needs model/env gating on integrations can promote the rule into `policyFloor`. | `integrations/core.ts` `applyPreCallPolicy` rules context. Revisit as its own slice with a migration note. |
-| KD-6 | Signed-policy verification backend | TypeScript verifies Ed25519 with `node:crypto`, which is always present. Python has no stdlib Ed25519, so `policy_verify.py` resolves an OPTIONAL backend (`cryptography`, then PyNaCl). With `policy_public_key` pinned and neither installed, Python reaches a state TypeScript cannot: it cannot check the signature at all. | The package ships zero mandatory runtime dependencies, and the degraded state is declared rather than hidden - Python still fails closed (the fetched policy is refused, last-good stays in force) and stamps `policy_verification_unavailable` into reserved metadata on every subsequent event, so an auditor sees an unverifiable window instead of inferring one from silence. All shared vectors resolve identically once a backend is installed (`pip install "obsvr-sdk[crypto]"`, included in the `dev` extra so CI runs them for real). | `sdk-python/obsvr/policy_verify.py`. Closes if a stdlib Ed25519 ever lands or the dependency posture changes. |
-| KD-7 | CSS-hidden / aria-hidden stripping in the canonical view | TypeScript's de-obfuscation pipeline runs a `strip-hidden-HTML` pass (between strip-HTML-comments and collapse-whitespace) that removes `display:none` / `visibility:hidden` / `aria-hidden="true"` elements, tag and content. Python's pipeline does not yet, so the two canonical views differ for inputs containing hidden markup. | **Temporary, and the only reason it is a row instead of a fix: the Python port is the next scheduled change.** No shared fixture case covers hidden markup yet, so both suites still pass the same corpus; the content cases land with the port so neither language can pass them alone. Raw text is scanned first in both languages, so a payload hidden whole is detected either way - the divergence costs Python only the split-phrase case. | `sdk/src/policy/deobfuscate.ts` `stripHiddenHtml` / `sdk-python/obsvr/deobfuscate.py`. **DELETE this row when the Python twin lands.** |
-| KD-8 | `LOOP_DETECTED` / `DELEGATION_BLOCKED` emission | Loop detection and delegation tracking (iteration thresholds, circular/depth/allowlist delegation violations) ship TypeScript-only (`policy/industry/devops.ts`, `policy/industry/agentic.ts`, wired through `integrations/core.ts`). TypeScript emits both codes on real events; Python has no emitting control, so both codes are RESERVED there (`obsvr/reason_codes.py` `RESERVED_REASON_CODES`) — kept in the shared closed registry, never emitted. | The registry is a cross-language wire vocabulary pinned by `reason_codes.json`, and deleting from a closed enum is breaking; a reserved code with a named owning control is honest, and each language's reachability test exempts exactly its reserved set, so wiring or removing a control without updating the reservation fails CI. | Python twins of the loop/delegation trackers; delete the two `RESERVED_REASON_CODES` entries (and this row) when they land. |
+**The live entries moved to `known-divergences.json`** — a machine-readable
+catalog whose structure (exact key set, `status` restricted to `intended`,
+`sdk`/`category` vocabularies) is validated by BOTH test suites
+(`sdk/tests/unit/fixture-bookkeeping.test.ts`,
+`sdk-python/tests/test_fixture_bookkeeping.py`), so a malformed or
+vocabulary-expanding entry fails CI in either language. Prose could only
+describe the discipline; the catalog lets CI hold it. This file keeps what a
+catalog cannot: the History below — the narrative of divergences that were
+FIXED rather than accepted, which the table never carried and which is the
+better half of the record.
 
 History:
 - 2026-07-27: KD-4 (numeric canonicalization) was FIXED, not re-argued, and

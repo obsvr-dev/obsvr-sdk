@@ -1,4 +1,5 @@
 {
+  "claimable": true,
   "description": "Effective-policy resolution fixtures (GOVERNANCE_ARCHITECTURE_REPORT.md §8). Pins ordering (pack < org < project), shadow-pack forcing, mandatory-override rejection with provenance flag, default-override application, provenance hash-neutrality, and the identity merge for org-less projects. Executed by ingest/tests/unit/effective-policy.test.ts.",
   "cases": [
     {

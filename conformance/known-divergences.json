@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "name": "known_divergences_catalog",
+  "description": "Machine-readable catalog of ACCEPTED cross-SDK divergences - the allowlist the parity discipline checks against. Every entry must carry exactly the keys id, sdk, category, status, description, parity_scope, allowed_difference, tracking; status has exactly one legal value, 'intended' - a divergence that is not intended is a bug to fix, never a row to add. `sdk` names the SDK whose behavior differs from the shared contract ('ts' or 'py'). `parity_scope` states what MUST remain identical despite the divergence; `allowed_difference` states precisely what is permitted to differ - an entry whose allowed_difference would cover an enforcement-verdict difference is invalid by policy, not just by schema. Structure is validated by BOTH test suites (sdk/tests/unit/fixture-bookkeeping.test.ts, sdk-python/tests/test_fixture_bookkeeping.py), so a malformed or vocabulary-expanding entry fails CI in either language. The narrative History of fixed divergences stays in known-divergences.md - this catalog replaces only the live table.",
+  "categories": {
+    "enforcement_surface": "one SDK applies an identical verdict through a weaker or different mechanism",
+    "evaluation_context": "one SDK evaluates a rule with less context on some path",
+    "dependency": "a capability resolves through an optional dependency in one SDK",
+    "capability": "a control or emission exists in only one SDK today"
+  },
+  "entries": [
+    {
+      "id": "KD-3",
+      "sdk": "py",
+      "category": "enforcement_surface",
+      "status": "intended",
+      "description": "MCP tool pinning, mode 'block' discovery strip: TS always returns a NEW listing result with offending tools filtered out; Python mutates result.tools in a try/except, so a frozen upstream ListToolsResult model keeps the swapped tool visible in the listing the model sees. Rebuilding an arbitrary upstream model object risks breaking the caller's type contract.",
+      "parity_scope": "The call-time gate REFUSES execution of a swapped tool identically in both SDKs; only the discovery-time listing strip is best-effort in Python.",
+      "allowed_difference": "Discovery-time listing contents when the upstream result model forbids assignment.",
+      "tracking": "sdk-python/obsvr/integrations/mcp.py (governed_list_tools). Revisit if a real MCP result type is found frozen."
+    },
+    {
+      "id": "KD-5",
+      "sdk": "ts",
+      "category": "evaluation_context",
+      "status": "intended",
+      "description": "Customer policyRules eval context on the TS integration path: integrations/core.ts applyPreCallPolicy passes customer rules {provider, metadata} with no top-level model / currentEnvironment, so a customer model_gate / environment_gate rule is inert there, while the Python shared pre-call and the TS proxy wrapper source both. Enriching the context would newly fire previously-inert rules - a behavior change for existing users, out of scope for the additive floor slice.",
+      "parity_scope": "The anti-tamper FLOOR threads model + currentEnvironment on all paths in both SDKs (as of 2026-07-20); a rule promoted into policyFloor gates identically everywhere.",
+      "allowed_difference": "Customer (non-floor) model_gate / environment_gate rules do not fire on the TS integrations path.",
+      "tracking": "integrations/core.ts applyPreCallPolicy rules context. Revisit as its own slice with a migration note."
+    },
+    {
+      "id": "KD-6",
+      "sdk": "py",
+      "category": "dependency",
+      "status": "intended",
+      "description": "Signed-policy verification backend: TypeScript verifies Ed25519 with node:crypto, always present. Python has no stdlib Ed25519, so policy_verify.py resolves an OPTIONAL backend (cryptography, then PyNaCl). With policy_public_key pinned and neither installed, Python reaches a state TypeScript cannot: it cannot check the signature at all. The package ships zero mandatory runtime dependencies, and the degraded state is declared rather than hidden.",
+      "parity_scope": "All shared signature vectors resolve to identical verdicts once a backend is installed (pip install \"obsvr-sdk[crypto]\", included in the dev extra so CI runs them for real); Python still fails closed without one - the fetched policy is refused, last-good stays in force, and policy_verification_unavailable is stamped into reserved metadata on every subsequent event.",
+      "allowed_difference": "The unverifiable-but-declared degraded state exists only in Python, only with a pinned key and no optional crypto backend.",
+      "tracking": "sdk-python/obsvr/policy_verify.py. Closes if a stdlib Ed25519 ever lands or the dependency posture changes."
+    },
+    {
+      "id": "KD-7",
+      "sdk": "py",
+      "category": "capability",
+      "status": "intended",
+      "description": "CSS-hidden / aria-hidden stripping in the canonical view: TypeScript's de-obfuscation pipeline runs a strip-hidden-HTML pass (between strip-HTML-comments and collapse-whitespace) that removes display:none / visibility:hidden / aria-hidden=\"true\" elements, tag and content. Python's pipeline does not yet. TEMPORARY: the Python port is the next scheduled change. Shared fixture cases for hidden markup exist in deobfuscation.json marked sdk_support py:skip, so the gap is CI-visible; flipping them to py:required is the port's acceptance gate.",
+      "parity_scope": "Raw text is scanned first in both languages, so a payload hidden whole is detected either way; the divergence costs Python only the split-phrase case.",
+      "allowed_difference": "Canonical views differ for inputs containing CSS-hidden or aria-hidden markup.",
+      "tracking": "sdk/src/policy/deobfuscate.ts stripHiddenHtml / sdk-python/obsvr/deobfuscate.py. DELETE this entry (and flip the fixture cases to py:required) when the Python twin lands."
+    },
+    {
+      "id": "KD-8",
+      "sdk": "py",
+      "category": "capability",
+      "status": "intended",
+      "description": "LOOP_DETECTED / DELEGATION_BLOCKED emission: loop detection and delegation tracking (iteration thresholds, circular/depth/allowlist delegation violations) ship TypeScript-only (policy/industry/devops.ts, policy/industry/agentic.ts, wired through integrations/core.ts). TypeScript emits both codes on real events; Python has no emitting control, so both codes are RESERVED there (obsvr/reason_codes.py RESERVED_REASON_CODES) - kept in the shared closed registry, never emitted. Deleting from a closed enum is breaking; a reserved code with a named owning control is honest.",
+      "parity_scope": "The reason-code registry and rule-type mapping are identical and fixture-pinned in both SDKs; each language's reachability test exempts exactly its reserved set, so wiring or removing a control without updating the reservation fails CI.",
+      "allowed_difference": "LOOP_DETECTED and DELEGATION_BLOCKED appear on TypeScript events only.",
+      "tracking": "Python twins of the loop/delegation trackers; delete the two RESERVED_REASON_CODES entries (and this entry) when they land."
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 {
+  "claimable": true,
   "description": "Audit gap markers: the signed record of events the bounded sender queue dropped before they could be chained. Because those drops happen BEFORE a sequence number is assigned, the surviving chain is contiguous and verifies clean - the loss leaves no hole to find. A marker is one real, signed, chain-linked event stating how many events were lost immediately before it. This fixture pins the part that must be byte-identical across both SDKs: the canonical statement that goes into the signature preimage. Producers: sdk/src/proxy/audit-gap.ts, sdk-python/obsvr/audit_gap.py. Consumers: sdk/tests/unit/audit-gap-conformance.test.ts, sdk-python/tests/test_audit_gap_conformance.py.",
 
   "constants": {

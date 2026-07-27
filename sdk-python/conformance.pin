@@ -6,4 +6,4 @@
 # no longer matches, so it fails loudly instead of passing its own suite.
 #
 # GENERATED: node scripts/generate-conformance-manifest.mjs
-corpus_sha256 = 0a5308962055570e774e0d8979802297a98babc612fee804936a78c896f94160
+corpus_sha256 = b42ef7adb0492bbb1871f6c91c755b94ecd260f62bf0f85609fb3d79798da1ec

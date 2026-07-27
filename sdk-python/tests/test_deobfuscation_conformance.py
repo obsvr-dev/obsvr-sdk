@@ -30,6 +30,12 @@ FIXTURE = json.loads(
     "case", FIXTURE["view_cases"], ids=[c["id"] for c in FIXTURE["view_cases"]]
 )
 def test_view_derivation(case):
+    # Per-case sdk_support: "skip" means this SDK does not implement the
+    # behavior yet - the case is a RECORDED gap (visible as a pytest skip,
+    # tied to a known-divergences entry), never a silent absence. Absent
+    # sdk_support means required in both languages.
+    if case.get("sdk_support", {}).get("py") == "skip":
+        pytest.skip("sdk_support py:skip - recorded divergence, see known-divergences.json")
     assert deobfuscate(case["input"]) == case["expect_views"]
 
 
