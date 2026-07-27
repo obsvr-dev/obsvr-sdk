@@ -60,6 +60,15 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **`sessionTaint.destructiveTools`: a tainted session loses its dangerous
+  capabilities.** An exact-name tool set a tainted session may never invoke,
+  enforced at every tool boundary (governed tools, MCP, framework wrappers)
+  even under the default `action: "flag"` — ordinary egress stays merely
+  flagged while `send_money`-class capabilities go dark, which is the
+  composition that actually stops indirect injection. One set-membership test
+  at the tool gate; decisions pinned as `(tool_name, taint_state) → decision`
+  in `conformance/fixtures/session_taint.json`.
+  ([`e350ab9`](https://github.com/obsvr-dev/obsvr-sdk/commit/e350ab9))
 - **Every audit event carries a `reason_code`.** The registry code for the
   classification the decision rests on — the deciding layer's fine-grained
   code (the rules engine's `KEYWORD_BLOCKED`, `MODEL_GATE_BLOCKED`, ...),
@@ -193,6 +202,13 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **An explicit `timeout_ms: 0` on the Python external policy backend was
+  silently replaced by the 2-second default.** The value was read with an
+  `or`-default, so the strictest configurable budget — zero, which fails
+  closed as a timeout — was the one value the code could not express, while
+  the TypeScript twin honored it. The default now applies only when the field
+  is absent.
+  ([`00b5dd1`](https://github.com/obsvr-dev/obsvr-sdk/commit/00b5dd1))
 - **The two SDKs could derive different `policy_version` values from the same
   policy.** Python's canonical form came from `json.dumps`, which disagrees with
   `JSON.stringify` on whole-valued floats, negative zero, exponent form,
