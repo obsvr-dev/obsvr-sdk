@@ -20,6 +20,23 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **Rules claiming the SDK's verdict namespace are rejected.** A policy rule
+  whose `id` starts with `sdk:` or `backend:` is now invalid — those prefixes
+  identify verdicts minted by the SDK's own governance layers, and an
+  operator- or server-supplied rule wearing one was indistinguishable from
+  the SDK's own records on the audit trail. **If you have a rule with such an
+  id, rename it**; it will otherwise be rejected (with the `rule_rejected`
+  signal on the sync path). Pinned by the `reserved_rule_id_rejected` case in
+  `eval_semantics.json`.
+  ([`ef1f49b`](https://github.com/obsvr-dev/obsvr-sdk/commit/ef1f49b))
+- **The multi-turn injection reason no longer carries the score.** The stored
+  `policy_reason` for a tripped multi-turn gate persisted the decayed score —
+  a continuous margin an audit-log reader could watch across attempts and use
+  to tune a payload under the threshold. The stored copy now carries only the
+  turn count and which signals fired (byte-identical across SDKs, pinned by
+  `conformance/fixtures/injection_reason.json`); full precision stays
+  in-process. **Monitoring that string-matched the old wording must update.**
+  ([`b82206e`](https://github.com/obsvr-dev/obsvr-sdk/commit/b82206e))
 - **BREAKING: the audit-chain content hash is length-prefixed and domain-tagged
   (chain format 2).** The signature previously hashed `sha256(prompt +
   response)`, which does not bind where the prompt ends and the response begins
@@ -43,6 +60,41 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **Every audit event carries a `reason_code`.** The registry code for the
+  classification the decision rests on — the deciding layer's fine-grained
+  code (the rules engine's `KEYWORD_BLOCKED`, `MODEL_GATE_BLOCKED`, ...),
+  `PERMITTED` on a clean allow — and always the same code the thrown
+  `ObsvrPolicyError` carries, resolved once for both. Previously the engine's
+  code was discarded at the throw site and re-derived as one of four coarse
+  categories, and the event had no such field at all.
+  ([`b8848a1`](https://github.com/obsvr-dev/obsvr-sdk/commit/b8848a1))
+- **The seven dormant reason codes are emitted.** `INJECTION_DETECTED` (single-
+  and multi-turn injection blocks, which previously surfaced as `PII_DETECTED`
+  or `POLICY_VIOLATION`), `TRANSMISSION_BLOCKED` (taint-gated egress refusals),
+  `TOOL_DENIED` (agent-policy tool refusals on every integration),
+  `MCP_TOOL_DENIED` / `MCP_RESULT_BLOCKED` (the MCP gates), and — TypeScript
+  only — `LOOP_DETECTED` / `DELEGATION_BLOCKED`. Both suites now run a
+  reachability gate: every registry code must be emitted by an exercised path,
+  pinned in a named suite, or explicitly reserved (KD-8 records Python's two
+  reserved codes).
+  ([`2f3b5a4`](https://github.com/obsvr-dev/obsvr-sdk/commit/2f3b5a4))
+- **MCP tool descriptors are content-inspected at discovery.** The poisoning
+  scan now also reads JSON Schema `description` / `default` strings at any
+  depth, matches over a comment-stripped view (a directive split by HTML
+  comments reads whole to the model and fragmented to a scanner) and — with
+  `deobfuscation` enabled — the decoded views; bidi controls are flagged on
+  presence, concealment is its own signal, and a truncated schema walk says
+  so. Reasons pinned exactly by `conformance/fixtures/tool_descriptor_scan.json`.
+  ([`ca0c209`](https://github.com/obsvr-dev/obsvr-sdk/commit/ca0c209))
+- **Cross-SDK bookkeeping is validated data.** Fixture cases carry per-language
+  `sdk_support` (a gap shows as a recorded skip, not a missing test — first
+  used by the KD-7 hidden-markup cases), fixtures carry `claimable` enforced
+  bidirectionally against the public docs, the known-divergences table became
+  the schema-checked `conformance/known-divergences.json`, and the spec's
+  seven uncovered EV statements are a checked partition in
+  `eval_semantics.json` rather than a prose admission.
+  ([`2585ce0`](https://github.com/obsvr-dev/obsvr-sdk/commit/2585ce0),
+  [`97d82dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/97d82dd))
 - **Dropped events are declared in the signed chain.** A bounded-queue overflow
   now signs a **gap marker** at the chain position where events were lost,
   stating how many. The count lives in the signature preimage, so editing it
