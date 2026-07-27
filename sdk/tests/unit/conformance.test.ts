@@ -211,3 +211,38 @@ describe('conformance: eval_semantics fixtures', () => {
     });
   }
 });
+
+describe('ev_coverage: the EV coverage map cannot drift from the cases', () => {
+  // The uncovered list is the RECORDED gap: statements exercised only
+  // indirectly, whose divergence would not fail CI. Recording it as data
+  // (with these checks, mirrored in Python) means closing or opening a gap
+  // is a reviewable fixture edit, never a silent drift.
+  const cov = (fixture as unknown as {
+    ev_coverage: { all: string[]; covered: Record<string, string[]>; uncovered: string[] };
+  }).ev_coverage;
+
+  it('covered and uncovered partition the full EV list exactly', () => {
+    const partition = [...Object.keys(cov.covered), ...cov.uncovered].sort();
+    expect(partition).toEqual(cov.all.slice().sort());
+    for (const ev of cov.uncovered) expect(cov.covered[ev]).toBeUndefined();
+  });
+
+  it('the EV tokens on the cases are exactly the statements covered by THIS fixture', () => {
+    const pinnedHere = new Set<string>();
+    for (const c of fixture.cases) {
+      for (const m of (c.ev ?? '').match(/EV-\d+/g) ?? []) pinnedHere.add(m);
+    }
+    const coveredHere = Object.entries(cov.covered)
+      .filter(([, files]) => files.includes('eval_semantics.json'))
+      .map(([ev]) => ev);
+    expect([...pinnedHere].sort()).toEqual(coveredHere.sort());
+  });
+
+  it('every fixture file named in the coverage map exists', () => {
+    for (const files of Object.values(cov.covered)) {
+      for (const f of files) {
+        expect(fs.existsSync(findFixture(`conformance/fixtures/${f}`))).toBe(true);
+      }
+    }
+  });
+});

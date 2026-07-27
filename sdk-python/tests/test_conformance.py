@@ -176,3 +176,43 @@ def test_conformance_case(case):
         if mode != "rules":
             _reset()
             _reset_quota()
+
+
+# ---------------------------------------------------------------------------
+# ev_coverage: the EV coverage map cannot drift from the cases
+# ---------------------------------------------------------------------------
+# The uncovered list is the RECORDED gap: statements exercised only
+# indirectly, whose divergence would not fail CI. Recording it as data (with
+# these checks, mirrored in TypeScript) means closing or opening a gap is a
+# reviewable fixture edit, never a silent drift.
+
+
+def test_ev_coverage_partitions_the_full_ev_list():
+    cov = FIXTURE["ev_coverage"]
+    partition = sorted(list(cov["covered"].keys()) + cov["uncovered"])
+    assert partition == sorted(cov["all"])
+    for ev in cov["uncovered"]:
+        assert ev not in cov["covered"]
+
+
+def test_case_ev_tokens_match_the_statements_covered_by_this_fixture():
+    import re
+
+    cov = FIXTURE["ev_coverage"]
+    pinned_here = set()
+    for case in FIXTURE["cases"]:
+        pinned_here.update(re.findall(r"EV-\d+", case.get("ev", "")))
+    covered_here = {
+        ev for ev, files in cov["covered"].items() if "eval_semantics.json" in files
+    }
+    assert pinned_here == covered_here
+
+
+def test_every_fixture_named_in_the_coverage_map_exists():
+    from pathlib import Path
+
+    fixtures_dir = (Path(__file__).parent / "../../conformance/fixtures").resolve()
+    cov = FIXTURE["ev_coverage"]
+    for files in cov["covered"].values():
+        for f in files:
+            assert (fixtures_dir / f).exists(), f

@@ -3,6 +3,93 @@
   "schema_version": 1,
   "name": "eval_semantics",
   "description": "Cross-SDK evaluation-semantics fixtures. Each case pins a normative statement (EV-n). Both SDK harnesses (sdk/tests/unit/conformance.test.ts, sdk-python/tests/test_conformance.py) run every case through validator + evaluator + shadow evaluator and must produce identical results. A divergence is a release blocker unless recorded in conformance/known-divergences.md. Cases carry an optional `mode`: absent or \"rules\" drives the rules engine directly (the default); \"pipeline\" drives the full pre-call pipeline, which is the only way to pin statements about step composition and the enforcement-integrity gate; \"explain\" drives check-only evaluation and proves it consumes nothing.",
+"ev_coverage": {
+    "desc": "Machine-readable coverage of the EV statements in conformance/SPEC-evaluation.md. `covered` maps each statement to the fixture file(s) whose cases pin it cross-language; `uncovered` records the statements exercised only indirectly by the SDK suites - the gap is a datum, not an absence. Both conformance runners check this object against the actual cases: an EV token appearing in a case's `ev` field must be listed as covered by this fixture, a statement listed covered-here must have such a case, covered and uncovered must partition `all` exactly, and every named fixture file must exist. Removing a case without moving its statement to `uncovered` (or vice versa) therefore fails BOTH suites.",
+    "all": [
+      "EV-1",
+      "EV-2",
+      "EV-3",
+      "EV-4",
+      "EV-5",
+      "EV-6",
+      "EV-7",
+      "EV-8",
+      "EV-9",
+      "EV-10",
+      "EV-11",
+      "EV-12",
+      "EV-13",
+      "EV-14",
+      "EV-15",
+      "EV-16",
+      "EV-17",
+      "EV-18",
+      "EV-19",
+      "EV-20",
+      "EV-21",
+      "EV-22",
+      "EV-23"
+    ],
+    "covered": {
+      "EV-3": [
+        "eval_semantics.json"
+      ],
+      "EV-6": [
+        "eval_semantics.json"
+      ],
+      "EV-7": [
+        "fail_mode.json"
+      ],
+      "EV-8": [
+        "eval_semantics.json"
+      ],
+      "EV-9": [
+        "eval_semantics.json"
+      ],
+      "EV-10": [
+        "eval_semantics.json"
+      ],
+      "EV-11": [
+        "eval_semantics.json"
+      ],
+      "EV-12": [
+        "eval_semantics.json"
+      ],
+      "EV-13": [
+        "eval_semantics.json"
+      ],
+      "EV-14": [
+        "eval_semantics.json"
+      ],
+      "EV-16": [
+        "rules_hash.json"
+      ],
+      "EV-17": [
+        "rules_hash.json"
+      ],
+      "EV-20": [
+        "eval_semantics.json"
+      ],
+      "EV-21": [
+        "eval_semantics.json"
+      ],
+      "EV-22": [
+        "eval_semantics.json"
+      ],
+      "EV-23": [
+        "fail_mode.json"
+      ]
+    },
+    "uncovered": [
+      "EV-1",
+      "EV-2",
+      "EV-4",
+      "EV-5",
+      "EV-15",
+      "EV-18",
+      "EV-19"
+    ]
+  },
   "cases": [
     {
       "id": "ev3_gate_paused",

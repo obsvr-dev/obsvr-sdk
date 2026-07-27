@@ -174,7 +174,13 @@ to pin statements about step composition and the integrity gate), and `explain`
 
 Not yet covered by a dedicated case: EV-1, EV-2, EV-4, EV-5, EV-15, EV-18,
 EV-19. Their behavior is exercised indirectly by the SDK suites but is not
-pinned cross-language, so a divergence there would not fail CI.
+pinned cross-language, so a divergence there would not fail CI. This list is
+recorded as DATA in `eval_semantics.json` (`ev_coverage.uncovered`), and both
+suites check the whole coverage map against the actual cases: covered and
+uncovered must partition EV-1..EV-23 exactly, and a case pinning a statement
+(or a statement losing its case) without a matching map edit fails CI in both
+languages. Closing one of these gaps means adding the case AND moving the
+statement out of `uncovered` in the same change.
 
 Divergences discovered between SDKs are release blockers unless
-recorded in conformance/known-divergences.md with a tracking entry.
+recorded in conformance/known-divergences.json with a tracking entry.

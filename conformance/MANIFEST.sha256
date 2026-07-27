@@ -12,11 +12,11 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = b42ef7adb0492bbb1871f6c91c755b94ecd260f62bf0f85609fb3d79798da1ec
+# corpus_sha256 = 509121449fe876e8d9db692795b29d86b9a7555f0c5de78fc3bdc43f83ba8299
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
-db05eafe28164448438d7b3ff7974677ef780e9505ea1210540f0f39b33b5da2  SPEC-evaluation.md
+1c5d305c3281792dd865be4864be3edc57045300dc808d601f7828dd839947df  SPEC-evaluation.md
 9ad1b421f5f3bf05a5c5bc9276d0f311855f317326b49a194abf775a6982828f  fixtures/audit_gap.json
 31568301fcef270034bc708edfde517fcdbf047881dd19918a92a7a4df00223c  fixtures/canary.json
 cffed063abb9d7218c75b93d93321990d20b7c41ba050a46b95fe08702985e88  fixtures/canonical_json.json
@@ -24,7 +24,7 @@ cffed063abb9d7218c75b93d93321990d20b7c41ba050a46b95fe08702985e88  fixtures/canon
 d10cce8d5a5baa3d32cce56053a9d5cf80177eb994c49f7076ac6b9852bff8b3  fixtures/deobfuscation.json
 9edc6b0809b8ad249a131b0edd8c6a71318fe8dffb1668442c6fe7d495adcf56  fixtures/effective_policy.json
 399b085942b5490974fbfa2303dd417d1a7b44e34c2227a2f1f9cc326f89271f  fixtures/error_parity.json
-7f7fb4d17ed3e15cb41d00a4621b8d8c916d8853f27358bfeef7b1b8eaf79909  fixtures/eval_semantics.json
+30edf0980364d6c26d66d5d32629e3833313f737f50aa9e4af6ac8b002f201c1  fixtures/eval_semantics.json
 dbba9144a45d71af6d2bc53ed0f5eba4319aed48d1c56fcb07a3e0c4ff8d7677  fixtures/external_backend.json
 73001390a95afef675b3122b52afa40c964e580a97f1a4c88daf10a7e62b1003  fixtures/fail_mode.json
 ba61d17ece61d5f2edde09ec1663e6897159bb89ecf0e43ae90203a42b178a4c  fixtures/injection_reason.json
