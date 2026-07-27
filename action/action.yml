@@ -37,8 +37,12 @@ inputs:
 runs:
   using: 'composite'
   steps:
+    # Pinned to a commit, not a tag. This action is PUBLISHED, so a mutable
+    # ref here is inherited by every consumer's CI, not only ours, and they
+    # have no way to see or override it. Dependabot updates the SHA and the
+    # trailing version comment together.
     - name: Set up Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: ${{ inputs.node-version }}
 
