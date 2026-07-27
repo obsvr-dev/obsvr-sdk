@@ -323,3 +323,33 @@ def test_pipeline_no_backend_is_inert():
     result = _pre_call()
     assert result["decision"] == "allow"
     assert result["compliance"]["external_backend"] is None
+
+
+# ── Falsy-zero guard on the per-call budget ──────────────────────────────────
+
+
+def test_explicit_zero_timeout_is_honored_not_defaulted():
+    """timeout_ms: 0 is the operator saying "no budget", and it must reach the
+    transport as 0.0 — an `or`-style default would silently replace the zero
+    with a laxer 2 seconds. Falsy-zero regression guard (TS parity: `?? 2000`).
+    """
+    seen = {}
+
+    def transport(url, headers, body_str, timeout_s):
+        seen["timeout_s"] = timeout_s
+        return 200, {"result": True}
+
+    cfg = {**OPA, "timeout_ms": 0}
+    evaluate_external_backend(cfg, INPUT, transport=transport)
+    assert seen["timeout_s"] == 0.0
+
+
+def test_absent_timeout_still_defaults_to_two_seconds():
+    seen = {}
+
+    def transport(url, headers, body_str, timeout_s):
+        seen["timeout_s"] = timeout_s
+        return 200, {"result": True}
+
+    evaluate_external_backend(OPA, INPUT, transport=transport)
+    assert seen["timeout_s"] == 2.0

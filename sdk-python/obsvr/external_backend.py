@@ -223,7 +223,12 @@ def evaluate_external_backend(
     payload = {"input": input_doc} if cfg["type"] == "opa" else input_doc
     body = json.dumps(payload)
     headers = {"content-type": "application/json", **(cfg.get("headers") or {})}
-    timeout_s = (cfg.get("timeout_ms") or 2000) / 1000.0
+    # `is None`, never `or`: an explicit timeout_ms of 0 is the operator
+    # saying "no budget" (which fails closed as a timeout), and `or` would
+    # silently replace that zero with a laxer 2-second default. The TS twin
+    # uses `?? 2000` and honors 0 the same way.
+    _timeout_ms = cfg.get("timeout_ms")
+    timeout_s = (2000 if _timeout_ms is None else _timeout_ms) / 1000.0
     send = transport or _urllib_transport
 
     try:
