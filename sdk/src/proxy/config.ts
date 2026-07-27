@@ -519,6 +519,17 @@ export const SDK_CAPABILITIES: string = [
 ].join(",");
 
 /**
+ * Rule-id namespaces the SDK mints for its OWN verdicts — `sdk:` for the
+ * built-in governance layers (sdk:canary_leak, sdk:session_tainted,
+ * sdk:multi_turn_injection, ...) and `backend:` for external-policy-backend
+ * verdicts. Reserved: an operator- or server-supplied rule claiming either
+ * prefix is invalid, because a forged `sdk:*` rule would be indistinguishable
+ * from the SDK's own governance verdicts on the audit record. Pinned by the
+ * `reserved_rule_id_rejected` case in conformance/fixtures/eval_semantics.json.
+ */
+export const RESERVED_RULE_ID_PREFIXES = ["sdk:", "backend:"] as const;
+
+/**
  * Validate that a server-fetched object has the minimum required PolicyRule fields.
  * Prevents malformed or pathological rules from being applied.
  * Regex rules additionally pass through the ReDoS pattern validator so a
@@ -537,6 +548,10 @@ export function isValidPolicyRule(rule: unknown): rule is PolicyRule {
     typeof r.conditions === "object" &&
     r.conditions !== null;
   if (!structureOk) return false;
+
+  // A rule cannot claim the SDK's own verdict namespace (see
+  // RESERVED_RULE_ID_PREFIXES above).
+  if (RESERVED_RULE_ID_PREFIXES.some((p) => (r.id as string).startsWith(p))) return false;
 
   // mode is optional; when present it must be a known value. A typo'd
   // mode must invalidate the rule (EV-12), never silently ENFORCE a rule

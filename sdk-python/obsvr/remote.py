@@ -76,6 +76,17 @@ SDK_CAPABILITIES = ",".join(
 )
 
 
+#: Rule-id namespaces the SDK mints for its OWN verdicts - ``sdk:`` for the
+#: built-in governance layers (sdk:canary_leak, sdk:session_tainted, ...) and
+#: ``backend:`` for external-policy-backend verdicts. Reserved: an operator-
+#: or server-supplied rule claiming either prefix is invalid, because a forged
+#: ``sdk:*`` rule would be indistinguishable from the SDK's own governance
+#: verdicts on the audit record. Pinned by the ``reserved_rule_id_rejected``
+#: case in conformance/fixtures/eval_semantics.json (parity with the TS
+#: RESERVED_RULE_ID_PREFIXES).
+RESERVED_RULE_ID_PREFIXES = ("sdk:", "backend:")
+
+
 def _valid_rule(raw: Any) -> bool:
     if not isinstance(raw, dict):
         return False
@@ -86,6 +97,9 @@ def _valid_rule(raw: Any) -> bool:
         return False
     return (
         isinstance(raw.get("id"), str) and raw["id"] != ""
+        # A rule cannot claim the SDK's own verdict namespace (see
+        # RESERVED_RULE_ID_PREFIXES above).
+        and not raw["id"].startswith(RESERVED_RULE_ID_PREFIXES)
         and isinstance(raw.get("name"), str)
         and isinstance(raw.get("enabled"), bool)
         and raw.get("action") in _VALID_ACTIONS

@@ -613,6 +613,59 @@
         "decision": "block",
         "rule_id": "r-quota"
       }
+    },
+    {
+      "id": "reserved_rule_id_rejected",
+      "ev": "reserved-namespace",
+      "desc": "an operator rule claiming the SDK's own verdict namespace (sdk:/backend:) is invalid before it can evaluate: a forged sdk:* rule would be indistinguishable from the SDK's own governance verdicts (sdk:canary_leak, sdk:session_tainted, ...) on the audit record, so the namespace is reserved at the validator, the same discipline as a schema-level reserved-reason pattern",
+      "rules": [
+        {
+          "id": "sdk:forged_gate",
+          "name": "Forged SDK rule",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "anything"
+            ]
+          }
+        },
+        {
+          "id": "backend:opa",
+          "name": "Forged backend verdict",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "anything"
+            ]
+          }
+        },
+        {
+          "id": "r-legit",
+          "name": "Valid flag",
+          "enabled": true,
+          "action": "flag",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "anything"
+            ]
+          }
+        }
+      ],
+      "expect_valid_rule_ids": [
+        "r-legit"
+      ],
+      "input": {
+        "text": "anything goes"
+      },
+      "expect": {
+        "decision": "allow",
+        "rule_id": "r-legit"
+      }
     }
   ]
 }
