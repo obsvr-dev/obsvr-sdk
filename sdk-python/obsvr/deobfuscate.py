@@ -1,8 +1,9 @@
 """De-obfuscation views for the injection/PII detectors (server-side normalizer mirror).
 
 Derives read-only scan "views" from a prompt so payloads hidden behind
-zero-width characters, homoglyphs, HTML comments, whitespace padding, or
-base64/hex/percent encoding are still seen by the pattern scanners.
+zero-width characters, homoglyphs, HTML comments, CSS-hidden or aria-hidden
+markup, whitespace padding, or base64/hex/percent encoding are still seen by
+the pattern scanners.
 Behavior-identical to the server-side normalizer,
 pinned by conformance/fixtures/deobfuscation.json. Twin:
 sdk/src/policy/deobfuscate.ts.
@@ -171,6 +172,206 @@ def strip_html_comments(text: str) -> str:
     return "".join(out)
 
 
+_VOID_ELEMENTS = frozenset(
+    (
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    )
+)
+
+# ECMAScript's trimEnd() whitespace set, spelled out rather than using
+# str.rstrip(): Python strips \x1c-\x1f and NEL that JS does not, and does not
+# strip U+FEFF that JS does. The self-closing test below is the only place the
+# two sets could disagree on whether a tag is void.
+_JS_TRIM_WS = (
+    "\t\n\x0b\f\r \xa0"
+    "\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+# Whitespace inside a style value, dropped before the CSS test so
+# "display : none" reads the same as "display:none". ASCII only, matching the
+# TypeScript twin's character class.
+_ATTR_WS_RE = re.compile(r"[ \t\n\r\f\v]+")
+
+
+def _is_tag_name_start(c: str) -> bool:
+    return ("a" <= c <= "z") or ("A" <= c <= "Z")
+
+
+def _is_tag_name_char(c: str) -> bool:
+    return _is_tag_name_start(c) or ("0" <= c <= "9") or c == "-"
+
+
+def _is_ascii_space(c: str) -> bool:
+    """ASCII whitespace only; markup separators are ASCII by spec."""
+    return c in (" ", "\t", "\n", "\r", "\f", "\v")
+
+
+def _find_tag_end(text: str, start: int) -> int:
+    """Index of the ``>`` closing the tag whose attributes start at ``start``,
+    or -1. Quoted attribute values are honored so a ``>`` inside one does not
+    end the tag."""
+    quote = ""
+    for i in range(start, len(text)):
+        c = text[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            continue
+        if c in ('"', "'"):
+            quote = c
+            continue
+        if c == ">":
+            return i
+    return -1
+
+
+def _index_of_closing_tag(text: str, start: int, name: str) -> int:
+    """Index just past the first ``</name ... >`` at or after ``start``, or -1."""
+    n = len(text)
+    i = start
+    while True:
+        lt = text.find("</", i)
+        if lt == -1:
+            return -1
+        name_start = lt + 2
+        if text[name_start:name_start + len(name)].lower() == name:
+            after_at = name_start + len(name)
+            after = text[after_at] if after_at < n else None
+            # A real closer, not a longer name that merely starts the same way.
+            if after is None or not _is_tag_name_char(after):
+                gt = text.find(">", after_at)
+                if gt == -1:
+                    return -1
+                return gt + 1
+        i = lt + 2
+
+
+def _has_hidden_attribute(attrs: str) -> bool:
+    """Whether a tag's attribute text hides the element: ``aria-hidden="true"``,
+    or a ``style`` value carrying ``display:none`` / ``visibility:hidden``. Only
+    the ``style`` attribute is inspected for the CSS forms, so
+    ``data-note="display:none"`` does not hide anything. Attribute text is
+    bounded by the tag, so this is cheap."""
+    lower = attrs.lower()
+    if "aria-hidden" not in lower and "style" not in lower:
+        return False
+    n = len(lower)
+    i = 0
+    while i < n:
+        while i < n and not _is_tag_name_start(lower[i]):
+            i += 1
+        name_start = i
+        while i < n and _is_tag_name_char(lower[i]):
+            i += 1
+        if i == name_start:
+            break
+        name = lower[name_start:i]
+        # Only two attribute names can hide anything; skipping the value scan
+        # for every other one keeps a tag-heavy prompt off the expensive path.
+        interesting = name in ("aria-hidden", "style")
+        while i < n and _is_ascii_space(lower[i]):
+            i += 1
+        value = ""
+        if i < n and lower[i] == "=":
+            i += 1
+            while i < n and _is_ascii_space(lower[i]):
+                i += 1
+            q = lower[i] if i < n else ""
+            if q in ('"', "'"):
+                end = lower.find(q, i + 1)
+                if interesting:
+                    value = lower[i + 1:] if end == -1 else lower[i + 1:end]
+                i = n if end == -1 else end + 1
+            else:
+                value_start = i
+                while i < n and not _is_ascii_space(lower[i]):
+                    i += 1
+                if interesting:
+                    value = lower[value_start:i]
+        if not interesting:
+            continue
+        if name == "aria-hidden" and value == "true":
+            return True
+        if name == "style":
+            css = _ATTR_WS_RE.sub("", value)
+            if "display:none" in css or "visibility:hidden" in css:
+                return True
+    return False
+
+
+def strip_hidden_html(text: str) -> str:
+    """Remove CSS-hidden (``display:none``, ``visibility:hidden``) and
+    ``aria-hidden="true"`` elements, tag AND content, from the canonical view.
+
+    The attack this closes is not "a payload is hidden" — a payload sitting in
+    a hidden div is already plain text in the raw prompt, and the raw text is
+    always scanned first. It is the SPLIT: interleaving hidden junk breaks a
+    phrase the scanner would otherwise match, so ``ignore <span
+    style="display:none">zzz</span>all previous instructions`` reads as an
+    injection to the model and as three unrelated fragments to a substring
+    scanner. Removing the region rejoins the phrase, exactly as
+    ``strip_invisible`` rejoins a zero-width-split word — which is why the
+    region is removed with NO separator (unlike ``strip_html_comments``, which
+    leaves a space): the canonical view is what a reader actually sees rendered.
+
+    Deliberately a bounded text pass, not a parser (hot-path budget):
+     - no regex over the document, so no backtracking surface; the only regex
+       is a whitespace squeeze over one tag's attribute value
+     - single forward pass, O(input): each hidden region's closing-tag search
+       ends where scanning resumes, so no character is examined twice
+     - the FIRST matching closing tag ends the region, so same-name nesting
+       (``<div style="display:none">a<div>b</div>c</div>``) leaves a tail in
+       the view. That fails toward keeping content, and the raw scan still
+       covers it.
+     - an unterminated hidden element drops the remainder, matching
+       ``strip_html_comments``.
+
+    Twin: ``stripHiddenHtml`` in sdk/src/policy/deobfuscate.ts.
+    """
+    if "<" not in text:
+        return text
+    n = len(text)
+    out: Optional[List[str]] = None
+    emitted = 0
+    scan = 0
+    while scan < n:
+        lt = text.find("<", scan)
+        if lt == -1:
+            break
+        name_start = lt + 1
+        if name_start >= n or not _is_tag_name_start(text[name_start]):
+            scan = lt + 1
+            continue
+        p = name_start
+        while p < n and _is_tag_name_char(text[p]):
+            p += 1
+        tag_end = _find_tag_end(text, p)
+        if tag_end == -1:
+            scan = lt + 1
+            continue
+        attrs = text[p:tag_end]
+        if not _has_hidden_attribute(attrs):
+            scan = tag_end + 1
+            continue
+        name = text[name_start:p].lower()
+        if out is None:
+            out = []
+        out.append(text[emitted:lt])
+        if attrs.rstrip(_JS_TRIM_WS).endswith("/") or name in _VOID_ELEMENTS:
+            region_end = tag_end + 1
+        else:
+            close = _index_of_closing_tag(text, tag_end + 1, name)
+            region_end = n if close == -1 else close
+        emitted = region_end
+        scan = region_end
+    if out is None:
+        return text
+    out.append(text[emitted:])
+    return "".join(out)
+
+
 def collapse_whitespace(text: str) -> str:
     """Collapse every whitespace run to a single space and trim both ends."""
     return _WS_TRIM_RE.sub("", _WS_RUN_RE.sub(" ", text))
@@ -328,7 +529,8 @@ _TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9+/=_-]+")
 def deobfuscate(text: str) -> List[Dict[str, str]]:
     """Derive scan views: at most one canonical "deobfuscated" view
     (strip-invisible → fold-confusables → strip-HTML-comments →
-    collapse-whitespace, composed) followed by at most 5 decoded views
+    strip-hidden-HTML → collapse-whitespace, composed) followed by at most 5
+    decoded views
     ("percent" whole-string first, then per-token "hex"/"base64" in token
     order). Decode depth is exactly 1. Never mutates or returns the input.
     Each view is {"method": ..., "text": ...}."""
@@ -337,7 +539,9 @@ def deobfuscate(text: str) -> List[Dict[str, str]]:
 
     # collapse_whitespace already trims, so non-empty here is the gateway's
     # TrimSpace(canon) != "" gate.
-    canon = collapse_whitespace(strip_html_comments(fold_confusables(strip_invisible(t))))
+    canon = collapse_whitespace(
+        strip_hidden_html(strip_html_comments(fold_confusables(strip_invisible(t))))
+    )
     if canon != t and canon != "":
         views.append({"method": "deobfuscated", "text": canon})
 

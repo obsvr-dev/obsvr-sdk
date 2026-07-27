@@ -40,16 +40,6 @@
       "tracking": "sdk-python/obsvr/policy_verify.py. Closes if a stdlib Ed25519 ever lands or the dependency posture changes."
     },
     {
-      "id": "KD-7",
-      "sdk": "py",
-      "category": "capability",
-      "status": "intended",
-      "description": "CSS-hidden / aria-hidden stripping in the canonical view: TypeScript's de-obfuscation pipeline runs a strip-hidden-HTML pass (between strip-HTML-comments and collapse-whitespace) that removes display:none / visibility:hidden / aria-hidden=\"true\" elements, tag and content. Python's pipeline does not yet. TEMPORARY: the Python port is the next scheduled change. Shared fixture cases for hidden markup exist in deobfuscation.json marked sdk_support py:skip, so the gap is CI-visible; flipping them to py:required is the port's acceptance gate.",
-      "parity_scope": "Raw text is scanned first in both languages, so a payload hidden whole is detected either way; the divergence costs Python only the split-phrase case.",
-      "allowed_difference": "Canonical views differ for inputs containing CSS-hidden or aria-hidden markup.",
-      "tracking": "sdk/src/policy/deobfuscate.ts stripHiddenHtml / sdk-python/obsvr/deobfuscate.py. DELETE this entry (and flip the fixture cases to py:required) when the Python twin lands."
-    },
-    {
       "id": "KD-8",
       "sdk": "py",
       "category": "capability",

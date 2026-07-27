@@ -17,6 +17,23 @@ FIXED rather than accepted, which the table never carried and which is the
 better half of the record.
 
 History:
+- 2026-07-28: KD-7 (CSS-hidden / aria-hidden stripping) was FIXED by porting
+  the pass, and the row is gone. The row had always described itself as
+  temporary: `stripHiddenHtml` landed in TypeScript with the Python twin
+  scheduled, and the three `hidden_html_*` cases in
+  `conformance/fixtures/deobfuscation.json` carried `sdk_support py:skip` so
+  the gap failed loudly rather than quietly. `strip_hidden_html` in
+  `sdk-python/obsvr/deobfuscate.py` is a line-for-line port sitting at the same
+  pipeline position (after HTML-comment stripping, before whitespace collapse),
+  and those three cases now run required in both suites. One parity detail the
+  port had to decide rather than copy: TypeScript tests a self-closing tag with
+  `String.prototype.trimEnd`, whose whitespace set is not Python's — Python also
+  strips `\x1c`-`\x1f` and NEL, and does not strip U+FEFF — so the Python side
+  spells the ECMAScript set out (`_JS_TRIM_WS`) instead of calling bare
+  `rstrip()`. The documented limits are shared too: first-matching-closer (so
+  same-name nesting leaves a tail, failing toward keeping content), an
+  unterminated hidden element drops the remainder, and only the `style`
+  attribute carries the CSS forms.
 - 2026-07-27: KD-4 (numeric canonicalization) was FIXED, not re-argued, and
   the row is gone. It had been an accepted risk pinned by hand-written
   vectors, scoped to "exotic numbers" — integers past the JS safe range and
