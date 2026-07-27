@@ -18,6 +18,19 @@ there is to link.
 Changes landed since 0.10.0. This section accumulates until the next release
 cut, when it is renamed to that version.
 
+### Removed
+
+- **BREAKING: the manual-tracking client is gone.** `ObsvrClient`,
+  `trackCompletion`, `trackBatch`, the deprecated `LLMAuditClient` alias, their
+  parameter types, and the `@obsvr/sdk/client` subpath export are removed. That
+  path posted events straight to ingest with no PII scan, no policy evaluation,
+  and no chain signature — a second ingestion path in a package whose whole
+  claim is that there is one, and the weaker of the two was a root export.
+  **Migration:** use `obsvr.wrap()` around your provider client, which produces
+  the same events with the controls applied and the chain signed. There is no
+  supported way to enqueue an unsigned event, which is the point.
+  ([`ebd2b33`](https://github.com/obsvr-dev/obsvr-sdk/commit/ebd2b33))
+
 ### Changed
 
 - **Rules claiming the SDK's verdict namespace are rejected.** A policy rule
