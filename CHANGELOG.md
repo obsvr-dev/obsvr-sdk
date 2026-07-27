@@ -6,7 +6,12 @@ version number.
 
 Breaking changes are marked **BREAKING** and carry a migration note. Additive
 changes to closed enums count as breaking, because they break exhaustive
-switches in consumer code.
+switches in consumer code. Entries are kept short by default; the long ones are
+the ones that change something you depend on.
+
+Each entry links the commit that made the change. This repository takes direct
+pushes rather than pull requests, so a commit is the smallest reviewable unit
+there is to link.
 
 ## [Unreleased]
 
@@ -15,239 +20,156 @@ cut, when it is renamed to that version.
 
 ### Added
 
-- **Dropped events are declared in the signed chain.** When the bounded sender
-  queue overflows, both SDKs now sign a **gap marker** into the chain at the
-  position the loss occurred: one chain-linked event stating how many events
-  were dropped there. Previously those drops were counted in
-  `getSenderStats()` / `get_sender_stats()` and nothing else — and because they
-  happen *before* a sequence number is assigned, the surviving events formed a
-  contiguous chain that verified clean. A burst that lost 90% of its events
-  produced a record that looked complete, and the only evidence otherwise was a
-  process-local counter that died with the process. The declared count lives in
-  the signature preimage (`prompt`), not in metadata, so editing it down breaks
-  verification like any other tamper; `metadata.obsvr_audit_gap` carries an
-  unsigned structured copy for querying. One marker covers a whole contiguous
-  gap rather than one per dropped event, and a `flush()` (including the exit
-  handlers) declares an outstanding gap before draining, so a shutdown mid-burst
-  still leaves the loss on the record. Both verifiers report it — new
-  `gapMarkers` / `eventsDeclaredLost` result fields (`gap_markers` /
-  `events_declared_lost` in Python) and a line in both `obsvr-verify` CLIs — so
-  a chain that is valid *and* incomplete is reported as both. New
-  `gap_markers` / `gap_events_declared` sender counters. Marker format and
-  verdicts are pinned cross-language by
-  `conformance/fixtures/audit_gap.json`.
-- **`obsvr-verify` exit code 3: valid but incomplete.** A chain carrying gap
-  markers previously exited `0` — it printed the declared loss, but
-  `obsvr-verify chain.json && deploy` still passed on a record missing most of
-  its events, which is the same conflation of *valid* and *complete* the markers
-  exist to end, surviving in the machine-readable half. Both CLIs now exit `3`
-  when every check passes and the chain declares dropped events; `1` (broken)
-  and `2` (usage) are unchanged, and a clean chain still exits `0`.
-  `--allow-gaps` maps `3` back to `0` for callers whose posture accepts
-  bounded-queue loss — it suppresses the status only, never the printed
-  disclosure. **If you gate on `obsvr-verify`'s exit status, a previously
-  passing chain that declares loss will now fail**; that is the intent, and
-  `--allow-gaps` is the opt-out. The parity script pins the status in both
-  languages.
-- **Typed policy-block error.** A call refused by policy now throws
-  `ObsvrPolicyError` (TypeScript) / raises `ObsvrPolicyError` (Python) carrying
-  a stable `type`, a `reason_code` from the closed registry, the deciding
-  `rule_id`, and the decision metadata, so callers can tell "refused on
-  purpose" from a provider or transport failure without matching on the
-  message. An unrecognized reason category produces `ObsvrUnknownPolicyError`
-  rather than degrading to an untyped error. **The message string is
-  unchanged**, so existing code that string-matched it keeps working, and the
-  Python error still subclasses `RuntimeError`, so existing `except` blocks
-  keep catching it.
-- **Duplicate-instance guard.** If the SDK ends up in one process twice -
-  installed directly and again as a transitive dependency - the first copy to
-  `init()` governs, and the second logs once and stands down instead of both
-  polling, both wrapping, and both emitting duplicate events for the same call.
-  A copy that stood down passes clients through unwrapped, so its warning names
+- **Dropped events are declared in the signed chain.** A bounded-queue overflow
+  now signs a **gap marker** at the chain position where events were lost,
+  stating how many. The count lives in the signature preimage, so editing it
+  down breaks verification. Previously drops preceded sequence assignment, so a
+  burst that lost most of its events still verified clean. Both verifiers gained
+  `gapMarkers` / `eventsDeclaredLost` (`gap_markers` / `events_declared_lost`),
+  and the format is pinned by `conformance/fixtures/audit_gap.json`.
+  ([`6e824fc`](https://github.com/obsvr-dev/obsvr-sdk/commit/6e824fc))
+- **`obsvr-verify` exit code 3: valid but incomplete.** A chain declaring
+  dropped events now exits `3` rather than `0`, so `obsvr-verify chain.json &&
+deploy` no longer passes on a record missing most of its events. **If you gate
+  on the exit status, a previously passing chain that declares loss will now
+  fail**; `--allow-gaps` maps `3` back to `0`, suppressing the status only and
+  never the printed disclosure.
+  ([`d5db27f`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5db27f))
+- **Typed policy-block error.** A refused call now raises `ObsvrPolicyError` in
+  both SDKs with a stable `type`, a registry `reason_code`, the deciding
+  `rule_id`, and decision metadata, so a deliberate refusal is distinguishable
+  from a transport failure. An unrecognized reason category yields
+  `ObsvrUnknownPolicyError` rather than an untyped error. Message text is
+  unchanged; Python still subclasses `RuntimeError`.
+  ([`6dfa8c7`](https://github.com/obsvr-dev/obsvr-sdk/commit/6dfa8c7))
+- **Duplicate-instance guard.** With the SDK installed twice in one process, the
+  first copy to `init()` governs and the second stands down with a warning. A
+  copy that stood down passes clients through unwrapped, so the warning names
   the fix: deduplicate the dependency.
+  ([`71caea2`](https://github.com/obsvr-dev/obsvr-sdk/commit/71caea2))
 - **Python chain verification.** `obsvr.verify_chain(events, api_key)` verifies
-  an exported audit chain offline - recomputing every HMAC signature and
-  checking sequence continuity, chain linkage, session consistency, and
-  timestamp monotonicity - and returns the same verdicts as the TypeScript
-  `verifyAuditChain` on the same input. A Python-only shop no longer needs a
-  Node toolchain to check its own evidence.
-- **`dropped_rejected` delivery counter.** When a batch POST returns 2xx while
-  refusing individual events in the response body, those events are now counted
-  in their own bucket and reported as a distinct `dropped_rejected` key on the
-  `X-Obsvr-Counters` poll header. Previously they were only debug-logged and,
-  worse, counted as sent. Server-refused events are no longer included in
-  `sent`; the existing `dropped` aggregate is unchanged and still means
+  an exported chain offline, checking every signature plus sequence continuity,
+  linkage, session consistency, and timestamp monotonicity, with the same
+  verdicts as the TypeScript `verifyAuditChain`.
+  ([`fea31b3`](https://github.com/obsvr-dev/obsvr-sdk/commit/fea31b3))
+- **`dropped_rejected` delivery counter.** Events a server refuses individually
+  inside a 2xx batch now get their own counter and poll-header key; they were
+  previously counted as sent. The `dropped` aggregate still means
   never-delivered.
+  ([`5b9a941`](https://github.com/obsvr-dev/obsvr-sdk/commit/5b9a941),
+  [`8d9066e`](https://github.com/obsvr-dev/obsvr-sdk/commit/8d9066e))
 - **`tool_content_hash` is pinned by a shared fixture.**
-  `conformance/fixtures/tool_content_hash.json` fixes the exact canonical
-  document and digest for sixteen cases — key ordering, unicode, absent versus
-  empty arguments, omitted null fields, schema widening, and the numbers that
-  must refuse to hash rather than seal a value the two languages format
-  differently. It also pins, in both directions, that this hash is not the
-  descriptor-pinning hash: the two projections digest the same descriptor
-  differently, and flipping a behavior hint moves the pin while leaving the
-  content hash alone.
-- **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` now installs an
-  `obsvr-verify` console script with the same two tiers, the same exit codes
-  (0 verified / 1 broken / 2 usage, joined this release by 3 valid-but-
-  incomplete — see above), the same accepted bundle shapes, and the
-  same verdicts as the npm CLI. A Python-only compliance team can verify its
-  own evidence without adopting a Node toolchain — the verification claim was
-  never language-qualified, but until now the tooling was. CI drives both
-  binaries over one export built from the shared signing vectors and compares
-  exit codes and output, so the two cannot drift apart. The GitHub Action keeps
-  using the npm CLI.
-- **Tool-call events carry `tool_content_hash` (TypeScript).** Every event
-  emitted at an MCP tool boundary or by `obsvrGovernTool` now carries a digest
-  binding the tool name, the descriptor the caller held, and the call
-  arguments, so a descriptor swap or a rug-pulled MCP server becomes
-  attributable after the fact: disclose the parts, recompute, compare against
-  the anchored root. It rides `metadata.obsvr_tool_content_hash` until the
-  ingest schema has a column for it (promotion plan in the module docs), is
-  stamped after caller metadata so a key collision cannot overwrite sealed
-  evidence, and is omitted rather than guessed when a value cannot be
-  canonicalized identically in both languages. Blocked tool calls are stamped
-  too. Descriptor-pinning hashes are unchanged and unrelated. MCP `call_tool`
-  carries no descriptor, so those events commit to the name and arguments with
-  the empty-descriptor digest - what the producer actually saw.
-- **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** Both senders
-  classified every 4xx other than the documented single-event 403 as a
-  permanent failure without ever looking at the body, so a retry that raced a
-  lost 2xx was dead-lettered - fabricating a coverage gap for an event the
-  server had already sealed. A 409 whose body carries `duplicate_event` is now
-  idempotent success on both the single-event and batch paths, and a per-event
-  `duplicate_event` inside a 2xx batch counts as sent rather than
-  `dropped_rejected`. Only that exact code: a 409 `sequence_fork` stays a
-  failure, because that chain position belongs to a different signature and has
-  to surface. A 409 body that cannot be read is not absorbed.
-- **The Python sender reads batch responses.** It previously discarded the
-  response body entirely, so when a batch POST returned 2xx while refusing
-  individual events inside it, those events were silently counted as sent -
-  strictly worse than TypeScript on the same public counters promise. Per-event
-  rejects now increment `dropped_rejected` under the same name TypeScript uses,
-  are excluded from `sent`, arm no backoff (the batch itself succeeded), and
-  appear as their own key on the `X-Obsvr-Counters` poll header. A response body
-  that is absent or unparseable means "no rejects reported", never a failed
+  `conformance/fixtures/tool_content_hash.json` fixes the canonical document and
+  digest for sixteen cases, including the numbers that must refuse to hash
+  rather than seal a value the two languages format differently, and pins that
+  this hash is not the descriptor-pinning hash.
+  ([`cf6c958`](https://github.com/obsvr-dev/obsvr-sdk/commit/cf6c958))
+- **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` installs a console
+  script with the same tiers, exit codes, bundle shapes, and verdicts as the npm
+  CLI, so a Python-only team can verify its own evidence without a Node
+  toolchain. CI drives both binaries over one export so they cannot drift.
+  ([`1756930`](https://github.com/obsvr-dev/obsvr-sdk/commit/1756930))
+- **Tool-call events carry `tool_content_hash` (TypeScript).** Events from an MCP
+  tool boundary or `obsvrGovernTool` carry a digest binding the tool name, the
+  descriptor the caller held, and the call arguments, so a descriptor swap is
+  attributable after the fact. Blocked tool calls are stamped too, and the
+  digest is omitted rather than guessed when a value cannot be canonicalized
+  identically in both languages.
+  ([`407186f`](https://github.com/obsvr-dev/obsvr-sdk/commit/407186f),
+  [`5ab19ec`](https://github.com/obsvr-dev/obsvr-sdk/commit/5ab19ec))
+- **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** A retry that
+  raced a lost 2xx was dead-lettered, fabricating a coverage gap for an event
+  the server had already sealed. Only that code: `409 sequence_fork` stays a
+  failure, and an unreadable 409 body is never absorbed.
+  ([`4dd99b4`](https://github.com/obsvr-dev/obsvr-sdk/commit/4dd99b4))
+- **The Python sender reads batch responses.** It previously discarded the body,
+  so events a server refused inside a 2xx batch counted as sent. Per-event
+  rejects now increment `dropped_rejected`, are excluded from `sent`, and arm no
+  backoff. An unparseable body means "no rejects reported", never a failed
   delivery.
-- **The shared conformance corpus is hash-pinned.**
-  `conformance/MANIFEST.sha256` records a sha256 of every file in the corpus,
-  and `sdk/conformance.pin` / `sdk-python/conformance.pin` record the corpus
-  hash each package's suite was written against. CI fails if a fixture changes
-  without regenerating the pin, if the two pins disagree, or if a fixture has no
-  in-repo consumer. The failure this closes is not a wrong fixture but a forked
-  one: a copy drifts, both copies keep passing their own suites, and the
-  "shared" contract quietly stops being shared. Regenerate with
-  `node scripts/generate-conformance-manifest.mjs`; the update protocol is in a
-  comment at the top of the manifest.
+  ([`8d9066e`](https://github.com/obsvr-dev/obsvr-sdk/commit/8d9066e))
+- **The shared conformance corpus is hash-pinned.** `conformance/MANIFEST.sha256`
+  hashes every file, and each package pins the corpus its suite was written
+  against. CI fails on an unregenerated pin, disagreeing pins, or a fixture with
+  no consumer. What this closes is a forked fixture: a copy drifts, both suites
+  keep passing, and the shared contract stops being shared.
+  ([`7a329ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/7a329ef))
 - **CSS-hidden and aria-hidden content is stripped from the scan view
-  (TypeScript).** The de-obfuscation view layer previously handled HTML
-  comments only, so hidden markup could be used to break a phrase apart:
-  `ignore <span style="display:none">zzz</span>all previous instructions` reads
-  as an injection to the model and as three unrelated fragments to a substring
-  scanner. Elements hidden via `display:none`, `visibility:hidden`, or
-  `aria-hidden="true"` are now removed - tag and content, with no separator -
-  from the canonical view, so the phrase rejoins and is detected. Detection-only
-  as before: the view never feeds redaction, and the raw text is still scanned
-  first, so a payload hidden whole was and remains caught. Off unless
-  `deobfuscation: { enabled: true }`. Measured cost of the pass: 0.04 us on a
-  100-byte prompt with no markup, 0.4 us with one hidden element. The Python
-  twin follows.
-- **Python signed-policy verification.** `obsvr.init(policy_public_key=...)`
-  pins an Ed25519 public key, and `policy_verify.py` checks the signature block
-  on a fetched policy the way the TypeScript SDK already did: same checks, same
-  order, same refusal reasons, asserted against the shared vectors in
-  `conformance/fixtures/policy_signature.json`. Until now only TypeScript
-  verified, so a Python fleet applied whatever structurally valid rules the
-  delivery path handed it. Python has no standard-library Ed25519, so the
-  backend is optional (`pip install "obsvr-sdk[crypto]"`); with a key pinned and
-  no backend installed the policy is still refused and events carry
-  `policy_verification_unavailable` in reserved metadata, so an unverifiable
-  window is visible rather than silent. This ships the module and the flag; the
-  poll path that consumes it lands next.
-- **Failure-disposition registry.** Every governance layer now declares what it
-  does in each failure state (timeout, error, degraded) in one table per
-  language, pinned by `conformance/fixtures/fail_mode.json`. Descriptive only:
-  no call path reads it and no behavior changed. It records, among other things,
-  that eight in-process detector layers currently have no error channel, so an
-  unexpected exception inside them reaches the host application.
+  (TypeScript).** Hidden markup could break a phrase apart so it read as an
+  injection to the model and as unrelated fragments to a scanner. Elements
+  hidden via `display:none`, `visibility:hidden`, or `aria-hidden="true"` are
+  now removed from the canonical view, tag and content. Raw text is still
+  scanned first, so a payload hidden whole was always caught; this closes the
+  split-phrase case. Detection-only, and off unless
+  `deobfuscation: { enabled: true }`.
+  ([`9916800`](https://github.com/obsvr-dev/obsvr-sdk/commit/9916800))
+- **Python signed-policy verification.** `obsvr.init(policy_public_key=...)` pins
+  an Ed25519 key and `policy_verify.py` checks a fetched policy's signature with
+  the same checks and refusal reasons TypeScript used. The backend is optional
+  (`pip install "obsvr-sdk[crypto]"`); with a key pinned and none installed the
+  policy is refused and the events say so.
+  ([`6783b26`](https://github.com/obsvr-dev/obsvr-sdk/commit/6783b26),
+  [`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5))
+- **Failure-disposition registry.** Every governance layer declares what it does
+  in each failure state (timeout, error, degraded) in one table per language,
+  pinned by `conformance/fixtures/fail_mode.json`. Descriptive when it landed:
+  no call path read it and no behavior changed.
+  ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
 
 ### Fixed
 
 - **The two SDKs could derive different `policy_version` values from the same
-  policy.** _(Also listed under Changed — a Python-computed `policy_version`
-  changes value for some rule sets, and approvals are pinned to
-  `policy_version`.)_ `policy_version` and `rules_hash` are SHA-256 over a canonical JSON
-  form that both SDKs must produce byte for byte. The Python side computed it
-  with `json.dumps(sort_keys=True, separators=(",", ":"),
-  ensure_ascii=False)`, which agrees with the TypeScript `JSON.stringify`-based
-  form on strings, ordinary integers and simple decimals — and disagrees on a
-  good deal else. A differential property test (fast-check generating on the
-  TypeScript side, hypothesis on the Python side, both canonicalizing the same
-  JSON *text*) found roughly a third of randomly generated documents diverging,
-  in six classes: every whole-valued float (`1.0`, which Python wrote as `1.0`
-  and JS as `1`), negative zero, both exponent thresholds, exponent
-  zero-padding (`1e-07` vs `1e-7`), unpaired surrogates (Python produced a
-  string with no UTF-8 encoding at all, so hashing raised instead of returning
-  a hash), and the sort order of astral object keys (JS compares UTF-16 code
-  units, Python compares code points). In a fleet running both SDKs against one
-  policy server, the same policy therefore stamped two different
-  `policy_version` values on audit events, which reads as a policy change that
-  never happened. `_canonical_json` is now a faithful port of the TypeScript
-  `stableStringify` and all six classes are closed. _No hash the two SDKs
-  already agreed on has changed_ — every previously pinned conformance vector
-  is unmoved — but a Python-computed `policy_version` for a rule set containing
-  one of the above **will** change, to the value TypeScript was already
-  producing. Numbers past 2^53, which JS rounds while parsing the literal
-  rather than while serializing, are now rounded the same way in Python; the
-  attacker-facing tool-descriptor and tool-content hashers deliberately still
-  refuse those values rather than normalize them. Pinned cross-language by the
-  new `conformance/fixtures/canonical_json.json` and re-checked against freshly
-  generated documents on every CI run.
+  policy.** Python's canonical form came from `json.dumps`, which disagrees with
+  `JSON.stringify` on whole-valued floats, negative zero, exponent form,
+  unpaired surrogates, and astral key order. A differential property test
+  (fast-check against hypothesis) found roughly a third of generated documents
+  diverging; `_canonical_json` is now a faithful port. See Changed for the
+  effect on approvals.
+  ([`87c593d`](https://github.com/obsvr-dev/obsvr-sdk/commit/87c593d))
 - **A bug inside a detector layer could break the calling application.** Eight
-  in-process detector layers - builtin PII scan, canary, de-obfuscation views,
-  multi-turn injection, policy floor, policy rules, session taint, tool-result
-  scan - had no error channel at all, so an unexpected exception inside one
+  in-process detector layers had no error channel, so an exception inside one
   propagated out of your own LLM call rather than resolving to allow or block.
-  That was neither fail-open nor fail-closed but the absence of a decision.
-  Every path that runs them is now guarded in both SDKs, and the resolution is
-  declared per layer in `conformance/fixtures/fail_mode.json`: by `failMode`
-  for the scanning layers, and closed for the policy floor and canary, which
-  are by definition the layers `failMode` cannot move. Failures are counted
-  under a `detector_errors` key on the fleet-status poll and recorded on the
-  call's own signed event under `obsvr_telemetry.detector_failure`.
+  Every path is now guarded in both SDKs, resolving by `failMode` for the
+  scanning layers and closed for the policy floor and canary. Failures are
+  counted under `detector_errors` on the fleet poll and recorded on the call's
+  own signed event under `obsvr_telemetry.detector_failure`.
+  ([`201a062`](https://github.com/obsvr-dev/obsvr-sdk/commit/201a062),
+  [`2825333`](https://github.com/obsvr-dev/obsvr-sdk/commit/2825333),
+  [`e5f845d`](https://github.com/obsvr-dev/obsvr-sdk/commit/e5f845d),
+  [`7a314e0`](https://github.com/obsvr-dev/obsvr-sdk/commit/7a314e0),
+  [`9441702`](https://github.com/obsvr-dev/obsvr-sdk/commit/9441702),
+  [`04cbf38`](https://github.com/obsvr-dev/obsvr-sdk/commit/04cbf38),
+  [`2c80466`](https://github.com/obsvr-dev/obsvr-sdk/commit/2c80466))
 - **A failed redaction could send the content it was told to remove.** Applying
-  a `redact` decision to the outbound provider arguments was unguarded, so a
-  defect in the redactor either propagated to your application or, mid-walk,
-  left a partially-redacted request. Because the scan has already found
-  something by that point, this now fails **closed** regardless of `failMode` -
-  the call is refused rather than forwarded - and the event drops any
-  `redacted` claim instead of asserting a redaction that did not happen.
+  a `redact` decision to the outbound arguments was unguarded, so a defect could
+  forward a partially-redacted request. It now fails **closed** regardless of
+  `failMode`, and the event drops any `redacted` claim.
+  ([`9f738ce`](https://github.com/obsvr-dev/obsvr-sdk/commit/9f738ce))
 - **A stored audit copy could be written by a broken redactor.** Every stored
   copy now goes through one guarded point per language, falling back to
-  `[UNSCANNED:detector_error]` - deliberately unlike the `[REDACTED…]` markers -
+  `[UNSCANNED:detector_error]`, deliberately unlike the `[REDACTED…]` markers,
   rather than persisting content nothing scanned.
+  ([`04fbf08`](https://github.com/obsvr-dev/obsvr-sdk/commit/04fbf08))
 - **The GitHub Action installed a stale SDK.** Its `version` input defaulted to
-  0.9.0 against a 0.10.0 repository, so a CI job using the defaults verified
-  evidence with an older SDK than the one that produced it. The default now
-  tracks the package version, and `scripts/check-version-consistency.mjs` -
-  which already guarded `package.json`, `constants.ts`, and `_version.py` -
-  now covers `action/action.yml` too, so this cannot drift again unnoticed. Both
-  publish workflows run that check before publishing.
+  0.9.0 against a 0.10.0 repository, so a default CI job verified evidence with
+  an older SDK than the one that produced it. The default now tracks the package
+  version, and the version-consistency check covers `action/action.yml`.
+  ([`bb2125a`](https://github.com/obsvr-dev/obsvr-sdk/commit/bb2125a))
 
 ### Changed
 
 - **A Python-computed `policy_version` changes value for rule sets containing
-  certain numbers.** The canonicalizer fix described under Fixed ("The two SDKs
-  could derive different `policy_version` values from the same policy") is
-  listed here as well because of what depends on that hash. Approvals are
-  pinned to the rule hash, and the `/policies` poll sends `X-Obsvr-Rules-Hash`,
-  so a rule set containing a whole-valued float, negative zero, an exponent-form
-  number, an unpaired surrogate, or an astral object key hashes to a different
-  value in Python than it did before — to the value TypeScript was already
-  producing. No hash the two SDKs agreed on has changed. _Migration: if a
-  Python process holds outstanding approvals for such a rule set, they are void
-  and must be re-granted; a mixed-language fleet stops reporting two different
-  versions for one policy._
+  certain numbers.** The canonicalizer fix described under Fixed is listed here
+  as well because of what depends on that hash. Approvals are pinned to the rule
+  hash, and the `/policies` poll sends `X-Obsvr-Rules-Hash`, so a rule set
+  containing a whole-valued float, negative zero, an exponent-form number, an
+  unpaired surrogate, or an astral object key hashes to a different value in
+  Python than it did before — to the value TypeScript was already producing. No
+  hash the two SDKs agreed on has changed. _Migration: if a Python process holds
+  outstanding approvals for such a rule set, they are void and must be
+  re-granted; a mixed-language fleet stops reporting two different versions for
+  one policy._
+  ([`87c593d`](https://github.com/obsvr-dev/obsvr-sdk/commit/87c593d))
 
 - **BREAKING: `QUOTA_UNMETERED` added to the closed `ReasonCode` registry.**
   A quota rule whose scope the bounded meter has no counter slot for is not
@@ -265,6 +187,8 @@ cut, when it is renamed to that version.
   `ReasonCode` in consumer code needs a `QUOTA_UNMETERED` arm. Operators
   running `failMode: "closed"` should note that a saturated quota store now
   blocks new scopes rather than admitting them unmetered._
+  ([`750e5f9`](https://github.com/obsvr-dev/obsvr-sdk/commit/750e5f9),
+  [`7e22b4b`](https://github.com/obsvr-dev/obsvr-sdk/commit/7e22b4b))
 
 - **BREAKING (Python): `ingest_url` no longer defaults to
   `http://localhost:3000`.** Unset, it is now empty: the SDK logs a loud
@@ -275,20 +199,26 @@ cut, when it is renamed to that version.
   you relied on the localhost default in development, pass
   `ingest_url="http://localhost:3000"` explicitly._ Governance itself is
   unaffected either way; only delivery stops.
+  ([`07413f7`](https://github.com/obsvr-dev/obsvr-sdk/commit/07413f7))
 - An unusable ingest URL is now a delivery failure in Python rather than an
-  exception: the sender and the policy poll both treat it as a retryable
-  failure and count it, instead of raising inside their background threads.
+  exception: the sender and the policy poll both count it as retryable instead
+  of raising inside their background threads.
+  ([`07413f7`](https://github.com/obsvr-dev/obsvr-sdk/commit/07413f7))
 - The normative evaluation-semantics specification (EV-1 through EV-23) now
   lives at `conformance/SPEC-evaluation.md`, beside the fixtures that pin it.
-  Semantics are unchanged; its fixture map was corrected to name only cases that
-  exist and to state which EV statements have no cross-language case yet.
+  Semantics are unchanged.
+  ([`3b0f13d`](https://github.com/obsvr-dev/obsvr-sdk/commit/3b0f13d))
 - `conformance/fixtures/signing_vectors.json` gained a `chain_verification`
   block: thirteen tamper cases with the verdict both verifiers must produce.
   Consumers of the existing `events` and key material are unaffected.
+  ([`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5))
 
 ## [0.10.0] - 2026-07-20
 
-Security engine and integrity hardening. Private beta.
+Security engine and integrity hardening. Private beta. The first commit in this
+repository, [`e90caf0`](https://github.com/obsvr-dev/obsvr-sdk/commit/e90caf0),
+squashes the work below. Nothing was published to npm or PyPI before it, so the
+record starts here.
 
 ### Added
 
@@ -302,64 +232,3 @@ Security engine and integrity hardening. Private beta.
   and excluded from customer-hook override.
 - SSRF-guarded outbound endpoints for the external policy backend and Presidio,
   validated at init.
-
-## [0.9.0] - 2026-07-17
-
-The version benchmarked in `BENCHMARKS.md`. What is recorded of the earlier
-lineage is below.
-
-## Pre-fork history
-
-The SDK was maintained in another repository before this one, under an internal
-version line that reached 2.0.0. **That line was never published**: the npm and
-PyPI names were checked and no version has ever existed on either registry, so
-the current 0.x line supersedes nothing and there is no upgrade path to
-describe. The security work from that period is recorded here because the code
-in this repository is built on it.
-
-### [2.0.0] - 2026-06-14
-
-#### Security fixes
-
-- **Streaming bypass closed.** PII scanning, policy rules, and the `onPreCall`
-  hook now run _before_ the model is contacted for `stream: true` calls.
-  Previously every streaming request skipped those checks entirely - the whole
-  governance boundary was optional if a caller passed one flag.
-- **`policy_version` derived from the active rule set.** Each audit event
-  carries a hash of the enabled rules rather than a hardcoded `"v1"`, so an
-  auditor can reconstruct which policy decided any given call.
-- **Hook timeout enforced in the proxy wrapper.** `onPreCall` runs under
-  `hookTimeoutMs` (2000 ms default); a timed-out hook logs and defaults to
-  allow rather than hanging the call.
-- **Server-fetched policy rules validated before being applied.** The polling
-  loop discards rules that do not match the rule schema, so a malformed or
-  hostile server response cannot alter enforcement.
-- **GitHub token pattern corrected.** The suffix length was wrong and missed
-  real personal access tokens.
-- **HMAC key-derivation comment corrected** to describe what the code does
-  (HMAC-Extract, RFC 5869 §2.2) rather than implying full HKDF.
-
-#### Breaking changes
-
-- **BREAKING: `ingest_url` / `baseUrl` is required.** The previous
-  `http://localhost:3000` default was removed. Unset, a warning is logged and
-  events are dropped rather than streamed to whatever is listening on a local
-  port. _Migration: set `ingest_url` explicitly._ (The Python default was not
-  removed at the same time; see Unreleased once that lands.)
-- **BREAKING: HTTPS enforced for non-localhost `ingest_url`.** An `http://` URL
-  for a non-localhost host throws at init. _Migration: use `https://`, or
-  localhost for development._
-- **BREAKING: source maps excluded from the published package.** `.js.map`
-  files are no longer shipped; `.d.ts.map` is retained for editor
-  go-to-definition.
-
-#### Improvements
-
-- `generateUUID()` always uses `crypto.randomUUID()`; the `Math.random()`
-  fallback was removed (Node 18+ is required anyway).
-- `init()` warns when `pii_policy.rules` names PII types that have no built-in
-  detector, instead of silently covering nothing.
-
-### 1.x and earlier
-
-Internal and pre-release builds. No changelog was kept.
