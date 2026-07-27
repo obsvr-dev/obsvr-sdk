@@ -18,6 +18,29 @@ there is to link.
 Changes landed since 0.10.0. This section accumulates until the next release
 cut, when it is renamed to that version.
 
+### Changed
+
+- **BREAKING: the audit-chain content hash is length-prefixed and domain-tagged
+  (chain format 2).** The signature previously hashed `sha256(prompt +
+  response)`, which does not bind where the prompt ends and the response begins
+  — `("AB","C")` and `("A","BC")` hash identically — so a stored event's
+  content could be re-split at a different attribution boundary and still
+  verify. Events now carry `chain_format: 2` and are signed over
+  `sha256("obsvr:content/2" || 0x00 || u64be(len(prompt)) || prompt ||
+  u64be(len(response)) || response)`, with the format number leading the HMAC
+  payload so the format claim is itself signed. **Migration:** nothing is
+  required for existing exports — chains signed before this change verify
+  exactly as before, and both verifiers now report `chainFormat: 1` for them
+  (a format-1 chain attests content-in-order, not the prompt/response
+  boundary). Verifiers older than this change cannot verify newly signed
+  chains, so upgrade verifiers before producers. Within one session a chain
+  must be format-uniform: a mixed, stripped, or unrecognized `chain_format`
+  fails verification closed. External consumers of
+  `conformance/fixtures/signing_vectors.json` must adopt the new layout —
+  `events` is format-2, and the old vectors are frozen under
+  `legacy_v1_events`.
+  ([`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
+
 ### Added
 
 - **Dropped events are declared in the signed chain.** A bounded-queue overflow
