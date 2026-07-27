@@ -1,0 +1,81 @@
+name: Benchmarks
+
+# Keeps the published performance numbers honest.
+#
+# BENCHMARKS.md carries per-call overhead figures, and the marketing site
+# quotes them. Nothing re-measured them after they were written, so a
+# regression would have shipped silently and the published claim would have
+# quietly become false. That is the same class of problem as an unverified
+# security claim, and it is worse here because the number is the claim.
+#
+# This does NOT gate a PR on timing. Shared CI runners vary enough that a
+# threshold either fires constantly or is set so loose it catches nothing.
+# What it does is run the suite on a schedule and keep the results as
+# artifacts, so drift is visible over time and a real regression shows up as a
+# trend rather than as one noisy number.
+
+on:
+  schedule:
+    # Weekly. Overhead moves when the decision path changes, which is not a
+    # daily event, and a weekly series is easier to read than a daily one.
+    - cron: "19 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "quick smoke pass, or the full serial matrix"
+        required: false
+        default: "quick"
+        type: choice
+        options: [quick, full]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Measure governance overhead
+    runs-on: ubuntu-latest
+    # The full matrix runs strictly serially by design (parallel runs
+    # contaminate each other's numbers, per bench/run-all.sh), so it needs
+    # room well past the default step timeout.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - run: npm ci
+        working-directory: sdk
+      - run: npm run build
+        working-directory: sdk
+      - run: python -m pip install --quiet -e .
+        working-directory: sdk-python
+
+      - name: Run the benchmark matrix
+        run: |
+          if [ "${{ inputs.mode || 'quick' }}" = "full" ]; then
+            bench/run-all.sh
+          else
+            bench/run-all.sh --quick
+          fi
+
+      - name: Keep the results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-results-${{ github.run_number }}
+          path: bench/results/
+          # Long enough to compare against a quarter of history when someone
+          # asks whether a number moved.
+          retention-days: 90
+
+      - name: Numbers are measured on a shared runner
+        run: |
+          echo "::notice::Benchmarks ran on a GitHub-hosted runner, which is noisier than"
+          echo "::notice::the machine BENCHMARKS.md was measured on. Use this series to spot"
+          echo "::notice::DRIFT, and re-measure on dedicated hardware before publishing a number."

@@ -1,0 +1,128 @@
+name: Nightly
+
+# Hunts for the failures that only appear on a seed nobody has drawn yet.
+#
+# This job exists because of a specific incident. The canonical-JSON property
+# suite runs 500 cases per property on a PR, which passed for weeks; CI then
+# drew a fresh seed on an unrelated changelog push, found a `__proto__`
+# counterexample, and went red across five open Dependabot PRs at once. The
+# bug was real and worth finding. Finding it that way was not: it surfaced on
+# a change that could not have caused it, and the noise was read as the
+# dependency bumps being broken.
+#
+# So the deep search runs here instead - off the critical path, at counts a PR
+# cannot afford, with a seed that changes every night. A failure here is a
+# genuine counterexample, not a flake, and the run that finds it is doing its
+# job.
+
+on:
+  schedule:
+    # Daily, clear of the working day so a red nightly is read in the morning
+    # rather than mid-task. Deliberately NOT on the hour: GitHub delays or
+    # drops scheduled runs under load, and every repo that schedules on the
+    # hour piles into the same minute. The reference repos that run the most
+    # scheduled work all offset (langfuse 17/31, otel 12/17/39, opa 17).
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      num_runs:
+        description: "fast-check cases per property"
+        required: false
+        default: "50000"
+        type: string
+      cases:
+        description: "cross-language parity documents"
+        required: false
+        default: "40000"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # A manual run should replace a scheduled one rather than queue behind it.
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  properties:
+    name: Property search (deep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+      - run: npm ci
+        working-directory: sdk
+
+      - name: Property suites at depth
+        working-directory: sdk
+        # 100x a PR run. Measured at ~4s for 20,000, so this stays cheap even
+        # at this count - the reason it is not the PR default is feedback
+        # latency, not machine time.
+        env:
+          FC_NUM_RUNS: ${{ inputs.num_runs || '50000' }}
+        run: npm test -- canonical-json-conformance
+
+  parity:
+    name: Cross-language parity (deep, random seed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: npm ci
+        working-directory: sdk
+      - run: npm run build
+        working-directory: sdk
+      - run: python -m pip install --quiet hypothesis
+
+      - name: Generate a seed
+        id: seed
+        # The pinned seed in CI proves the KNOWN divergence classes stay
+        # closed. A fresh seed each night is what looks for the next one, and
+        # printing it means a failure is reproducible with --seed.
+        run: echo "value=$RANDOM$RANDOM" >> "$GITHUB_OUTPUT"
+
+      - name: TypeScript and Python canonicalizers must agree
+        run: |
+          echo "seed: ${{ steps.seed.outputs.value }}"
+          node scripts/check-canonical-json-parity.mjs \
+            --cases ${{ inputs.cases || '40000' }} \
+            --seed ${{ steps.seed.outputs.value }}
+
+  full-matrix:
+    name: Full suite (Node ${{ matrix.node }} / Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["18.x", "20.x", "22.x"]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - run: npm ci
+        working-directory: sdk
+      - run: npm test
+        working-directory: sdk
+      - run: python -m pip install --quiet -e ".[dev]"
+        working-directory: sdk-python
+      - run: python -m pytest -q
+        working-directory: sdk-python

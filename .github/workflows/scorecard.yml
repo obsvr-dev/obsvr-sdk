@@ -1,0 +1,66 @@
+name: Scorecard
+
+# OpenSSF Scorecard: an independent, automated grade of this repository's
+# supply-chain posture. It checks things this repo already does (pinned
+# dependencies, least-privilege tokens, CodeQL, signed releases, branch
+# protection) and reports what it finds, without taking our word for any of it.
+#
+# The most-adopted practice among the mature repositories surveyed - cedar,
+# opa, opentelemetry-collector, and the Microsoft agent-governance-toolkit all
+# run it. For a project selling independent verification of AI decisions,
+# having its own supply chain graded by a third party is the same argument
+# applied to itself.
+#
+# Results land in the Security tab as SARIF. The badge is worth adding to the
+# README once the first run has a score to show.
+
+on:
+  schedule:
+    # Weekly. Scorecard grades repository CONFIGURATION, which changes rarely;
+    # a daily run would report the same number and stop being read.
+    - cron: "37 6 * * 1"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Analyze supply-chain posture
+    runs-on: ubuntu-latest
+    permissions:
+      # Write the SARIF into the Security tab.
+      security-events: write
+      # Read the OIDC token Scorecard uses to publish to the public
+      # OpenSSF dataset; this is what lets anyone verify the score
+      # independently rather than trusting a badge we render ourselves.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish to the OpenSSF public dataset so the score is checkable by
+          # someone who does not trust this repository's own reporting - which
+          # is the entire point of running it.
+          publish_results: true
+
+      - name: Keep the raw result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 30
+
+      - name: Upload to the Security tab
+        uses: github/codeql-action/upload-sarif@4187e74d05793876e9989daffde9c3e66b4acd07 # v3.37.3
+        with:
+          sarif_file: results.sarif

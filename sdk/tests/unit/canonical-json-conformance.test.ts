@@ -74,6 +74,16 @@ const jsonValue = fc.letrec((tie) => ({
   ),
 })).node;
 
+/**
+ * How hard each property is exercised. 500 keeps a PR fast; the nightly job
+ * raises it, because these properties are the kind that fail on a seed nobody
+ * has drawn yet. The `__proto__` counterexample that broke this suite was
+ * found by CI drawing a fresh seed on an unrelated push, not by anything the
+ * author did wrong - so hunting deliberately, off the critical path, is worth
+ * more than a bigger number on every PR.
+ */
+const NUM_RUNS = Number(process.env.FC_NUM_RUNS ?? 500);
+
 describe('stableStringify properties', () => {
   it('is a fixed point: re-canonicalizing its own output changes nothing', () => {
     fc.assert(
@@ -81,7 +91,7 @@ describe('stableStringify properties', () => {
         const once = stableStringify(v);
         expect(stableStringify(JSON.parse(once))).toBe(once);
       }),
-      { numRuns: 500 },
+      { numRuns: NUM_RUNS },
     );
   });
 
@@ -101,7 +111,7 @@ describe('stableStringify properties', () => {
           expect(stableStringify(shuffled)).toBe(stableStringify(obj));
         },
       ),
-      { numRuns: 500 },
+      { numRuns: NUM_RUNS },
     );
   });
 
@@ -113,7 +123,7 @@ describe('stableStringify properties', () => {
         const s = stableStringify(v);
         expect(Buffer.from(s, 'utf8').toString('utf8')).toBe(s);
       }),
-      { numRuns: 500 },
+      { numRuns: NUM_RUNS },
     );
   });
 
@@ -122,7 +132,7 @@ describe('stableStringify properties', () => {
       fc.property(jsonValue, (v) => {
         expect(stableStringify(v)).not.toMatch(/[\n\r]/);
       }),
-      { numRuns: 500 },
+      { numRuns: NUM_RUNS },
     );
   });
 
@@ -131,7 +141,7 @@ describe('stableStringify properties', () => {
       fc.property(jsonValue, (v) => {
         expect(JSON.parse(stableStringify(v))).toEqual(JSON.parse(JSON.stringify(v)));
       }),
-      { numRuns: 500 },
+      { numRuns: NUM_RUNS },
     );
   });
 });

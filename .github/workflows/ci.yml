@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: ["**"]
 
+# Least privilege by default. Nothing here writes to the repository: every job
+# reads the tree, runs tests, and reports. A job that needs more declares it
+# itself, so a step that starts wanting write access is visible in review
+# rather than inheriting it. This matters most on `pull_request` from a fork,
+# where the token would otherwise carry broader default scopes into a run of
+# somebody else's code.
+permissions:
+  contents: read
+
 jobs:
   ts-test:
     name: TypeScript SDK (Node ${{ matrix.node-version }})
@@ -15,10 +24,10 @@ jobs:
       matrix:
         node-version: [18.x, 20.x, 22.x]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Use Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
@@ -46,10 +55,10 @@ jobs:
       matrix:
         python-version: ["3.9", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -71,7 +80,7 @@ jobs:
     name: Cross-language conformance fixtures
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Assert both suites reference the shared fixtures
         run: |
@@ -110,7 +119,7 @@ jobs:
           grep -q "conformance/fixtures/canonical_json.json" sdk-python/tests/test_canonical_json_conformance.py
 
       - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20.x
           cache: npm
@@ -123,7 +132,7 @@ jobs:
         run: node scripts/generate-conformance-manifest.mjs --check
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -165,10 +174,10 @@ jobs:
     name: Dependency audit (npm + pip)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20.x
           cache: npm
@@ -208,7 +217,7 @@ jobs:
         working-directory: sdk
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -238,10 +247,10 @@ jobs:
     name: Lint (ESLint + Ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20.x
           cache: npm
@@ -256,7 +265,7 @@ jobs:
         working-directory: sdk
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
@@ -270,7 +279,7 @@ jobs:
     name: Version consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # catch a self-contradictory version early (package.json vs
       # constants.ts vs _version.py vs server.json). Node is preinstalled.
       - name: Check versions agree

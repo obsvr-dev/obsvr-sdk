@@ -11,6 +11,12 @@ on:
         required: true
         type: string
 
+# Deny by default; the publish job below re-grants exactly what it needs. This
+# job holds NPM_TOKEN and id-token: write, so a compromised step here could
+# publish a package carrying a VALID provenance attestation. The narrower the
+# default, the less any added step inherits.
+permissions: {}
+
 jobs:
   publish:
     name: Build and Publish
@@ -21,10 +27,10 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20.x
           registry-url: https://registry.npmjs.org
