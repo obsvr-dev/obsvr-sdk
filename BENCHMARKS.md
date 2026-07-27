@@ -75,9 +75,18 @@ A0 re-run with the stubbed transport artificially slowed to 25 ms per POST:
 
 A slow backend does **not** slow governed calls. (The hot path actually gets *faster* once
 the bounded queue fills: overflowed events are dropped-and-counted before signing, so the
-sender does less work. Drops are visible in `getSenderStats()` / `get_sender_stats()` —
-never silent — and, because they occur before a sequence number is assigned, they can never
-create a hole in the signed chain.)
+sender does less work.)
+
+**What a drop leaves behind.** Overflow drops happen before a sequence number is assigned,
+so they leave no hole of their own — the events that survive still form a contiguous chain.
+That is a property to be careful with, not a guarantee: read the wrong way it says a run
+that lost most of its events verified clean. Loss is therefore recorded in two places. It is
+counted in `getSenderStats()` / `get_sender_stats()`, and it is **declared in the chain
+itself** by a signed gap marker — one chain-linked event, at the position the loss happened,
+stating how many events were dropped there. The count sits in the signature preimage, so
+editing it breaks verification like any other tamper, and `obsvr-verify` reports it:
+`N event(s) declared LOST by M gap marker(s) in this chain`. A chain carrying markers is
+valid and incomplete at the same time, and the tooling says both.
 
 ## Part B — sustained stress, 100,000 governed calls per tier
 
@@ -116,13 +125,35 @@ previous-signature linkage, and a recomputed HMAC-SHA256 signature match on ever
 was cross-checked against the SDK's exported `verifyAuditChain` (1,000-event sample each
 run, agreement required); the Python verifier is validated against the shared
 `conformance/fixtures/signing_vectors.json`. Accounting closed exactly in every run:
-`calls == enqueued + dropped_overflow` and `verified == enqueued`.
+`calls == enqueued + dropped_overflow` and `verified == enqueued`. (Gap markers are events
+the SDK enqueues on its own behalf, with no call behind them, so the identity the bench
+asserts today carries a `+ gap_markers` term on the left. These runs predate markers and
+had none — the closure above is the same statement with that term at zero.)
 
 **Burst overflow (bounded queue, deliberately saturated):** with the stubbed transport
 slowed (10 ms per POST in TS, 50 ms in Python), 10,000-call bursts overflowed the
-1,000-event queue as designed — 67–90% of burst
-events dropped, every drop **counted** in sender stats, RSS growth ≤ 2.3 MB, and the chain
-of delivered events still verified with zero gaps in every case.
+1,000-event queue as designed — 67–90% of burst events dropped, every drop **counted** in
+sender stats, and RSS growth ≤ 2.3 MB.
+
+Every drop is also **declared in the signed chain**. The burst phase asserts it as an
+invariant (`gap_events_declared == dropped_overflow`), so a run that lost events and did not
+say so fails the bench rather than reporting a clean chain. One marker covers a whole
+contiguous gap, not one per dropped event — the cost of disclosure is one signed event per
+burst, which is why the throughput and latency rows above are unaffected by it.
+
+Measured on the current build (2026-07-27, same machine), one burst phase per language:
+
+| | burst calls | dropped | gap markers | declared lost | chain |
+| --- | ---: | ---: | ---: | ---: | --- |
+| TypeScript | 10,000 | 8,999 (90%) | 1 | 8,999 | ✅ valid |
+| Python | 4,000 | 2,804 (70%) | 7 | 2,804 | ✅ valid |
+
+The marker counts differ because they track *contiguous* gaps, not drops: TypeScript's
+50 × 200-wave burst saturates the queue once and stays saturated, while Python's slower
+per-POST stub drains between waves and opens seven separate gaps. Both declare every
+dropped event. The Part A and Part B tables above were measured before gap markers landed;
+their per-call figures stand (the marker is off the hot path), and the accounting identity
+is the one printed here.
 
 ## Known costs and quirks (disclosed)
 
