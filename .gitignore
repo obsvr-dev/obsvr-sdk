@@ -12,6 +12,7 @@ build/
 venv/
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
 
 # Coverage
 coverage/
@@ -23,6 +24,5 @@ htmlcov/
 .env.*
 *.log
 .DS_Store
-LAUNCH.md
 bench/results/
 .claude/
