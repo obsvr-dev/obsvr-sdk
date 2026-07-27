@@ -90,7 +90,13 @@ describe('stableStringify properties', () => {
       fc.property(
         fc.dictionary(fc.string({ unit: 'binary' }), jsonValue, { maxKeys: 6 }),
         (obj) => {
-          const shuffled: Record<string, unknown> = {};
+          // Null-prototype, so re-inserting is a faithful shuffle. On a plain
+          // `{}` the key "__proto__" hits the inherited Object.prototype
+          // setter instead of becoming an own property, so the shuffled copy
+          // silently loses it and the test fails against a canonicalizer that
+          // was right: Object.keys reports an own "__proto__", and
+          // JSON.stringify emits it, so stableStringify must too.
+          const shuffled: Record<string, unknown> = Object.create(null);
           for (const k of Object.keys(obj).reverse()) shuffled[k] = obj[k];
           expect(stableStringify(shuffled)).toBe(stableStringify(obj));
         },

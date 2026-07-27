@@ -23,21 +23,35 @@ updates:
     directory: /sdk
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     groups:
       npm-minor-and-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+    # Majors are not proposed for the language toolchain. First activation
+    # filed eight of them at once (typescript 5 to 7, eslint 9 to 10,
+    # @types/node 20 to 26, jest), every one red in CI, which is the noise
+    # this file's grouping exists to avoid. These are dev-only: the published
+    # tree declares no runtime dependencies, so a stale one here cannot reach
+    # a consumer. Upgrade them deliberately, on their own branch, reading the
+    # changelog. Security updates ignore this list, so an advisory still
+    # arrives as its own PR.
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: pip
     directory: /sdk-python
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     groups:
       pip-minor-and-patch:
         patterns: ["*"]
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
 
   # Covers .github/workflows. Actions are the one ecosystem here that runs with
   # repository credentials, so a stale pinned action is a supply-chain risk to
