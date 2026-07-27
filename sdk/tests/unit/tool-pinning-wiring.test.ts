@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { init, _reset, getConfig } from '../../src/proxy/config';
 import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import { obsvrGovernMCP } from '../../src/integrations/mcp';
@@ -327,4 +329,39 @@ describe('review: per-client store scoping (patch path) + config-pin removal noi
     expect(blocked.metadata.tenant).toBe('acme'); // preserved on the block event
     expect(blocked.metadata.tool_pin_status).toBe('mismatch'); // sealed stamp wins over caller "spoof"
   });
+});
+
+// ── Shared discovery-strip contract (conformance/fixtures/tool_pinning.json) ──
+
+function findFixture(name: string): string {
+  let dir = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(dir, 'conformance/fixtures', name);
+    if (fs.existsSync(candidate)) return candidate;
+    dir = path.dirname(dir);
+  }
+  throw new Error(`fixture not found upward from ${process.cwd()}: ${name}`);
+}
+
+describe('discovery strip: the fixture contract', () => {
+  const fixture = JSON.parse(fs.readFileSync(findFixture('tool_pinning.json'), 'utf-8')) as {
+    discovery_strip_cases: Array<{
+      id: string;
+      tools: Array<{ name: string; description: string }>;
+      pinning: { enabled: boolean; mode?: string; require_pin?: boolean; pins?: Record<string, string> };
+      expect_listed: string[];
+    }>;
+  };
+
+  for (const c of fixture.discovery_strip_cases) {
+    it(`${c.id}: the returned listing carries exactly the surviving tools`, async () => {
+      // require_pin is the fixture's shared spelling; the TS config key is requirePin.
+      const { require_pin, ...rest } = c.pinning;
+      initPinning({ ...rest, ...(require_pin !== undefined ? { requirePin: require_pin } : {}) });
+      const { client } = mutableClient(c.tools);
+      const governed = obsvrGovernMCP(client, getConfig());
+      const listing: any = await governed.listTools();
+      expect(listing.tools.map((t: any) => t.name)).toEqual(c.expect_listed);
+    });
+  }
 });

@@ -17,6 +17,24 @@ FIXED rather than accepted, which the table never carried and which is the
 better half of the record.
 
 History:
+- 2026-07-28: KD-3 (block-mode discovery strip) was FIXED, and the row is gone.
+  The row accepted a best-effort strip because Python cannot spread an
+  arbitrary upstream listing model the way TypeScript spreads a plain object:
+  `result.tools = kept` sat in a bare try/except, so a frozen model swallowed
+  the strip and the model still read the swapped descriptor. The rebuild is now
+  a declared chain — assignment, `model_copy(update=...)`, `copy(update=...)`,
+  `dataclasses.replace`, then a shallow copy written through
+  `object.__setattr__` — every step of which returns the listing's OWN class,
+  which is what the row's stated objection (breaking the caller's type
+  contract) was really about. The contract is pinned cross-language by
+  `discovery_strip_cases` in `conformance/fixtures/tool_pinning.json`, and the
+  Python harness runs all five cases against five listing shapes, four of which
+  refuse assignment. Verified against real pydantic 2.13.4 as well as the
+  stand-ins: a frozen model raises on assignment, `model_copy` rebuilds it, and
+  the governed listing comes back as the same class with the offender gone. The
+  one shape nothing can rebuild — a read-only `tools` property — now warns
+  instead of reporting a strip that did not happen; the call-time gate refuses
+  the tool either way, as it always did.
 - 2026-07-28: KD-7 (CSS-hidden / aria-hidden stripping) was FIXED by porting
   the pass, and the row is gone. The row had always described itself as
   temporary: `stripHiddenHtml` landed in TypeScript with the Python twin

@@ -3,6 +3,10 @@ sdk/tests/unit/tool-pinning-wiring.test.ts. The pure hash/decision semantics
 are fixture-pinned (tool_pinning.json); these tests pin that the governed
 session actually detects and enforces a descriptor swap."""
 import asyncio
+import dataclasses
+import json
+import logging
+from pathlib import Path
 
 import pytest
 
@@ -380,3 +384,158 @@ class TestReviewCallerMetadataPrecedence:
         ]
         assert blocked[0]["metadata"]["tenant"] == "acme"  # preserved on block event
         assert blocked[0]["metadata"]["tool_pin_status"] == "mismatch"  # stamp wins
+
+
+# ── Shared discovery-strip contract (conformance/fixtures/tool_pinning.json) ──
+
+_FIXTURE = json.loads(
+    (Path(__file__).parent / "../../conformance/fixtures/tool_pinning.json")
+    .resolve()
+    .read_text()
+)
+
+
+class _FixtureSession:
+    """A stub session whose listing type is supplied per test, so the same
+    fixture cases run against every shape ``_listing_with_tools`` must handle."""
+
+    def __init__(self, tools, listing_factory):
+        self.tools = [Tool(t["name"], t["description"]) for t in tools]
+        self._listing_factory = listing_factory
+
+    async def call_tool(self, name, arguments=None):
+        return "ok"
+
+    async def list_tools(self):
+        return self._listing_factory(list(self.tools))
+
+
+class _Mutable:
+    """The ordinary case: attribute assignment works."""
+
+    def __init__(self, tools):
+        self.tools = tools
+
+
+class _FrozenModel:
+    """A pydantic-v2-shaped listing: assignment raises, ``model_copy`` works.
+    This is the exact shape the KD-3 row described - the strip used to be
+    swallowed by a bare try/except here and the swapped tool stayed listed."""
+
+    def __init__(self, tools):
+        object.__setattr__(self, "tools", tools)
+
+    def __setattr__(self, name, value):
+        raise TypeError("instance is frozen")
+
+    def model_copy(self, update=None):
+        return _FrozenModel(list((update or {}).get("tools", self.tools)))
+
+
+class _FrozenModelV1:
+    """A pydantic-v1-shaped listing: only ``copy(update=...)`` rebuilds it."""
+
+    def __init__(self, tools):
+        object.__setattr__(self, "tools", tools)
+
+    def __setattr__(self, name, value):
+        raise TypeError("instance is immutable")
+
+    def copy(self, update=None):
+        return _FrozenModelV1(list((update or {}).get("tools", self.tools)))
+
+
+@dataclasses.dataclass(frozen=True)
+class _FrozenDataclass:
+    tools: list
+
+
+class _NoRebuildApi:
+    """Refuses assignment and offers no rebuild API at all - only the shallow
+    copy written through object.__setattr__ can strip this one."""
+
+    def __init__(self, tools):
+        object.__setattr__(self, "tools", tools)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("read-only listing")
+
+
+_LISTING_SHAPES = {
+    "mutable": _Mutable,
+    "frozen_model_v2": _FrozenModel,
+    "frozen_model_v1": _FrozenModelV1,
+    "frozen_dataclass": _FrozenDataclass,
+    "no_rebuild_api": _NoRebuildApi,
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_LISTING_SHAPES), ids=sorted(_LISTING_SHAPES))
+@pytest.mark.parametrize(
+    "case",
+    _FIXTURE["discovery_strip_cases"],
+    ids=[c["id"] for c in _FIXTURE["discovery_strip_cases"]],
+)
+def test_discovery_strip_contract(case, shape, monkeypatch):
+    _init(pinning=case["pinning"])
+    _captured(monkeypatch)
+    session = govern_mcp(_FixtureSession(case["tools"], _LISTING_SHAPES[shape]))
+    listing = _run(session.list_tools())
+    assert [t.name for t in listing.tools] == case["expect_listed"]
+
+
+def test_a_frozen_listing_that_cannot_be_rebuilt_warns_instead_of_stripping_silently(
+    monkeypatch, caplog
+):
+    """The one shape nothing can rebuild: a read-only ``tools`` property. The
+    listing is returned unstripped - there is no other option - but it says so
+    rather than reporting a strip that never happened."""
+
+    class _ReadOnlyTools:
+        def __init__(self, tools):
+            object.__setattr__(self, "_tools", tools)
+
+        @property
+        def tools(self):
+            return self._tools
+
+    case = next(
+        c for c in _FIXTURE["discovery_strip_cases"]
+        if c["id"] == "block_strips_the_mismatched_descriptor"
+    )
+    _init(pinning=case["pinning"], debug=True)
+    _captured(monkeypatch)
+    session = govern_mcp(_FixtureSession(case["tools"], _ReadOnlyTools))
+    with caplog.at_level(logging.WARNING, logger="obsvr"):
+        listing = _run(session.list_tools())
+    assert [t.name for t in listing.tools] == ["get_weather", "read_file"]
+    assert "could not strip tools" in caplog.text
+    # The call-time gate is independent and still refuses the swapped tool.
+    with pytest.raises(McpToolBlockedError, match="descriptor_hash_mismatch"):
+        _run(session.call_tool("get_weather", {}))
+
+
+def test_a_rebuilt_listing_keeps_its_own_class_and_other_fields():
+    """Rebuilding must not hand the caller a different type or drop the rest of
+    the result - that risk is why the strip used to be best-effort."""
+
+    class _FrozenWithCursor(_FrozenModel):
+        def __init__(self, tools, next_cursor="page-2"):
+            _FrozenModel.__init__(self, tools)
+            object.__setattr__(self, "nextCursor", next_cursor)
+
+        def model_copy(self, update=None):
+            return _FrozenWithCursor(
+                list((update or {}).get("tools", self.tools)), self.nextCursor
+            )
+
+    case = next(
+        c for c in _FIXTURE["discovery_strip_cases"]
+        if c["id"] == "block_strips_the_mismatched_descriptor"
+    )
+    _init(pinning=case["pinning"])
+    session = govern_mcp(_FixtureSession(case["tools"], _FrozenWithCursor))
+    listing = _run(session.list_tools())
+    assert isinstance(listing, _FrozenWithCursor)
+    assert listing.nextCursor == "page-2"
+    assert [t.name for t in listing.tools] == ["read_file"]

@@ -21,6 +21,8 @@ Usage:
     patch_mcp(ClientSession)
 """
 
+import copy
+import dataclasses
 import inspect
 import weakref
 import json
@@ -43,7 +45,7 @@ from ..tool_pinning import (
     tool_descriptor_hash,
 )
 from ..rules import derive_policy_version
-from ..sender import send_audit_async, should_sample
+from ..sender import _debug_warn, send_audit_async, should_sample
 
 SOURCE = "mcp_python"
 _PATCHED_ATTR = "_obsvr_mcp_patched"
@@ -268,6 +270,71 @@ def _emit(config: ResolvedConfig, **kwargs: Any) -> None:
         send_audit_async(config, event)
 
 
+def _tool_name_of(tool: Any) -> str:
+    """Dual-access tool name, so flag / strip / pin all resolve a dict-shaped
+    descriptor to the SAME name. Matches TS `name ?? "unknown"`: a present
+    empty string is kept, only a truly absent name becomes "unknown"."""
+    name = getattr(tool, "name", None)
+    if name is None and isinstance(tool, dict):
+        name = tool.get("name")
+    return name if name is not None else "unknown"
+
+
+def _listing_with_tools(config: ResolvedConfig, result: Any, kept: List[Any]) -> Any:
+    """Return the tools/list result carrying only ``kept``.
+
+    TypeScript strips by building a new listing object
+    (``{...result, tools: filtered}``), which cannot fail. Python cannot spread
+    an arbitrary upstream model, so this walks the ways a listing can be
+    rebuilt, in the order that changes least:
+
+    1. plain attribute assignment - the object the caller already holds keeps
+       its identity, and this is what an ordinary mutable model takes;
+    2. ``model_copy(update=...)`` / ``copy(update=...)`` - a pydantic model
+       declared frozen refuses (1) but takes these, and both return the SAME
+       class, so the caller's type contract survives;
+    3. ``dataclasses.replace`` - the frozen-dataclass equivalent;
+    4. a shallow copy written through ``object.__setattr__`` - the generic
+       escape hatch for a type that guards ``__setattr__`` itself.
+
+    A silent fall-through was the earlier behavior and it is the wrong one for
+    an enforcement product: block mode exists to keep a swapped or poisoned
+    descriptor out of the listing the model reads, so failing to strip has to
+    be loud. Nothing here changes the call-time gate, which refuses the tool
+    regardless of what the listing shows.
+    """
+    try:
+        result.tools = kept
+        return result
+    except Exception:
+        pass
+    for attempt in (
+        lambda: result.model_copy(update={"tools": kept}),  # pydantic v2
+        lambda: result.copy(update={"tools": kept}),  # pydantic v1
+        lambda: dataclasses.replace(result, tools=kept),
+    ):
+        try:
+            rebuilt = attempt()
+        except Exception:
+            continue
+        if list(getattr(rebuilt, "tools", None) or []) == kept:
+            return rebuilt
+    try:
+        rebuilt = copy.copy(result)
+        object.__setattr__(rebuilt, "tools", kept)
+        if list(getattr(rebuilt, "tools", None) or []) == kept:
+            return rebuilt
+    except Exception:
+        pass
+    _debug_warn(
+        config,
+        "[obsvr] MCP discovery could not strip tools from a "
+        f"{type(result).__name__} listing; the call-time gate still refuses them: "
+        + ", ".join(sorted(_tool_name_of(t) for t in (getattr(result, "tools", None) or []))),
+    )
+    return result
+
+
 class McpToolBlockedError(RuntimeError):
     """Raised when a tool call is blocked by policy (denylist, allowlist, PII, hook)."""
 
@@ -331,14 +398,6 @@ def _build_governed_mcp_callables(
                 store = ToolPinStore()
                 _pin_store_by_id[id(session)] = store
             return store
-
-    def _tool_name_of(tool: Any) -> str:
-        name = getattr(tool, "name", None)
-        if name is None and isinstance(tool, dict):
-            name = tool.get("name")
-        # Match TS `name ?? "unknown"`: a present empty string "" is kept
-        # (only a truly absent name becomes "unknown").
-        return name if name is not None else "unknown"
 
     def _principal_and_meta():
         """Caller principal + rules-eval identity metadata from the bound options."""
@@ -891,10 +950,7 @@ def _build_governed_mcp_callables(
             strip_names |= pin_blocked_names  # pinning mode "block"
             if strip_names:
                 kept = [t for t in tools if _tool_name_of(t) not in strip_names]
-                try:
-                    result.tools = kept
-                except Exception:
-                    pass
+                result = _listing_with_tools(cfg, result, kept)
 
             return result
 

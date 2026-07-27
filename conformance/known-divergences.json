@@ -10,16 +10,6 @@
   },
   "entries": [
     {
-      "id": "KD-3",
-      "sdk": "py",
-      "category": "enforcement_surface",
-      "status": "intended",
-      "description": "MCP tool pinning, mode 'block' discovery strip: TS always returns a NEW listing result with offending tools filtered out; Python mutates result.tools in a try/except, so a frozen upstream ListToolsResult model keeps the swapped tool visible in the listing the model sees. Rebuilding an arbitrary upstream model object risks breaking the caller's type contract.",
-      "parity_scope": "The call-time gate REFUSES execution of a swapped tool identically in both SDKs; only the discovery-time listing strip is best-effort in Python.",
-      "allowed_difference": "Discovery-time listing contents when the upstream result model forbids assignment.",
-      "tracking": "sdk-python/obsvr/integrations/mcp.py (governed_list_tools). Revisit if a real MCP result type is found frozen."
-    },
-    {
       "id": "KD-5",
       "sdk": "ts",
       "category": "evaluation_context",
