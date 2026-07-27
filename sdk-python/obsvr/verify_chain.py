@@ -10,10 +10,12 @@ answer rather than two.
 The checks, in the order a break is reported:
 
 1. ``sdk_session_id`` is consistent across all events
-2. ``seq_no`` is present, starts at >= 1, and increases by exactly one
-3. ``timestamp_sdk`` never decreases
-4. ``prev_sig`` links to the prior event's ``sdk_sig``
-5. the recomputed HMAC matches ``sdk_sig``
+2. every event declares the same signing format as the first (see
+   chain_format.py; the result reports which format the chain used)
+3. ``seq_no`` is present, starts at >= 1, and increases by exactly one
+4. ``timestamp_sdk`` never decreases
+5. ``prev_sig`` links to the prior event's ``sdk_sig``
+6. the recomputed HMAC matches ``sdk_sig``, under the declared format
 
 Verification is offline and off the hot path, so it does the thorough thing:
 every event is re-signed from scratch rather than trusting any stored digest.
@@ -46,6 +48,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence
 
 from .audit_gap import parse_audit_gap_prompt
+from .chain_format import (
+    CHAIN_FORMAT_CURRENT,
+    CHAIN_FORMAT_LEGACY,
+    signature_payload,
+)
 from .sender import derive_signing_key
 
 __all__ = ["ChainVerificationResult", "verify_chain"]
@@ -74,6 +81,15 @@ class ChainVerificationResult:
     #: separately is the point - a caller that ignores this reads a saturated
     #: burst as a clean run.
     events_declared_lost: int = 0
+    #: Signing format the chain was checked under (see chain_format.py): 2 for
+    #: current chains, 1 for chains signed before length-prefixed content
+    #: framing existed. Reported so a legacy chain never passes as silently
+    #: equivalent to a current one - format 1 does not bind the
+    #: prompt/response boundary, and a consumer weighing the evidence is
+    #: entitled to know that. ``None`` when verification broke before the
+    #: format could be established (empty chain, missing session id,
+    #: unrecognized format value).
+    chain_format: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-friendly view using the cross-language field names."""
@@ -84,15 +100,37 @@ class ChainVerificationResult:
             out["reason"] = self.reason
         out["gapMarkers"] = self.gap_markers
         out["eventsDeclaredLost"] = self.events_declared_lost
+        if self.chain_format is not None:
+            out["chainFormat"] = self.chain_format
         return out
 
 
-def _content_hash(prompt: str, response: str) -> str:
-    return hashlib.sha256(((prompt or "") + (response or "")).encode("utf-8")).hexdigest()
+def _declared_format(event: Dict[str, Any]) -> Optional[int]:
+    """The event's declared signing format.
+
+    Absent means 1: legacy chains were signed before the field existed.
+    Anything but 1 or 2 returns ``None`` - an unrecognized format fails
+    closed rather than being guessed at. ``bool`` is excluded explicitly
+    because it is an ``int`` subclass and ``True`` would read as format 1.
+    """
+    raw = event.get("chain_format")
+    if raw is None:
+        return CHAIN_FORMAT_LEGACY
+    # A JSON number is a number: JavaScript parses 2.0 and 2 to the same
+    # value, so an integral float counts as its integer here or the two
+    # verifiers would return different verdicts on the same export.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if raw == CHAIN_FORMAT_LEGACY:
+        return CHAIN_FORMAT_LEGACY
+    if raw == CHAIN_FORMAT_CURRENT:
+        return CHAIN_FORMAT_CURRENT
+    return None
 
 
 def _compute_signature(
     signing_key: bytes,
+    fmt: int,
     session_id: str,
     seq_no: int,
     timestamp_sdk: int,
@@ -100,14 +138,8 @@ def _compute_signature(
     response: str,
     prev_sig: Optional[str],
 ) -> str:
-    payload = "|".join(
-        [
-            session_id,
-            str(seq_no),
-            str(timestamp_sdk),
-            _content_hash(prompt, response),
-            prev_sig or "",
-        ]
+    payload = signature_payload(
+        fmt, session_id, seq_no, timestamp_sdk, prompt, response, prev_sig
     )
     return hmac_mod.new(signing_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -133,6 +165,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
     """
     gap_markers = 0
     events_declared_lost = 0
+    chain_format: Optional[int] = None
 
     def broken(index: int, reason: str) -> ChainVerificationResult:
         """A break: the gap tally covers only the prefix that verified."""
@@ -143,6 +176,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             events_verified=index,
             gap_markers=gap_markers,
             events_declared_lost=events_declared_lost,
+            chain_format=chain_format,
         )
 
     if not events:
@@ -154,6 +188,18 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
     if not session_id:
         return broken(0, "First event missing sdk_session_id")
 
+    # The first event fixes the chain's signing format. A chain is one
+    # session, one process, one SDK build - no legitimate producer changes
+    # format mid-chain, so a later event declaring a different format is a
+    # break, not a negotiation. An unrecognized value fails closed: a newer
+    # format is not guessed at by an older verifier.
+    first_format = _declared_format(events[0])
+    if first_format is None:
+        return broken(
+            0, f"Unsupported chain_format at event 0: {events[0].get('chain_format')}"
+        )
+    chain_format = first_format
+
     last_sig: Optional[str] = None
     last_seq = 0
     last_timestamp = 0
@@ -164,6 +210,17 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
                 i,
                 f"Session ID mismatch at event {i}: expected {session_id}, "
                 f"got {event.get('sdk_session_id')}",
+            )
+
+        fmt = _declared_format(event)
+        if fmt is None:
+            return broken(
+                i, f"Unsupported chain_format at event {i}: {event.get('chain_format')}"
+            )
+        if fmt != chain_format:
+            return broken(
+                i,
+                f"Chain format mismatch at event {i}: expected {chain_format}, got {fmt}",
             )
 
         seq_no = event.get("seq_no")
@@ -198,6 +255,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
 
         expected_sig = _compute_signature(
             signing_key,
+            chain_format,
             session_id,
             seq_no,
             timestamp_sdk if timestamp_sdk is not None else 0,
@@ -226,4 +284,5 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
         events_verified=len(events),
         gap_markers=gap_markers,
         events_declared_lost=events_declared_lost,
+        chain_format=chain_format,
     )

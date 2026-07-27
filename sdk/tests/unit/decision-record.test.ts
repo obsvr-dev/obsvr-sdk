@@ -30,6 +30,7 @@ import {
   buildIntegrationEvent,
   DEFAULT_COMPLIANCE,
 } from "../../src/integrations/core";
+import { CHAIN_FORMAT_CURRENT, signaturePayload } from "../../src/proxy/chain-format";
 
 function findFixture(rel: string): string {
   let dir = process.cwd();
@@ -237,15 +238,20 @@ describe("enforcement wiring (applyPreCallPolicy → event)", () => {
 
 describe("chain preimage is untouched (signing_vectors stay green)", () => {
   it("the HMAC signature is identical with and without the new fields", () => {
-    // Same derivation + payload as fire-and-forget.ts / signing-vectors.test.ts:
-    // session|seq|ts|sha256(prompt+response)|prev — the decision-record fields
-    // are NOT part of the preimage, so adding them changes no signed byte.
+    // Same derivation + payload as fire-and-forget.ts / signing-vectors.test.ts
+    // (format 2, via proxy/chain-format.ts) — the decision-record fields are
+    // NOT part of the preimage, so adding them changes no signed byte.
     const key = createHmac("sha256", "obsvr-sdk-signing-v1").update("test-api-key").digest();
     const sign = (ev: Record<string, unknown>): string => {
-      const contentHash = createHash("sha256")
-        .update(String(ev.prompt ?? "") + String(ev.response ?? ""))
-        .digest("hex");
-      const payload = [ev.sdk_session_id, String(ev.seq_no), String(ev.timestamp_sdk), contentHash, ""].join("|");
+      const payload = signaturePayload(
+        CHAIN_FORMAT_CURRENT,
+        String(ev.sdk_session_id),
+        ev.seq_no as number,
+        ev.timestamp_sdk as number,
+        String(ev.prompt ?? ""),
+        String(ev.response ?? ""),
+        null,
+      );
       return createHmac("sha256", key).update(payload).digest("hex");
     };
     const base = {

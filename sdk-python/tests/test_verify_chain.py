@@ -22,22 +22,29 @@ def _load_vectors():
         return json.load(f)
 
 
-def _chain():
-    """The shared vectors as an exported event chain."""
+def _chain(source=None):
+    """The shared vectors as an exported event chain.
+
+    ``source="legacy_v1"`` selects the frozen pre-format-2 vectors; those
+    events carry no ``chain_format`` field, and that absence is part of what
+    the legacy cases exercise, so the key is copied only when present.
+    """
     v = _load_vectors()
+    base = v["legacy_v1_events"]["events"] if source == "legacy_v1" else v["events"]
     events = []
-    for ev in v["events"]:
-        events.append(
-            {
-                "sdk_session_id": v["session_id"],
-                "seq_no": ev["seq_no"],
-                "timestamp_sdk": ev["timestamp_sdk"],
-                "prompt": ev["prompt"],
-                "response": ev["response"],
-                "prev_sig": ev["prev_sig"],
-                "sdk_sig": ev["sdk_sig"],
-            }
-        )
+    for ev in base:
+        event = {
+            "sdk_session_id": v["session_id"],
+            "seq_no": ev["seq_no"],
+            "timestamp_sdk": ev["timestamp_sdk"],
+            "prompt": ev["prompt"],
+            "response": ev["response"],
+            "prev_sig": ev["prev_sig"],
+            "sdk_sig": ev["sdk_sig"],
+        }
+        if "chain_format" in ev:
+            event["chain_format"] = ev["chain_format"]
+        events.append(event)
     return v["api_key"], events
 
 
@@ -86,7 +93,14 @@ class TestValidChains:
             # verifier is too old to report loss".
             "gapMarkers": 0,
             "eventsDeclaredLost": 0,
+            "chainFormat": 2,
         }
+
+    def test_legacy_chain_verifies_and_reports_format_1(self):
+        api_key, events = _chain("legacy_v1")
+        result = verify_chain(events, api_key)
+        assert result.valid is True
+        assert result.chain_format == 1
 
 
 class TestTamperDetection:
@@ -241,7 +255,7 @@ class TestChainVerificationConformance:
         assert len(cases) > 0
 
         for case in cases:
-            api_key, events = _chain()
+            api_key, events = _chain(case.get("events"))
             events, api_key = _apply(case["mutations"], events, api_key)
             result = verify_chain(events, api_key)
             expect = case["expect"]
@@ -252,3 +266,6 @@ class TestChainVerificationConformance:
             )
             assert result.broken_at == expect.get("broken_at"), f"{case['id']}: broken_at"
             assert result.reason == expect.get("reason"), f"{case['id']}: reason"
+            assert result.chain_format == expect.get("chain_format"), (
+                f"{case['id']}: chain_format"
+            )

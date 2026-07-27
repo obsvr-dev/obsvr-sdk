@@ -201,6 +201,7 @@ class TestRegistryGate:
         "agent_run.py",
         "audit_gap.py",
         "auto.py",
+        "chain_format.py",
         "cli_verify.py",
         "config.py",
         "decision_record.py",

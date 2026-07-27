@@ -4,11 +4,26 @@ Asserts the Python signer produces byte-identical signatures to the shared
 vectors in conformance/fixtures/signing_vectors.json (twin:
 sdk/tests/unit/signing-vectors.test.ts). If either language's signing logic
 drifts, these vectors fail in that language's suite.
+
+The vectors pin THREE things: the signing-key derivation, the format-2
+content-hash preimage (including the boundary cases format 1 collided on -
+that collision is itself pinned under ``legacy_digest``, so the defect the
+format change closed stays demonstrable), and the chained signatures under
+both formats. Format 1 vectors are frozen forever: chains signed before the
+change are existing evidence.
 """
+import hashlib
+import hmac as hmac_mod
 import json
 from pathlib import Path
 
 from obsvr import sender
+from obsvr.chain_format import (
+    CHAIN_FORMAT_CURRENT,
+    CHAIN_FORMAT_LEGACY,
+    content_hash,
+    signature_payload,
+)
 from obsvr.sender import derive_signing_key, sign_event
 
 VECTORS_PATH = (
@@ -21,51 +36,82 @@ def _load_vectors():
         return json.load(f)
 
 
+def _sign(key, fmt, session, seq, ts, prompt, response, prev):
+    payload = signature_payload(fmt, session, seq, ts, prompt, response, prev or None)
+    return hmac_mod.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 class TestSigningVectors:
     def test_signing_key_derivation_matches(self):
         v = _load_vectors()
         key = derive_signing_key(v["api_key"])
         assert key.hex() == v["signing_key_hex"]
 
-    def test_event_signatures_match_shared_vectors(self, monkeypatch):
+    def test_content_hash_matches_every_pinned_case_in_both_formats(self):
         v = _load_vectors()
-        # Drive the signer deterministically by pinning session/seq/timestamp
-        # to the vector values, then verifying the computed sdk_sig matches.
-        # Pinned via monkeypatch so it is RESTORED afterwards: _reset_sender()
-        # does not clear _sdk_session_id, so a bare assignment here leaks the
-        # fixture's session id into every later test in the process and makes
-        # their outcome depend on file order.
-        sender._reset_sender()
-        monkeypatch.setattr(sender, "_sdk_session_id", v["session_id"])
+        for case in v["content_hash"]["cases"]:
+            assert (
+                content_hash(CHAIN_FORMAT_CURRENT, case["prompt"], case["response"])
+                == case["digest"]
+            ), case["id"]
+            assert (
+                content_hash(CHAIN_FORMAT_LEGACY, case["prompt"], case["response"])
+                == case["legacy_digest"]
+            ), case["id"]
 
-        prev = None
+    def test_format_2_binds_the_boundary_must_differ_pairs_differ(self):
+        v = _load_vectors()
+        by_id = {c["id"]: c for c in v["content_hash"]["cases"]}
+        for a, b in v["content_hash"]["must_differ"]:
+            assert by_id[a]["digest"] != by_id[b]["digest"], (a, b)
+
+    def test_format_1_did_not_bind_the_boundary_legacy_pairs_collide(self):
+        # The pinned demonstration of the defect format 2 closed. If this
+        # ever fails, the legacy implementation drifted - which would break
+        # existing evidence, so the collision is asserted, not just
+        # remembered.
+        v = _load_vectors()
+        by_id = {c["id"]: c for c in v["content_hash"]["cases"]}
+        for a, b in v["content_hash"]["equal_under_legacy"]:
+            assert by_id[a]["legacy_digest"] == by_id[b]["legacy_digest"], (a, b)
+
+    def test_event_signatures_match_shared_vectors(self):
+        v = _load_vectors()
+        key = derive_signing_key(v["api_key"])
+        prev = ""
         for expected in v["events"]:
-            # Build the same event shape and sign via the real code path,
-            # but override the non-deterministic fields to the vector's.
-            event = {
-                "prompt": expected["prompt"],
-                "response": expected["response"],
-            }
-            # Reproduce sign_event's payload with pinned session/seq/ts so the
-            # assertion is deterministic (sign_event uses live uuid/seq/clock).
-            import hashlib
-            import hmac as hmac_mod
-
-            key = derive_signing_key(v["api_key"])
-            content_hash = hashlib.sha256(
-                (expected["prompt"] + expected["response"]).encode()
-            ).hexdigest()
-            payload = "|".join(
-                [
-                    v["session_id"],
-                    str(expected["seq_no"]),
-                    str(expected["timestamp_sdk"]),
-                    content_hash,
-                    prev or "",
-                ]
+            assert expected["chain_format"] == CHAIN_FORMAT_CURRENT
+            sig = _sign(
+                key,
+                CHAIN_FORMAT_CURRENT,
+                v["session_id"],
+                expected["seq_no"],
+                expected["timestamp_sdk"],
+                expected["prompt"],
+                expected["response"],
+                prev,
             )
-            sig = hmac_mod.new(key, payload.encode(), hashlib.sha256).hexdigest()
             assert sig == expected["sdk_sig"], f"seq {expected['seq_no']} mismatch"
+            assert expected["prev_sig"] == prev
+            prev = sig
+
+    def test_frozen_format_1_signatures_still_reproduce(self):
+        v = _load_vectors()
+        key = derive_signing_key(v["api_key"])
+        prev = ""
+        for expected in v["legacy_v1_events"]["events"]:
+            sig = _sign(
+                key,
+                CHAIN_FORMAT_LEGACY,
+                v["session_id"],
+                expected["seq_no"],
+                expected["timestamp_sdk"],
+                expected["prompt"],
+                expected["response"],
+                prev,
+            )
+            assert sig == expected["sdk_sig"], f"seq {expected['seq_no']} mismatch"
+            assert expected["prev_sig"] == prev
             prev = sig
 
 
@@ -77,6 +123,7 @@ class TestSignerBehavior:
         assert e1["seq_no"] == 1
         assert "sdk_session_id" in e1
         assert "timestamp_sdk" in e1
+        assert e1["chain_format"] == CHAIN_FORMAT_CURRENT
         assert "prev_sig" not in e1  # first event has no predecessor
         assert len(e1["sdk_sig"]) == 64
 

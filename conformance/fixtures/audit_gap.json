@@ -9,7 +9,7 @@
     "operation": "audit.gap"
   },
 
-  "preimage_note": "The count lives in `prompt` because the HMAC preimage is session|seq|timestamp|sha256(prompt+response)|prev_sig and metadata is deliberately not in it. A count carried only in metadata could be edited from 10000 to 1 without breaking a signature - a tamper-evident record whose one load-bearing number is not tamper-evident. One character of drift here makes the two SDKs sign different markers, which is why it is pinned rather than described.",
+  "preimage_note": "The count lives in `prompt` because the HMAC preimage covers a content hash of prompt and response (in every chain format - see signing_vectors.json) and metadata is deliberately not in it. A count carried only in metadata could be edited from 10000 to 1 without breaking a signature - a tamper-evident record whose one load-bearing number is not tamper-evident. One character of drift here makes the two SDKs sign different markers, which is why it is pinned rather than described.",
 
   "preimage_cases": [
     {
@@ -96,7 +96,7 @@
   },
 
   "signing": {
-    "desc": "A chain whose middle event is a marker. Both SDKs must recompute these signatures exactly: the marker is signed by the ordinary signing path, with no special case, so its claim is covered by the same HMAC as any prompt. Derivation is the one in signing_vectors.json.",
+    "desc": "A chain whose middle event is a marker. Both SDKs must recompute these signatures exactly: the marker is signed by the ordinary signing path, with no special case, so its claim is covered by the same HMAC as any prompt. Derivation is the one in signing_vectors.json. DELIBERATELY a chain-format-1 chain (no chain_format field): it was signed before format 2 existed, and keeping it frozen makes it standing proof that legacy evidence - including its gap markers - keeps verifying. Marker signing under the current format is covered by the live-signer tests; the marker preimage itself is format-independent.",
     "api_key": "test-api-key",
     "session_id": "22222222-2222-2222-2222-222222222222",
     "signing_key_hex": "82063a1c5c8964553bf0ff6f9957e7b8063424a0d8aaaa09299a1ffd7ed468fd",

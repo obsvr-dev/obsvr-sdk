@@ -11,10 +11,13 @@ so ingest-side verification code treats both identically:
 - sdk_session_id : stable UUID per process lifetime
 - seq_no         : monotonic 1-based counter
 - timestamp_sdk  : epoch milliseconds at enqueue
+- chain_format   : signing format number (see chain_format.py)
 - prev_sig       : sdk_sig of the previous event (chain link; absent on first)
-- sdk_sig        : HMAC-SHA256(key, session|seq|ts|content_hash|prev_sig)
-                   where key = HMAC-SHA256("obsvr-sdk-signing-v1", api_key)
-                   and content_hash = SHA-256(prompt + response)
+- sdk_sig        : HMAC-SHA256(key, payload) where
+                   key = HMAC-SHA256("obsvr-sdk-signing-v1", api_key) and
+                   payload = signature_payload(...) from chain_format.py
+                   (format|session|seq|ts|content_hash|prev_sig, with the
+                   content hash length-prefixed and domain-tagged)
 """
 
 import atexit
@@ -38,6 +41,7 @@ from .audit_gap import (
     AUDIT_GAP_REASON_QUEUE_OVERFLOW,
     format_audit_gap_prompt,
 )
+from .chain_format import CHAIN_FORMAT_CURRENT, signature_payload
 from .config import ResolvedConfig
 
 MAX_QUEUE_SIZE = 1000
@@ -139,8 +143,9 @@ def _get_or_derive_signing_key(api_key: str) -> bytes:
 def sign_event(event: Dict[str, Any], api_key: str) -> None:
     """Stamp session/sequence fields and the chained HMAC signature in place.
 
-    Field order and payload format mirror the TS SDK exactly:
-      sig_payload = session|seq|timestamp_ms|sha256(prompt+response)|prev_sig
+    Field order and payload format mirror the TS SDK exactly; the payload is
+    built by chain_format.signature_payload (format 2: the format number
+    leads the payload and the content hash is length-prefixed per field).
     """
     with _sign_lock:
         _sign_event_locked(event, api_key)
@@ -162,21 +167,24 @@ def _sign_event_locked(event: Dict[str, Any], api_key: str) -> None:
     # part of the signature payload, so the chain format stays version-
     # independent (mirrors the TS SDK).
     event["sdk_version"] = f"python/{SDK_VERSION}"
+    # Which signing format this event verifies under (see chain_format.py).
+    # The field itself only routes the verifier; the format number is also
+    # the leading element of the signature payload, so stripping or rewriting
+    # this field can only fail verification, never redirect it.
+    event["chain_format"] = CHAIN_FORMAT_CURRENT
 
     if _last_sig is not None:
         event["prev_sig"] = _last_sig
 
     key = _get_or_derive_signing_key(api_key)
-    content = (event.get("prompt") or "") + (event.get("response") or "")
-    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    sig_payload = "|".join(
-        [
-            event["sdk_session_id"],
-            str(event["seq_no"]),
-            str(event["timestamp_sdk"]),
-            content_hash,
-            event.get("prev_sig") or "",
-        ]
+    sig_payload = signature_payload(
+        CHAIN_FORMAT_CURRENT,
+        event["sdk_session_id"],
+        event["seq_no"],
+        event["timestamp_sdk"],
+        event.get("prompt") or "",
+        event.get("response") or "",
+        event.get("prev_sig") or None,
     )
     event["sdk_sig"] = hmac_mod.new(
         key, sig_payload.encode("utf-8"), hashlib.sha256

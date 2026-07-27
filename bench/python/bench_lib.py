@@ -412,16 +412,25 @@ def verify_signing_vectors(path: str = SIGNING_VECTORS_PATH) -> Dict[str, Any]:
         result["error"] = f"could not read fixture: {e}"
         return result
 
+    from obsvr.chain_format import signature_payload
+
     key = sender.derive_signing_key(fx["api_key"])
     result["key_match"] = key.hex() == fx.get("signing_key_hex")
     session_id = fx["session_id"]
-    for ev in fx.get("events", []):
-        prompt = ev.get("prompt") or ""
-        response = ev.get("response") or ""
-        content_hash = hashlib.sha256((prompt + response).encode("utf-8")).hexdigest()
-        payload = "|".join([session_id, str(ev["seq_no"]),
-                            str(ev["timestamp_sdk"]), content_hash,
-                            ev.get("prev_sig") or ""])
+    # Current-format vectors plus the frozen legacy chain: the recipe is
+    # per-event (chain_format, absent = 1), exactly as the verifier reads it.
+    all_events = list(fx.get("events", []))
+    all_events += fx.get("legacy_v1_events", {}).get("events", [])
+    for ev in all_events:
+        payload = signature_payload(
+            ev.get("chain_format", 1),
+            session_id,
+            ev["seq_no"],
+            ev["timestamp_sdk"],
+            ev.get("prompt") or "",
+            ev.get("response") or "",
+            ev.get("prev_sig") or None,
+        )
         got = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
         result["events_checked"] += 1
         if got != ev.get("sdk_sig"):

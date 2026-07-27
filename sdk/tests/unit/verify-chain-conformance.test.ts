@@ -33,12 +33,16 @@ interface Mutation {
 interface VerificationCase {
   id: string;
   desc: string;
+  /** Which vector set the case starts from: absent = `events` (current
+   * format), "legacy_v1" = the frozen pre-format-2 chain. */
+  events?: string;
   mutations: Mutation[];
   expect: {
     valid: boolean;
     events_verified: number;
     broken_at?: number;
     reason?: string;
+    chain_format?: number;
   };
 }
 
@@ -48,15 +52,20 @@ const vectors = JSON.parse(
   api_key: string;
   session_id: string;
   events: Array<Record<string, unknown>>;
+  legacy_v1_events: { events: Array<Record<string, unknown>> };
   chain_verification: { cases: VerificationCase[] };
 };
 
 /** The shared vectors as an exported event chain. */
-function chain(): Array<Record<string, unknown>> {
-  return vectors.events.map((ev) => ({
+function chain(source?: string): Array<Record<string, unknown>> {
+  const base = source === "legacy_v1" ? vectors.legacy_v1_events.events : vectors.events;
+  return base.map((ev) => ({
     sdk_session_id: vectors.session_id,
     seq_no: ev.seq_no,
     timestamp_sdk: ev.timestamp_sdk,
+    // Legacy events carry no chain_format field, and that absence is part of
+    // what the case exercises — copy it only when the vector has it.
+    ...(ev.chain_format !== undefined ? { chain_format: ev.chain_format } : {}),
     prompt: ev.prompt,
     response: ev.response,
     prev_sig: ev.prev_sig,
@@ -101,13 +110,14 @@ describe("conformance: chain verification verdicts", () => {
 
   for (const testCase of vectors.chain_verification.cases) {
     it(`${testCase.id}: ${testCase.desc.slice(0, 80)}`, () => {
-      const applied = applyMutations(testCase.mutations, chain(), vectors.api_key);
+      const applied = applyMutations(testCase.mutations, chain(testCase.events), vectors.api_key);
       const result = verifyAuditChain(applied.events as unknown as AuditEvent[], applied.apiKey);
 
       expect(result.valid).toBe(testCase.expect.valid);
       expect(result.eventsVerified).toBe(testCase.expect.events_verified);
       expect(result.brokenAt).toBe(testCase.expect.broken_at);
       expect(result.reason).toBe(testCase.expect.reason);
+      expect(result.chainFormat).toBe(testCase.expect.chain_format);
     });
   }
 });

@@ -772,6 +772,10 @@ export interface AuditEvent {
   seq_no?: number;           // monotonic counter, 1-based, resets on SDK re-init
   timestamp_sdk?: number;    // Date.now() at capture, before queue entry
   sdk_version?: string;      // "node/<semver>", which SDK build produced this event
+  /** Signing format this event verifies under (see proxy/chain-format.ts).
+   * Absent = 1, the legacy concatenation preimage; the current SDK stamps 2.
+   * Routing only — the format number is also inside the signed payload. */
+  chain_format?: number;
   sdk_sig?: string;          // HMAC-SHA256 hex signature, 64 chars (Phase 2)
   prev_sig?: string;         // sdk_sig of the previous event in this session (Phase 3)
 }

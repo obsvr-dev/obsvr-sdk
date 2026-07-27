@@ -24,10 +24,13 @@ Every event emitted by an SDK carries:
 |---|---|
 | `sdk_session_id` | Stable UUID per SDK process lifetime |
 | `seq_no` | Monotonic counter within the session |
+| `chain_format` | Signing format number (currently `2`; absent on pre-format-2 events) |
 | `prev_sig` | Signature of the previous event (chain link) |
-| `sdk_sig` | HMAC-SHA256 over `session|seq|timestamp|sha256(content)|prev_sig` |
+| `sdk_sig` | HMAC-SHA256 over `format|session|seq|timestamp|content_hash|prev_sig` |
 
-The signing algorithm is byte-for-byte identical in both SDKs, pinned by the shared vectors in `conformance/fixtures/signing_vectors.json`. The ingest service re-derives the signing key from the stored API key, verifies `sdk_sig` on acceptance, rejects replays and stale/future-dated events, and **countersigns** each accepted event with a key that never leaves the server.
+The content hash inside the signature payload is domain-tagged and **length-prefixed per field** (`sha256("obsvr:content/2" || 0x00 || u64be(len(prompt)) || prompt || u64be(len(response)) || response)`), so the prompt/response boundary is itself under the HMAC: the same bytes re-split at a different boundary produce a different digest. The previous format hashed the bare concatenation `sha256(prompt + response)`, which left the boundary unsigned — text could move between "what the user said" and "what the model said" without breaking verification. Chains signed under that format keep verifying, and the verifiers report `chainFormat: 1` for them so legacy evidence is never mistaken for boundary-bound evidence (see the migration note in `CHANGELOG.md`).
+
+The signing algorithm is byte-for-byte identical in both SDKs, pinned by the shared vectors in `conformance/fixtures/signing_vectors.json` (which also pin the legacy format, frozen, and the boundary-collision pair that motivated the change). The ingest service re-derives the signing key from the stored API key, verifies `sdk_sig` on acceptance, rejects replays and stale/future-dated events, and **countersigns** each accepted event with a key that never leaves the server.
 
 **Guarantees:**
 
@@ -39,7 +42,7 @@ The signing algorithm is byte-for-byte identical in both SDKs, pinned by the sha
 
 **Explicit non-guarantees:**
 
-- **Client signing alone is not non-repudiation against a key-holder.** The SDK signing key is derived from the API key, so a party holding the API key could construct validly-signed *client* chains. This is why ingest adds a server countersignature with a key that never leaves the server: a key-holder cannot forge it, so they cannot fabricate an event that appears to have been accepted. What the client chain still cannot prove is (a) what happened *inside your process before emission*, or (b) the integrity of the decision/attribution fields — those are **not** in the client signature preimage (`session | seq | timestamp | sha256(prompt+response) | prev_sig`), so a party who can alter a stored event before ingest could rewrite `action_taken`/`rule_id`/`tenant_id` without breaking the *client* chain. The client chain proves only that the emitted prompt/response content arrived in order and unmodified; the server countersignature (over the full canonical event) is what seals the decision fields once accepted.
+- **Client signing alone is not non-repudiation against a key-holder.** The SDK signing key is derived from the API key, so a party holding the API key could construct validly-signed *client* chains. This is why ingest adds a server countersignature with a key that never leaves the server: a key-holder cannot forge it, so they cannot fabricate an event that appears to have been accepted. What the client chain still cannot prove is (a) what happened *inside your process before emission*, or (b) the integrity of the decision/attribution fields — those are **not** in the client signature preimage (`format | session | seq | timestamp | content_hash | prev_sig`), so a party who can alter a stored event before ingest could rewrite `action_taken`/`rule_id`/`tenant_id` without breaking the *client* chain. The client chain proves only that the emitted prompt/response content arrived in order and unmodified; the server countersignature (over the full canonical event) is what seals the decision fields once accepted.
 - **Events the SDK never saw are not in the record.** Coverage requires the SDK to be in the call path; this is an inherent property of an in-process library (see "Bypass surface").
 
 ## Enforcement semantics: what blocking means

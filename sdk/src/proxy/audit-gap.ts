@@ -13,11 +13,11 @@
  * moment the queue has room again, so it occupies the chain position between
  * the last event that survived and the first event after the loss.
  *
- * WHY THE COUNT LIVES IN `prompt`: the HMAC preimage is
- * `session | seq | timestamp | sha256(prompt + response) | prev_sig`. Metadata
- * is deliberately NOT in it, so a count carried only in metadata could be
- * edited from 10,000 to 1 without breaking a single signature — a tamper-
- * evident record whose one load-bearing number is not tamper-evident. Putting
+ * WHY THE COUNT LIVES IN `prompt`: the HMAC preimage covers a content hash
+ * of `prompt` and `response` (in every chain format — see chain-format.ts),
+ * and metadata is deliberately NOT in it, so a count carried only in metadata
+ * could be edited from 10,000 to 1 without breaking a single signature — a
+ * tamper-evident record whose one load-bearing number is not tamper-evident. Putting
  * the canonical statement in the signed content preimage costs no chain-format
  * change and no verifier special case: the marker verifies exactly like any
  * other event, and its claim is covered by the same HMAC. The structured copy

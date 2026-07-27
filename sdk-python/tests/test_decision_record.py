@@ -193,24 +193,24 @@ def test_events_without_a_decision_carry_no_record():
 
 
 def test_chain_signature_identical_with_and_without_the_fields():
-    # Same derivation + payload as sender.sign_event / test_signing.py:
-    # session|seq|ts|sha256(prompt+response)|prev — the decision-record fields
-    # are NOT part of the preimage, so adding them changes no signed byte.
+    # Same derivation + payload as sender.sign_event / test_signing.py
+    # (format 2, via chain_format.py) — the decision-record fields are NOT
+    # part of the preimage, so adding them changes no signed byte.
+    from obsvr.chain_format import CHAIN_FORMAT_CURRENT, signature_payload
+
     key = hmac_mod.new(
         b"obsvr-sdk-signing-v1", b"test-api-key", hashlib.sha256
     ).digest()
 
     def sign(event):
-        content = (event.get("prompt") or "") + (event.get("response") or "")
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        payload = "|".join(
-            [
-                event["sdk_session_id"],
-                str(event["seq_no"]),
-                str(event["timestamp_sdk"]),
-                content_hash,
-                "",
-            ]
+        payload = signature_payload(
+            CHAIN_FORMAT_CURRENT,
+            event["sdk_session_id"],
+            event["seq_no"],
+            event["timestamp_sdk"],
+            event.get("prompt") or "",
+            event.get("response") or "",
+            None,
         )
         return hmac_mod.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 

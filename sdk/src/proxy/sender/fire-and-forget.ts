@@ -7,10 +7,11 @@
  * @packageDocumentation
  */
 
-import { randomUUID, createHmac, createHash } from "node:crypto";
+import { randomUUID, createHmac } from "node:crypto";
 import type { AuditEvent, QueueItem, BackoffState, ResolvedConfig } from "../types.js";
 import { debugLog } from "../../utils/logger.js";
 import { mirrorToOtel } from "../otel-mirror.js";
+import { CHAIN_FORMAT_CURRENT, signaturePayload } from "../chain-format.js";
 import {
   AUDIT_GAP_GOVERNANCE_EVENT,
   AUDIT_GAP_METADATA_KEY,
@@ -637,6 +638,11 @@ function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
   // without correlating against the fleet registry timeline. Not part of
   // the signature payload, so the chain format stays version-independent.
   event.sdk_version = `node/${SDK_VERSION}`;
+  // Which signing format this event verifies under (see proxy/chain-format.ts).
+  // The field itself only routes the verifier; the format number is also the
+  // leading element of the signature payload, so stripping or rewriting this
+  // field can only fail verification, never redirect it.
+  event.chain_format = CHAIN_FORMAT_CURRENT;
 
   // ── Phase 3: Chain-link to previous event ────────────────────────────────
   if (lastSig !== null) {
@@ -645,16 +651,15 @@ function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
 
   // ── Phase 2: Compute HMAC-SHA256 signature ────────────────────────────────
   const key = getOrDeriveSigningKey(config.api_key);
-  const contentHash = createHash("sha256")
-    .update((event.prompt ?? "") + (event.response ?? ""))
-    .digest("hex");
-  const sigPayload = [
+  const sigPayload = signaturePayload(
+    CHAIN_FORMAT_CURRENT,
     event.sdk_session_id,
-    String(event.seq_no),
-    String(event.timestamp_sdk),
-    contentHash,
-    event.prev_sig ?? "",  // Phase 3: bind prev_sig into the signature
-  ].join("|");
+    event.seq_no,
+    event.timestamp_sdk,
+    event.prompt ?? "",
+    event.response ?? "",
+    event.prev_sig ?? null
+  );
   event.sdk_sig = createHmac("sha256", key)
     .update(sigPayload)
     .digest("hex");
