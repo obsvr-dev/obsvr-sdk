@@ -344,9 +344,20 @@ obsvr-verify ./bundle.json          # Python (console script from obsvr-sdk)
 npx obsvr-verify ./bundle.json --api-key <key>
 obsvr-verify ./bundle.json --api-key <key>
 
+# accept a chain that declares dropped events as a pass (exit 3 -> 0)
+npx obsvr-verify ./bundle.json --api-key <key> --allow-gaps
 ```
 
-Exit code `0` = verified at the requested tier, `1` = broken, `2` = usage error — identical in both, along with the accepted bundle shapes and the verdicts. CI drives both binaries over one export built from the shared fixtures and compares exit codes and output, so the two cannot drift apart.
+Exit codes — identical in both, along with the accepted bundle shapes and the verdicts:
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | verified at the requested tier, and the chain declares no loss |
+| `1` | broken — a signature, link, or continuity check failed |
+| `2` | usage error |
+| `3` | **valid but incomplete** — every check passed *and* the chain declares events it dropped |
+
+`3` exists because `obsvr-verify chain.json && deploy` reads only the status: without it, a record missing most of its events passes a gate that means "all clear", which is the same conflation of *valid* and *complete* the gap markers exist to end. It is distinct from `1` because nothing is wrong with the evidence, and distinct from `0` because it is not all of it. `--allow-gaps` maps `3` back to `0` for a team whose posture already accepts bounded-queue loss — it suppresses only the status, never the printed disclosure. CI drives both binaries over one export built from the shared fixtures and compares exit codes and output, so the two cannot drift apart.
 
 Python also exposes verification as a library call:
 

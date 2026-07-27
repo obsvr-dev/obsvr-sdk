@@ -30,6 +30,19 @@ with open(VECTORS_PATH, encoding="utf-8") as fh:
 
 API_KEY = VECTORS["api_key"]
 
+GAP_PATH = os.path.join(REPO_ROOT, "conformance/fixtures/audit_gap.json")
+
+with open(GAP_PATH, encoding="utf-8") as fh:
+    GAP_FIXTURE = json.load(fh)
+
+GAP_API_KEY = GAP_FIXTURE["signing"]["api_key"]
+
+
+def _gap_chain():
+    """A valid chain whose middle event is a signed gap marker."""
+    signing = GAP_FIXTURE["signing"]
+    return [dict(e, sdk_session_id=signing["session_id"]) for e in signing["events"]]
+
 
 def _chain():
     return [dict(e, sdk_session_id=VECTORS["session_id"]) for e in VECTORS["events"]]
@@ -103,6 +116,43 @@ def test_timestamp_regression_fails_keyless(tmp_path, capsys):
 
 def test_wrong_key_exits_1(tmp_path):
     assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", "wrong"]) == 1
+
+
+def test_declared_gap_exits_3_not_0(tmp_path, capsys):
+    """The whole point: `obsvr-verify chain.json && deploy` must NOT pass on a
+    record the chain itself says is missing events. Valid is not complete."""
+    code = _run([_write(tmp_path, "gap.json", _gap_chain()), "--api-key", GAP_API_KEY])
+    assert code == 3
+    out = capsys.readouterr().out
+    assert "CONTENT + CHAIN verification passed" in out
+    assert "declared LOST" in out
+
+
+def test_declared_gap_exits_3_keyless_too(tmp_path, capsys):
+    # Keyless reads the marker without authenticating it, and still refuses to
+    # report the run as clean - the count is untrusted, its presence is not.
+    assert _run([_write(tmp_path, "gap.json", _gap_chain())]) == 3
+
+
+def test_allow_gaps_opts_back_into_0(tmp_path, capsys):
+    code = _run(
+        [_write(tmp_path, "gap.json", _gap_chain()), "--api-key", GAP_API_KEY, "--allow-gaps"]
+    )
+    assert code == 0
+    # The status is suppressed; the disclosure is not. A team that accepts
+    # bounded-queue loss still has the loss printed in its CI log.
+    assert "declared LOST" in capsys.readouterr().out
+
+
+def test_allow_gaps_does_not_rescue_a_broken_chain(tmp_path, capsys):
+    chain = _chain()
+    chain[1]["prompt"] = "tampered"
+    code = _run([_write(tmp_path, "t.json", chain), "--api-key", API_KEY, "--allow-gaps"])
+    assert code == 1
+
+
+def test_allow_gaps_on_a_clean_chain_is_a_no_op(tmp_path, capsys):
+    assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", API_KEY, "--allow-gaps"]) == 0
 
 
 def test_usage_error_exits_2(capsys):

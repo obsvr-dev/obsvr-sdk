@@ -10,7 +10,10 @@
  *
  * The export is built from the shared signing vectors
  * (conformance/fixtures/signing_vectors.json), so the chain is the fixture's,
- * not a per-language literal.
+ * not a per-language literal. The gap-marker cases are built from
+ * conformance/fixtures/audit_gap.json for the same reason: a chain that
+ * declares dropped events must read the same in both CLIs, or an auditor
+ * running one of them is told a lossy run was clean.
  *
  * Compared per case: exit code, stdout, and stderr, byte for byte. Exit codes
  * and verdicts are the contract; the prose is compared too because it costs
@@ -41,6 +44,15 @@ const API_KEY = vectors.api_key;
 /** The fixture chain, with the session id the fixture keeps alongside it. */
 const chain = vectors.events.map((e) => ({ ...e, sdk_session_id: vectors.session_id }));
 
+const gapFixture = JSON.parse(
+  readFileSync(join(root, "conformance", "fixtures", "audit_gap.json"), "utf8"),
+);
+/** A chain whose middle event is a signed gap marker declaring 1,234 losses. */
+const gapChain = gapFixture.signing.events.map((e) => ({
+  ...e,
+  sdk_session_id: gapFixture.signing.session_id,
+}));
+
 const workdir = mkdtempSync(join(tmpdir(), "obsvr-cli-parity-"));
 const write = (name, value) => {
   const path = join(workdir, name);
@@ -68,6 +80,26 @@ const CASES = [
   },
   { name: "tampered content, keyless (undetectable by design)", args: [write("tampered.json", tampered)] },
   { name: "seq_no gap, keyless", args: [write("gapped.json", gapped)] },
+  // Exit 3 (valid but incomplete) is the contract these pin: a chain that
+  // declares dropped events must not pass a `verify && deploy` gate, and both
+  // CLIs must agree on that status, not just on the printed finding.
+  {
+    name: "declared audit gap, --api-key (exit 3)",
+    args: [write("audit-gap.json", gapChain), "--api-key", gapFixture.signing.api_key],
+  },
+  { name: "declared audit gap, keyless (exit 3)", args: [write("audit-gap.json", gapChain)] },
+  {
+    name: "declared audit gap, --allow-gaps opts back into 0",
+    args: [write("audit-gap.json", gapChain), "--api-key", gapFixture.signing.api_key, "--allow-gaps"],
+  },
+  {
+    name: "--allow-gaps on a clean chain changes nothing",
+    args: [write("valid.json", chain), "--api-key", API_KEY, "--allow-gaps"],
+  },
+  {
+    name: "--allow-gaps does not rescue a broken chain",
+    args: [write("tampered.json", tampered), "--api-key", API_KEY, "--allow-gaps"],
+  },
   { name: "wrong key", args: [write("valid.json", chain), "--api-key", "not-the-key"] },
   { name: "unrecognized shape", args: [write("weird.json", { nope: true })] },
   { name: "missing file argument", args: [] },

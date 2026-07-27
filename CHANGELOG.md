@@ -36,6 +36,19 @@ cut, when it is renamed to that version.
   `gap_markers` / `gap_events_declared` sender counters. Marker format and
   verdicts are pinned cross-language by
   `conformance/fixtures/audit_gap.json`.
+- **`obsvr-verify` exit code 3: valid but incomplete.** A chain carrying gap
+  markers previously exited `0` — it printed the declared loss, but
+  `obsvr-verify chain.json && deploy` still passed on a record missing most of
+  its events, which is the same conflation of *valid* and *complete* the markers
+  exist to end, surviving in the machine-readable half. Both CLIs now exit `3`
+  when every check passes and the chain declares dropped events; `1` (broken)
+  and `2` (usage) are unchanged, and a clean chain still exits `0`.
+  `--allow-gaps` maps `3` back to `0` for callers whose posture accepts
+  bounded-queue loss — it suppresses the status only, never the printed
+  disclosure. **If you gate on `obsvr-verify`'s exit status, a previously
+  passing chain that declares loss will now fail**; that is the intent, and
+  `--allow-gaps` is the opt-out. The parity script pins the status in both
+  languages.
 - **Typed policy-block error.** A call refused by policy now throws
   `ObsvrPolicyError` (TypeScript) / raises `ObsvrPolicyError` (Python) carrying
   a stable `type`, a `reason_code` from the closed registry, the deciding
@@ -76,7 +89,8 @@ cut, when it is renamed to that version.
   content hash alone.
 - **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` now installs an
   `obsvr-verify` console script with the same two tiers, the same exit codes
-  (0 verified / 1 broken / 2 usage), the same accepted bundle shapes, and the
+  (0 verified / 1 broken / 2 usage, joined this release by 3 valid-but-
+  incomplete — see above), the same accepted bundle shapes, and the
   same verdicts as the npm CLI. A Python-only compliance team can verify its
   own evidence without adopting a Node toolchain — the verification claim was
   never language-qualified, but until now the tooling was. CI drives both
