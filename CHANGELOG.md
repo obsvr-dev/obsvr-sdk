@@ -60,6 +60,18 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **Python agent-run controls: loop detection and delegation tracking.**
+  `obsvr.LoopDetector` / `obsvr.DelegationTracker` (and their `create_*`
+  factories) are the twins of the TypeScript controls, with identical
+  thresholds, check order, and violation messages, pinned by the new
+  `conformance/fixtures/agent_controls.json`. Loop detection is driven for you
+  by the LangChain and OpenAI-Agents integrations when
+  `agent_policy={"loop_detection": {"max_iterations": N, "window_ms": M,
+  "action": "block"}}` is configured; a run past the limit emits a
+  `LOOP_DETECTED` event and stops. Opt-in: with no `loop_detection` block, an
+  agent run behaves exactly as before. Delegation tracking is a library you
+  drive from your own handoff path, as in TypeScript.
+  ([`36696bc`](https://github.com/obsvr-dev/obsvr-sdk/commit/36696bc))
 - **`sessionTaint.destructiveTools`: a tainted session loses its dangerous
   capabilities.** An exact-name tool set a tainted session may never invoke,
   enforced at every tool boundary (governed tools, MCP, framework wrappers)
@@ -81,11 +93,11 @@ cut, when it is renamed to that version.
   and multi-turn injection blocks, which previously surfaced as `PII_DETECTED`
   or `POLICY_VIOLATION`), `TRANSMISSION_BLOCKED` (taint-gated egress refusals),
   `TOOL_DENIED` (agent-policy tool refusals on every integration),
-  `MCP_TOOL_DENIED` / `MCP_RESULT_BLOCKED` (the MCP gates), and — TypeScript
-  only — `LOOP_DETECTED` / `DELEGATION_BLOCKED`. Both suites now run a
+  `MCP_TOOL_DENIED` / `MCP_RESULT_BLOCKED` (the MCP gates), and
+  `LOOP_DETECTED` / `DELEGATION_BLOCKED`. Both suites now run a
   reachability gate: every registry code must be emitted by an exercised path,
-  pinned in a named suite, or explicitly reserved (KD-8 records Python's two
-  reserved codes).
+  pinned in a named suite, or explicitly reserved — and as of the Python
+  agent-run controls below, nothing is reserved in either language.
   ([`2f3b5a4`](https://github.com/obsvr-dev/obsvr-sdk/commit/2f3b5a4))
 - **MCP tool descriptors are content-inspected at discovery.** The poisoning
   scan now also reads JSON Schema `description` / `default` strings at any
@@ -97,7 +109,7 @@ cut, when it is renamed to that version.
   ([`ca0c209`](https://github.com/obsvr-dev/obsvr-sdk/commit/ca0c209))
 - **Cross-SDK bookkeeping is validated data.** Fixture cases carry per-language
   `sdk_support` (a gap shows as a recorded skip, not a missing test — first
-  used by the KD-7 hidden-markup cases), fixtures carry `claimable` enforced
+  used by the hidden-markup cases, since closed), fixtures carry `claimable` enforced
   bidirectionally against the public docs, the known-divergences table became
   the schema-checked `conformance/known-divergences.json`, and the spec's
   seven uncovered EV statements are a checked partition in
@@ -178,15 +190,15 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   no consumer. What this closes is a forked fixture: a copy drifts, both suites
   keep passing, and the shared contract stops being shared.
   ([`7a329ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/7a329ef))
-- **CSS-hidden and aria-hidden content is stripped from the scan view
-  (TypeScript).** Hidden markup could break a phrase apart so it read as an
-  injection to the model and as unrelated fragments to a scanner. Elements
-  hidden via `display:none`, `visibility:hidden`, or `aria-hidden="true"` are
-  now removed from the canonical view, tag and content. Raw text is still
-  scanned first, so a payload hidden whole was always caught; this closes the
-  split-phrase case. Detection-only, and off unless
-  `deobfuscation: { enabled: true }`.
-  ([`9916800`](https://github.com/obsvr-dev/obsvr-sdk/commit/9916800))
+- **CSS-hidden and aria-hidden content is stripped from the scan view, in both
+  SDKs.** Hidden markup could break a phrase apart so it read as an injection
+  to the model and as unrelated fragments to a scanner. Elements hidden via
+  `display:none`, `visibility:hidden`, or `aria-hidden="true"` are now removed
+  from the canonical view, tag and content. Raw text is still scanned first, so
+  a payload hidden whole was always caught; this closes the split-phrase case.
+  Detection-only, and off unless `deobfuscation: { enabled: true }`.
+  ([`9916800`](https://github.com/obsvr-dev/obsvr-sdk/commit/9916800),
+  [`ad34f66`](https://github.com/obsvr-dev/obsvr-sdk/commit/ad34f66))
 - **Python signed-policy verification.** `obsvr.init(policy_public_key=...)` pins
   an Ed25519 key and `policy_verify.py` checks a fetched policy's signature with
   the same checks and refusal reasons TypeScript used. The backend is optional
@@ -202,6 +214,18 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Python MCP discovery could fail to strip a tool it had refused.** Under
+  `pinning: {mode: "block"}` (or `block_poisoned_tools`), the offending tools
+  are removed from the listing the model reads. Python performed that by
+  assigning to `result.tools` inside a bare `try`/`except`, so a listing model
+  that forbids assignment — a frozen pydantic result, for instance — kept the
+  swapped descriptor visible while the code reported success. The listing is
+  now rebuilt through whichever of `model_copy` / `copy(update=…)` /
+  `dataclasses.replace` / a shallow copy the type supports, each returning the
+  listing's own class; the one shape that can be rebuilt no way at all warns
+  instead of staying silent. The call-time gate refused the tool before this
+  change and still does — this closes the discovery half.
+  ([`1c5d9d8`](https://github.com/obsvr-dev/obsvr-sdk/commit/1c5d9d8))
 - **An explicit `timeout_ms: 0` on the Python external policy backend was
   silently replaced by the 2-second default.** The value was read with an
   `or`-default, so the strictest configurable budget — zero, which fails
