@@ -747,6 +747,7 @@ def apply_pre_call_policy(
     metadata: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     scan_text: Optional[str] = None,
+    tool_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compliance boundary before an LLM call (real enforcement).
 
@@ -819,7 +820,7 @@ def apply_pre_call_policy(
         from .session_taint import (
             resolve_session_taint,
             derive_session_key,
-            evaluate_session_taint,
+            evaluate_tool_taint_gate,
             mark_tainted,
             touch_taint,
             session_taint_size,
@@ -829,12 +830,19 @@ def apply_pre_call_policy(
         taint_rule_id: Optional[str] = None
         taint_reason: Optional[str] = None
         if taint_cfg and session_taint_size() > 0 and action_taken != "blocked":
-            verdict = evaluate_session_taint(taint_key, taint_cfg)
+            # Tool-aware when the caller is a tool boundary: a tainted session
+            # in flag mode still loses its DESTRUCTIVE capabilities
+            # (session_taint destructive_tools) - the composition that stops
+            # indirect injection without bricking the session (TS parity).
+            verdict = evaluate_tool_taint_gate(taint_key, taint_cfg, tool_name or "")
             if verdict["enforcement"] != "none":
                 touch_taint(taint_key, time.monotonic())  # LRU: keep victim alive
                 taint_rule_id = "sdk:session_tainted"
                 taint_reason = (
-                    "Session previously compromised (%s); egress escalated"
+                    "Session previously compromised (%s); destructive capability '%s' denied"
+                    % (verdict["reason"], tool_name)
+                    if verdict.get("destructive")
+                    else "Session previously compromised (%s); egress escalated"
                     % verdict["reason"]
                 )
                 if verdict["enforcement"] == "block":

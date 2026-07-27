@@ -123,7 +123,7 @@ class ObsvrGovernedTool:
         prompt_text = _call_prompt(tool_name, args, kwargs)
         result = apply_pre_call_policy(
             prompt_text, cfg, provider=PROVIDER, operation="smolagents.tool.call",
-            metadata=self._identity_meta(),
+            metadata=self._identity_meta(), tool_name=tool_name,
         )
         compliance = result["compliance"]
         if result["decision"] == "block":

@@ -1,4 +1,5 @@
 {
+  "claimable": true,
   "schema_version": 1,
   "name": "session_taint",
   "description": "Cross-SDK session taint latch fixtures. key_cases pin derive_session_key/deriveSessionKey (metadata.user_id ?? session_id ?? tenant_id ?? 'global'). decision_cases pin evaluate_session_taint/evaluateSessionTaint: the harness mark_tainted's the key when `tainted`, then asserts the enforcement (none|flag|block) for the given config (action defaults to flag; disabled/absent config never enforces). Both SDK harnesses (sdk/tests/unit/session-taint-conformance.test.ts, sdk-python/tests/test_session_taint_conformance.py) must agree; divergence is a release blocker unless recorded in known-divergences.md.",
@@ -161,5 +162,108 @@
         "enforcement": "none"
       }
     }
-  ]
+  ],
+  "tool_gate_cases": {
+    "desc": "Tool-aware taint gate: (tool_name, taint_state, action, destructive set) -> decision, pinned identically in both SDKs (TS evaluateToolTaintGate, Python evaluate_tool_taint_gate). The composition this pins: a tainted session under the DEFAULT flag action still has its calls to tools in the destructive-capability set REFUSED - detection quality is not the lever, reachability is. A missed injection is harmless if it cannot reach send_money, and a detected one no longer bricks the session (ordinary egress stays flagged) while the dangerous capabilities go dark. Membership is EXACT tool names - a capability set that pattern-matched would be a detector again. `destructive: true` marks a block that came from the set rather than a blanket block action.",
+    "cases": [
+      {
+        "id": "untainted_destructive_tool_runs",
+        "tainted": false,
+        "config": {
+          "enabled": true,
+          "action": "flag",
+          "destructive_tools": [
+            "send_money"
+          ]
+        },
+        "tool_name": "send_money",
+        "expect": {
+          "enforcement": "none"
+        }
+      },
+      {
+        "id": "tainted_flag_nondestructive_flags",
+        "tainted": true,
+        "config": {
+          "enabled": true,
+          "action": "flag",
+          "destructive_tools": [
+            "send_money"
+          ]
+        },
+        "tool_name": "read_file",
+        "expect": {
+          "enforcement": "flag"
+        }
+      },
+      {
+        "id": "tainted_flag_destructive_blocks",
+        "desc": "THE case: flag mode, and the destructive capability is still refused",
+        "tainted": true,
+        "config": {
+          "enabled": true,
+          "action": "flag",
+          "destructive_tools": [
+            "send_money"
+          ]
+        },
+        "tool_name": "send_money",
+        "expect": {
+          "enforcement": "block",
+          "destructive": true
+        }
+      },
+      {
+        "id": "tainted_block_mode_blocks_everything",
+        "tainted": true,
+        "config": {
+          "enabled": true,
+          "action": "block",
+          "destructive_tools": []
+        },
+        "tool_name": "read_file",
+        "expect": {
+          "enforcement": "block"
+        }
+      },
+      {
+        "id": "empty_set_flag_stays_flag",
+        "tainted": true,
+        "config": {
+          "enabled": true,
+          "action": "flag",
+          "destructive_tools": []
+        },
+        "tool_name": "send_money",
+        "expect": {
+          "enforcement": "flag"
+        }
+      },
+      {
+        "id": "membership_is_exact_names_only",
+        "desc": "send_money_v2 is not send_money: no prefix or pattern matching, ever",
+        "tainted": true,
+        "config": {
+          "enabled": true,
+          "action": "flag",
+          "destructive_tools": [
+            "send_money"
+          ]
+        },
+        "tool_name": "send_money_v2",
+        "expect": {
+          "enforcement": "flag"
+        }
+      },
+      {
+        "id": "disabled_latch_never_gates",
+        "tainted": true,
+        "config": null,
+        "tool_name": "send_money",
+        "expect": {
+          "enforcement": "none"
+        }
+      }
+    ]
+  }
 }

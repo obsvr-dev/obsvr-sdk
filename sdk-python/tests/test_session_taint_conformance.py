@@ -13,6 +13,7 @@ from obsvr.session_taint import (
     _reset_session_taint,
     derive_session_key,
     evaluate_session_taint,
+    evaluate_tool_taint_gate,
     mark_tainted,
     session_taint_size,
     taint_reason,
@@ -44,6 +45,23 @@ def test_taint_enforcement_decision(case):
         evaluate_session_taint("k", case["config"])["enforcement"]
         == case["expect"]["enforcement"]
     )
+    _reset_session_taint()
+
+
+@pytest.mark.parametrize(
+    "case",
+    FIXTURE["tool_gate_cases"]["cases"],
+    ids=[c["id"] for c in FIXTURE["tool_gate_cases"]["cases"]],
+)
+def test_tool_aware_taint_gate(case):
+    # The destructive-capability composition: a tainted session under the
+    # default flag action still has its calls to tools in the set refused.
+    _reset_session_taint()
+    if case["tainted"]:
+        mark_tainted("k", "prompt_injection", 1.0)
+    verdict = evaluate_tool_taint_gate("k", case["config"], case["tool_name"])
+    assert verdict["enforcement"] == case["expect"]["enforcement"], case["id"]
+    assert verdict.get("destructive") == case["expect"].get("destructive"), case["id"]
     _reset_session_taint()
 
 

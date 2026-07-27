@@ -32,7 +32,7 @@ import {
 import {
   resolveSessionTaint,
   deriveSessionKey,
-  evaluateSessionTaint,
+  evaluateToolTaintGate,
   touchTaint,
   sessionTaintSize,
 } from "../policy/session-taint.js";
@@ -221,14 +221,22 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
           const taintKey = deriveSessionKey(
             (options.metadata ?? {}) as Record<string, unknown>,
           );
-          const verdict = evaluateSessionTaint(taintKey, taintCfg);
+          // Tool-aware: a tainted session in flag mode still loses its
+          // DESTRUCTIVE capabilities (sessionTaint.destructiveTools) — the
+          // composition that stops indirect injection without bricking the
+          // session. One set-membership test.
+          const verdict = evaluateToolTaintGate(taintKey, taintCfg, toolName);
           if (verdict.enforcement !== "none") {
             touchTaint(taintKey, Date.now());
             if (verdict.enforcement === "block") {
               toolBlock = {
                 rule_id: "sdk:session_tainted",
-                policy_reason: `Session previously compromised (${verdict.reason}); tool call escalated`,
-                message: `[obsvr] Tool blocked: session tainted (${verdict.reason})`,
+                policy_reason: verdict.destructive
+                  ? `Session previously compromised (${verdict.reason}); destructive capability '${toolName}' denied`
+                  : `Session previously compromised (${verdict.reason}); tool call escalated`,
+                message: verdict.destructive
+                  ? `[obsvr] Tool blocked: destructive capability denied for tainted session (${verdict.reason})`
+                  : `[obsvr] Tool blocked: session tainted (${verdict.reason})`,
                 // A taint-gated refusal of outbound egress (a tool call is the
                 // most side-effecting transmission there is).
                 reason_code: ReasonCode.TRANSMISSION_BLOCKED,

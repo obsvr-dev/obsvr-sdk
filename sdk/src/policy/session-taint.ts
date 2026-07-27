@@ -30,6 +30,18 @@ export interface SessionTaintConfig {
   enabled?: boolean;
   /** flag (default): annotate a tainted session's egress; block: refuse it. */
   action?: "block" | "flag";
+  /**
+   * Destructive-capability set: EXACT tool names a tainted session may never
+   * invoke, even under the default `flag` action. This is the composition
+   * that makes the latch a working defense against indirect injection:
+   * detection quality is not the lever — reachability is. A missed or
+   * borderline injection is harmless if it cannot reach `send_money`, and a
+   * detected one no longer bricks the whole session (ordinary egress is
+   * still only flagged) while the capabilities that could do damage go dark.
+   * Cost at the tool gate is one set-membership test. Exact names only — a
+   * capability set that pattern-matched would be a detector again.
+   */
+  destructiveTools?: string[];
 }
 
 interface TaintRecord {
@@ -146,11 +158,45 @@ export function evaluateSessionTaint(
   return { enforcement: config.action === "block" ? "block" : "flag", reason };
 }
 
+export interface ToolTaintVerdict extends TaintVerdict {
+  /** True when the block came from the destructive-capability set rather
+   * than a blanket `action: "block"` posture. */
+  destructive?: boolean;
+}
+
+/**
+ * Tool-aware enforcement decision at a TOOL egress point (fixture-pinned in
+ * session_taint.json `tool_gate_cases`). Composes {@link evaluateSessionTaint}
+ * with the destructive-capability set: a tainted session in `flag` mode still
+ * has its calls to tools in `destructiveTools` REFUSED, because the flag
+ * posture exists so one detection never bricks a session — not so a
+ * compromised session keeps its most dangerous capabilities. Exact name
+ * membership, nothing else; does NOT mutate the store.
+ */
+export function evaluateToolTaintGate(
+  sessionKey: string,
+  config: { enabled?: boolean; action?: "block" | "flag"; destructiveTools?: string[] } | undefined,
+  toolName: string,
+): ToolTaintVerdict {
+  const base = evaluateSessionTaint(sessionKey, config);
+  if (base.enforcement !== "flag") return base;
+  if ((config?.destructiveTools ?? []).includes(toolName)) {
+    return { enforcement: "block", reason: base.reason, destructive: true };
+  }
+  return base;
+}
+
 /** Resolve the taint sub-config (absent/disabled => undefined). */
 export function resolveSessionTaint(
   config: { sessionTaint?: SessionTaintConfig } | undefined,
-): Required<Pick<SessionTaintConfig, "enabled" | "action">> | undefined {
+): Required<Pick<SessionTaintConfig, "enabled" | "action">> & { destructiveTools: string[] } | undefined {
   const t = config?.sessionTaint;
   if (!t?.enabled) return undefined;
-  return { enabled: true, action: t.action === "block" ? "block" : "flag" };
+  return {
+    enabled: true,
+    action: t.action === "block" ? "block" : "flag",
+    destructiveTools: Array.isArray(t.destructiveTools)
+      ? t.destructiveTools.filter((n): n is string => typeof n === "string")
+      : [],
+  };
 }

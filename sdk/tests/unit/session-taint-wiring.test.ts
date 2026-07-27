@@ -219,3 +219,62 @@ describe('session taint: wrapper end-to-end (per-session keying, not the global 
     ).rejects.toThrow(/blocked/i);
   });
 });
+
+describe('session taint: destructive-capability gate (flag mode still refuses the set)', () => {
+  it('a tainted flag-mode session loses its destructive tool but keeps ordinary ones', () => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      sessionTaint: { enabled: true, destructiveTools: ['send_money'] }, // action defaults to flag
+    });
+    markTainted('alice', 'prompt_injection', Date.now());
+
+    // The destructive capability is refused before its side effect runs...
+    let ranMoney = false;
+    const money = obsvrGovernTool(
+      { name: 'send_money', execute: (_i: unknown) => { ranMoney = true; return 'sent'; } },
+      { metadata: { user_id: 'alice' } },
+    );
+    expect(() => money.execute({ amount: 100 })).toThrow(/destructive capability denied/i);
+    expect(ranMoney).toBe(false);
+
+    // ...while an ordinary tool in the SAME tainted session still runs (flag).
+    let ranRead = false;
+    const read = obsvrGovernTool(
+      { name: 'read_file', execute: (_i: unknown) => { ranRead = true; return 'ok'; } },
+      { metadata: { user_id: 'alice' } },
+    );
+    expect(read.execute({ path: '/tmp/x' })).toBe('ok');
+    expect(ranRead).toBe(true);
+  });
+
+  it('the pre-call path gates by tool name too (MCP threads toolName)', async () => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      sessionTaint: { enabled: true, destructiveTools: ['send_money'] },
+    });
+    markTainted('alice', 'prompt_injection', Date.now());
+
+    const destructive = await applyPreCallPolicy('transfer please', {
+      config: getConfig(),
+      provider: 'unknown',
+      operation: 'test',
+      toolName: 'send_money',
+      metadata: { user_id: 'alice' },
+    });
+    expect(destructive.decision).toBe('block');
+    expect(destructive.compliance.reason_code).toBe('TRANSMISSION_BLOCKED');
+    expect(destructive.compliance.policy_reason).toContain("destructive capability 'send_money' denied");
+
+    const ordinary = await applyPreCallPolicy('read please', {
+      config: getConfig(),
+      provider: 'unknown',
+      operation: 'test',
+      toolName: 'read_file',
+      metadata: { user_id: 'alice' },
+    });
+    expect(ordinary.decision).toBe('allow'); // flagged, not blocked
+    expect(ordinary.compliance.rule_id).toBe('sdk:session_tainted');
+  });
+});

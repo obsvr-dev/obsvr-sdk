@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
   deriveSessionKey,
   evaluateSessionTaint,
+  evaluateToolTaintGate,
   markTainted,
   taintReason,
   touchTaint,
@@ -38,10 +39,24 @@ interface DecisionCase {
   config: { enabled?: boolean; action?: 'block' | 'flag' } | null;
   expect: { enforcement: string };
 }
+interface ToolGateCase {
+  id: string;
+  desc?: string;
+  tainted: boolean;
+  /** Fixture configs use the wire spelling; destructive_tools maps to the
+   * TS resolved-config key destructiveTools. */
+  config: { enabled?: boolean; action?: 'block' | 'flag'; destructive_tools?: string[] } | null;
+  tool_name: string;
+  expect: { enforcement: string; destructive?: boolean };
+}
 
 const fixture = JSON.parse(
   fs.readFileSync(findFixture('conformance/fixtures/session_taint.json'), 'utf-8'),
-) as { key_cases: KeyCase[]; decision_cases: DecisionCase[] };
+) as {
+  key_cases: KeyCase[];
+  decision_cases: DecisionCase[];
+  tool_gate_cases: { cases: ToolGateCase[] };
+};
 
 describe('conformance: session key derivation', () => {
   for (const c of fixture.key_cases) {
@@ -57,6 +72,26 @@ describe('conformance: taint enforcement decision', () => {
       _resetSessionTaint();
       if (c.tainted) markTainted('k', 'prompt_injection', 1.0);
       expect(evaluateSessionTaint('k', c.config ?? undefined).enforcement).toBe(c.expect.enforcement);
+      _resetSessionTaint();
+    });
+  }
+});
+
+describe('conformance: tool-aware taint gate (destructive-capability set)', () => {
+  for (const c of fixture.tool_gate_cases.cases) {
+    it(c.id, () => {
+      _resetSessionTaint();
+      if (c.tainted) markTainted('k', 'prompt_injection', 1.0);
+      const cfg = c.config
+        ? {
+            enabled: c.config.enabled,
+            action: c.config.action,
+            destructiveTools: c.config.destructive_tools,
+          }
+        : undefined;
+      const verdict = evaluateToolTaintGate('k', cfg, c.tool_name);
+      expect(verdict.enforcement).toBe(c.expect.enforcement);
+      expect(verdict.destructive).toBe(c.expect.destructive);
       _resetSessionTaint();
     });
   }

@@ -511,7 +511,7 @@ def _build_governed_mcp_callables(
             try:
                 result = apply_pre_call_policy(
                     prompt_text, cfg, provider="mcp", operation="mcp.tool.call",
-                    metadata=identity_meta or None,
+                    metadata=identity_meta or None, tool_name=tool_name,
                 )
                 compliance = result["compliance"]
                 final_prompt = result["redacted_prompt"]

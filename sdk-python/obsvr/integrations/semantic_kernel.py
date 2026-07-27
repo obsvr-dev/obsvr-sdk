@@ -139,7 +139,7 @@ async def _govern(context: Any, options: Dict[str, Any]) -> bool:
     prompt_text = _args_prompt(tool_name, args)
     result = apply_pre_call_policy(
         prompt_text, cfg, provider=PROVIDER, operation="semantic_kernel.function.invoke",
-        metadata=_identity_meta(options),
+        metadata=_identity_meta(options), tool_name=tool_name,
     )
     compliance = result["compliance"]
     if result["decision"] == "block":

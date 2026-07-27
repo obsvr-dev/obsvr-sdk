@@ -807,6 +807,8 @@ async function runGovernedCallTool(
           userId: principal.user_id,
           serviceName: principal.service_name,
           tenantId: principal.tenant_id,
+          // Session-taint destructive-capability gate needs the tool identity.
+          toolName,
           metadata: opts.metadata,
         });
 

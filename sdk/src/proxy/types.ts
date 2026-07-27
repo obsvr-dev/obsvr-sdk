@@ -191,6 +191,9 @@ export interface ObsvrConfig {
     enabled?: boolean;
     /** @default "flag" */
     action?: "block" | "flag";
+    /** Destructive-capability set: EXACT tool names a TAINTED session may
+     * never invoke, even under the default "flag" action. */
+    destructiveTools?: string[];
   };
 
   /**
@@ -417,6 +420,7 @@ export interface LLMAuditInitConfig {
   sessionTaint?: {
     enabled?: boolean;
     action?: "block" | "flag";
+    destructiveTools?: string[];
   };
 
   /** De-obfuscation scan views (see ObsvrConfig.deobfuscation). */
@@ -554,6 +558,7 @@ export interface ResolvedConfig {
   sessionTaint?: {
     enabled?: boolean;
     action?: "block" | "flag";
+    destructiveTools?: string[];
   };
   /** De-obfuscation scan views (server-side normalizer mirror), detection-only. */
   deobfuscation?: { enabled?: boolean };

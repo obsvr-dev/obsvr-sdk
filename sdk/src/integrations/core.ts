@@ -54,7 +54,7 @@ import type { CanaryHit } from "../policy/canary.js";
 import {
   resolveSessionTaint,
   deriveSessionKey,
-  evaluateSessionTaint,
+  evaluateToolTaintGate,
   markTainted,
   touchTaint,
   sessionTaintSize,
@@ -423,6 +423,14 @@ export async function applyPreCallPolicy(
      * without it, a floor model allow/deny-list was silently inert here.
      */
     model?: string;
+    /**
+     * The tool this pre-call governs, when the caller is a TOOL boundary
+     * (MCP, framework tool wrappers). Lets the session-taint latch apply the
+     * destructive-capability gate: a tainted session in flag mode still has
+     * its calls to `sessionTaint.destructiveTools` refused. Absent on plain
+     * LLM-call boundaries.
+     */
+    toolName?: string;
     /** Extra rule-evaluation context (e.g. tenant_id, session_id). */
     metadata?: Record<string, unknown>;
   },
@@ -493,11 +501,17 @@ export async function applyPreCallPolicy(
     let taintRuleId: string | undefined;
     let taintPolicyReason: string | undefined;
     if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
-      const verdict = evaluateSessionTaint(taintKey, taintCfg);
+      // Tool-aware when the caller is a tool boundary: a tainted session in
+      // flag mode still loses its DESTRUCTIVE capabilities
+      // (sessionTaint.destructiveTools) — the composition that stops
+      // indirect injection without bricking the session.
+      const verdict = evaluateToolTaintGate(taintKey, taintCfg, ctx.toolName ?? "");
       if (verdict.enforcement !== "none") {
         touchTaint(taintKey, Date.now()); // LRU: keep an enforced victim alive
         taintRuleId = "sdk:session_tainted";
-        taintPolicyReason = `Session previously compromised (${verdict.reason}); egress escalated`;
+        taintPolicyReason = verdict.destructive
+          ? `Session previously compromised (${verdict.reason}); destructive capability '${ctx.toolName}' denied`
+          : `Session previously compromised (${verdict.reason}); egress escalated`;
         if (verdict.enforcement === "block") {
           actionTaken = "blocked";
           actionReason = "policy_violation";

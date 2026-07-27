@@ -130,7 +130,7 @@ class ObsvrToolset(_WrapperToolset):  # type: ignore[misc]
         prompt_text = _args_prompt(tool_name, tool_args)
         result = apply_pre_call_policy(
             prompt_text, cfg, provider=PROVIDER, operation="pydantic_ai.tool.call",
-            metadata=self._identity_meta(),
+            metadata=self._identity_meta(), tool_name=tool_name,
         )
         compliance = result["compliance"]
         if result["decision"] == "block":

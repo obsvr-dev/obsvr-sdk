@@ -168,7 +168,7 @@ def make_before_tool_callback(**options: Any) -> Callable[[Any, Any, Any], Optio
         prompt_text = _args_prompt(tool_name, args)
         result = apply_pre_call_policy(
             prompt_text, cfg, provider=PROVIDER, operation="adk.tool.call",
-            metadata=_identity_meta(options),
+            metadata=_identity_meta(options), tool_name=tool_name,
         )
         compliance = result["compliance"]
         if result["decision"] == "block":

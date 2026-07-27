@@ -124,9 +124,41 @@ def evaluate_session_taint(
     return {"enforcement": enforcement, "reason": reason}
 
 
+def evaluate_tool_taint_gate(
+    session_key: str, config: Optional[Dict[str, Any]], tool_name: str
+) -> Dict[str, Any]:
+    """Tool-aware enforcement decision at a TOOL egress point (fixture-pinned
+    in session_taint.json ``tool_gate_cases``; twin of the TS
+    evaluateToolTaintGate).
+
+    Composes :func:`evaluate_session_taint` with the destructive-capability
+    set: a tainted session in ``flag`` mode still has its calls to tools in
+    ``destructive_tools`` REFUSED, because the flag posture exists so one
+    detection never bricks a session - not so a compromised session keeps its
+    most dangerous capabilities. Exact name membership, nothing else; does NOT
+    mutate the store. A block from the set carries ``destructive: True``.
+    """
+    base = evaluate_session_taint(session_key, config)
+    if base["enforcement"] != "flag":
+        return base
+    if tool_name in ((config or {}).get("destructive_tools") or []):
+        return {"enforcement": "block", "reason": base.get("reason"), "destructive": True}
+    return base
+
+
 def resolve_session_taint(config: Any) -> Optional[Dict[str, Any]]:
     """Resolve the taint sub-config (absent/disabled => None)."""
     t = getattr(config, "session_taint", None)
     if not isinstance(t, dict) or not t.get("enabled"):
         return None
-    return {"enabled": True, "action": "block" if t.get("action") == "block" else "flag"}
+    raw_tools = t.get("destructive_tools")
+    return {
+        "enabled": True,
+        "action": "block" if t.get("action") == "block" else "flag",
+        # Destructive-capability set: EXACT tool names a tainted session may
+        # never invoke, even under the default flag action. Detection quality
+        # is not the lever - reachability is: a missed injection is harmless
+        # if it cannot reach send_money. Exact names only; a capability set
+        # that pattern-matched would be a detector again.
+        "destructive_tools": [n for n in (raw_tools or []) if isinstance(n, str)],
+    }

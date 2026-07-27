@@ -109,3 +109,46 @@ class TestTaintSetEnforce:
             metadata={"user_id": "", "session_id": "s1"},
         )
         assert res1["decision"] == "block"
+
+
+class TestDestructiveCapabilityGate:
+    """Flag mode still refuses the destructive-capability set (TS parity).
+
+    The composition that stops indirect injection: ordinary egress in a
+    tainted session stays merely flagged, while the tools that could do
+    damage go dark. Membership is exact tool names.
+    """
+
+    def test_tainted_flag_session_loses_destructive_tool_keeps_ordinary(self):
+        from obsvr.session_taint import mark_tainted
+        import time
+
+        _init(session_taint={"enabled": True, "destructive_tools": ["send_money"]})
+        mark_tainted("alice", "prompt_injection", time.monotonic())
+
+        destructive = apply_pre_call_policy(
+            "transfer please", get_config(), provider="unknown", operation="test",
+            metadata={"user_id": "alice"}, tool_name="send_money",
+        )
+        assert destructive["decision"] == "block"
+        assert destructive["compliance"]["reason_code"] == "TRANSMISSION_BLOCKED"
+        assert (
+            "destructive capability 'send_money' denied"
+            in destructive["compliance"]["policy_reason"]
+        )
+
+        ordinary = apply_pre_call_policy(
+            "read please", get_config(), provider="unknown", operation="test",
+            metadata={"user_id": "alice"}, tool_name="read_file",
+        )
+        assert ordinary["decision"] == "allow"  # flagged, not blocked
+        assert ordinary["compliance"]["rule_id"] == "sdk:session_tainted"
+
+    def test_untainted_session_uses_destructive_tool_normally(self):
+        _init(session_taint={"enabled": True, "destructive_tools": ["send_money"]})
+        r = apply_pre_call_policy(
+            "transfer please", get_config(), provider="unknown", operation="test",
+            metadata={"user_id": "bob"}, tool_name="send_money",
+        )
+        assert r["decision"] == "allow"
+        assert r["compliance"]["rule_id"] != "sdk:session_tainted"
