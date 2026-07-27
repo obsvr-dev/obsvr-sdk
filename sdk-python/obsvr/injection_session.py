@@ -92,6 +92,24 @@ def score_turn(
     return {"tripped": tripped, "score": entry["score"], "signals": signals, "turns": turns}
 
 
+def format_multi_turn_reason(turns: int, signals: "list[str]") -> str:
+    """The stored-record wording for a tripped multi-turn gate.
+
+    The DECAYED SCORE IS DELIBERATELY ABSENT: a continuous per-request margin
+    persisted into the audit record is an evasion oracle - anyone with read
+    access to the records can watch the number move across attempts and tune
+    a payload's distance to the threshold. The stored copy carries only
+    categorical facts (turn count, which signals fired); the full-precision
+    score stays in-process, where the threshold comparison actually runs.
+    Byte-identical across both SDKs, pinned by
+    conformance/fixtures/injection_reason.json.
+    """
+    return (
+        "Multi-turn injection accumulation reached the threshold over "
+        f"{turns} turn(s); this turn's signals: {', '.join(signals) or 'none'}"
+    )
+
+
 def get_session_score(session_key: str, half_life_s: float = 600.0) -> float:
     with _lock:
         entry = _sessions.get(session_key)

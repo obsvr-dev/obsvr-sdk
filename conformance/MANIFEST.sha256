@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 8f17cb957b4a2450abe40d81b58a005bf3e7054a88c79c0ed9d0f1c98ffa949d
+# corpus_sha256 = 0a5308962055570e774e0d8979802297a98babc612fee804936a78c896f94160
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -27,6 +27,7 @@ f9c7e5b3ce5e0026a33d1730a1989dd5eb4bc4ec3d3ad9b888f2ce19212c0497  fixtures/effec
 b488a81854384e8299e95db6aeea8932322782678833ae6dc9493e5990ae5e05  fixtures/eval_semantics.json
 dbba9144a45d71af6d2bc53ed0f5eba4319aed48d1c56fcb07a3e0c4ff8d7677  fixtures/external_backend.json
 25ba420b5ed14d92f454dc75780bc3c37709bf720bff25971aae903790a2ff59  fixtures/fail_mode.json
+ba61d17ece61d5f2edde09ec1663e6897159bb89ecf0e43ae90203a42b178a4c  fixtures/injection_reason.json
 38aa87fe32296a2bd87af8a74525d6524485a691e780736c225823a46de328d7  fixtures/instance_guard.json
 0429a05ee68234d6e15036d6aff0cd29576b8938483ba70c7064c3986e45cc29  fixtures/normalization.json
 8995c88f504764437ff46a767cfef29ac0115ae11ba22f336b2dfdc1b65660c3  fixtures/otel_attributes.json

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "name": "multi_turn_injection_stored_reason",
+  "description": "The stored policy_reason for a tripped multi-turn injection gate, byte-identical across both SDKs. The decayed score is DELIBERATELY ABSENT from the template: a continuous per-request margin persisted into the audit record is an evasion oracle - anyone with read access can watch the number move across attempts and tune a payload's distance to the threshold. Only categorical facts persist (turn count, which signals fired); full precision stays in-process where the threshold comparison runs. Producers: sdk/src/policy/injection-session.ts formatMultiTurnReason, sdk-python/obsvr/injection_session.py format_multi_turn_reason. Consumers: sdk/tests/unit/injection-session.test.ts, sdk-python/tests/test_parity_features.py. The forbidden_fragments list is the negative pin: no stored reason may ever carry a score again.",
+  "cases": [
+    {
+      "id": "two_turns_two_signals",
+      "turns": 2,
+      "signals": ["instruction_reference", "secrecy_request"],
+      "reason": "Multi-turn injection accumulation reached the threshold over 2 turn(s); this turn's signals: instruction_reference, secrecy_request"
+    },
+    {
+      "id": "single_turn_no_signals",
+      "turns": 1,
+      "signals": [],
+      "reason": "Multi-turn injection accumulation reached the threshold over 1 turn(s); this turn's signals: none"
+    },
+    {
+      "id": "many_turns_one_signal",
+      "turns": 17,
+      "signals": ["role_pressure"],
+      "reason": "Multi-turn injection accumulation reached the threshold over 17 turn(s); this turn's signals: role_pressure"
+    }
+  ],
+  "forbidden_fragments": {
+    "desc": "Substrings that must never appear in any formatted reason - each is a shape a persisted score took or could take. Both suites format every case above plus a probe set and assert none of these appear.",
+    "fragments": ["score", "0.", "1.", "Score"]
+  }
+}

@@ -957,11 +957,11 @@ def apply_pre_call_policy(
             # Full matches are already handled by the single-turn scan; the
             # multi-turn gate exists for the accumulation case.
             if mt["tripped"] and not had_full:
+                from .injection_session import format_multi_turn_reason
                 gate_rule_id = "sdk:multi_turn_injection"
-                gate_reason = (
-                    f"Multi-turn injection score {mt['score']:.2f} reached threshold over "
-                    f"{mt['turns']} turn(s); this turn's signals: {', '.join(mt['signals']) or 'none'}"
-                )
+                # No score in the stored reason - a persisted continuous
+                # margin is an evasion oracle (see format_multi_turn_reason).
+                gate_reason = format_multi_turn_reason(mt["turns"], mt["signals"])
                 # Accumulated injection taints the session (later egress escalated).
                 if taint_cfg:
                     mark_tainted(taint_key, "multi_turn_injection", time.monotonic())

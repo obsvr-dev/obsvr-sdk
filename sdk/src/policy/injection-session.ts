@@ -126,6 +126,20 @@ export function scoreTurn(
 }
 
 /** Current decayed score for a session (0 when unknown). For tests/inspection. */
+/**
+ * The stored-record wording for a tripped multi-turn gate. The DECAYED SCORE
+ * IS DELIBERATELY ABSENT: a continuous per-request margin persisted into the
+ * audit record is an evasion oracle — anyone with read access to the records
+ * can watch the number move across attempts and tune a payload's distance to
+ * the threshold. The stored copy carries only categorical facts (turn count,
+ * which signals fired); the full-precision score stays in-process, where the
+ * threshold comparison actually runs. Byte-identical across both SDKs, pinned
+ * by conformance/fixtures/injection_reason.json.
+ */
+export function formatMultiTurnReason(turns: number, signals: string[]): string {
+  return `Multi-turn injection accumulation reached the threshold over ${turns} turn(s); this turn's signals: ${signals.join(", ") || "none"}`;
+}
+
 export function getSessionScore(sessionKey: string, halfLifeMs = 600_000): number {
   const entry = sessions.get(sessionKey);
   return entry ? decayed(entry, Date.now(), halfLifeMs) : 0;

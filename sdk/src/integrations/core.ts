@@ -60,7 +60,7 @@ import {
   sessionTaintSize,
 } from "../policy/session-taint.js";
 import { presidioScan, presidioRedactText } from "../policy/presidio.js";
-import { scoreTurn } from "../policy/injection-session.js";
+import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js";
 import type { PolicyDecisionResult, PostCallDecisionResult, QuotaUnmetered } from "../policy/hook.js";
 import { normalizePostCallDecision } from "../policy/hook.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
@@ -624,7 +624,9 @@ export async function applyPreCallPolicy(
       if (mt.tripped && !hadFullMatch) {
         const mtAction = config.multiTurnInjection.action ?? "block";
         mtRuleId = "sdk:multi_turn_injection";
-        mtPolicyReason = `Multi-turn injection score ${mt.score.toFixed(2)} reached threshold over ${mt.turns} turn(s); this turn's signals: ${mt.signals.join(", ") || "none"}`;
+        // No score in the stored reason — a persisted continuous margin is
+        // an evasion oracle (see formatMultiTurnReason).
+        mtPolicyReason = formatMultiTurnReason(mt.turns, mt.signals);
         // Accumulated injection taints the session (later egress escalated).
         if (taintCfg) markTainted(taintKey, "multi_turn_injection", Date.now());
         if (mtAction === "block") {

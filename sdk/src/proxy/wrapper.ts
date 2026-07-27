@@ -61,7 +61,7 @@ import {
   runExternalBackendStep,
 } from "../policy/external-backend.js";
 import type { ExternalBackendRecord } from "../policy/external-backend.js";
-import { scoreTurn } from "../policy/injection-session.js";
+import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js";
 import { requestApproval } from "../policy/approvals.js";
 import { recordTokenUsage } from "../governance/quota.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
@@ -1282,7 +1282,9 @@ function createAuditedMethod(
         if (mt.tripped && !hadFullMatch) {
           const mtAction = config.multiTurnInjection.action ?? "block";
           ruleIdOverride = "sdk:multi_turn_injection";
-          policyReasonOverride = `Multi-turn injection score ${mt.score.toFixed(2)} reached threshold over ${mt.turns} turn(s); this turn's signals: ${mt.signals.join(", ") || "none"}`;
+          // No score in the stored reason — a persisted continuous margin is
+          // an evasion oracle (see formatMultiTurnReason).
+          policyReasonOverride = formatMultiTurnReason(mt.turns, mt.signals);
           // Accumulated injection taints the session (later egress escalated).
           if (taintCfg) markTainted(taintKey, "multi_turn_injection", Date.now());
           if (mtAction === "block") {
