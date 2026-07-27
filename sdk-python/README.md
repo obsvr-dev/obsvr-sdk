@@ -245,7 +245,7 @@ Built-in regex detection covers 13 PII types including SSN, credit cards, API ke
 
 ### Verdict reason codes
 
-Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (`obsvr.ReasonCode`) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the Python and TypeScript SDKs share one identical vocabulary. A CI staleness check fails if the two registries diverge or the engine can emit a code outside the registry.
+Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (`obsvr.ReasonCode`) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the Python and TypeScript SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `fail_mode="closed"`. A CI staleness check fails if the two registries diverge or the engine can emit a code outside the registry.
 
 ```python
 from obsvr import ReasonCode, REASON_CODES
