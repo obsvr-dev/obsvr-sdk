@@ -57,13 +57,16 @@ describe("README accuracy", () => {
   });
 
   it('"What Gets Governed" lists every AUDITABLE_METHODS entry from wrapper.ts', () => {
-    // Extract the set literal from source so this test tracks the code,
-    // not a hand-maintained copy of it.
-    const setMatch = wrapperSrc.match(
-      /const AUDITABLE_METHODS = new Set\(\[([\s\S]*?)\]\)/,
+    // Extract the table literal from source so this test tracks the code,
+    // not a hand-maintained copy of it. Each entry is [path, shape]; only the
+    // path is documented, so take the first string of each pair.
+    const tableMatch = wrapperSrc.match(
+      /const AUDITABLE_METHODS = new Map<string, ApiShape>\(\[([\s\S]*?)^\]\);/m,
     );
-    expect(setMatch).not.toBeNull();
-    const methods = [...setMatch![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(tableMatch).not.toBeNull();
+    const methods = [...tableMatch![1].matchAll(/\[\s*"([^"]+)"\s*,/g)].map(
+      (m) => m[1],
+    );
     expect(methods.length).toBeGreaterThanOrEqual(4);
     for (const method of methods) {
       expect(readme).toContain(`\`${method}\``);

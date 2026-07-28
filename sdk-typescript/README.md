@@ -144,14 +144,21 @@ The **OPA** endpoint is POSTed `{ "input": <decision document> }` and its `resul
 
 `obsvr.wrap()` (and the module interceptor) govern exactly these provider method paths:
 
-| Provider | Governed method |
+| Provider | Governed methods |
 | --- | --- |
-| OpenAI / Azure OpenAI | `chat.completions.create` |
-| OpenAI Responses API | `responses.create` |
-| Anthropic | `messages.create` |
+| OpenAI / Azure OpenAI | `chat.completions.create`, `chat.completions.parse`, `beta.chat.completions.create`, `beta.chat.completions.parse` |
+| OpenAI Responses API | `responses.create`, `responses.parse`, `beta.responses.create` |
+| Anthropic | `messages.create`, `messages.parse`, `beta.messages.create` |
 | Google Gemini | `generateContent` |
 
-All other client methods (`embeddings.create`, `images.generate`, `audio.*`, `files.*`, `fine_tuning.*`, ...) pass through **ungoverned and unaudited** — they carry no chat-shaped prompt/response text for the policy engine to evaluate. MCP tool calls are governed separately (below); any framework's tools can be governed with `obsvrGovernTool` / `obsvrGovernTools`.
+Beta namespaces are listed one by one rather than matched by stripping a leading `beta.`, so a provider shipping a new beta namespace never widens governance without review.
+
+Two different things sit outside that table, and only the first is a policy decision:
+
+- **Excluded — no chat text to govern.** `embeddings.create`, `images.generate`, `audio.*`, `files.*`, `fine_tuning.*` and the moderation/model-listing surfaces pass through **ungoverned and unaudited**. They carry no chat-shaped prompt/response text for the policy engine to evaluate.
+- **Text-bearing but not covered yet.** The `.stream()` helpers (`messages.stream`, `chat.completions.stream`, `responses.stream`) and the tool runners (`chat.completions.runTools`, `beta.messages.toolRunner`) return their runner object synchronously, so they cannot be governed by the async method wrapper — pass `stream: true` to `create()` for governed streaming. The batch surfaces (`messages.batches.create`) carry many prompts per call against a one-prompt event schema; `countTokens` returns no response text; and Gemini's `startChat()` session calls an internal function rather than a method on the model, so no method-path table can reach it.
+
+MCP tool calls are governed separately (below); any framework's tools can be governed with `obsvrGovernTool` / `obsvrGovernTools`.
 
 ## MCP Governance
 

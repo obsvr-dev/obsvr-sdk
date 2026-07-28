@@ -9,9 +9,14 @@ through the full governance pipeline:
 
 Auditable method paths (duck-typed, same as TS):
     chat.completions.create   OpenAI / Azure OpenAI (openai>=1.x)
+    chat.completions.parse    OpenAI structured outputs
     responses.create          OpenAI Responses API (openai>=1.x)
+    responses.parse           OpenAI Responses structured outputs
     messages.create           Anthropic
+    messages.parse            Anthropic structured outputs
     generate_content          Google Gemini (google-generativeai)
+    beta.messages.create      Anthropic beta namespace
+    beta.responses.create     OpenAI Responses beta namespace
 
 Sync and async client methods are both supported: if the underlying method is
 a coroutine function the wrapper is async, otherwise sync. The wrapped object
@@ -110,16 +115,34 @@ def _record_token_usage_for_rules(config: Any, event: Dict[str, Any]) -> None:
         )
 
 
+#: COVERAGE BOUNDARY. Mirrors the TypeScript AUDITABLE_METHODS table, which
+#: carries the full statement of what is excluded because it bears no chat text
+#: (embeddings, images, audio, files, fine-tuning) versus what is text-bearing
+#: but out of reach of a method-path table (the ``.stream()`` helpers and tool
+#: runners, the batch surfaces, ``count_tokens``, and Gemini's ``start_chat``).
+#: The beta namespaces are enumerated rather than matched by stripping a
+#: leading ``beta.`` segment, so a provider shipping a new beta namespace does
+#: not silently widen governance without review.
 AUDITABLE_METHODS = {
-    "chat.completions.create",  # OpenAI / Azure OpenAI
-    "responses.create",         # OpenAI Responses API
-    "messages.create",          # Anthropic
-    "generate_content",         # Google Gemini
+    "chat.completions.create",   # OpenAI / Azure OpenAI
+    "chat.completions.parse",    # OpenAI structured outputs
+    "responses.create",          # OpenAI Responses API
+    "responses.parse",           # OpenAI Responses structured outputs
+    "messages.create",           # Anthropic
+    "messages.parse",            # Anthropic structured outputs
+    "generate_content",          # Google Gemini
+    "beta.messages.create",      # Anthropic beta
+    "beta.responses.create",     # OpenAI Responses beta
+    "beta.chat.completions.create",  # OpenAI chat beta
+    "beta.chat.completions.parse",   # OpenAI chat beta
 }
 
 #: Attribute names that may lead to an auditable method. Everything else is
-#: returned untouched, so we never wrap unrelated objects.
-_TRAVERSABLE = {"chat", "completions", "messages", "responses"}
+#: returned untouched, so we never wrap unrelated objects. "beta" earns its
+#: place here for the two beta paths above: without it ``client.beta`` is
+#: returned raw and every path beneath it is unreachable, which would leave
+#: those entries as dead code.
+_TRAVERSABLE = {"beta", "chat", "completions", "messages", "responses"}
 
 
 def _detect_provider(client: Any) -> str:

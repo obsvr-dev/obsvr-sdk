@@ -77,6 +77,13 @@ client = obsvr.wrap(Anthropic())          # messages.create
 model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content
 ```
 
+`wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
+`messages.create` / `.parse`, `generate_content`, and the `beta.messages.create` and
+`beta.responses.create` namespaces. Everything else on the client passes through
+ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for which of
+those carry no chat text at all and which are text-bearing but not yet reachable from
+a method-path table.
+
 ## MCP Governance
 
 Wrap the MCP client session; governance then covers all three phases —

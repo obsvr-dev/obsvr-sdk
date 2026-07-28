@@ -162,21 +162,84 @@ const DEFAULT_COMPLIANCE: ComplianceCtx = {
 };
 
 /**
- * Methods that should be audited with their nested paths
- * Format: "namespace.method"
- *
- * COVERAGE BOUNDARY: wrap() governs TEXT-generation surfaces only. Other
- * client methods (embeddings.create, images.generate, audio.*, files.*,
- * fine_tuning.*, ...) pass through UNGOVERNED and UNAUDITED — they carry no
- * chat-shaped prompt/response text for the policy engine to evaluate. This
- * is a deliberate, documented boundary: do not assume wrap() covers them.
+ * The payload shape a method path carries. This is what selects the extractor
+ * — the path string never does. Two OpenAI surfaces speak different request
+ * and response dialects (`messages[]`/`choices[]` vs `input`/`output[]`), and
+ * an entry routed to the wrong one still produces a signed, chain-linked,
+ * success:true event whose prompt and response are both the empty string,
+ * because each extractor returns "" rather than throwing on a foreign shape.
+ * Carrying the shape alongside the path makes that mismatch unrepresentable.
  */
-const AUDITABLE_METHODS = new Set([
-  "chat.completions.create", // OpenAI / Azure OpenAI
-  "messages.create", // Anthropic
-  "generateContent", // Google Gemini
-  "responses.create", // OpenAI Responses API
+type ApiShape =
+  | "openai-chat"
+  | "openai-responses"
+  | "anthropic-messages"
+  | "gemini-generate";
+
+/**
+ * Methods that should be audited, keyed by their nested path
+ * Format: "namespace.method" -> the payload shape that path carries
+ *
+ * COVERAGE BOUNDARY. wrap() governs TEXT-generation surfaces, and the boundary
+ * has two halves that are different in kind:
+ *
+ * 1. EXCLUDED — no chat-shaped prompt/response text for the policy engine to
+ *    evaluate: embeddings.create, images.generate, audio.*, files.*,
+ *    fine_tuning.*, and the moderation/model-listing surfaces. These are
+ *    deliberately ungoverned and unaudited; do not assume wrap() covers them.
+ *
+ * 2. TEXT-BEARING BUT NOT COVERED — chat-shaped, and out of reach of a method
+ *    path table rather than out of policy. Recorded here so the gap is a known
+ *    one rather than an assumed absence:
+ *      - the `.stream()` helpers (messages.stream, chat.completions.stream,
+ *        responses.stream) and the tool runners (chat.completions.runTools,
+ *        beta.messages.toolRunner). Each returns a runner object
+ *        SYNCHRONOUSLY, and createAuditedMethod is async, so listing them here
+ *        would hand the caller a Promise and break `.on(...)` chaining. They
+ *        need a non-async wrapper of their own. Callers who need governed
+ *        streaming today should pass `stream: true` to create(), which IS
+ *        covered.
+ *      - the batch surfaces (messages.batches.create and its beta twin), which
+ *        carry N independent prompts per call against an event schema with one
+ *        prompt field.
+ *      - countTokens / messages.countTokens, which carry full prompt text but
+ *        return only an integer, so half the evidence a governed event records
+ *        does not exist.
+ *      - Gemini generateContentStream, whose result object is not itself an
+ *        async iterable, and startChat(), whose ChatSession calls a
+ *        module-level generateContent rather than a property on the model —
+ *        so no property read on the proxy ever happens and NO path table can
+ *        reach it.
+ */
+const AUDITABLE_METHODS = new Map<string, ApiShape>([
+  ["chat.completions.create", "openai-chat"], // OpenAI / Azure OpenAI
+  ["chat.completions.parse", "openai-chat"], // OpenAI structured outputs
+  ["messages.create", "anthropic-messages"], // Anthropic
+  ["messages.parse", "anthropic-messages"], // Anthropic structured outputs
+  ["generateContent", "gemini-generate"], // Google Gemini
+  ["responses.create", "openai-responses"], // OpenAI Responses API
+  ["responses.parse", "openai-responses"], // OpenAI Responses structured outputs
+  // The beta namespaces carry exactly the payload their GA twin carries, so
+  // they are governed identically. They are enumerated rather than matched by
+  // stripping a leading "beta." segment: a strip rule would auto-govern every
+  // future beta.* namespace a provider ships without review, which is the
+  // inverse of the boundary above, and it reaches only these two of the
+  // text-bearing gaps listed in half 2.
+  ["beta.messages.create", "anthropic-messages"], // Anthropic beta
+  ["beta.responses.create", "openai-responses"], // OpenAI Responses beta
+  ["beta.chat.completions.create", "openai-chat"], // OpenAI chat beta
+  ["beta.chat.completions.parse", "openai-chat"], // OpenAI chat beta
 ]);
+
+/**
+ * The payload shape for a traversed method path, or undefined when the path is
+ * not audited. Callers that need "is this the Responses dialect" must ask this
+ * rather than comparing the path string, so beta and structured-output aliases
+ * reach the same extractor as the surface they alias.
+ */
+function apiShapeFor(operation: string): ApiShape | undefined {
+  return AUDITABLE_METHODS.get(operation);
+}
 
 /**
  * Symbol to mark wrapped objects
@@ -503,9 +566,12 @@ function buildAuditEvent(
     };
   }
 
-  // Determine operation from method path (also selects the extractor for
-  // OpenAI-shaped clients: Chat Completions vs Responses API).
+  // Determine operation from method path. The extractor for OpenAI-shaped
+  // clients (Chat Completions vs Responses API) is selected from the path's
+  // recorded shape, not from the path string, so beta and structured-output
+  // aliases land on the same extractor as the surface they alias.
   const operation = ctx.path.join(".");
+  const shape = apiShapeFor(operation);
 
   // Extract prompt/response using the correct provider extractor
   let prompt: string;
@@ -531,7 +597,7 @@ function buildAuditEvent(
     tokenUsage = response
       ? extractGeminiTokenUsage(response as GeminiResponse)
       : undefined;
-  } else if (operation === "responses.create") {
+  } else if (shape === "openai-responses") {
     prompt = extractResponsesPrompt(request as OpenAIResponsesRequest);
     responseText = response
       ? extractResponsesText(response as OpenAIResponsesResponse)
@@ -856,7 +922,7 @@ function wrapStreamingIterator(
             }
           }
           model = extractGeminiModel(request as GeminiRequest, modelHint); // uses modelHint from target.model if available
-        } else if (ctx.path.join(".") === "responses.create") {
+        } else if (apiShapeFor(ctx.path.join(".")) === "openai-responses") {
           const result = accumulateResponsesStream(chunks);
           accText = result.text;
           tokenUsage = result.usage;
@@ -886,7 +952,7 @@ function wrapStreamingIterator(
           );
         } else if (provider === "google") {
           promptText = extractGeminiPrompt(request as GeminiRequest);
-        } else if (operation === "responses.create") {
+        } else if (apiShapeFor(operation) === "openai-responses") {
           promptText = extractResponsesPrompt(request as OpenAIResponsesRequest);
         } else {
           promptText = extractOpenAIPrompt(request as OpenAIChatRequest);
@@ -2151,8 +2217,7 @@ function createAuditedMethod(
  * Check if a method path should be audited
  */
 function isAuditablePath(path: string[]): boolean {
-  const pathStr = path.join(".");
-  return AUDITABLE_METHODS.has(pathStr);
+  return AUDITABLE_METHODS.has(path.join("."));
 }
 
 /**
