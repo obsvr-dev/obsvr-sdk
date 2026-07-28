@@ -11,7 +11,7 @@ version: 2
 # green checkout of this file is not by itself evidence that advisories are
 # being raised; check the settings.
 #
-# Grouping is deliberate. The npm dev tree is ~540 packages of test and lint
+# Grouping is deliberate. The npm dev tree is ~490 packages of test and lint
 # tooling, and ungrouped weekly updates would open enough PRs that they stop
 # being read — which is the same failure as not scanning at all. Minor and
 # patch bumps therefore land as one PR per ecosystem per week; majors stay

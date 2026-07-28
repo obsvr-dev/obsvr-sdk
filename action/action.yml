@@ -42,9 +42,15 @@ runs:
     # have no way to see or override it. Dependabot updates the SHA and the
     # trailing version comment together.
     - name: Set up Node.js
-      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version: ${{ inputs.node-version }}
+        # setup-node v5 began enabling npm caching automatically whenever the
+        # consumer's package.json names npm in packageManager/devEngines. This
+        # action runs inside THEIR repository, so leaving the default on would
+        # silently start reading and writing a cache in a workflow that never
+        # asked for one. Off keeps v7 behaving exactly as the v4 pin did.
+        package-manager-cache: false
 
     - name: Verify Obsvr evidence bundle
       shell: bash
@@ -71,4 +77,10 @@ runs:
         fi
 
         # Installs the pinned SDK on demand and runs its obsvr-verify bin.
-        npx -y -p "@obsvr/sdk@${OBSVR_SDK_VERSION}" obsvr-verify "${args[@]}"
+        # --ignore-scripts for the same reason the action pin above is a commit
+        # and not a tag: this runs in every consumer's CI, and a lifecycle
+        # script in anything the resolver pulls would execute there with their
+        # job's permissions. @obsvr/sdk declares no runtime dependencies, so
+        # the resolved tree is one package and nothing legitimate needs a
+        # script to run. The version input is an exact pin, never a range.
+        npx -y --ignore-scripts -p "@obsvr/sdk@${OBSVR_SDK_VERSION}" obsvr-verify "${args[@]}"
