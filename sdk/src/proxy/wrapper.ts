@@ -1399,6 +1399,44 @@ function createAuditedMethod(
               rule_hash: result.rule_hash,
             });
           }
+        } else if (result.decision === "redact" && actionTaken !== "redacted") {
+          // A rules-engine "redact" verdict used to be dropped here: only the
+          // block branch existed, so the call went out untouched and the event
+          // recorded "allowed" while the operator's rule said remove it. The
+          // same rule redacts through every framework integration and through
+          // Python, so this was the wrapper disagreeing with every other door
+          // into the same policy.
+          //
+          // Application is the hook-redact branch's, for the same reason it is
+          // that one there: "redact" applies the SDK's structure-aware PII
+          // redaction across every provider shape (system / messages /
+          // contents / instructions / input / bare string). A rule that must
+          // suppress non-PII content should declare action "block".
+          //
+          // Enforcement APPLICATION, so it fails CLOSED regardless of failMode:
+          // policy already decided the content must be removed, and answering
+          // a failed removal by forwarding the content under a "redacted"
+          // record is the one outcome worse than blocking.
+          const notRedacted = applyOutboundRedaction(() => {
+            if (typeof cleaned_args[0] === "string") {
+              cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
+            } else {
+              redactMessagesInPlace(cleaned_args[0]);
+            }
+          }, "policy_rules");
+          if (notRedacted) {
+            actionTaken = "blocked";
+            actionReason = "policy_violation";
+            actionSource = "policy_rules";
+            redactedTypes = []; // nothing was redacted; the record must not say otherwise
+            ruleId = notRedacted.ruleId;
+            policyReason = notRedacted.policyReason;
+            outboundRedactionFailure = notRedacted.failure;
+          } else {
+            actionTaken = "redacted";
+            actionReason = "policy_violation";
+            actionSource = "policy_rules";
+          }
         }
       }
     } catch (err) {
