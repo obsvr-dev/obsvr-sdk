@@ -15,7 +15,7 @@
  *    not-skip), so the vocabulary is enforced here.
  *
  * 2. `claimable` — a boolean marking a fixture (or case) that backs a claim
- *    made in the PUBLIC docs (README/SECURITY), as opposed to one that
+ *    made in the PUBLIC docs (README/SECURITY/BENCHMARKS), as opposed to one that
  *    merely exercises behavior. The assignment rule is objective: a fixture
  *    is claimable iff a public doc cites it. Enforced bidirectionally below
  *    so the marking cannot drift from the docs.
@@ -106,12 +106,14 @@ describe('fixture bookkeeping: claimable matches the public docs', () => {
   });
 
   it('a fixture is claimable iff a public doc cites it', () => {
-    // The assignment rule made checkable: README.md / SECURITY.md /
-    // sdk/README.md / sdk-python/README.md citing `fixtures/<name>.json` is
-    // what "backs a public claim" MEANS here. Marking without a citation or
-    // citing without a marking both fail, so the two cannot drift.
+    // The assignment rule made checkable: one of the PUBLISHED docs citing
+    // `fixtures/<name>.json` is what "backs a public claim" MEANS here.
+    // Marking without a citation or citing without a marking both fail, so
+    // the two cannot drift. BENCHMARKS.md is in the set because a published
+    // number is a claim like any other: a fixture cited only there must come
+    // out claimable, and dropping it would silently require the opposite.
     const root = path.dirname(path.dirname(FIXTURES_DIR));
-    const docs = ['README.md', 'SECURITY.md', 'sdk/README.md', 'sdk-python/README.md']
+    const docs = ['README.md', 'SECURITY.md', 'BENCHMARKS.md', 'sdk/README.md', 'sdk-python/README.md']
       .map((d) => path.join(root, d))
       .filter((d) => fs.existsSync(d))
       .map((d) => fs.readFileSync(d, 'utf-8'))

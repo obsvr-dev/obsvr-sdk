@@ -14,7 +14,7 @@ described:
    not-skip), so the vocabulary is enforced here.
 
 2. ``claimable`` - a boolean marking a fixture (or case) that backs a claim
-   made in the PUBLIC docs (README/SECURITY), as opposed to one that merely
+   made in the PUBLIC docs (README/SECURITY/BENCHMARKS), as opposed to one that merely
    exercises behavior. The assignment rule is objective: a fixture is
    claimable iff a public doc cites it. Enforced bidirectionally below so
    the marking cannot drift from the docs.
@@ -86,13 +86,21 @@ def test_claimable_is_always_boolean():
 
 
 def test_fixture_is_claimable_iff_a_public_doc_cites_it():
-    # The assignment rule made checkable: README.md / SECURITY.md /
-    # sdk/README.md / sdk-python/README.md citing ``fixtures/<name>.json`` is
-    # what "backs a public claim" MEANS here. Marking without a citation or
-    # citing without a marking both fail, so the two cannot drift.
+    # The assignment rule made checkable: one of the PUBLISHED docs citing
+    # ``fixtures/<name>.json`` is what "backs a public claim" MEANS here.
+    # Marking without a citation or citing without a marking both fail, so the
+    # two cannot drift. BENCHMARKS.md is in the set because a published number
+    # is a claim like any other: a fixture cited only there must come out
+    # claimable, and dropping it would silently require the opposite.
     docs = "\n".join(
         (REPO_ROOT / d).read_text()
-        for d in ("README.md", "SECURITY.md", "sdk/README.md", "sdk-python/README.md")
+        for d in (
+            "README.md",
+            "SECURITY.md",
+            "BENCHMARKS.md",
+            "sdk/README.md",
+            "sdk-python/README.md",
+        )
         if (REPO_ROOT / d).exists()
     )
     for name, data in _all_fixtures():
