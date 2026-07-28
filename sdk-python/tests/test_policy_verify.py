@@ -73,10 +73,15 @@ def test_policy_signature_vector(case):
     )
     expect = case["expect"]
 
-    # The two vectors that need real Ed25519 arithmetic. Everything else is
-    # refused structurally (wrong key, bad hash, missing block) before any
-    # crypto runs, so those verdicts hold with or without a backend.
-    needs_crypto = expect["ok"] is True or expect.get("reason_contains") == "verification failed"
+    # The vectors that need real Ed25519 arithmetic are exactly the ones the
+    # fixture marks sdk_support py:"optional" - Python resolves that primitive
+    # through an optional backend. Everything else is refused structurally
+    # (wrong key, bad hash, missing block) before any crypto runs, so those
+    # verdicts hold with or without a backend. Reading the marking rather than
+    # re-deriving it from the expectation shape keeps the fixture the single
+    # source of truth; the test below pins the two against each other so the
+    # marking cannot drift away from the property it names.
+    needs_crypto = case.get("sdk_support", {}).get("py") == "optional"
     if needs_crypto and not HAS_BACKEND:
         assert result.ok is False, "no backend must never mean 'accepted'"
         assert result.unavailable is True
@@ -90,6 +95,25 @@ def test_policy_signature_vector(case):
             f"{expect['reason_contains']!r}"
         )
         assert result.unavailable is False
+
+
+def test_optional_marking_names_exactly_the_crypto_dependent_vectors():
+    """The fixture's py:"optional" marking must name exactly the vectors that
+    cannot be refused structurally.
+
+    Pinning the marking against the property it stands for is what stops the
+    two from drifting: a vector added later that needs real Ed25519 but is
+    left marked "required" fails HERE, with a backend installed, instead of
+    only on a zero-dependency install where nobody is looking.
+    """
+    marked = {c["id"] for c in CASES if c.get("sdk_support", {}).get("py") == "optional"}
+    needs_crypto = {
+        c["id"]
+        for c in CASES
+        if c["expect"]["ok"] is True
+        or c["expect"].get("reason_contains") == "verification failed"
+    }
+    assert marked == needs_crypto
 
 
 @pytest.mark.skipif(not HAS_BACKEND, reason="no Ed25519 backend installed")
