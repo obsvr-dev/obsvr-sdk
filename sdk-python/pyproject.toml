@@ -76,14 +76,39 @@ fastapi = ["starlette>=0.30.0"]
 otel = ["opentelemetry-api>=1.20.0"]
 bedrock = ["boto3>=1.34.0"]
 vertex = ["google-cloud-aiplatform>=1.38.0"]
-adk = ["google-adk>=0.1.0"]
-pydantic-ai = ["pydantic-ai-slim>=0.0.14"]
+# 0.1.0 through 1.1.0 all install but cannot import: google.adk.models raises
+# ModuleNotFoundError for 'deprecated', reached transitively through the
+# OpenTelemetry stack. Upstream packaging, not a renamed symbol — but the
+# declared floor named six releases where obsvr's LlmResponse binding fails, so
+# the floor is the first release that actually imports. Bisected by building a
+# venv per candidate and importing the symbol (0.1.0/0.2.0/0.3.0/0.4.0/0.5.0/
+# 1.0.0/1.1.0 fail, 1.2.0 binds).
+adk = ["google-adk>=1.2.0"]
+# pydantic_ai.toolsets.WrapperToolset — the symbol pydantic_ai.py binds — does
+# not exist until 0.4.4. Below it nothing raises: ObsvrToolset falls back to a
+# local shim and govern_toolset() still returns an object, but it is not a
+# toolset PydanticAI accepts, so denied-tool policy, per-tool auditing and step
+# limits are all silently inert while the manifest advertises support.
+pydantic-ai = ["pydantic-ai-slim>=0.4.4"]
 haystack = ["haystack-ai>=2.0.0"]
-smolagents = ["smolagents>=1.0.0"]
+# `from smolagents import Tool` — the symbol smolagents.py binds — fails below
+# 1.4.0 and again at exactly 1.5.0, both times for upstream reasons rather than
+# an obsvr rename: 1.0.0-1.1.0 import a since-removed name from transformers,
+# 1.2.0-1.3.0 mask the same failure behind a lazy-import error, and 1.5.0 does
+# not pull transformers in at all (1.5.1 restored it). The exclusion is stated
+# rather than rounded up to >=1.5.1 because 1.4.x genuinely works, and a floor
+# that is merely safe misdescribes the range as much as one that is wrong.
+smolagents = ["smolagents>=1.4.0,!=1.5.0"]
 # The 0.x line has never existed on PyPI: the earliest published release is
 # 1.0.0, preceded only by 1.0.0b* prereleases.
 agent-framework = ["agent-framework>=1.0.0"]
-semantic-kernel = ["semantic-kernel>=1.0.0"]
+# Interpreter-dependent, and stated rather than assumed: on CPython 3.13 pip
+# offers no candidate below 1.14.0, and 1.14.0/1.15.0 install but cannot import
+# (semantic_kernel.functions raises ImportError for pydantic.networks.Url
+# against any modern pydantic). 1.16.0 is the first release that binds
+# FunctionResult. Older interpreters may reach further back; this floor is what
+# the supported ones can actually install and import.
+semantic-kernel = ["semantic-kernel>=1.16.0"]
 # Ed25519 verification of signed remote policy. Optional because the package
 # ships zero mandatory runtime dependencies and Python has no stdlib Ed25519;
 # without it a pinned policy key still fails closed, and events carry
