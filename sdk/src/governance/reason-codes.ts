@@ -38,6 +38,9 @@ export enum ReasonCode {
   KEYWORD_BLOCKED = 'KEYWORD_BLOCKED',
   REGEX_MATCHED = 'REGEX_MATCHED',
   MODEL_GATE_BLOCKED = 'MODEL_GATE_BLOCKED',
+  /** A protocol_facet rule matched parsed statement structure, or the
+   *  statement could not be decomposed and the rule failed closed. */
+  PROTOCOL_FACET_MATCHED = 'PROTOCOL_FACET_MATCHED',
   HOOK_BLOCKED = 'HOOK_BLOCKED',
   HOOK_TIMEOUT = 'HOOK_TIMEOUT',
   TOOL_DENIED = 'TOOL_DENIED',
@@ -82,6 +85,7 @@ export const RULE_TYPE_TO_REASON_CODE: Readonly<Record<string, ReasonCode>> = Ob
   environment_gate: ReasonCode.ENVIRONMENT_BLOCKED,
   quota: ReasonCode.QUOTA_EXCEEDED,
   model_gate: ReasonCode.MODEL_GATE_BLOCKED,
+  protocol_facet: ReasonCode.PROTOCOL_FACET_MATCHED,
 });
 
 /** Map a legacy PolicyRule type to a ReasonCode */

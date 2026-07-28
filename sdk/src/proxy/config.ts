@@ -496,7 +496,7 @@ export const VALID_RULE_TYPES = new Set([
   "keyword", "regex", "topic_deny", "topic_allow", "pii",
   "action_gate", "namespace_isolation", "cross_tenant_block",
   "destructive_op_gate", "source_grounding", "environment_gate",
-  "quota", "model_gate",
+  "quota", "model_gate", "protocol_facet",
 ]);
 
 /**

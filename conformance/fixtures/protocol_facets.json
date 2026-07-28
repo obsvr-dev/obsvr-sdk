@@ -1,0 +1,844 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "protocol_facets",
+  "description": "Deterministic protocol facets: rule type `protocol_facet` matches PARSED statement structure rather than raw characters, so a rule saying \"the verb is DROP\" survives a comment, a quote-style change or a line break that defeats a regex, and does not fire on prose that merely mentions the word. `facet_cases` pin the decomposition itself - verb, target, tables, functions, and whether more than one statement is present. `rule_cases` pin the rule semantics end to end, including the direction that matters most: text the decomposer cannot speak about (`parsed: false`) MATCHES, so a rule that cannot evaluate refuses rather than permitting. That is the opposite of every other rule type and is deliberate - an attacker who can make a statement unparseable would otherwise have found the bypass. Stdlib-only by construction: a real SQL grammar is a dependency and this package ships none, so the decomposition is lexical, bounded, and explicit about what it does not handle (subquery scopes, CTEs, dialect syntax, precedence). Harnesses: sdk/tests/unit/protocol-facets-conformance.test.ts, sdk-python/tests/test_protocol_facets_conformance.py.",
+  "facet_cases": [
+    {
+      "id": "simple_select",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "SELECT id FROM users",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "join_collects_both_relations",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "SELECT * FROM users JOIN orders ON users.id = orders.user_id",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "orders",
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "comment_between_verb_and_object",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "THE case for facets over patterns: a comment splits DROP from TABLE, defeating /drop\\s+table/i, and the statement still means exactly what it meant.",
+      "text": "DROP /* sneaky */ TABLE public.users",
+      "expect": {
+        "parsed": true,
+        "verb": "DROP",
+        "target": "users",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "line_comment_is_stripped",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "SELECT 1 -- FROM secrets\nFROM users",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "comment_marker_inside_a_literal_is_data",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A '--' inside quotes is content, not a comment; treating it as one would silently truncate the statement being judged.",
+      "text": "SELECT '-- not a comment' FROM users",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "schema_qualifier_is_stripped",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Names compare bare, so a rule listing 'users' catches 'public.users'.",
+      "text": "SELECT * FROM analytics.events",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "events"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "delimited_identifier_is_a_name",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "SELECT * FROM \"Weird Name\"",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "weird name"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "string_literal_is_never_a_name",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A single-quoted run is data. Reading it as a relation would let a caller name any table by quoting it.",
+      "text": "INSERT INTO logs (msg) VALUES ('users')",
+      "expect": {
+        "parsed": true,
+        "verb": "INSERT",
+        "target": "logs",
+        "tables": [
+          "logs"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "functions_are_collected",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "SELECT lower(name), COUNT(*) FROM users",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [
+          "count",
+          "lower"
+        ],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "function_call_is_not_a_relation",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A table-valued function after FROM is a function, not a relation.",
+      "text": "SELECT * FROM generate_series(1, 10)",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [],
+        "functions": [
+          "generate_series"
+        ],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "stacked_statements_are_flagged",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A verb-only check sees SELECT here. The facet says there is more than one statement, which is the whole point.",
+      "text": "SELECT 1; DROP TABLE users",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": true
+      }
+    },
+    {
+      "id": "trailing_semicolon_is_not_stacked",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "SELECT 1 FROM users;",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "insert_names_its_target",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "INSERT INTO audit_log (a) VALUES (1)",
+      "expect": {
+        "parsed": true,
+        "verb": "INSERT",
+        "target": "audit_log",
+        "tables": [
+          "audit_log"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "delete_names_its_target",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "DELETE FROM users WHERE id = 1",
+      "expect": {
+        "parsed": true,
+        "verb": "DELETE",
+        "target": "users",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "update_names_its_target",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "UPDATE accounts SET balance = 0",
+      "expect": {
+        "parsed": true,
+        "verb": "UPDATE",
+        "tables": [
+          "accounts"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "drop_if_exists_reaches_the_name",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "DROP TABLE IF EXISTS temp_data",
+      "expect": {
+        "parsed": true,
+        "verb": "DROP",
+        "target": "temp_data",
+        "tables": [
+          "temp_data"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "create_materialized_view_reaches_the_name",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "CREATE MATERIALIZED VIEW v AS SELECT 1",
+      "expect": {
+        "parsed": true,
+        "verb": "CREATE",
+        "target": "v",
+        "tables": [],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "call_names_the_procedure",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "CALL sp_reconcile(1, 2)",
+      "expect": {
+        "parsed": true,
+        "verb": "CALL",
+        "target": "sp_reconcile",
+        "tables": [],
+        "functions": [
+          "sp_reconcile"
+        ],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "select_has_no_target",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "'The object this statement names' is not defined for SELECT - the first name after it is a column - so no target is reported rather than a confident wrong one.",
+      "text": "SELECT balance FROM accounts",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "accounts"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "prose_is_not_a_statement",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Prose that merely mentions a verb is not a statement. This is the false positive a regex rule produces and a facet rule does not.",
+      "text": "Please explain what DROP TABLE does in SQL",
+      "expect": {
+        "parsed": false,
+        "reason": "unrecognized_verb",
+        "tables": [],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "unrecognized_leading_word",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "hello world",
+      "expect": {
+        "parsed": false,
+        "reason": "unrecognized_verb",
+        "tables": [],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "empty_input",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "",
+      "expect": {
+        "parsed": false,
+        "reason": "empty",
+        "tables": [],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "non_string_input",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": null,
+      "expect": {
+        "parsed": false,
+        "reason": "not_a_string",
+        "tables": [],
+        "functions": [],
+        "multiple_statements": false
+      }
+    },
+    {
+      "id": "case_is_normalised",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "text": "select * from Users",
+      "expect": {
+        "parsed": true,
+        "verb": "SELECT",
+        "tables": [
+          "users"
+        ],
+        "functions": [],
+        "multiple_statements": false
+      }
+    }
+  ],
+  "rule_cases": [
+    {
+      "id": "verb_in_list_blocks",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_in": [
+            "drop",
+            "truncate"
+          ]
+        }
+      },
+      "text": "DROP TABLE users",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "verb_not_in_list_allows",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_in": [
+            "drop"
+          ]
+        }
+      },
+      "text": "SELECT 1 FROM users",
+      "expect": {
+        "decision": "allow",
+        "reason_code": "PERMITTED"
+      }
+    },
+    {
+      "id": "verb_allowlist_blocks_everything_else",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "The allowlist shape: only SELECT may run, so an UPDATE fires the rule.",
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_not_in": [
+            "select"
+          ]
+        }
+      },
+      "text": "UPDATE accounts SET balance = 0",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "verb_allowlist_permits_the_listed_verb",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_not_in": [
+            "select"
+          ]
+        }
+      },
+      "text": "SELECT 1 FROM users",
+      "expect": {
+        "decision": "allow",
+        "reason_code": "PERMITTED"
+      }
+    },
+    {
+      "id": "table_in_list_blocks",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.tables",
+          "facet_in": [
+            "payments"
+          ]
+        }
+      },
+      "text": "SELECT * FROM analytics.payments",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "table_allowlist_blocks_an_unlisted_relation",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.tables",
+          "facet_not_in": [
+            "users",
+            "orders"
+          ]
+        }
+      },
+      "text": "SELECT * FROM users JOIN secrets ON 1=1",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "table_allowlist_permits_listed_relations",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.tables",
+          "facet_not_in": [
+            "users",
+            "orders"
+          ]
+        }
+      },
+      "text": "SELECT * FROM users JOIN orders ON 1=1",
+      "expect": {
+        "decision": "allow",
+        "reason_code": "PERMITTED"
+      }
+    },
+    {
+      "id": "function_in_list_blocks",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.functions",
+          "facet_in": [
+            "pg_read_file"
+          ]
+        }
+      },
+      "text": "SELECT pg_read_file('/etc/passwd')",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "target_in_list_blocks",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.target",
+          "facet_in": [
+            "users"
+          ]
+        }
+      },
+      "text": "DROP TABLE users",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "stacked_statements_block",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.multiple_statements",
+          "facet_in": [
+            "true"
+          ]
+        }
+      },
+      "text": "SELECT 1; DROP TABLE users",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "single_statement_passes_the_stacking_rule",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.multiple_statements",
+          "facet_in": [
+            "true"
+          ]
+        }
+      },
+      "text": "SELECT 1 FROM users",
+      "expect": {
+        "decision": "allow",
+        "reason_code": "PERMITTED"
+      }
+    },
+    {
+      "id": "unparseable_input_fails_closed",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "THE failure direction: text the decomposer cannot speak about MATCHES, so a rule that cannot evaluate refuses rather than quietly permitting. An attacker who can make a statement unparseable would otherwise have found the bypass.",
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_in": [
+            "drop"
+          ]
+        }
+      },
+      "text": "this is not sql",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "a_comment_cannot_hide_the_verb",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "The regex a facet rule replaces would miss this.",
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_in": [
+            "drop"
+          ]
+        }
+      },
+      "text": "DROP /*x*/ TABLE users",
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    },
+    {
+      "id": "no_facet_named_never_fires",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A malformed rule matches nothing rather than blocking everything - the fail-closed rule is about unparseable INPUT, not about an unconfigured rule.",
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet_in": [
+            "drop"
+          ]
+        }
+      },
+      "text": "DROP TABLE users",
+      "expect": {
+        "decision": "allow",
+        "reason_code": "PERMITTED"
+      }
+    },
+    {
+      "id": "unknown_facet_namespace_never_fires",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Only sql.* facets exist today; a rule naming another protocol matches nothing rather than pretending to know.",
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "block",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "http.method",
+          "facet_in": [
+            "delete"
+          ]
+        }
+      },
+      "text": "DROP TABLE users",
+      "expect": {
+        "decision": "allow",
+        "reason_code": "PERMITTED"
+      }
+    },
+    {
+      "id": "redact_action_on_a_facet_match",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "rule": {
+        "id": "r-facet",
+        "name": "facet rule",
+        "enabled": true,
+        "action": "redact",
+        "type": "protocol_facet",
+        "conditions": {
+          "facet": "sql.verb",
+          "facet_in": [
+            "select"
+          ]
+        }
+      },
+      "text": "SELECT * FROM users",
+      "expect": {
+        "decision": "redact",
+        "rule_id": "r-facet",
+        "reason_code": "PROTOCOL_FACET_MATCHED"
+      }
+    }
+  ]
+}

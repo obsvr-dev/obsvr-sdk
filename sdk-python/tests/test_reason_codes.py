@@ -79,6 +79,7 @@ _CASES = [
     ("source_grounding flag", [{"id": "sg", "name": "sg", "enabled": True, "action": "flag", "type": "source_grounding", "conditions": {"min_grounding_ratio": 0.9}}], "ungrounded claim about the moon", None),
     ("environment_gate block", [{"id": "eg", "name": "eg", "enabled": True, "action": "block", "type": "environment_gate", "conditions": {"target_environments": ["prod"]}}], "x", {"current_environment": "prod"}),
     ("model_gate block", [{"id": "mg", "name": "mg", "enabled": True, "action": "block", "type": "model_gate", "conditions": {"denied_models": ["gpt-4"]}}], "x", {"model": "gpt-4"}),
+    ("protocol_facet block", [{"id": "pf", "name": "pf", "enabled": True, "action": "block", "type": "protocol_facet", "conditions": {"facet": "sql.verb", "facet_in": ["drop"]}}], "DROP TABLE users", None),
     ("approval_required block", [{"id": "ap", "name": "ap", "enabled": True, "action": "block", "type": "keyword", "conditions": {"keywords": ["trigger"], "require_approval": True}}], "trigger", None),
 ]
 

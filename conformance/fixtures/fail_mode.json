@@ -309,6 +309,26 @@
       "notes": "A descriptor that cannot be hashed is treated as a mismatch, never as a pass. Enforcement follows the configured pinning mode (block blocks, warn flags); neither is silent. Contained per tool so one unhashable entry cannot abort discovery."
     },
     {
+      "id": "protocol_facets",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "module_ts": "sdk/src/policy/protocol-facets.ts",
+      "module_py": "sdk-python/obsvr/protocol_facets.py",
+      "timeout": {
+        "disposition": "not_applicable"
+      },
+      "error": {
+        "disposition": "fail_mode"
+      },
+      "degraded": {
+        "disposition": "not_applicable"
+      },
+      "hook_overridable": true,
+      "notes": "Lexical decomposition of a protocol statement into facets a rule can address. Runs inside the policy_rules span, so an exception resolves the way that layer does. Its own decision on input it CANNOT decompose is separate from an exception and is closed: unparseable text matches the rule, so a facet rule refuses rather than permitting what it could not read. That distinction is why this has its own row."
+    },
+    {
       "id": "destructive_capability_hints",
       "sdk_support": {
         "ts": "required",

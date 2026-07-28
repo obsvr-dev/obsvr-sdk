@@ -54,6 +54,7 @@ _VALID_TYPES = {
     "keyword", "regex", "topic_deny", "topic_allow", "pii", "action_gate",
     "namespace_isolation", "cross_tenant_block", "destructive_op_gate",
     "source_grounding", "environment_gate", "quota", "model_gate",
+    "protocol_facet",
 }
 
 # Reported on the /policies poll (fleet status) and stamped on every signed

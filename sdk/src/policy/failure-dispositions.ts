@@ -221,6 +221,16 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
       "A descriptor that cannot be hashed is treated as a mismatch, never as a pass. Enforcement follows the configured pinning mode (block blocks, warn flags); neither is silent. Contained per tool so one unhashable entry cannot abort discovery.",
   },
   {
+    id: "protocol_facets",
+    module: "sdk/src/policy/protocol-facets.ts",
+    timeout: s("not_applicable"),
+    error: s("fail_mode"),
+    degraded: s("not_applicable"),
+    hookOverridable: true,
+    notes:
+      "Lexical decomposition of a protocol statement into facets a rule can address. Runs inside the policy_rules span, so an exception resolves the way that layer does. Its own decision on input it CANNOT decompose is separate from an exception and is closed: unparseable text matches the rule, so a facet rule refuses rather than permitting what it could not read. That distinction is why this has its own row.",
+  },
+  {
     id: "destructive_capability_hints",
     module: "sdk/src/policy/capability-hints.ts",
     timeout: s("not_applicable"),

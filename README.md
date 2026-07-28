@@ -156,9 +156,11 @@ Anthropic and Google Gemini wrap identically. See [`sdk/README.md`](sdk/README.m
 
 ## Policy engine
 
-Deterministic code only; no LLM in the decision path. Rules run **before** the provider call. **13 rule types** are enforced by the SDK:
+Deterministic code only; no LLM in the decision path. Rules run **before** the provider call. **14 rule types** are enforced by the SDK:
 
-`keyword` · `regex` · `topic_allow` · `topic_deny` · `pii` · `action_gate` · `namespace_isolation` · `cross_tenant_block` · `destructive_op_gate` · `source_grounding` · `environment_gate` · `quota` · `model_gate`
+`keyword` · `regex` · `topic_allow` · `topic_deny` · `pii` · `action_gate` · `namespace_isolation` · `cross_tenant_block` · `destructive_op_gate` · `source_grounding` · `environment_gate` · `quota` · `model_gate` · `protocol_facet`
+
+`protocol_facet` matches **parsed** statement structure rather than raw characters — `{ facet: "sql.verb", facet_not_in: ["select"] }` reads the decomposed statement, so it survives a comment, a quote-style change or a line break that defeats a regex, and it does not fire on prose that merely mentions the word. Facets today are `sql.verb`, `sql.target`, `sql.tables`, `sql.functions` and `sql.multiple_statements`. The decomposition is stdlib-only and lexical rather than a full grammar (this package ships no runtime dependencies), so it is explicit about what it cannot read — and text it cannot decompose **matches**, because a rule that cannot evaluate must not quietly permit.
 
 ```typescript
 obsvr.init({

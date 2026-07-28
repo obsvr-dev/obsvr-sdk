@@ -230,6 +230,15 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         ),
     },
     {
+        "id": "protocol_facets",
+        "module": "sdk-python/obsvr/protocol_facets.py",
+        "timeout": _s("not_applicable"),
+        "error": _s("fail_mode"),
+        "degraded": _s("not_applicable"),
+        "hook_overridable": True,
+        "notes": "Lexical decomposition of a protocol statement into facets a rule can address. Runs inside the policy_rules span, so an exception resolves the way that layer does. Its own decision on input it CANNOT decompose is separate from an exception and is closed: unparseable text matches the rule, so a facet rule refuses rather than permitting what it could not read. That distinction is why this has its own row.",
+    },
+    {
         "id": "destructive_capability_hints",
         "module": "sdk-python/obsvr/capability_hints.py",
         "timeout": _s("not_applicable"),

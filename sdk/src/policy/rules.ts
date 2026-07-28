@@ -11,6 +11,7 @@ import { hasEscrow, spendEscrowShare, peekEscrowShare } from '../governance/escr
 import { safeRegexTest } from '../utils/safe-regex.js';
 import { normalizeForMatching } from './normalize.js';
 import { ReasonCode, ruleTypeToReasonCode } from '../governance/reason-codes.js';
+import { extractSqlFacets, readFacet } from './protocol-facets.js';
 
 export interface PolicyRule {
   id: string;
@@ -42,7 +43,14 @@ export interface PolicyRule {
     | 'source_grounding'
     | 'environment_gate'
     | 'quota'
-    | 'model_gate';
+    | 'model_gate'
+    /**
+     * Matches PARSED protocol structure rather than raw characters. A rule
+     * saying "the verb is DROP" survives a comment, a quote-style change or a
+     * line break that defeats a regex, and does not fire on prose that merely
+     * mentions the word. Fully deterministic (policy/protocol-facets.ts).
+     */
+    | 'protocol_facet';
   conditions: {
     keywords?: string[];
     pattern?: string;
@@ -87,6 +95,23 @@ export interface PolicyRule {
     denied_models?: string[];
     /** model_gate: providers allowed through (e.g. ["openai", "anthropic"]). */
     allowed_providers?: string[];
+    /**
+     * protocol_facet: which parsed facet to address, e.g. "sql.verb",
+     * "sql.tables", "sql.functions", "sql.target", "sql.multiple_statements".
+     */
+    facet?: string;
+    /**
+     * protocol_facet: values that MATCH (the rule fires when the facet holds
+     * any of them). Compared case-insensitively against the facet's values.
+     */
+    facet_in?: string[];
+    /**
+     * protocol_facet: values that do NOT match — the rule fires when the facet
+     * holds a value outside this list, which is the allowlist shape. An empty
+     * facet (nothing to compare) does NOT fire this: absence is handled by the
+     * unparseable rule below, not by pretending an empty list is a violation.
+     */
+    facet_not_in?: string[];
   };
   applies_to?: 'prompt' | 'response' | 'both';
 }
@@ -204,6 +229,8 @@ function evaluateRules(
       matched = evaluateEnvironmentGate(rule, context);
     } else if (rule.type === 'model_gate') {
       matched = evaluateModelGate(rule, context);
+    } else if (rule.type === 'protocol_facet') {
+      matched = evaluateProtocolFacet(rule, text);
     } else if (rule.type === 'quota') {
       if (!rule.conditions.quota_limit || !rule.conditions.quota_window_ms || !rule.conditions.quota_scope) continue;
       // Phase-aware consumption: a rule in scope for both phases meters and
@@ -503,6 +530,44 @@ function evaluateEnvironmentGate(
   const current = context?.currentEnvironment;
   if (!current) return false;
   return targets.includes(current);
+}
+
+/**
+ * protocol_facet - match PARSED protocol structure rather than raw characters.
+ *
+ * FAILS CLOSED. Text the decomposer cannot speak about returns
+ * `parsed: false`, and that MATCHES — the rule's action applies. This is the
+ * opposite of every other rule type here, and deliberately so: a facet rule
+ * exists because "the verb is DROP" is a stronger question than a pattern
+ * match, and a statement an attacker made unparseable would otherwise be the
+ * bypass. An operator who wants unparseable input permitted should not be
+ * using a facet rule for it.
+ *
+ * Runs on the SAME normalized copy every other text rule sees, so a
+ * confusable-folded or zero-width-split statement is decomposed from the text
+ * the rest of the engine already agreed on.
+ */
+function evaluateProtocolFacet(rule: PolicyRule, text: string): boolean {
+  const facet = rule.conditions.facet;
+  if (typeof facet !== 'string' || facet.length === 0) return false;
+  if (!facet.startsWith('sql.')) return false; // only SQL facets exist today
+  const facets = extractSqlFacets(text);
+  if (!facets.parsed) return true; // fail closed: cannot evaluate is a match
+  const values = readFacet(facets, facet);
+  const lower = (list: string[] | undefined): string[] =>
+    (list ?? []).map((v) => String(v).toLowerCase());
+
+  const inList = rule.conditions.facet_in;
+  if (inList && inList.length > 0) {
+    const wanted = new Set(lower(inList));
+    if (values.some((v) => wanted.has(v.toLowerCase()))) return true;
+  }
+  const notInList = rule.conditions.facet_not_in;
+  if (notInList && notInList.length > 0 && values.length > 0) {
+    const allowed = new Set(lower(notInList));
+    if (values.some((v) => !allowed.has(v.toLowerCase()))) return true;
+  }
+  return false;
 }
 
 /**

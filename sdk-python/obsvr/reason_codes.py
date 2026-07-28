@@ -45,6 +45,9 @@ class ReasonCode(str, Enum):
     KEYWORD_BLOCKED = "KEYWORD_BLOCKED"
     REGEX_MATCHED = "REGEX_MATCHED"
     MODEL_GATE_BLOCKED = "MODEL_GATE_BLOCKED"
+    # A protocol_facet rule matched parsed statement structure, or the
+    # statement could not be decomposed and the rule failed closed.
+    PROTOCOL_FACET_MATCHED = "PROTOCOL_FACET_MATCHED"
     HOOK_BLOCKED = "HOOK_BLOCKED"
     HOOK_TIMEOUT = "HOOK_TIMEOUT"
     TOOL_DENIED = "TOOL_DENIED"
@@ -98,6 +101,7 @@ RULE_TYPE_TO_REASON_CODE: Dict[str, str] = {
     "environment_gate": ReasonCode.ENVIRONMENT_BLOCKED.value,
     "quota": ReasonCode.QUOTA_EXCEEDED.value,
     "model_gate": ReasonCode.MODEL_GATE_BLOCKED.value,
+    "protocol_facet": ReasonCode.PROTOCOL_FACET_MATCHED.value,
 }
 
 

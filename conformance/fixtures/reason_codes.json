@@ -1,6 +1,9 @@
 {
   "claimable": true,
-  "sdk_support": { "ts": "required", "py": "required" },
+  "sdk_support": {
+    "ts": "required",
+    "py": "required"
+  },
   "schema_version": 1,
   "name": "reason_codes",
   "description": "Closed registry of policy-verdict reason codes, shared by both SDKs. TS source: sdk/src/governance/reason-codes.ts (ReasonCode enum + RULE_TYPE_TO_REASON_CODE). Python twin: sdk-python/obsvr/reason_codes.py. Both SDK staleness suites (sdk/tests/unit/reason-codes.test.ts, sdk-python/tests/test_reason_codes.py) assert their registry equals `codes` here, their rule-type mapping equals `rule_type_to_reason_code`, and that the rules engine never emits a code outside `codes`. Values are stable wire strings: renaming one is a breaking change; new codes are additive. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",
@@ -24,6 +27,7 @@
     "PERMITTED",
     "PII_DETECTED",
     "POLICY_VIOLATION",
+    "PROTOCOL_FACET_MATCHED",
     "QUOTA_EXCEEDED",
     "QUOTA_UNMETERED",
     "REGEX_MATCHED",
@@ -47,6 +51,7 @@
     "source_grounding": "SOURCE_GROUNDING_FAILED",
     "environment_gate": "ENVIRONMENT_BLOCKED",
     "quota": "QUOTA_EXCEEDED",
-    "model_gate": "MODEL_GATE_BLOCKED"
+    "model_gate": "MODEL_GATE_BLOCKED",
+    "protocol_facet": "PROTOCOL_FACET_MATCHED"
   }
 }

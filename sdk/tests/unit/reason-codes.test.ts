@@ -176,6 +176,7 @@ describe('reason-code registry: every code is REACHABLE', () => {
       { rules: [{ id: 'sg', name: 'sg', enabled: true, action: 'block', type: 'source_grounding', conditions: { min_grounding_ratio: 0.99 } }], text: 'an ungrounded claim' },
       { rules: [{ id: 'eg', name: 'eg', enabled: true, action: 'block', type: 'environment_gate', conditions: { target_environments: ['prod'] } }], text: 'x', context: { currentEnvironment: 'prod' } },
       { rules: [{ id: 'mg', name: 'mg', enabled: true, action: 'block', type: 'model_gate', conditions: { denied_models: ['gpt-4'] } }], text: 'x', context: { model: 'gpt-4' } },
+      { rules: [{ id: 'pf', name: 'pf', enabled: true, action: 'block', type: 'protocol_facet', conditions: { facet: 'sql.verb', facet_in: ['drop'] } }], text: 'DROP TABLE users' },
       { rules: [{ id: 'pi', name: 'pi', enabled: true, action: 'block', type: 'pii', conditions: {} }], text: 'ssn 123-45-6789' },
       { rules: [{ id: 'ap', name: 'ap', enabled: true, action: 'block', type: 'keyword', conditions: { keywords: ['trigger'], require_approval: true } }], text: 'trigger' },
     ];

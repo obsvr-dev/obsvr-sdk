@@ -139,6 +139,8 @@ def _evaluate_rules(
 
         elif rule.type == "model_gate":
             matched = _evaluate_model_gate(rule, context)
+        elif rule.type == "protocol_facet":
+            matched = _evaluate_protocol_facet(rule, text)
 
         elif rule.type == "quota":
             limit = rule.conditions.get("quota_limit")
@@ -416,6 +418,41 @@ def _evaluate_environment_gate(
     if not current:
         return False
     return current in targets
+
+
+def _evaluate_protocol_facet(rule: PolicyRule, text: str) -> bool:
+    """protocol_facet - match PARSED protocol structure, not raw characters.
+
+    FAILS CLOSED. Text the decomposer cannot speak about returns
+    ``parsed: False``, and that MATCHES - the rule's action applies. This is
+    the opposite of every other rule type here, and deliberately so: a facet
+    rule exists because "the verb is DROP" is a stronger question than a
+    pattern match, and a statement an attacker made unparseable would otherwise
+    be the bypass. Parity with TS evaluateProtocolFacet.
+    """
+    from .protocol_facets import extract_sql_facets, read_facet
+
+    facet = rule.conditions.get("facet")
+    if not isinstance(facet, str) or not facet:
+        return False
+    if not facet.startswith("sql."):
+        return False  # only SQL facets exist today
+    facets = extract_sql_facets(text)
+    if not facets.get("parsed"):
+        return True  # fail closed: cannot evaluate is a match
+    values = [v.lower() for v in read_facet(facets, facet)]
+
+    in_list = rule.conditions.get("facet_in")
+    if in_list:
+        wanted = {str(v).lower() for v in in_list}
+        if any(v in wanted for v in values):
+            return True
+    not_in_list = rule.conditions.get("facet_not_in")
+    if not_in_list and values:
+        allowed = {str(v).lower() for v in not_in_list}
+        if any(v not in allowed for v in values):
+            return True
+    return False
 
 
 def _evaluate_model_gate(
