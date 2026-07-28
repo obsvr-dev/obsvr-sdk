@@ -45,6 +45,79 @@ The signing algorithm is byte-for-byte identical in both SDKs, pinned by the sha
 - **Client signing alone is not non-repudiation against a key-holder.** The SDK signing key is derived from the API key, so a party holding the API key could construct validly-signed *client* chains. This is why ingest adds a server countersignature with a key that never leaves the server: a key-holder cannot forge it, so they cannot fabricate an event that appears to have been accepted. What the client chain still cannot prove is (a) what happened *inside your process before emission*, or (b) the integrity of the decision/attribution fields — those are **not** in the client signature preimage (`format | session | seq | timestamp | content_hash | prev_sig`), so a party who can alter a stored event before ingest could rewrite `action_taken`/`rule_id`/`tenant_id` without breaking the *client* chain. The client chain proves only that the emitted prompt/response content arrived in order and unmodified; the server countersignature (over the full canonical event) is what seals the decision fields once accepted.
 - **Events the SDK never saw are not in the record.** Coverage requires the SDK to be in the call path; this is an inherent property of an in-process library (see "Bypass surface").
 
+## The same thing in RATS vocabulary (RFC 9334)
+
+Everything above is described in this project's own words. RFC 9334 — the IETF
+Remote ATtestation procedureS architecture — already has words for most of it,
+and a reader who evaluates attestation systems for a living should not have to
+translate. This section is that translation, including the parts where obsvr
+does not fit and the roles it does not implement. It adds no behaviour; it is
+here so the claims above can be checked against a standard rather than against
+a vocabulary obsvr invented.
+
+**Roles.**
+
+| RFC 9334 role | obsvr | Notes |
+|---|---|---|
+| Attester | The SDK, in your process | Produces Evidence about the LLM/tool calls it intercepts. See the isolation caveat below — this is the load-bearing difference. |
+| Verifier | `obsvr-verify` (`sdk/src/cli-verify.ts`, `sdk-python/obsvr/cli_verify.py`) and the chain verifiers behind it; the ingest service, independently | Appraises a chain and produces a verdict. Shipped in this package precisely so a Relying Party can appraise Evidence itself rather than take an Attestation Result on trust. |
+| Relying Party | Your auditor, regulator, or security team — anyone consuming an export or an evidence pack | Outside this package. |
+| Reference Value Provider | You, when you author policy: the rule set, the anti-tamper floor, operator tool-descriptor pins | Plus the SDK for its own frozen vectors. |
+| Verifier Owner | Nobody, deliberately | The offline verifier's appraisal rules are fixed in code, not configurable. A verifier whose rules the audited party can tune is not a verifier. |
+| Endorser | **Not implemented.** | See below. |
+| Relying Party Owner | Outside this package | An auditor's acceptance criteria — which controls an export must satisfy — are theirs, not the SDK's. |
+
+**Conceptual messages.**
+
+| RFC 9334 message | obsvr |
+|---|---|
+| Evidence | The signed event chain: `content_hash`, `sdk_sig`, `prev_sig`, `seq_no`, plus `decision_input_hash` and `tool_content_hash` where present |
+| Attestation Results | The verifier's verdict; server-side, the countersigned event and the anchored Merkle root |
+| Reference Values | `policy_version` (canonical hash of the enabled rule set), `floor_version`, operator descriptor pins, and the pinned conformance corpus (`conformance/MANIFEST.sha256`) — the known-good values a claim is compared against |
+| Appraisal Policy for Evidence | The verifier's own rules: signature validity, sequence contiguity, chain-format uniformity, declared gap markers, recomputed digests |
+| Appraisal Policy for Attestation Results | Not implemented — the Relying Party's own |
+| Endorsements | **None.** No third party vouches for a deployment's attestation key or capabilities. |
+
+**Where obsvr does not satisfy the architecture, stated plainly.**
+
+- **The Attesting Environment is not isolated from the Target Environment.**
+  RFC 9334 §3.1 assumes an Attester's measuring environment is "sufficiently
+  isolated" from what it measures, "so that the Target Environment cannot forge
+  Evidence about itself." obsvr is an in-process library: the two share an
+  address space, and the signing key is derived from your own API key. That
+  assumption does not hold, and no amount of chain discipline makes it hold.
+  What the chain proves is what the "Explicit non-guarantees" above already
+  say — that emitted content arrived in order and unmodified, not that it was
+  truthful when written. This is the same boundary as "Bypass surface," in the
+  standard's terms.
+- **There is no Endorser and no Endorsements.** Nothing signs a statement
+  binding a particular deployment's attestation key to a vouched capability.
+  The published package and the corpus pin let a verifier establish *which
+  build* produced an export, which is useful and is not an Endorsement: it
+  vouches for the software, not for the instance. Adding a real Endorser role
+  is a third-party trust relationship, not a code change, and obsvr does not
+  claim one.
+- **Evidence freshness is anchor-bounded, not nonce-bound.** RFC 9334 §10 gives
+  three mechanisms. obsvr uses none of them in the strict sense. Event
+  timestamps come from the Attester's own clock, which the RFC treats as
+  untrustworthy absent an endorsed clock — and obsvr endorses no clocks. There
+  is no verifier-supplied nonce, because the Verifier is offline and
+  after-the-fact rather than in the request path. What obsvr does provide is an
+  upper bound from a third-party time source: external anchoring of the daily
+  Merkle root (RFC-3161 token, git commit, transparency log) proves the root
+  existed unmodified no later than the anchor time. That is stronger than a
+  self-asserted timestamp and weaker than a nonce, and the difference matters:
+  it bounds when Evidence *existed*, never when it was *created*. Separately,
+  `policyStalenessBudgetMs` and the enforcement-integrity gate are a freshness
+  mechanism for the Reference Values rather than for the Evidence — they bound
+  how stale the policy in force may be before enforcement degrades.
+- **Topology: passport model, with a background-check escape hatch.** Evidence
+  is appraised and turned into a durable artifact that is later *presented* to
+  a Relying Party, which is the passport shape (RFC 9334 §5.1) — the auditor is
+  never in the request path. The escape hatch is why `obsvr-verify` ships here:
+  a Relying Party that does not want to trust the Attestation Result can
+  re-appraise the raw Evidence itself, offline, with no obsvr service involved.
+
 ## Enforcement semantics: what blocking means
 
 - **Pre-call policies (PII, rules, hooks) are real enforcement.** They run before the provider is contacted; a blocked call never leaves the process.
