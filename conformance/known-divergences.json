@@ -10,16 +10,6 @@
   },
   "entries": [
     {
-      "id": "KD-5",
-      "sdk": "ts",
-      "category": "evaluation_context",
-      "status": "intended",
-      "description": "Customer policyRules eval context on the TS integration path: integrations/core.ts applyPreCallPolicy passes customer rules {provider, metadata} with no top-level model / currentEnvironment, so a customer model_gate / environment_gate rule is inert there, while the Python shared pre-call and the TS proxy wrapper source both. Enriching the context would newly fire previously-inert rules - a behavior change for existing users, out of scope for the additive floor slice.",
-      "parity_scope": "The anti-tamper FLOOR threads model + currentEnvironment on all paths in both SDKs (as of 2026-07-20); a rule promoted into policyFloor gates identically everywhere.",
-      "allowed_difference": "Customer (non-floor) model_gate / environment_gate rules do not fire on the TS integrations path.",
-      "tracking": "integrations/core.ts applyPreCallPolicy rules context. Revisit as its own slice with a migration note."
-    },
-    {
       "id": "KD-6",
       "sdk": "py",
       "category": "dependency",

@@ -417,10 +417,13 @@ export async function applyPreCallPolicy(
     userId?: string;
     serviceName?: string;
     /**
-     * The request model, when the integration knows it. Threaded into the
-     * anti-tamper FLOOR eval context so a floor `model_gate` rule enforces on
-     * the integration path too (parity with the proxy wrapper and Python) —
-     * without it, a floor model allow/deny-list was silently inert here.
+     * The request model, when the integration knows it. Threaded into BOTH
+     * the anti-tamper FLOOR and the customer-rules eval context, so a
+     * `model_gate` rule enforces on the integration path exactly as it does
+     * through the proxy wrapper and through Python — without it, a model
+     * allow/deny-list was silently inert here. Tool boundaries (MCP) leave it
+     * absent: a tool call has no request model, and both SDKs evaluate that
+     * case with an empty model, which `model_gate` reads as "cannot evaluate".
      */
     model?: string;
     /**
@@ -715,7 +718,17 @@ export async function applyPreCallPolicy(
     let rulesReasonCode: string | undefined = floorReasonCode;
     let quotaUnmetered: QuotaUnmetered | undefined;
     if (config.policyRules && config.policyRules.length > 0 && actionTaken !== "blocked") {
+      // Same context the floor above was handed, and the same one the proxy
+      // wrapper and the Python shared pre-call build: model and environment are
+      // TOP-LEVEL fields because that is where model_gate / environment_gate
+      // read them. They were previously omitted here, so a customer rule of
+      // either type was inert on this path while firing everywhere else — and a
+      // rule whose verdict depends on WHICH entry point evaluated it is not a
+      // policy. The floor deliberately keeps a context at least as strong as
+      // this one; they are now equal.
       const rulesResult = evaluatePolicyRules(config.policyRules, promptText, "prompt", {
+        currentEnvironment: config.environment,
+        model: ctx.model ?? "",
         provider,
         metadata: evalMetadata,
       }, { failMode: config.failMode });

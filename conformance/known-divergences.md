@@ -17,6 +17,27 @@ FIXED rather than accepted, which the table never carried and which is the
 better half of the record.
 
 History:
+- 2026-07-28: KD-5 (customer-rule eval context on the TypeScript integrations
+  path) was FIXED, and the row is gone. `applyPreCallPolicy` built the
+  customer-rules context as `{provider, metadata}` while handing the floor,
+  three lines above it, `{currentEnvironment, model, provider, metadata}` — so
+  a customer `model_gate` or `environment_gate` rule was inert on that path
+  and fired everywhere else. It now gets the floor's context, which is the
+  same one the proxy wrapper and the Python shared pre-call build. The
+  equivalence is pinned by `conformance/fixtures/eval_context.json`: ten cases
+  of (rule, model, provider, environment, prompt) → verdict, asserted through
+  BOTH TypeScript doors (`wrap()` and `applyPreCallPolicy`) and through
+  Python's single shared pre-call. **Writing that fixture immediately found a
+  second break in the same equivalence, in the opposite direction:** the proxy
+  wrapper handled only the rules engine's `block` verdict, so a rule declaring
+  action `redact` let the call out untouched and stamped the event `allowed`,
+  while the same rule redacted through every integration and through Python.
+  The wrapper now applies it, failing closed to a block when the removal
+  cannot be carried out — pinned in `policy-rules-redact-wiring.test.ts`. That
+  one was never in the catalog, which is the argument for the fixture: a
+  divergence nobody wrote down is not smaller than one that was, only quieter.
+  Both changes are behavioural for existing users and are recorded BREAKING in
+  the CHANGELOG.
 - 2026-07-28: KD-8 (LOOP_DETECTED / DELEGATION_BLOCKED) was FIXED by porting
   the owning controls, and the row is gone. `obsvr/agent_policy.py` is the
   Python twin of `policy/industry/devops.ts` + `policy/industry/agentic.ts`

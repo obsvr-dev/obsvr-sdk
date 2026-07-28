@@ -1,0 +1,178 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "eval_context",
+  "description": "Cross-SDK, cross-ENTRY-POINT equivalence of the pre-call rule evaluation context. Every case is one customer policy rule plus the four context values a gate reads - model, provider, environment, prompt - and the verdict that rule must reach. The point is not the verdict: it is that the SAME rule reaches the SAME verdict no matter which door the call came through. A rule whose outcome depends on whether the app used the proxy wrapper or a framework integration is not a policy, it is a coincidence. Harnesses: TypeScript asserts each case TWICE, once through wrap() (proxy wrapper) and once through applyPreCallPolicy (integrations core); Python asserts once through apply_pre_call_policy, which is the single shared pre-call both of its paths use. model_gate and environment_gate are the two rule types that read this context and nothing else, which is what makes them the probe. Cases fix provider to 'openai' so the wrapper harness can drive them with an OpenAI-shaped stub client and all three paths see one provider value.",
+  "precall_context_cases": [
+    {
+      "id": "model_gate_denied_model_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-denied",
+        "name": "Deny gpt-4",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "denied_models": ["gpt-4"] }
+      },
+      "environment": "production",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "block", "rule_id": "mg-denied" }
+    },
+    {
+      "id": "model_gate_denied_matches_by_prefix",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-prefix",
+        "name": "Deny the gpt-4 family",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "denied_models": ["gpt-4"] }
+      },
+      "environment": "production",
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "block", "rule_id": "mg-prefix" }
+    },
+    {
+      "id": "model_gate_allowed_model_passes",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-allow",
+        "name": "Only gpt-4",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "allowed_models": ["gpt-4"] }
+      },
+      "environment": "production",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "allow" }
+    },
+    {
+      "id": "model_gate_model_outside_allowlist_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-allow-miss",
+        "name": "Only gpt-4",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "allowed_models": ["gpt-4"] }
+      },
+      "environment": "production",
+      "model": "some-unapproved-model",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "block", "rule_id": "mg-allow-miss" }
+    },
+    {
+      "id": "model_gate_provider_outside_allowlist_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-provider",
+        "name": "Approved providers only",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "allowed_providers": ["anthropic"] }
+      },
+      "environment": "production",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "block", "rule_id": "mg-provider" }
+    },
+    {
+      "id": "model_gate_provider_in_allowlist_passes",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-provider-ok",
+        "name": "Approved providers only",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "allowed_providers": ["openai"] }
+      },
+      "environment": "production",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "allow" }
+    },
+    {
+      "id": "model_gate_absent_model_cannot_evaluate",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "mg-no-model",
+        "name": "Deny gpt-4",
+        "enabled": true,
+        "action": "block",
+        "type": "model_gate",
+        "conditions": { "denied_models": ["gpt-4"] }
+      },
+      "environment": "production",
+      "model": "",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "allow" }
+    },
+    {
+      "id": "environment_gate_matching_environment_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "eg-prod",
+        "name": "Not in production",
+        "enabled": true,
+        "action": "block",
+        "type": "environment_gate",
+        "conditions": { "target_environments": ["production"] }
+      },
+      "environment": "production",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "block", "rule_id": "eg-prod" }
+    },
+    {
+      "id": "environment_gate_other_environment_passes",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "eg-staging",
+        "name": "Not in production",
+        "enabled": true,
+        "action": "block",
+        "type": "environment_gate",
+        "conditions": { "target_environments": ["production"] }
+      },
+      "environment": "staging",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "allow" }
+    },
+    {
+      "id": "environment_gate_redact_action_redacts",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "rule": {
+        "id": "eg-redact",
+        "name": "Redact in production",
+        "enabled": true,
+        "action": "redact",
+        "type": "environment_gate",
+        "conditions": { "target_environments": ["production"] }
+      },
+      "environment": "production",
+      "model": "gpt-4",
+      "provider": "openai",
+      "prompt": "summarize this quarter",
+      "expect": { "decision": "redact", "rule_id": "eg-redact" }
+    }
+  ]
+}
