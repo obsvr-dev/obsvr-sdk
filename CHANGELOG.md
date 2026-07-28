@@ -33,6 +33,31 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **Text that only quotes an injection phrase is no longer rewritten.** The
+  built-in scanner and the redactor iterate the same pattern table, so a bug
+  report, a test fixture or a policy document reproducing an attack string was
+  flagged and then had that string replaced with `[BLOCKED_INJECTION]` in the
+  stored copy — an audit record committed to content the model was never shown.
+  A `prompt_injection` match whose span is immediately enclosed by a matching
+  quote, apostrophe or backtick pair is now marked quoted: **the stored text is
+  left byte-for-byte as sent**, and the match no longer counts as the
+  single-turn full match handed to the multi-turn scorer. **This is a downgrade,
+  not a suppression** — `pii_detected` and `detected_types` are unchanged, so
+  the detection event still fires, any configured `pii_policy` action still
+  applies, and the phrase still accrues weak-signal score toward the multi-turn
+  gate. **One consequence to expect when tuning:** that gate fires on
+  `tripped && !hadFullMatch`, so a quoted phrase — no longer a full match — no
+  longer short-circuits it, and **multi-turn trips can now fire on quoted text
+  where they previously did not**. Quoting is consulted for `prompt_injection`
+  only; a quoted credential is still a leaked credential and is still scrubbed. The delimiter test is strict
+  adjacency and deliberately narrow: punctuation inside the quotation
+  (`"…instructions."`) and a quotation wider than the matched phrase both still
+  redact, because every relaxation classifies more text as quoted. Additive API:
+  `runBuiltinPiiScan` / `run_builtin_pii_scan` now also return `matches`
+  (`label`, `confidence`, `quoted`); existing readers of `pii_detected` and
+  `detected_types` are unaffected. Pinned by
+  `conformance/fixtures/pii_scan.json`.
+  ([`119ed71`](https://github.com/obsvr-dev/obsvr-sdk/commit/119ed71))
 - **Approval grants are bound to the action they were granted for, and
   re-checked before the call goes out.** A grant may now carry an
   `action_hash` — a canonical digest of the rule, the rule's definition hash,

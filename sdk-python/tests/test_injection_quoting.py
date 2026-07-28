@@ -79,6 +79,32 @@ def test_quoted_phrase_is_not_a_full_match_and_does_not_trip_on_turn_one():
     assert score_turn("quoted", QUOTED, had_full_match(QUOTED), **CFG)["tripped"] is False
 
 
+def test_quoted_phrase_accumulates_into_a_trip_that_reaches_the_gate():
+    # Both call sites gate on ``tripped and not had_full`` -- "a full match is
+    # already handled by the single-turn scan" (policy.py, wrapper.ts, core.ts).
+    # A quoted phrase now reports had_full False, so it no longer short-circuits
+    # that gate: text that used to suppress the multi-turn path can now reach
+    # it. That is a behaviour change beyond preserving the stored text, and it
+    # is pinned here so it stays a decision rather than a consequence someone
+    # rediscovers while tuning thresholds.
+    full = had_full_match(QUOTED)
+    assert full is False
+    assert score_turn("quoted-accum", QUOTED, full, **CFG)["tripped"] is False  # 0.35
+    assert score_turn("quoted-accum", QUOTED, full, **CFG)["tripped"] is False  # 0.70
+    third = score_turn("quoted-accum", QUOTED, full, **CFG)  # ................. 1.05
+    assert third["tripped"] is True
+    assert (third["tripped"] and not full) is True  # the gate fires
+
+
+def test_same_phrase_unquoted_trips_sooner_but_never_reaches_the_gate():
+    full = had_full_match(UNQUOTED)
+    assert full is True
+    first = score_turn("unquoted-accum", UNQUOTED, full, **CFG)
+    assert first["tripped"] is True
+    # Suppressed by the full match, exactly as before this change.
+    assert (first["tripped"] and not full) is False
+
+
 def test_quoted_phrase_still_accumulates_session_signal():
     # The downgrade removes the 1.0 full-match contribution, not the turn. A
     # quoted phrase that carries weak signals still moves the session score, so

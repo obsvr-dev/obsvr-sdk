@@ -76,6 +76,34 @@ describe('the downgrade reaches scoreTurn', () => {
     expect(scoreTurn('quoted', QUOTED, hadFullMatch(QUOTED), CFG).tripped).toBe(false);
   });
 
+  // Both call sites gate on `mt.tripped && !hadFullMatch` — "a full match is
+  // already handled by the single-turn scan" (wrapper.ts, core.ts, policy.py).
+  // A quoted phrase now reports hadFullMatch:false, so it no longer
+  // short-circuits that gate: text that used to suppress the multi-turn path
+  // can now reach it. That is a behaviour change beyond preserving the stored
+  // text, and it is pinned here so it stays a decision rather than a
+  // consequence someone rediscovers while tuning thresholds.
+  it('a quoted phrase accumulates into a trip that REACHES the gate', () => {
+    const key = 'quoted-accum';
+    const full = hadFullMatch(QUOTED);
+    expect(full).toBe(false);
+    expect(scoreTurn(key, QUOTED, full, CFG).tripped).toBe(false); // turn 1: 0.35
+    expect(scoreTurn(key, QUOTED, full, CFG).tripped).toBe(false); // turn 2: 0.70
+    const third = scoreTurn(key, QUOTED, full, CFG); //              turn 3: 1.05
+    expect(third.tripped).toBe(true);
+    expect(third.tripped && !full).toBe(true); // the gate fires
+  });
+
+  it('the same phrase unquoted trips sooner but never reaches the gate', () => {
+    const key = 'unquoted-accum';
+    const full = hadFullMatch(UNQUOTED);
+    expect(full).toBe(true);
+    const first = scoreTurn(key, UNQUOTED, full, CFG);
+    expect(first.tripped).toBe(true);
+    // Suppressed by the full match, exactly as before this change.
+    expect(first.tripped && !full).toBe(false);
+  });
+
   it('a quoted phrase still accumulates session signal', () => {
     // The downgrade removes the 1.0 full-match contribution, not the turn. A
     // quoted phrase that carries weak signals still moves the session score,
