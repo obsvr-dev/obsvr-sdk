@@ -10,7 +10,7 @@ Runtime governance for LLM applications in Python: deterministic policy enforcem
 pip install obsvr-sdk
 ```
 
-Requires **Python >= 3.9**. No runtime dependencies.
+Requires **Python >= 3.10**. No runtime dependencies.
 
 Optional extras for framework integrations:
 

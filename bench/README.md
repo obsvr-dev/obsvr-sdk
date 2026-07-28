@@ -77,8 +77,8 @@ burst that lost most of its events would report as a clean run.
 
 ## Requirements
 
-- Node ≥ 18 (SDK is ESM; `--expose-gc` optional, used for cleaner memory reads)
-- Python ≥ 3.9 with the `obsvr` package importable — `sdk-python/.venv` or
+- Node ≥ 22 (SDK is ESM; `--expose-gc` optional, used for cleaner memory reads)
+- Python ≥ 3.10 with the `obsvr` package importable — `sdk-python/.venv` or
   `pip install -e sdk-python` (the SDK is dependency-free)
 - Run on an otherwise-quiet machine; `run-all.sh` warns if load is high. Run
   serially only — never two benchmark processes at once.

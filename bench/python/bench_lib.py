@@ -10,7 +10,7 @@ Honesty posture: report p50/p95/p99/mean/max, discard only the
 declared warmup, and treat any crash / silent drop / chain corruption / leak as
 a FINDING to record, never something to tune away.
 
-Zero third-party deps: Python stdlib + the obsvr SDK only. Python >= 3.9.
+Zero third-party deps: Python stdlib + the obsvr SDK only. Python >= 3.10.
 """
 
 from __future__ import annotations

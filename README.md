@@ -8,8 +8,8 @@ Intercept every model and tool call. Enforce deterministic policy **before** the
 
 ![Status](https://img.shields.io/badge/status-private%20beta-6d4aff)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
-![Node](https://img.shields.io/badge/node-%3E%3D18-10b981)
-![Python](https://img.shields.io/badge/python-%3E%3D3.9-3776ab)
+![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
+![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
 
 [Website](https://obsvr.dev) · [TypeScript SDK](sdk/) · [Python SDK](sdk-python/)
 
@@ -27,8 +27,8 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 
 | Package                    | Language                  | Version | Directory                    |
 | -------------------------- | ------------------------- | ------- | ---------------------------- |
-| [`@obsvr/sdk`](sdk/)       | TypeScript / Node.js ≥ 18 | 0.10.0  | [`sdk/`](sdk/)               |
-| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.9              | 0.10.0  | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](sdk/)       | TypeScript / Node.js ≥ 22 | 0.10.0  | [`sdk/`](sdk/)               |
+| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.10.0  | [`sdk-python/`](sdk-python/) |
 
 ## Table of contents
 

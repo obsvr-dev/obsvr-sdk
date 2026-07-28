@@ -28,7 +28,7 @@ if (typeof register === 'function') {
   register('./auto/loader-hooks.js', import.meta.url);
 } else {
   console.warn(
-    '[obsvr] --import @obsvr/sdk/register requires Node >=18.19 or >=20.6. ' +
+    '[obsvr] --import @obsvr/sdk/register requires Node >=22. ' +
       'Global interception is not active; use obsvr.wrap() per client instead.',
   );
 }

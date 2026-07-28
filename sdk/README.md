@@ -10,7 +10,7 @@ Runtime governance for LLM applications: intercept every model and tool call, en
 npm install @obsvr/sdk    # private beta — not yet on npm; request access at obsvr.dev
 ```
 
-Requires **Node.js >= 18**.
+Requires **Node.js >= 22**.
 
 ## Quick Start
 

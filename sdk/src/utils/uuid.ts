@@ -12,8 +12,9 @@
 import { randomUUID } from "node:crypto";
 
 /**
- * Generate a UUID v4 via node:crypto — works on all supported Node versions
- * (the global Web Crypto `crypto` is not present on every Node 18 build).
+ * Generate a UUID v4 via node:crypto — an explicit import rather than the
+ * global Web Crypto `crypto`, so the dependency is visible at the top of the
+ * file and cannot be shadowed by a caller's global.
  */
 export function generateUUID(): string {
   return randomUUID();
