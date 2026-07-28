@@ -39,6 +39,7 @@ from .. import sender as _sender
 from ..config import try_get_config
 from ..events import blocked_call_error, emit_event
 from ..deobfuscate import redact_for_storage
+from ..token_usage import read_token_usage
 from ..policy import (
     apply_post_call_policy,
     apply_pre_call_policy,
@@ -189,19 +190,7 @@ def _extract_response_text(response: Any) -> str:
 
 def _usage(response: Any) -> Dict[str, Optional[int]]:
     um = getattr(response, "usage_metadata", None) if not isinstance(response, dict) else response.get("usage_metadata")
-    if um is None:
-        return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
-
-    def g(key: str) -> Optional[int]:
-        if isinstance(um, dict):
-            return um.get(key)
-        return getattr(um, key, None)
-
-    return {
-        "input_tokens": g("prompt_token_count"),
-        "output_tokens": g("candidates_token_count"),
-        "total_tokens": g("total_token_count"),
-    }
+    return read_token_usage(um)
 
 
 def _resolved_model(response: Any) -> Optional[str]:

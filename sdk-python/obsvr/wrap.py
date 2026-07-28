@@ -40,6 +40,7 @@ from .policy import (
     redact_builtin_pii,
 )
 from .sender import send_audit_async, should_sample
+from .token_usage import read_token_usage
 
 
 def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] = None) -> None:
@@ -447,30 +448,21 @@ def _extract_response_text(provider: str, result: Any) -> str:
 
 
 def _extract_usage(provider: str, result: Any) -> Dict[str, Optional[int]]:
-    usage = getattr(result, "usage", None) or (result.get("usage") if isinstance(result, dict) else None)
-    out: Dict[str, Optional[int]] = {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+    """Token counts off a provider response, whatever shape it arrives in.
+
+    The Gemini fallback used to be reachable only for attribute-shaped results:
+    ``usage`` was read from dict OR attribute, but ``usage_metadata`` was read
+    with a bare ``getattr``, which always returns None on a dict. A dict-shaped
+    Gemini response therefore reported no tokens at all.
+    """
+    usage = getattr(result, "usage", None)
+    if usage is None and isinstance(result, dict):
+        usage = result.get("usage")
     if usage is None:
-        # Gemini: usage_metadata
-        um = getattr(result, "usage_metadata", None)
-        if um is not None:
-            out["input_tokens"] = getattr(um, "prompt_token_count", None)
-            out["output_tokens"] = getattr(um, "candidates_token_count", None)
-            out["total_tokens"] = getattr(um, "total_token_count", None)
-        return out
-
-    def _get(obj: Any, *names: str) -> Optional[int]:
-        for n in names:
-            v = getattr(obj, n, None) if not isinstance(obj, dict) else obj.get(n)
-            if isinstance(v, int):
-                return v
-        return None
-
-    out["input_tokens"] = _get(usage, "prompt_tokens", "input_tokens")
-    out["output_tokens"] = _get(usage, "completion_tokens", "output_tokens")
-    out["total_tokens"] = _get(usage, "total_tokens")
-    if out["total_tokens"] is None and out["input_tokens"] is not None and out["output_tokens"] is not None:
-        out["total_tokens"] = out["input_tokens"] + out["output_tokens"]
-    return out
+        usage = getattr(result, "usage_metadata", None)
+        if usage is None and isinstance(result, dict):
+            usage = result.get("usage_metadata") or result.get("usageMetadata")
+    return read_token_usage(usage)
 
 
 def _tel_get(obj: Any, *names: str) -> Any:
@@ -629,22 +621,15 @@ def _extract_chunk_text(provider: str, chunk: Any) -> str:
 
 
 def _extract_chunk_usage(chunk: Any) -> Dict[str, Optional[int]]:
-    """Usage from a final streaming chunk when the provider includes it."""
+    """Usage from a final streaming chunk when the provider includes it.
+
+    Reads dict-shaped chunks as well as attribute-shaped ones; the old bare
+    ``getattr`` silently missed every provider that yields plain dicts.
+    """
     usage = getattr(chunk, "usage", None)
-    if usage is None:
-        return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
-    def _get(*names: str) -> Optional[int]:
-        for n in names:
-            v = getattr(usage, n, None)
-            if isinstance(v, int):
-                return v
-        return None
-    inp = _get("input_tokens", "prompt_tokens")
-    out = _get("output_tokens", "completion_tokens")
-    tot = _get("total_tokens")
-    if tot is None and inp is not None and out is not None:
-        tot = inp + out
-    return {"input_tokens": inp, "output_tokens": out, "total_tokens": tot}
+    if usage is None and isinstance(chunk, dict):
+        usage = chunk.get("usage")
+    return read_token_usage(usage)
 
 
 def _emit_stream_event(

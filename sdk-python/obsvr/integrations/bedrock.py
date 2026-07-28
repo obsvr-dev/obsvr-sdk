@@ -47,6 +47,7 @@ from .. import sender as _sender
 from ..config import try_get_config
 from ..events import blocked_call_error, emit_event
 from ..deobfuscate import redact_for_storage
+from ..token_usage import read_token_usage
 from ..policy import (
     apply_post_call_policy,
     apply_pre_call_policy,
@@ -269,12 +270,8 @@ def _extract_converse_response_text(response: Dict[str, Any]) -> str:
 
 
 def _converse_usage(response: Dict[str, Any]) -> Dict[str, Optional[int]]:
-    u = response.get("usage") or {} if isinstance(response, dict) else {}
-    return {
-        "input_tokens": u.get("inputTokens"),
-        "output_tokens": u.get("outputTokens"),
-        "total_tokens": u.get("totalTokens"),
-    }
+    u = response.get("usage") if isinstance(response, dict) else None
+    return read_token_usage(u)
 
 
 def _extract_invoke_response_text(body: Optional[Dict[str, Any]]) -> str:
@@ -305,17 +302,19 @@ def _extract_invoke_response_text(body: Optional[Dict[str, Any]]) -> str:
 
 
 def _invoke_usage(body: Optional[Dict[str, Any]]) -> Dict[str, Optional[int]]:
+    """InvokeModel bodies carry usage under ``usage`` for the Anthropic-shaped
+    models and as a top-level ``inputTextTokenCount`` for Titan, so both are
+    tried before giving up."""
     if not body:
-        return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
-    u = body.get("usage") or {}
-    inp = u.get("input_tokens", u.get("inputTokens"))
-    out = u.get("output_tokens", u.get("outputTokens"))
-    tot = u.get("total_tokens", u.get("totalTokens"))
-    if tot is None and inp is not None and out is not None:
-        tot = inp + out
-    if inp is None and isinstance(body.get("inputTextTokenCount"), int):
-        inp = body["inputTextTokenCount"]
-    return {"input_tokens": inp, "output_tokens": out, "total_tokens": tot}
+        return read_token_usage(None)
+    usage = read_token_usage(body.get("usage"))
+    if usage["input_tokens"] is None:
+        titan = read_token_usage(body)
+        if titan["input_tokens"] is not None:
+            usage["input_tokens"] = titan["input_tokens"]
+            if usage["total_tokens"] is None and usage["output_tokens"] is not None:
+                usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    return usage
 
 
 # ---------------------------------------------------------------------------

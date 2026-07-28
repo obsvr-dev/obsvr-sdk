@@ -237,6 +237,14 @@ class TestRegistryGate:
         # and its callers omit the field on failure. Matches the TS twin's
         # exemption for tool-content-hash.ts.
         "tool_content_hash.py",
+        # Reads token counts out of a provider usage payload and produces a
+        # record field. Decides nothing: no count it returns, or declines to
+        # return, blocks anything on its own — a quota rule does, and that is
+        # declared. Its whole contract is to be absent rather than wrong, and
+        # it cannot fail open because "I could not read this" is a value it
+        # returns rather than an exception it raises. Same exemption reason as
+        # cost.py and tool_content_hash.py.
+        "token_usage.py",
         "verify_chain.py",
         "wrap.py",
     }
