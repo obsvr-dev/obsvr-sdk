@@ -61,7 +61,7 @@ openai-agents = ["openai-agents>=0.0.2"]
 # hash (a rug-pull that edits only the schema would then hash identically), and
 # empties the destructive-capability gate. Upstream advises the same bound for
 # callers that have not migrated.
-mcp = ["mcp>=1.0.0,<2.0.0"]
+mcp = ["mcp>=1.0.0,<3.0.0"]
 langchain = ["langchain-core>=0.2.0"]
 llamaindex = ["llama-index-core>=0.10.0"]
 # No crewai release permits 3.14 — every one of them caps at <3.14 or <=3.13 —
