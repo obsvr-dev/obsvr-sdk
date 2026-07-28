@@ -2,6 +2,18 @@
 
 Pairs CBEventType.LLM on_event_start/on_event_end by event_id using
 EventPayload.PROMPT/MESSAGES/RESPONSE/COMPLETION payload keys.
+
+REGISTRATION. ``obsvr.init()`` already adds this handler to
+``Settings.callback_manager`` whenever ``llama_index`` is importable, so the
+normal setup is init() alone — do not add it a second time. Adding it yourself
+is harmless (the duplicate is inert, see _claim_governing_handler) but
+unnecessary. If you opted out with ``obsvr.init(auto=False)``, register it
+manually::
+
+    from llama_index.core import Settings
+    from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler
+
+    Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler())
 """
 
 # Interception: LlamaIndex Python BaseCallbackHandler API (non-mutating). Register via Settings.callback_manager.add_handler() — no internals modified.
@@ -30,6 +42,39 @@ except ImportError:  # shim base class so import never fails
 
 
 SOURCE = "llamaindex_py"
+
+#: The handler that governs this process. See _claim_governing_handler.
+_GOVERNING: Any = None
+
+
+def _claim_governing_handler(handler: Any) -> bool:
+    """Whether ``handler`` is the one that emits, or an inert duplicate.
+
+    obsvr.init() auto-registers a handler on Settings.callback_manager whenever
+    ``llama_index`` is importable, and this module's own docstring tells the
+    reader to add one too — so following the documented setup put TWO handlers
+    on the callback manager and emitted every LLM event twice, with distinct
+    request_ids that made the pair look like two real calls. Duplicate evidence
+    for one governed call is a defect in a governance product: it inflates any
+    count taken over the trail, and now that tokens ARE captured on this path
+    it would double every cost and quota figure derived from it.
+
+    obsvr never mutates the callback manager it registers into, so it cannot
+    remove the duplicate from the outside. The stance is the one
+    instance_guard.py takes for a duplicated module: the incumbent keeps the
+    slot and later arrivals are inert, so exactly one record is produced no
+    matter how many times obsvr was registered or in what order.
+    """
+    global _GOVERNING
+    if _GOVERNING is None:
+        _GOVERNING = handler
+    return _GOVERNING is handler
+
+
+def _reset_governing_handler() -> None:
+    """Test seam: forget the incumbent so each test starts clean."""
+    global _GOVERNING
+    _GOVERNING = None
 
 
 def _enum_value(value: Any) -> Any:
@@ -109,6 +154,7 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
             pass
         self._runs: Dict[str, Dict[str, Any]] = {}
         self._options = options
+        self._governs = _claim_governing_handler(self)
 
     def on_event_start(
         self,
@@ -118,6 +164,8 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
         parent_id: str = "",
         **kwargs: Any,
     ) -> str:
+        if not self._governs:
+            return event_id
         try:
             if _enum_value(event_type) != "llm":
                 return event_id
@@ -165,6 +213,8 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
         event_id: str = "",
         **kwargs: Any,
     ) -> None:
+        if not self._governs:
+            return
         try:
             if _enum_value(event_type) != "llm":
                 return

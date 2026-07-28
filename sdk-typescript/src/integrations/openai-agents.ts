@@ -33,6 +33,7 @@ import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
 import { ReasonCode } from "../governance/reason-codes.js";
+import { readTokenUsage } from "../proxy/extractors/token-usage.js";
 
 const SOURCE = "openai_agents_js";
 
@@ -346,12 +347,31 @@ export class ObsvrTraceProcessor {
 
       // Generation (LLM call) span
       if (spanType === "generation") {
-        // The Agents SDK generation span records only the configured `model`;
-        // it exposes no separate provider-resolved snapshot, so model_resolved
-        // stays absent (the proxy/openai-compat paths capture it when present).
+        // The generation span's `model` IS the configured alias — this is the
+        // one span type that carries it, and it is what the event schema wants.
         const model = String(spanData.model ?? span.model ?? "unknown");
         const rawInput = spanData.input ?? span.input;
         const rawOutput = spanData.output ?? span.output;
+        // A resolved snapshot IS recoverable here, contrary to what this
+        // branch used to claim: on the NON-streamed Chat Completions path the
+        // raw provider ChatCompletion sits in spanData.output[0], and its
+        // `model` is the served snapshot.
+        //
+        // The streamed path must be excluded, and the guard is not cosmetic:
+        // there the SDK synthesises a stand-in completion whose `model` is
+        // copied from the CONFIGURED alias, so reading it blindly would mint a
+        // "provider-verified snapshot" that is really just the request echoed
+        // back — a fabricated provenance claim, and worse than the absent one
+        // it replaced. The stand-in announces itself with the placeholder id
+        // the SDK exports as FAKE_ID; anything else is a real provider body.
+        const firstOutput = Array.isArray(rawOutput)
+          ? ((rawOutput[0] ?? {}) as Record<string, unknown>)
+          : undefined;
+        const isSynthesizedStandIn = firstOutput?.id === "FAKE_ID";
+        const modelResolved =
+          !isSynthesizedStandIn && typeof firstOutput?.model === "string"
+            ? firstOutput.model
+            : undefined;
         const promptText =
           typeof rawInput === "string"
             ? rawInput
@@ -369,6 +389,10 @@ export class ObsvrTraceProcessor {
           config,
           provider: "openai",
           model,
+          model_resolved: modelResolved,
+          // Read off the provider's own completion body carried on the span,
+          // not off a framework abstraction over it.
+          provenance_source: modelResolved ? "provider_response" : undefined,
           operation: "llm",
           source: SOURCE,
           prompt: promptText,
@@ -421,21 +445,30 @@ export class ObsvrTraceProcessor {
           : "";
 
         const model = typeof resp.model === "string" ? resp.model : "unknown";
-        const usage = resp.usage as Record<string, unknown> | undefined;
-        const inputTokens =
-          typeof usage?.input_tokens === "number" ? usage.input_tokens : undefined;
-        const outputTokens =
-          typeof usage?.output_tokens === "number" ? usage.output_tokens : undefined;
-        const totalTokens =
-          typeof usage?.total_tokens === "number" ? usage.total_tokens : undefined;
+        const tokens = readTokenUsage(resp.usage);
+        const inputTokens = tokens?.input_tokens;
+        const outputTokens = tokens?.output_tokens;
+        const totalTokens = tokens?.total_tokens;
 
         emitIntegrationEvent({
           config,
           provider: "openai",
+          // Both fields hold the RESOLVED served snapshot, and on this path
+          // that is the only model information that exists. ResponseSpanData
+          // carries exactly (response_id, _input, _response); the agent span
+          // carries name/handoffs/tools/output_type; trace metadata is
+          // caller-supplied. Nothing in a Responses-path trace ever holds the
+          // configured alias, so there is no other span to correlate against
+          // and no version of this code that could recover it.
+          //
+          // That makes `model === model_resolved` here mean something
+          // different from what it means elsewhere: not "the caller pinned an
+          // exact snapshot" but "the alias was never observable". Those are
+          // not distinguishable from the two fields alone, so the substitution
+          // is stated outright rather than left for a reader to infer — a
+          // temporal-provenance check over this source would otherwise always
+          // pass and look like evidence of no drift.
           model,
-          // The Responses API echoes the RESOLVED served model in the same
-          // field used to request it, so this is a genuine provider-verified
-          // snapshot, not just an echo of the caller's request.
           model_resolved: model,
           provenance_source: "provider_response",
           operation: "llm",
@@ -448,6 +481,7 @@ export class ObsvrTraceProcessor {
           metadata: {
             agent_run_id: traceId,
             response_id: spanData.response_id,
+            model_alias_unavailable: true,
           },
           options: this.opts,
         });

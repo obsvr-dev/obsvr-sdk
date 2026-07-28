@@ -500,6 +500,15 @@ def _reset() -> None:
     _reset_session_taint()
     _reset_policy_verify()
     _reset_detector_errors()
+    # The framework handlers keep a process-level incumbent so that registering
+    # obsvr twice (auto-instrumentation plus the documented manual call) still
+    # yields one evidence record per call. That incumbent outlives config, so a
+    # test that resets config has to release it too or every later handler it
+    # builds is inert.
+    from .integrations.llamaindex import _reset_governing_handler
+    from .integrations.openai_agents import _reset_governing_processor
+    _reset_governing_handler()
+    _reset_governing_processor()
     _state["initialized"] = False
     _state["config"] = None
     _tenant_registry.clear()
