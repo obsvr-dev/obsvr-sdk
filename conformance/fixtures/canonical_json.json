@@ -1,4 +1,5 @@
 {
+  "claimable": false,
   "schema_version": 1,
   "name": "canonical_json",
   "description": "Cross-SDK vectors for the FROZEN rules-hash canonicalizer (stableStringify / _canonical_json), the serializer policy_version and rules_hash are SHA-256 over. input is JSON TEXT, not a value: policy rules reach both SDKs as bytes off the /policies poll, and some of these divergences live in the PARSE (JS rounds an integer past 2^53 before any serializer runs), so a fixture of in-memory values could not express them. Each case: parse input with the language stdlib JSON parser, canonicalize, and compare bytes to expect. The groups other than agreeing_baseline are divergence classes a differential property test found (scripts/check-canonical-json-parity.mjs, fast-check against hypothesis) and that are now closed; agreeing_baseline pins the shapes that already matched, so a future change to either canonicalizer has to show it moved only what was already broken. A divergence here is a release blocker.",

@@ -1,4 +1,5 @@
 {
+  "claimable": false,
   "schema_version": 1,
   "name": "canary",
   "description": "Cross-SDK canary-leak detection fixtures (honeytoken tripwire). hash_cases pin sha256_hex(canonical token) \u2014 the canonical token is the raw token lower-cased. candidate_cases pin canaryCandidates/canary_candidates: registry-INDEPENDENT extraction of every obsvr-cnry-<32hex> from the raw text AND each de-obfuscation view, each reduced to its canonical-token sha256 and de-duped by hash (first via wins; raw before views). via is one of raw|deobfuscated|percent|hex|base64. The raw token never appears in any output \u2014 only hashes. Both SDK harnesses (sdk/tests/unit/canary-conformance.test.ts, sdk-python/tests/test_canary_conformance.py) must agree; divergence is a release blocker unless recorded in conformance/known-divergences.md. Minting is CSPRNG (not fixture-pinned); these vectors use fixed tokens.",

@@ -1,4 +1,5 @@
 {
+  "claimable": false,
   "schema_version": 1,
   "name": "policy_floor",
   "description": "Cross-SDK anti-tamper policy floor fixtures. decision_cases pin evaluateFloor/evaluate_floor (floor rules coerced to enabled+enforce, so a downgraded floor rule still blocks; empty floor allows). version_cases pin deriveFloorVersion/derive_floor_version (16-hex SHA-256 of the coerced floor projection, sorted by id; 'none' when empty) \u2014 a downgraded floor hashes IDENTICALLY to its enforced form (the downgrade changes nothing the floor evaluates). Floor rules are plain objects (TS uses them as PolicyRule[]; Python constructs PolicyRule(**d)). Both harnesses must agree; divergence is a release blocker unless recorded in known-divergences.md.",

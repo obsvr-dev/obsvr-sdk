@@ -1,4 +1,5 @@
 {
+  "claimable": false,
   "schema_version": 1,
   "name": "external_backend",
   "description": "Cross-SDK fixtures for the inbound OPA/Cedar external policy backend (ADR-4). merge_cases pin the DENY-WINS merge plus fail-closed and shadow (observe-only) semantics: a deny from EITHER the local pipeline or the backend blocks; a backend error/timeout is a deny in enforce mode; shadow mode never blocks. provenance_cases pin the backend identity + effective-policy-hash computation. Both SDK harnesses (sdk/tests/unit/external-backend-conformance.test.ts, sdk-python/tests/test_external_backend_conformance.py) run mergeExternalBackendDecision / merge_external_backend_decision and backendProvenance / backend_provenance over every case and must agree byte for byte. A divergence is a release blocker.",

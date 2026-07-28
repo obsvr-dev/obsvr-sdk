@@ -1,4 +1,5 @@
 {
+  "claimable": false,
   "schema_version": 1,
   "name": "pii_scan",
   "description": "Cross-SDK built-in PII/secret/injection scanner conformance. Each case pins the exact output of runBuiltinPiiScan / run_builtin_pii_scan (detected_types: unique labels in span-start order after confidence-based overlap suppression, with Luhn validation for credit cards) AND of redactBuiltinPii / redact_builtin_pii (typed placeholders; non-validated matches left intact; invisible chars stripped before redaction; fold-aware redaction for NFKC compatibility forms). Both harnesses (sdk/tests/unit/pii-scan-conformance.test.ts, sdk-python/tests/test_pii_scan_conformance.py) must produce the pinned values byte-for-byte. Python patterns compile with re.ASCII so \\d/\\w/\\b match JavaScript's ASCII classes. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",

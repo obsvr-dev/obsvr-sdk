@@ -1,4 +1,5 @@
 {
+  "claimable": false,
   "schema_version": 1,
   "name": "decision_input.canonical",
   "description": "Cross-SDK canonical decision-input document fixture (ADR-2, schema obsvr-decision-input-v1). Both SDKs must build these exact documents from these inputs, serialize them to these exact canonical bytes (RFC 8785-style: UTF-8, sorted keys, no insignificant whitespace, absent optionals omitted), and derive these exact SHA-256 hashes. The hash is the decision_input_hash stamped on every audit event and sealed by the ledger's v7 Merkle leaf, so a divergence here is a release blocker, never a known-divergence. engine_version bumps only when evaluation semantics change.",
