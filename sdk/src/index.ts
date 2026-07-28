@@ -105,6 +105,17 @@ export { verifyAuditChain } from "./governance/verify-chain.js";
 // carry the claim, for callers processing their own exports.
 export { parseAuditGapPrompt } from "./proxy/audit-gap.js";
 export type { AuditGapClaim } from "./proxy/audit-gap.js";
+// CloudEvents v1.0 export: an additive projection for CNCF-ecosystem sinks, so
+// fanning audit events out does not need a bespoke adapter per consumer.
+export {
+  toCloudEvent,
+  serializeCloudEvent,
+  safeSerializeCloudEvent,
+  CLOUDEVENTS_SPEC_VERSION,
+  CLOUDEVENTS_TYPE_PREFIX,
+  CLOUDEVENTS_DATA_SCHEMA,
+} from "./proxy/cloudevents.js";
+export type { CloudEvent } from "./proxy/cloudevents.js";
 // Typed policy-block error: catch this to tell "refused by policy" apart
 // from a provider or transport failure without matching on the message.
 export {

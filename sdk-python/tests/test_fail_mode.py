@@ -202,6 +202,9 @@ class TestRegistryGate:
         "audit_gap.py",
         "auto.py",
         "chain_format.py",
+        # Export serializer, decides nothing: it projects an audit event onto a
+        # CloudEvents envelope. Same exemption reason as tool_content_hash.py.
+        "cloudevents.py",
         "cli_verify.py",
         "config.py",
         "decision_record.py",

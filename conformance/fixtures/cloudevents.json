@@ -1,0 +1,834 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "cloudevents",
+  "description": "CloudEvents v1.0 export conformance. `envelope_cases` pin the projection of an audit event onto a CloudEvents envelope AND its canonical string form, which must be byte-identical across SDKs - the string is the contract, the parsed envelope is carried alongside it so a reader can see the shape without decoding. The mapping choices worth knowing: (source, id) is the audit chain coordinate (sdk_session_id, seq_no), so a sink that dedupes CloudEvents dedupes on the same identity the ledger does; an event with no chain position falls back to request_id and says so rather than generating an id that would make every re-export look new; dataschema is a URN because an https URL would promise something is served there. `time_cases` pin the RFC 3339 formatter on its own, including the inputs where the two runtimes' built-in formatters disagree, which is why each SDK spells the format out instead of calling toISOString / isoformat. Harnesses: sdk/tests/unit/cloudevents-conformance.test.ts, sdk-python/tests/test_cloudevents_conformance.py.",
+  "envelope_cases": [
+    {
+      "id": "full_llm_call",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Every mapped field present: the chain coordinate becomes (source, id), the operation becomes the subject, and both routing extensions are emitted.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "no_chain_position",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "An event that never entered the signed chain has no coordinate: source falls back to the unknown-session URN and id to request_id, and the dedup guarantee is then only as strong as request_id.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "timestamp_sdk": 1700000000123
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "req-1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:unknown",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"req-1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:unknown\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "no_timestamp",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "time is OPTIONAL in the spec; an absent capture time omits the attribute rather than inventing one.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "empty_operation",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "subject MUST be non-empty if present, so an empty operation omits it.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "negative_epoch",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A pre-1970 capture time. Pinned because the two runtimes floor a negative division differently unless both spell the format out.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": -1
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": -1
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "1969-12-31T23:59:59.999Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":-1},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"1969-12-31T23:59:59.999Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "epoch_zero",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 0
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 0
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "1970-01-01T00:00:00.000Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":0},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"1970-01-01T00:00:00.000Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "blocked_call",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A blocked event: the routing extension carries the decision so a sink can fan blocked calls to a different topic without parsing data.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": false,
+        "event_type": "blocked_call",
+        "policy_version": "v1",
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "action_source": "policy_rules",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123,
+        "rule_id": "r-1",
+        "policy_reason": "Blocked by policy"
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "policy_violation",
+            "action_source": "policy_rules",
+            "action_taken": "blocked",
+            "environment": "production",
+            "event_type": "blocked_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_reason": "Blocked by policy",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "rule_id": "r-1",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": false,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "blocked",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.blocked_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"policy_violation\",\"action_source\":\"policy_rules\",\"action_taken\":\"blocked\",\"environment\":\"production\",\"event_type\":\"blocked_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_reason\":\"Blocked by policy\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"rule_id\":\"r-1\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":false,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"blocked\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.blocked_call\"}"
+      }
+    },
+    {
+      "id": "mcp_tool_call",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "mcp",
+        "model": "mcp",
+        "operation": "mcp.tool.call",
+        "source": "mcp_sdk",
+        "prompt": "[MCP Tool call: delete_row({\"id\":\"7\"})]",
+        "response": "hi",
+        "success": true,
+        "event_type": "tool_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "tool_call",
+            "model": "mcp",
+            "operation": "mcp.tool.call",
+            "policy_version": "v1",
+            "prompt": "[MCP Tool call: delete_row({\"id\":\"7\"})]",
+            "provider": "mcp",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "mcp_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "mcp.tool.call",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.tool_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"tool_call\",\"model\":\"mcp\",\"operation\":\"mcp.tool.call\",\"policy_version\":\"v1\",\"prompt\":\"[MCP Tool call: delete_row({\\\"id\\\":\\\"7\\\"})]\",\"provider\":\"mcp\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"mcp_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"mcp.tool.call\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.tool_call\"}"
+      }
+    },
+    {
+      "id": "unicode_content",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "String escaping must agree byte for byte; both canonicalizers emit non-ASCII unescaped.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "ünïcödé — 日本語",
+        "response": "emoji 🎯",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "ünïcödé — 日本語",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "emoji 🎯",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"ünïcödé — 日本語\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"emoji 🎯\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "nested_metadata",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Nested objects, explicit nulls and arrays all survive canonicalization with sorted keys.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "environment": "production",
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123,
+        "metadata": {
+          "z_last": 1,
+          "a_first": true,
+          "nested": {
+            "b": null,
+            "a": [
+              1,
+              2,
+              {
+                "k": "v"
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "environment": "production",
+            "event_type": "llm_call",
+            "metadata": {
+              "a_first": true,
+              "nested": {
+                "a": [
+                  1,
+                  2,
+                  {
+                    "k": "v"
+                  }
+                ],
+                "b": null
+              },
+              "z_last": 1
+            },
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "obsvrenv": "production",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"environment\":\"production\",\"event_type\":\"llm_call\",\"metadata\":{\"a_first\":true,\"nested\":{\"a\":[1,2,{\"k\":\"v\"}],\"b\":null},\"z_last\":1},\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"obsvrenv\":\"production\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    },
+    {
+      "id": "no_environment",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "environment is optional on the wire; the routing extension is omitted rather than emitted empty.",
+      "event": {
+        "request_id": "req-1",
+        "region": "us-east-1",
+        "provider": "openai",
+        "model": "gpt-4",
+        "operation": "chat.completions.create",
+        "source": "openai_sdk",
+        "prompt": "hello",
+        "response": "hi",
+        "success": true,
+        "event_type": "llm_call",
+        "policy_version": "v1",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000123
+      },
+      "expect": {
+        "envelope": {
+          "data": {
+            "action_reason": "none",
+            "action_source": "unknown",
+            "action_taken": "allowed",
+            "event_type": "llm_call",
+            "model": "gpt-4",
+            "operation": "chat.completions.create",
+            "policy_version": "v1",
+            "prompt": "hello",
+            "provider": "openai",
+            "redacted_types": [],
+            "region": "us-east-1",
+            "request_id": "req-1",
+            "response": "hi",
+            "sdk_session_id": "11111111-2222-3333-4444-555555555555",
+            "seq_no": 1,
+            "source": "openai_sdk",
+            "success": true,
+            "timestamp_sdk": 1700000000123
+          },
+          "datacontenttype": "application/json",
+          "dataschema": "urn:obsvr:schema:audit-event:1",
+          "id": "1",
+          "obsvraction": "allowed",
+          "source": "urn:obsvr:session:11111111-2222-3333-4444-555555555555",
+          "specversion": "1.0",
+          "subject": "chat.completions.create",
+          "time": "2023-11-14T22:13:20.123Z",
+          "type": "dev.obsvr.audit.llm_call"
+        },
+        "serialized": "{\"data\":{\"action_reason\":\"none\",\"action_source\":\"unknown\",\"action_taken\":\"allowed\",\"event_type\":\"llm_call\",\"model\":\"gpt-4\",\"operation\":\"chat.completions.create\",\"policy_version\":\"v1\",\"prompt\":\"hello\",\"provider\":\"openai\",\"redacted_types\":[],\"region\":\"us-east-1\",\"request_id\":\"req-1\",\"response\":\"hi\",\"sdk_session_id\":\"11111111-2222-3333-4444-555555555555\",\"seq_no\":1,\"source\":\"openai_sdk\",\"success\":true,\"timestamp_sdk\":1700000000123},\"datacontenttype\":\"application/json\",\"dataschema\":\"urn:obsvr:schema:audit-event:1\",\"id\":\"1\",\"obsvraction\":\"allowed\",\"source\":\"urn:obsvr:session:11111111-2222-3333-4444-555555555555\",\"specversion\":\"1.0\",\"subject\":\"chat.completions.create\",\"time\":\"2023-11-14T22:13:20.123Z\",\"type\":\"dev.obsvr.audit.llm_call\"}"
+      }
+    }
+  ],
+  "time_cases": [
+    {
+      "id": "epoch_zero",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": 0,
+      "expect": "1970-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "one_ms_before_epoch",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": -1,
+      "expect": "1969-12-31T23:59:59.999Z"
+    },
+    {
+      "id": "fractional_ms_truncates",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": 1700000000123.9,
+      "expect": "2023-11-14T22:13:20.123Z"
+    },
+    {
+      "id": "max_representable",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": 8640000000000000,
+      "expect": null
+    },
+    {
+      "id": "past_max_is_omitted",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": 8640000000000001,
+      "expect": null
+    },
+    {
+      "id": "last_four_digit_year",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": 253402300799999,
+      "expect": "9999-12-31T23:59:59.999Z"
+    },
+    {
+      "id": "year_ten_thousand_is_omitted",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": 253402300800000,
+      "expect": null
+    },
+    {
+      "id": "string_is_omitted",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": "1700000000123",
+      "expect": null
+    },
+    {
+      "id": "null_is_omitted",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": null,
+      "expect": null
+    },
+    {
+      "id": "true_is_omitted",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "epoch_ms": true,
+      "expect": null
+    }
+  ]
+}

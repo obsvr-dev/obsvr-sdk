@@ -48,6 +48,13 @@ from .sender import flush  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
 from .audit_gap import parse_audit_gap_prompt  # noqa: F401
 from .verify_chain import ChainVerificationResult, verify_chain  # noqa: F401
+# CloudEvents v1.0 export: an additive projection for CNCF-ecosystem sinks, so
+# fanning audit events out does not need a bespoke adapter per consumer.
+from .cloudevents import (  # noqa: F401
+    safe_serialize_cloud_event,
+    serialize_cloud_event,
+    to_cloud_event,
+)
 # Typed policy-block error: catch this to tell "refused by policy" apart
 # from a provider or transport failure without matching on the message.
 from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
@@ -83,6 +90,9 @@ __all__ = [
     # queue dropped. verify_chain totals them; this identifies which events
     # carry the claim, for callers processing their own exports.
     "parse_audit_gap_prompt",
+    "to_cloud_event",
+    "serialize_cloud_event",
+    "safe_serialize_cloud_event",
     "ObsvrPolicyError",
     "ObsvrUnknownPolicyError",
     "ChainVerificationResult",
