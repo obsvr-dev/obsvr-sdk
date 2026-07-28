@@ -25,6 +25,8 @@ interface PiiScanCase {
   note?: string;
   input: string;
   detected_types: string[];
+  /** Per-match `quoted` flags in span order. Present on the security cases. */
+  quoted?: boolean[];
   redacted: string;
 }
 
@@ -39,6 +41,19 @@ describe('conformance: pii_scan fixtures', () => {
       expect(scan.detected_types).toEqual(c.detected_types);
       expect(scan.pii_detected).toBe(c.detected_types.length > 0);
     });
+
+    if (c.quoted !== undefined) {
+      it(`${c.id} marks the pinned spans quoted`, () => {
+        const scan = runBuiltinPiiScan(c.input);
+        expect(scan.matches.map((m) => m.quoted)).toEqual(c.quoted);
+        // A quoted match is a DOWNGRADE, never a suppression: the detection
+        // still has to be reported.
+        if (c.quoted!.some(Boolean)) {
+          expect(scan.pii_detected).toBe(true);
+          expect(scan.detected_types).toEqual(c.detected_types);
+        }
+      });
+    }
 
     it(`${c.id} redacts to the pinned string`, () => {
       expect(redactBuiltinPii(c.input)).toBe(c.redacted);

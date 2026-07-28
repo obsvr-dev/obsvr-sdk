@@ -26,6 +26,20 @@ def test_detected_types_pinned(case):
     assert scan["pii_detected"] is (len(case["detected_types"]) > 0)
 
 
+_QUOTED_CASES = [c for c in FIXTURE["cases"] if "quoted" in c]
+
+
+@pytest.mark.parametrize("case", _QUOTED_CASES, ids=[c["id"] for c in _QUOTED_CASES])
+def test_quoted_flags_pinned(case):
+    scan = run_builtin_pii_scan(case["input"])
+    assert [m["quoted"] for m in scan["matches"]] == case["quoted"]
+    # A quoted match is a DOWNGRADE, never a suppression: the detection still
+    # has to be reported.
+    if any(case["quoted"]):
+        assert scan["pii_detected"] is True
+        assert scan["detected_types"] == case["detected_types"]
+
+
 @pytest.mark.parametrize("case", FIXTURE["cases"], ids=[c["id"] for c in FIXTURE["cases"]])
 def test_redaction_pinned(case):
     assert redact_builtin_pii(case["input"]) == case["redacted"]
