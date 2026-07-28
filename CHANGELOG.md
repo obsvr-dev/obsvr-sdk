@@ -33,6 +33,27 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **Approval grants are bound to the action they were granted for, and
+  re-checked before the call goes out.** A grant may now carry an
+  `action_hash` — a canonical digest of the rule, the rule's definition hash,
+  the action name, the amount, the caller and target namespaces, and the
+  subject — and a grant carrying one satisfies only a call that hashes the
+  same. Previously a grant was scoped to a rule id, so one human approving a
+  small transfer left a live grant that satisfied a large one, because both
+  tripped the same rule. **Not breaking for existing deployments:** each pin
+  only narrows, so a grant with no `action_hash` still satisfies exactly as
+  before, and an issuer can start binding without voiding outstanding grants.
+  The digest deliberately excludes the free-text prompt (an approved request
+  and its retry rarely reproduce it byte for byte). Separately, a grant is now
+  re-checked after every layer that can delay a call — the customer hook's
+  timeout budget, an external policy backend — so **a grant revoked or expired
+  mid-call now blocks where it previously proceeded**, reported as
+  `approval_expired_before_execution`. Two related fixes: the framework-
+  integration path could reach `approval_required` and then file no approval
+  request, leaving the block permanent rather than pending — it now files one;
+  and the request carries the action hash so the granting party can mint a
+  bound grant at all. Pinned by `conformance/fixtures/approvals.json`.
+  ([`052702e`](https://github.com/obsvr-dev/obsvr-sdk/commit/052702e))
 - **BREAKING: an MCP tool that declares `destructiveHint: true` is now in the
   destructive-capability set by default.** With `sessionTaint` enabled, a
   tainted session's calls to destructive tools are refused even under the
@@ -124,6 +145,21 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **CloudEvents v1.0 export.** `toCloudEvent` / `to_cloud_event` project an
+  audit event onto a CloudEvents envelope, and `serializeCloudEvent` /
+  `serialize_cloud_event` produce its canonical string form, byte-identical
+  across both SDKs and pinned by `conformance/fixtures/cloudevents.json`. The
+  envelope's dedup key `(source, id)` is mapped onto the audit chain
+  coordinate `(sdk_session_id, seq_no)`, so a CNCF-ecosystem sink dedupes on
+  the same identity the ledger does; an event that never entered the chain
+  falls back to `request_id`. `datacontenttype` is `application/json`,
+  `dataschema` is `urn:obsvr:schema:audit-event:1`, and two extension
+  attributes (`obsvraction`, `obsvrenv`) let a sink route without opening the
+  payload. Purely additive: nothing calls it unless you do, and the event is
+  carried verbatim as `data`. The serializer refuses values the two runtimes
+  cannot render identically rather than emit bytes that quietly differ; use
+  `safeSerializeCloudEvent` / `safe_serialize_cloud_event` to skip those.
+  ([`fdb0d2e`](https://github.com/obsvr-dev/obsvr-sdk/commit/fdb0d2e))
 - **Python agent-run controls: loop detection and delegation tracking.**
   `obsvr.LoopDetector` / `obsvr.DelegationTracker` (and their `create_*`
   factories) are the twins of the TypeScript controls, with identical
