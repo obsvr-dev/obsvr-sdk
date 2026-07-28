@@ -33,6 +33,35 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **BREAKING: `model_gate` and `environment_gate` rules now fire on the
+  framework-integration path.** `applyPreCallPolicy` built the customer-rules
+  evaluation context without the request model or the environment, so a rule of
+  either type could not evaluate there and silently permitted every call —
+  while the same rule enforced through `wrap()` and through the Python SDK. The
+  context is now the one the anti-tamper floor already got on that path, which
+  is also the one the proxy wrapper and Python build. **Migration: before
+  upgrading, review your `model_gate` and `environment_gate` rules.** If any of
+  your traffic reaches the SDK through an MCP, Bedrock, Vertex, Vercel AI,
+  Cloudflare, Azure OpenAI, Together, or OpenAI-compatible integration, those
+  rules were not enforcing on it and will start to. A tool boundary has no
+  request model, so a `model_gate` rule keyed on `allowed_models` /
+  `denied_models` still cannot evaluate there and continues to permit; one
+  keyed on `allowed_providers` evaluates everywhere. Pinned by the new
+  `conformance/fixtures/eval_context.json`, whose ten cases are asserted
+  through both TypeScript entry points and through Python's shared pre-call.
+  ([`fbbb76a`](https://github.com/obsvr-dev/obsvr-sdk/commit/fbbb76a))
+- **BREAKING: a rule with `action: "redact"` now redacts on the `wrap()`
+  path.** The wrapper's rules step acted only on a `block` verdict, so a redact
+  rule forwarded the prompt unmodified and recorded `action_taken: "allowed"` —
+  an audit record contradicting the policy in force. The same rule already
+  redacted through every framework integration and through Python. **Migration:
+  review any rule declaring `action: "redact"`.** Matching calls now have the
+  SDK's structure-aware PII redaction applied to the outgoing request and are
+  recorded `redacted` with the deciding `rule_id`; if the redaction cannot be
+  applied the call is blocked rather than sent, regardless of `failMode`. A
+  rule that needs to suppress non-PII content should declare `action: "block"`
+  — `redact` has always meant PII redaction on the other paths.
+  ([`aae1240`](https://github.com/obsvr-dev/obsvr-sdk/commit/aae1240))
 - **Rules claiming the SDK's verdict namespace are rejected.** A policy rule
   whose `id` starts with `sdk:` or `backend:` is now invalid — those prefixes
   identify verdicts minted by the SDK's own governance layers, and an
