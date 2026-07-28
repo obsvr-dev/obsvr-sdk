@@ -48,6 +48,10 @@ from .sender import flush  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
 from .audit_gap import parse_audit_gap_prompt  # noqa: F401
 from .verify_chain import ChainVerificationResult, verify_chain  # noqa: F401
+# Layered call cost: a caller estimate, an operator-declared override, and a
+# metered figure from real usage at operator-declared rates - all three kept,
+# because the gap between estimate and correction is the auditable part.
+from .cost import price_tokens, resolve_call_cost  # noqa: F401
 # CloudEvents v1.0 export: an additive projection for CNCF-ecosystem sinks, so
 # fanning audit events out does not need a bespoke adapter per consumer.
 from .cloudevents import (  # noqa: F401
@@ -93,6 +97,8 @@ __all__ = [
     "to_cloud_event",
     "serialize_cloud_event",
     "safe_serialize_cloud_event",
+    "resolve_call_cost",
+    "price_tokens",
     "ObsvrPolicyError",
     "ObsvrUnknownPolicyError",
     "ChainVerificationResult",

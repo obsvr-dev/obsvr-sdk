@@ -124,6 +124,11 @@ export {
 } from "./policy/policy-error.js";
 export type { ObsvrPolicyDecision } from "./policy/policy-error.js";
 export { checkQuota, incrementQuota, resetQuota, getQuotaStatus } from "./governance/quota.js";
+// Layered call cost: a caller estimate, an operator-declared override, and a
+// metered figure from real usage at operator-declared rates - all three kept,
+// because the gap between estimate and correction is the auditable part.
+export { resolveCallCost, priceTokens } from "./governance/cost.js";
+export type { CostPolicyConfig, CostRate, ResolvedCost } from "./governance/cost.js";
 export { createGovernanceServer } from "./governance/server.js";
 
 // Re-export MCP client governance (also available as `@obsvr/sdk/mcp`)

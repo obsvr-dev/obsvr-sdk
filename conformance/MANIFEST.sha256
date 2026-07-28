@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 1626c6ffa5b5c2b38c9ef2e6437625ce9bfb23231371cbb72c41001db2093dfe
+# corpus_sha256 = 4a7513600c649ecc436d168c2db3b76f36db942a2b4a5e7644de4da54362850f
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -23,6 +23,7 @@
 524699e65e30f92989511bc20b341135747a21ee61a59bf1243295507a8a85f3  fixtures/canary.json
 8897a8358801783b77db8df72915a3737df6f569d7357aceeedbfb6a9774d0d2  fixtures/canonical_json.json
 fa3e058cb2956888d2cc1938502ad1d2f16b96994efa6e17ef27082aaea45fc8  fixtures/cloudevents.json
+cbf092cf8421023be96908e93eb8b01752f7c1161be19b716c6b496d20dde636  fixtures/cost.json
 d77658342742e521477344e4ca363aefc4ec7989614fc8318228abd3944e3cf6  fixtures/decision_input.json
 933e2c94f21539865fc40dc5ad92a4670b0aa172fb9d6b67962dc54f4b8e27ef  fixtures/deobfuscation.json
 a31dd90a54ef9844b6c980ea86756ae1e8b6832b422f0bc72268fbf9294afdd2  fixtures/effective_policy.json

@@ -1,0 +1,682 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "cost",
+  "description": "Layered call cost. Three layers, each overriding the one before and ALL retained: a caller/tool estimate, an operator-declared cost that overrides it (the caller is the party being governed, so its claim about its own cost is not evidence about itself), and a metered figure from provider-reported usage priced at the operator's own rates. `resolve_cases` pin the resolution, `price_cases` pin the rate arithmetic on its own, `metadata_cases` pin what reaches the event. Two design facts the cases exist to hold: every amount is an INTEGER count of millionths of a currency unit, because money in binary floating point does not agree between two runtimes at the edges and a sealed amount that differs in the last place is not evidence; and rounding is half-up applied ONCE on the final division, spelled out rather than delegated, because Python's round() is banker's rounding and JavaScript's Math.round is not. No provider price list ships in this package - a stale rate baked into a release produces a sealed wrong number, and sealed evidence cannot be reissued. Harnesses: sdk/tests/unit/cost-conformance.test.ts, sdk-python/tests/test_cost_conformance.py.",
+  "resolve_cases": [
+    {
+      "id": "nothing_configured",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "No policy and no caller claim: the result is empty. An unknown cost is absent, never zero - a cost of zero and an unknown cost are different facts.",
+      "inputs": {},
+      "expect": {}
+    },
+    {
+      "id": "caller_estimate_only",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Layer 1 alone.",
+      "inputs": {
+        "caller_estimate_micros": 500
+      },
+      "expect": {
+        "estimate_micros": 500,
+        "estimate_source": "caller"
+      }
+    },
+    {
+      "id": "policy_overrides_caller",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Layer 2 beats layer 1: the caller is the party being governed, so its own claim about its cost is not evidence about itself.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          },
+          "declared": {
+            "wire_transfer": 250000,
+            "gpt-4": 1000
+          }
+        },
+        "action_name": "wire_transfer",
+        "caller_estimate_micros": 500
+      },
+      "expect": {
+        "currency": "USD",
+        "estimate_micros": 250000,
+        "estimate_source": "policy"
+      }
+    },
+    {
+      "id": "policy_declared_by_model_when_no_action",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "The declared table is matched against the action name first, then the model.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          },
+          "declared": {
+            "wire_transfer": 250000,
+            "gpt-4": 1000
+          }
+        },
+        "model": "gpt-4o-mini",
+        "caller_estimate_micros": 500
+      },
+      "expect": {
+        "currency": "USD",
+        "estimate_micros": 1000,
+        "estimate_source": "policy"
+      }
+    },
+    {
+      "id": "metered_only",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Layer 3 alone: usage priced at the operator's rates, with no estimate to compare against.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          }
+        },
+        "model": "gpt-4o",
+        "input_tokens": 1000,
+        "output_tokens": 500
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 7500
+      }
+    },
+    {
+      "id": "all_three_layers",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "THE case: an estimate, a metered correction, and the signed gap between them - which is the quantity that makes a persistently-wrong estimator visible.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          },
+          "declared": {
+            "wire_transfer": 250000,
+            "gpt-4": 1000
+          }
+        },
+        "model": "gpt-4o",
+        "action_name": "wire_transfer",
+        "caller_estimate_micros": 500,
+        "input_tokens": 1000,
+        "output_tokens": 500
+      },
+      "expect": {
+        "currency": "USD",
+        "estimate_micros": 250000,
+        "estimate_source": "policy",
+        "metered_micros": 7500,
+        "delta_micros": -242500
+      }
+    },
+    {
+      "id": "longest_prefix_wins",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "gpt-4o matches both 'gpt-4' and 'gpt-4o'; the longer key is chosen, and it is unique because two distinct keys cannot both be the longest prefix of one string.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          }
+        },
+        "model": "gpt-4o",
+        "input_tokens": 1000,
+        "output_tokens": 1000
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 12500
+      }
+    },
+    {
+      "id": "shorter_prefix_when_no_longer_match",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          }
+        },
+        "model": "gpt-4-turbo",
+        "input_tokens": 1000,
+        "output_tokens": 1000
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 90000
+      }
+    },
+    {
+      "id": "unknown_model_has_no_rate",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "No matching rate means no metered figure, rather than a guessed one.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          },
+          "declared": {
+            "wire_transfer": 250000,
+            "gpt-4": 1000
+          }
+        },
+        "model": "some-other-model",
+        "input_tokens": 1000,
+        "output_tokens": 1000,
+        "caller_estimate_micros": 500
+      },
+      "expect": {
+        "currency": "USD",
+        "estimate_micros": 500,
+        "estimate_source": "caller"
+      }
+    },
+    {
+      "id": "input_tokens_only",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A rate applies to whichever usage half is present; the missing half contributes nothing rather than zero-priced tokens.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          }
+        },
+        "model": "claude",
+        "input_tokens": 1234
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 3702
+      }
+    },
+    {
+      "id": "rounding_is_half_up",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "1 token at 30000 micros/1k is 30.0 exactly; 1 at 3000 is 3.0; the pinned cases below carry the boundary.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "m": {
+              "input_micros_per_1k": 1
+            }
+          }
+        },
+        "model": "m",
+        "input_tokens": 500
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 1
+      }
+    },
+    {
+      "id": "rounding_boundary_below_half",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "499 * 1 = 499; (499+500)//1000 = 0. Half-up rounds .4999 down.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "m": {
+              "input_micros_per_1k": 1
+            }
+          }
+        },
+        "model": "m",
+        "input_tokens": 499
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 0
+      }
+    },
+    {
+      "id": "rounding_boundary_above_half",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "m": {
+              "input_micros_per_1k": 1
+            }
+          }
+        },
+        "model": "m",
+        "input_tokens": 501
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 1
+      }
+    },
+    {
+      "id": "zero_tokens_price_zero",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Zero usage is a known cost of zero, which is different from unknown and is recorded as such.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          }
+        },
+        "model": "gpt-4o",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "expect": {
+        "currency": "USD",
+        "metered_micros": 0
+      }
+    },
+    {
+      "id": "zero_estimate_is_kept",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Zero is a value, not an absence.",
+      "inputs": {
+        "caller_estimate_micros": 0
+      },
+      "expect": {
+        "estimate_micros": 0,
+        "estimate_source": "caller"
+      }
+    },
+    {
+      "id": "negative_caller_estimate_rejected",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A negative cost is not a cost. Rejected rather than clamped, so the record does not carry a number nobody supplied.",
+      "inputs": {
+        "caller_estimate_micros": -5
+      },
+      "expect": {}
+    },
+    {
+      "id": "fractional_caller_estimate_rejected",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Amounts are integer micro-units; a fraction of a micro-unit is not representable and is refused rather than rounded silently.",
+      "inputs": {
+        "caller_estimate_micros": 1.5
+      },
+      "expect": {}
+    },
+    {
+      "id": "string_caller_estimate_rejected",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "inputs": {
+        "caller_estimate_micros": "500"
+      },
+      "expect": {}
+    },
+    {
+      "id": "metered_below_estimate_gives_negative_delta",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "The gap is SIGNED: an over-estimate is as much a finding as an under-estimate.",
+      "inputs": {
+        "policy": {
+          "currency": "USD",
+          "rates": {
+            "gpt-4": {
+              "input_micros_per_1k": 30000,
+              "output_micros_per_1k": 60000
+            },
+            "gpt-4o": {
+              "input_micros_per_1k": 2500,
+              "output_micros_per_1k": 10000
+            },
+            "claude": {
+              "input_micros_per_1k": 3000,
+              "output_micros_per_1k": 15000
+            }
+          },
+          "declared": {
+            "wire_transfer": 250000,
+            "gpt-4": 1000
+          }
+        },
+        "model": "gpt-4o",
+        "action_name": "wire_transfer",
+        "input_tokens": 10,
+        "output_tokens": 10
+      },
+      "expect": {
+        "currency": "USD",
+        "estimate_micros": 250000,
+        "estimate_source": "policy",
+        "metered_micros": 125,
+        "delta_micros": -249875
+      }
+    },
+    {
+      "id": "currency_only_policy_resolves_nothing",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A currency is a unit with no value; on its own it is not a cost.",
+      "inputs": {
+        "policy": {
+          "currency": "USD"
+        },
+        "model": "gpt-4o",
+        "input_tokens": 100
+      },
+      "expect": {
+        "currency": "USD"
+      }
+    }
+  ],
+  "price_cases": [
+    {
+      "id": "price_0_at_30000",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 0,
+      "micros_per_1k": 30000,
+      "expect": 0
+    },
+    {
+      "id": "price_1_at_30000",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 1,
+      "micros_per_1k": 30000,
+      "expect": 30
+    },
+    {
+      "id": "price_500_at_1",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 500,
+      "micros_per_1k": 1,
+      "expect": 1
+    },
+    {
+      "id": "price_499_at_1",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 499,
+      "micros_per_1k": 1,
+      "expect": 0
+    },
+    {
+      "id": "price_501_at_1",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 501,
+      "micros_per_1k": 1,
+      "expect": 1
+    },
+    {
+      "id": "price_1000_at_30000",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 1000,
+      "micros_per_1k": 30000,
+      "expect": 30000
+    },
+    {
+      "id": "price_1500_at_30000",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 1500,
+      "micros_per_1k": 30000,
+      "expect": 45000
+    },
+    {
+      "id": "price_1_at_1",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 1,
+      "micros_per_1k": 1,
+      "expect": 0
+    },
+    {
+      "id": "price_2_at_1",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 2,
+      "micros_per_1k": 1,
+      "expect": 0
+    },
+    {
+      "id": "price_999999_at_123",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "tokens": 999999,
+      "micros_per_1k": 123,
+      "expect": 123000
+    }
+  ],
+  "metadata_cases": [
+    {
+      "id": "empty_cost_has_no_metadata",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "cost": {},
+      "expect": {}
+    },
+    {
+      "id": "currency_alone_has_no_metadata",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "cost": {
+        "currency": "USD"
+      },
+      "expect": {}
+    },
+    {
+      "id": "a_resolved_cost_rides_reserved_metadata",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "cost": {
+        "currency": "USD",
+        "metered_micros": 40
+      },
+      "expect": {
+        "obsvr_cost": {
+          "currency": "USD",
+          "metered_micros": 40
+        }
+      }
+    }
+  ]
+}

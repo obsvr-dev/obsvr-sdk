@@ -128,6 +128,12 @@ class ResolvedConfig:
     # subsequent egress is escalated. Keyed on metadata.user_id ?? session_id
     # ?? tenant_id. action defaults to "flag". Off by default.
     session_taint: Optional[Dict[str, Any]] = None
+    # Layered call cost (see ObsvrConfig.costPolicy in the TS types): a caller
+    # estimate, an operator-declared override, and a metered figure from real
+    # usage at operator-declared rates - all three retained, because the gap
+    # between estimate and correction is the auditable part. No provider price
+    # list ships here; a stale rate would produce a SEALED wrong number.
+    cost_policy: Optional[Dict[str, Any]] = None
     # De-obfuscation scan views (server-side normalizer mirror): {"enabled": bool}.
     # When enabled, the builtin scanners also see base64/hex/percent-decoded
     # and invisible-stripped/confusable-folded/HTML-comment-stripped views of
@@ -179,6 +185,7 @@ def init(
     presidio_anonymizer_url: Optional[str] = None,
     multi_turn_injection: Optional[Dict[str, Any]] = None,
     session_taint: Optional[Dict[str, Any]] = None,
+    cost_policy: Optional[Dict[str, Any]] = None,
     deobfuscation: Optional[Dict[str, Any]] = None,
     otel: Optional[Dict[str, Any]] = None,
     external_policy_backend: Optional[Dict[str, Any]] = None,
@@ -338,6 +345,7 @@ def init(
         presidio_anonymizer_url=presidio_anonymizer_url,
         multi_turn_injection=multi_turn_injection,
         session_taint=session_taint,
+        cost_policy=cost_policy,
         deobfuscation=deobfuscation,
         otel=otel,
         external_policy_backend=external_policy_backend,

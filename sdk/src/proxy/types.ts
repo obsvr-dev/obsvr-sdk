@@ -9,6 +9,7 @@
 import type { PolicyHook, PostCallHook } from '../policy/hook.js';
 import type { PolicyRule } from '../policy/rules.js';
 import type { ExternalPolicyBackendConfig, ExternalBackendRecord } from '../policy/external-backend.js';
+import type { CostPolicyConfig } from '../governance/cost.js';
 
 // Re-export PolicyHook so callers only need one import
 export type { PolicyHook, PolicyDecision, PostCallHook } from '../policy/hook.js';
@@ -203,6 +204,26 @@ export interface ObsvrConfig {
      * `destructiveTools` alone. @default true */
     honorDestructiveHints?: boolean;
   };
+
+  /**
+   * Layered call cost. Three layers, each overriding the one before it and all
+   * three RETAINED on the record: what the caller said a call would cost, what
+   * you declare it costs (which overrides the caller, since the caller is the
+   * party being governed), and what it actually cost — provider-reported usage
+   * priced at YOUR rates. The gap between the estimate and the metered figure
+   * is the auditable quantity: an estimator that is persistently wrong is only
+   * visible if both numbers survive.
+   *
+   * No provider price list ships in this package. Prices change on the
+   * vendor's schedule, and a stale rate baked into a release produces a SEALED
+   * wrong number, which is worse than none because sealed evidence cannot be
+   * reissued. Declare your own rates here.
+   *
+   * Every amount is an INTEGER count of millionths of a currency unit, because
+   * money in binary floating point does not agree between two runtimes at the
+   * edges. Off by default; resolving costs nothing when unset.
+   */
+  costPolicy?: CostPolicyConfig;
 
   /**
    * De-obfuscation scan views (server-side normalizer mirror): when enabled, the builtin
@@ -433,6 +454,9 @@ export interface LLMAuditInitConfig {
     honorDestructiveHints?: boolean;
   };
 
+  /** Layered call cost (see ObsvrConfig.costPolicy). */
+  costPolicy?: CostPolicyConfig;
+
   /** De-obfuscation scan views (see ObsvrConfig.deobfuscation). */
   deobfuscation?: { enabled?: boolean };
 
@@ -572,6 +596,8 @@ export interface ResolvedConfig {
     /** See ObsvrConfig.sessionTaint.honorDestructiveHints. @default true */
     honorDestructiveHints?: boolean;
   };
+  /** Layered call cost (see ObsvrConfig.costPolicy). */
+  costPolicy?: CostPolicyConfig;
   /** De-obfuscation scan views (server-side normalizer mirror), detection-only. */
   deobfuscation?: { enabled?: boolean };
   /** Mirror audit events as OTel spans (optional @opentelemetry/api peer). */

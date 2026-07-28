@@ -211,6 +211,11 @@ class TestRegistryGate:
         "cloudevents.py",
         "cli_verify.py",
         "config.py",
+        # Layered cost resolution: arithmetic over numbers the caller already
+        # holds, producing a record field. Decides nothing - a cost never
+        # blocks a call on its own; a quota rule does. Same exemption reason as
+        # tool_content_hash.py.
+        "cost.py",
         "decision_record.py",
         "errors.py",
         "escrow.py",

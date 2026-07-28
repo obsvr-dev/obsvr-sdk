@@ -64,6 +64,7 @@ import {
 import type { ExternalBackendRecord } from "../policy/external-backend.js";
 import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js";
 import { requestApproval, revalidateApproval } from "../policy/approvals.js";
+import { resolveCallCost, resolveCostPolicy, costMetadata } from "../governance/cost.js";
 import { recordTokenUsage } from "../governance/quota.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
 import { filterArgs } from "./filters/filter.js";
@@ -694,7 +695,41 @@ function buildAuditEvent(
     recordTokenUsageForRules(config, event);
   }
 
+  // Layered cost: the caller's estimate, the operator's declared override, and
+  // the metered figure from real usage at the operator's own rates - all three
+  // kept, because the gap between the estimate and the correction is the part
+  // an auditor can act on. Stamped LAST so a caller metadata key collision
+  // cannot overwrite it, and only when a cost policy is configured (absent
+  // policy leaves existing events byte-identical).
+  stampCost(config, event);
+
   return event;
+}
+
+/**
+ * Resolve and stamp this call's layered cost onto the event's reserved
+ * telemetry metadata. No-op unless a cost policy is configured.
+ *
+ * The caller's own estimate is read from `metadata.cost_estimate_micros` -
+ * the channel a tool or framework already has - and is the WEAKEST layer: an
+ * operator-declared cost for the same action or model replaces it, because a
+ * cost claimed by the party being governed is not evidence about that party.
+ */
+function stampCost(config: ResolvedConfig, event: AuditEvent): void {
+  const policy = resolveCostPolicy(config);
+  if (!policy) return;
+  const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+  const cost = resolveCallCost({
+    policy,
+    model: event.model_resolved ?? event.model,
+    actionName: event.action_name,
+    callerEstimateMicros: metadata.cost_estimate_micros,
+    inputTokens: event.input_tokens,
+    outputTokens: event.output_tokens,
+  });
+  const fragment = costMetadata(cost);
+  if (Object.keys(fragment).length === 0) return;
+  event.metadata = { ...metadata, ...fragment };
 }
 
 /**
