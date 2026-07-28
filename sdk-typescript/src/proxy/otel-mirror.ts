@@ -78,6 +78,14 @@ export function mirrorToOtel(config: ResolvedConfig, event: AuditEvent): void {
       attributes: {
         "gen_ai.system": event.provider ?? "unknown",
         "gen_ai.request.model": event.model ?? "unknown",
+        // These two `?? 0` are the last fabricated zeros in the SDK, and they
+        // are deliberate. conformance/fixtures/otel_attributes.json pins this
+        // span's attribute key set EXACTLY, in both languages — omitting a key
+        // when the count is unknown is a parity break, not a local fix. The
+        // audit EVENT is honest (an unread count is absent there); only the
+        // mirrored span flattens unknown to zero. Changing that is a
+        // coordinated corpus change in both SDKs plus every OTel consumer
+        // downstream, so it is proposed rather than done here.
         "gen_ai.usage.input_tokens": event.input_tokens ?? 0,
         "gen_ai.usage.output_tokens": event.output_tokens ?? 0,
         "obsvr.event_type": event.event_type ?? "llm_call",

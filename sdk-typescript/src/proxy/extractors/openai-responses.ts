@@ -11,6 +11,7 @@
  */
 
 import type { TokenUsage } from "./types.js";
+import { readTokenUsage } from "./token-usage.js";
 
 /** One content part inside a Responses input/output message item. */
 export interface OpenAIResponsesContentPart {
@@ -158,14 +159,7 @@ export function extractModel(request: OpenAIResponsesRequest): string {
 export function extractTokenUsage(
   response: OpenAIResponsesResponse,
 ): TokenUsage | undefined {
-  if (!response.usage) {
-    return undefined;
-  }
-  return {
-    input_tokens: response.usage.input_tokens || 0,
-    output_tokens: response.usage.output_tokens || 0,
-    total_tokens: response.usage.total_tokens || 0,
-  };
+  return readTokenUsage(response?.usage);
 }
 
 /**

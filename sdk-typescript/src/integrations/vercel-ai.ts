@@ -47,6 +47,10 @@ import {
   outboundRedactionBlockedCompliance,
 } from "./core.js";
 import { applyOutboundRedaction } from "../policy/detector-guard.js";
+import {
+  normalizeTokenUsage,
+  type UsageShape,
+} from "../proxy/extractors/token-usage.js";
 
 const SOURCE = "vercel_ai";
 const OPERATION = "generate";
@@ -169,24 +173,55 @@ function extractResultText(result: unknown): string {
   return "";
 }
 
+/**
+ * Token counts off an AI SDK result, across every language-model spec version.
+ *
+ * This is the ONE site in the SDK that reads an SDK-versioned framework object
+ * rather than a provider wire format, and it is the one that broke. The spec
+ * has changed the shape of this object three times:
+ *
+ *   v1   usage.promptTokens / completionTokens / totalTokens   (numbers)
+ *   v2   usage.inputTokens  / outputTokens     / totalTokens   (numbers)
+ *   v3+  usage.inputTokens  = { total, noCache, cacheRead, cacheWrite }
+ *        usage.outputTokens = { total, text, reasoning }
+ *        totalTokens REMOVED
+ *
+ * v3 kept the field NAMES and changed their TYPE, so every existence check
+ * still passed while `typeof v === "number"` answered "not a number" for both
+ * counts — and the total, being derived from them, went with it. Nothing threw;
+ * the events kept arriving with prompt, response and resolved model intact, and
+ * only the numbers disappeared.
+ *
+ * Delegating to the shared normaliser means the nested form is understood here
+ * the same way it would be anywhere else, and a shape this SDK has never seen
+ * is reported as unreadable instead of silently counting as zero.
+ */
 function extractResultUsage(result: unknown): {
   input?: number;
   output?: number;
   total?: number;
+  shape: UsageShape;
 } {
-  if (!result || typeof result !== "object") return {};
-  const usage = (result as Record<string, unknown>).usage as
-    | Record<string, unknown>
-    | undefined;
-  if (!usage) return {};
-  const num = (v: unknown): number | undefined =>
-    typeof v === "number" && Number.isFinite(v) ? v : undefined;
-  const input = num(usage.inputTokens) ?? num(usage.promptTokens);
-  const output = num(usage.outputTokens) ?? num(usage.completionTokens);
-  const total =
-    num(usage.totalTokens) ??
-    (input !== undefined && output !== undefined ? input + output : undefined);
-  return { input, output, total };
+  if (!result || typeof result !== "object") return { shape: "absent" };
+  const { usage, shape } = normalizeTokenUsage(
+    (result as Record<string, unknown>).usage,
+  );
+  return {
+    input: usage?.input_tokens,
+    output: usage?.output_tokens,
+    total: usage?.total_tokens,
+    shape,
+  };
+}
+
+/**
+ * Reserved telemetry for a usage payload obsvr could not read, and nothing at
+ * all otherwise. Stamped only for `unrecognized` so the normal path adds no
+ * bytes to the wire: an absent count with no reason beside it means the model
+ * reported nothing, and an absent count WITH this reason means the shape moved.
+ */
+function usageShapeTelemetry(shape: UsageShape) {
+  return shape === "unrecognized" ? { usage_shape: shape } : undefined;
 }
 
 function modelInfo(model: ModelLike | undefined): {
@@ -368,6 +403,7 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
         inputTokens: usage.input,
         outputTokens: usage.output,
         totalTokens: usage.total,
+        telemetry: usageShapeTelemetry(usage.shape),
         latencyMs: Math.round(performance.now() - startTime),
         options: opts,
         compliance,
@@ -421,7 +457,12 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
 
       let accumulated = "";
       let firstChunkTime: number | null = null;
-      let usage: { input?: number; output?: number; total?: number } = {};
+      let usage: {
+        input?: number;
+        output?: number;
+        total?: number;
+        shape: UsageShape;
+      } = { shape: "absent" };
       // Resolved model arrives on the V2 `response-metadata` stream part.
       let modelResolved: string | undefined;
 
@@ -467,6 +508,7 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
               inputTokens: usage.input,
               outputTokens: usage.output,
               totalTokens: usage.total,
+              telemetry: usageShapeTelemetry(usage.shape),
               latencyMs: Math.round(performance.now() - startTime),
               timeToFirstTokenMs:
                 firstChunkTime !== null

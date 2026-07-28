@@ -14,6 +14,7 @@ import type {
   OpenAIContentPart,
   TokenUsage,
 } from "./types.js";
+import { readTokenUsage } from "./token-usage.js";
 
 /**
  * Extract text content from a message's content field
@@ -151,15 +152,7 @@ export function isStreamingRequest(request: OpenAIChatRequest): boolean {
  * Returns undefined if usage data is not available
  */
 export function extractTokenUsage(response: OpenAIChatResponse): TokenUsage | undefined {
-  if (!response.usage) {
-    return undefined;
-  }
-
-  return {
-    input_tokens: response.usage.prompt_tokens || 0,
-    output_tokens: response.usage.completion_tokens || 0,
-    total_tokens: response.usage.total_tokens || 0,
-  };
+  return readTokenUsage(response?.usage);
 }
 
 /**
@@ -186,11 +179,7 @@ export function accumulateOpenAIStream(chunks: unknown[]): {
     }
     // Usage present in final chunk when stream_options.include_usage is true
     if (chunk.usage) {
-      usage = {
-        input_tokens: (chunk.usage.prompt_tokens as number) ?? 0,
-        output_tokens: (chunk.usage.completion_tokens as number) ?? 0,
-        total_tokens: (chunk.usage.total_tokens as number) ?? 0,
-      };
+      usage = readTokenUsage(chunk.usage) ?? usage;
     }
   }
 

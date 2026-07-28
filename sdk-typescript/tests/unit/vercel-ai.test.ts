@@ -57,6 +57,83 @@ describe('obsvrMiddleware', () => {
     expect(e.total_tokens).toBe(12);
   });
 
+  it('wrapGenerate reads spec-v3 NESTED usage (the shape that silently emptied the counts)', async () => {
+    // Measured off ai@7.0.41. `inputTokens`/`outputTokens` kept their NAMES and
+    // became objects, and `totalTokens` was deleted outright — so every
+    // `typeof v === "number"` guard answered "no tokens" while the event kept
+    // arriving with prompt, response and resolved model intact. Nothing threw
+    // and nothing was logged; only the numbers money depends on went missing.
+    init({ api_key: 'test', sample_rate: 1 });
+    const mw = obsvrMiddleware();
+    const params = userParams('Hi there');
+
+    const transformed = await mw.transformParams({ params, model: MODEL });
+    await mw.wrapGenerate({
+      doGenerate: async () => ({
+        content: [{ type: 'text', text: 'Hello back' }],
+        usage: {
+          inputTokens: { total: 9, noCache: 9, cacheRead: 0, cacheWrite: 0 },
+          outputTokens: { total: 3, text: 3, reasoning: 0 },
+          raw: { input_tokens: 9, output_tokens: 3 },
+        },
+      }),
+      params: transformed,
+      model: MODEL,
+    });
+
+    await waitForEvents(1);
+    const e = sentEvents[0];
+    expect(e.input_tokens).toBe(9);
+    expect(e.output_tokens).toBe(3);
+    // Derived from the two counts, since the spec no longer states a total.
+    expect(e.total_tokens).toBe(12);
+  });
+
+  it('wrapGenerate leaves counts ABSENT and says why when the usage shape is unknown', async () => {
+    init({ api_key: 'test', sample_rate: 1 });
+    const mw = obsvrMiddleware();
+    const params = userParams('Hi there');
+
+    const transformed = await mw.transformParams({ params, model: MODEL });
+    await mw.wrapGenerate({
+      doGenerate: async () => ({
+        text: 'Hello back',
+        usage: { tokens_consumed: 42 },
+      }),
+      params: transformed,
+      model: MODEL,
+    });
+
+    await waitForEvents(1);
+    const e = sentEvents[0];
+    // Absent, NOT zero: a fabricated 0 here is indistinguishable from a call
+    // that genuinely consumed nothing.
+    expect(e.input_tokens).toBeUndefined();
+    expect(e.output_tokens).toBeUndefined();
+    expect(e.total_tokens).toBeUndefined();
+    // ...and the reason rides reserved telemetry, so "obsvr could not read the
+    // usage" is distinguishable from "the provider reported no usage".
+    expect((e.metadata as any).obsvr_telemetry.usage_shape).toBe('unrecognized');
+  });
+
+  it('does not stamp a usage_shape reason when the provider simply reported nothing', async () => {
+    init({ api_key: 'test', sample_rate: 1 });
+    const mw = obsvrMiddleware();
+    const params = userParams('Hi there');
+
+    const transformed = await mw.transformParams({ params, model: MODEL });
+    await mw.wrapGenerate({
+      doGenerate: async () => ({ text: 'Hello back' }),
+      params: transformed,
+      model: MODEL,
+    });
+
+    await waitForEvents(1);
+    const e = sentEvents[0];
+    expect(e.input_tokens).toBeUndefined();
+    expect((e.metadata as any)?.obsvr_telemetry?.usage_shape).toBeUndefined();
+  });
+
   it('wrapGenerate captures the resolved model from response.modelId', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     const mw = obsvrMiddleware();

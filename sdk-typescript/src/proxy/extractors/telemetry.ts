@@ -38,6 +38,18 @@ export interface CallTelemetry {
   cache_read_tokens?: number;
   /** Prompt tokens written to cache (cost driver). */
   cache_write_tokens?: number;
+  /**
+   * Stamped as `"unrecognized"` when a usage payload WAS present and carried no
+   * field the token normaliser knows, and never stamped otherwise.
+   *
+   * This is the difference between "the provider reported no usage" and "obsvr
+   * could not read the usage the provider reported". Both leave the token
+   * counts absent from the event, but only the second is a defect — an upstream
+   * shape moved — and without this key the two are indistinguishable in the
+   * evidence. It rides reserved telemetry rather than a top-level event field
+   * so the signed schema and its conformance fixtures are untouched.
+   */
+  usage_shape?: string;
 }
 
 const RESERVED_TELEMETRY_KEY = "obsvr_telemetry";

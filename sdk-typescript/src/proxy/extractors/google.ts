@@ -13,6 +13,7 @@
  */
 
 import type { ExtractionResult, TokenUsage } from "./types.js";
+import { readTokenUsage } from "./token-usage.js";
 
 // ---------------------------------------------------------------------------
 // Google Gemini API Types
@@ -199,20 +200,7 @@ export function extractModel(_request: GeminiRequest, modelHint?: string): strin
 export function extractTokenUsage(
   response: GeminiResponse
 ): TokenUsage | undefined {
-  const r = unwrap(response);
-  if (!r || !r.usageMetadata) {
-    return undefined;
-  }
-
-  const inputTokens = r.usageMetadata.promptTokenCount ?? 0;
-  const outputTokens = r.usageMetadata.candidatesTokenCount ?? 0;
-  const totalTokens = r.usageMetadata.totalTokenCount ?? inputTokens + outputTokens;
-
-  return {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    total_tokens: totalTokens,
-  };
+  return readTokenUsage(unwrap(response)?.usageMetadata);
 }
 
 /**

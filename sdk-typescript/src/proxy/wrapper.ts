@@ -110,6 +110,7 @@ import {
   unwrapGeminiResponse,
 } from "./extractors/google.js";
 import type { GeminiRequest, GeminiResponse } from "./extractors/google.js";
+import { readTokenUsage } from "./extractors/token-usage.js";
 import {
   sendAuditAsync,
   shouldSample,
@@ -911,11 +912,7 @@ function wrapStreamingIterator(
             const text = chunk.candidates?.[0]?.content?.parts?.[0]?.text;
             if (typeof text === "string") accText += text;
             if (chunk.usageMetadata) {
-              tokenUsage = {
-                input_tokens: chunk.usageMetadata.promptTokenCount ?? 0,
-                output_tokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
-                total_tokens: chunk.usageMetadata.totalTokenCount ?? 0,
-              };
+              tokenUsage = readTokenUsage(chunk.usageMetadata) ?? tokenUsage;
             }
             if (typeof chunk.modelVersion === "string" && chunk.modelVersion.trim().length > 0) {
               modelResolved = chunk.modelVersion.trim();

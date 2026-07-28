@@ -12,6 +12,7 @@
  */
 
 import type { ExtractionResult, TokenUsage } from "./types.js";
+import { readTokenUsage } from "./token-usage.js";
 
 // ---------------------------------------------------------------------------
 // Anthropic API Types
@@ -221,18 +222,7 @@ export function isStreamingRequest(request: AnthropicMessagesRequest): boolean {
 export function extractTokenUsage(
   response: AnthropicMessagesResponse
 ): TokenUsage | undefined {
-  if (!response || !response.usage) {
-    return undefined;
-  }
-
-  const inputTokens = response.usage.input_tokens ?? 0;
-  const outputTokens = response.usage.output_tokens ?? 0;
-
-  return {
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    total_tokens: inputTokens + outputTokens,
-  };
+  return readTokenUsage(response?.usage);
 }
 
 /**
@@ -278,11 +268,19 @@ export function extractStreamingResponse(events: AnthropicStreamEvent[]): {
     }
   }
 
+  // A half-known stream stays half-known. The two counts arrive on DIFFERENT
+  // events — input on message_start, output on message_delta — so a stream that
+  // ends early legitimately has one and not the other. Defaulting the missing
+  // half to 0 used to turn that into a recorded measurement of zero, and the
+  // total derived from it was then wrong by exactly the count nobody saw.
   let usage: TokenUsage | undefined;
   if (inputTokens !== undefined || outputTokens !== undefined) {
-    const inp = inputTokens ?? 0;
-    const out = outputTokens ?? 0;
-    usage = { input_tokens: inp, output_tokens: out, total_tokens: inp + out };
+    usage = {};
+    if (inputTokens !== undefined) usage.input_tokens = inputTokens;
+    if (outputTokens !== undefined) usage.output_tokens = outputTokens;
+    if (inputTokens !== undefined && outputTokens !== undefined) {
+      usage.total_tokens = inputTokens + outputTokens;
+    }
   }
 
   return {
