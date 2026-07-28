@@ -170,6 +170,28 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **`content_provenance` on audit events: where inside the payload the content
+  came from.** `source` names the integration that emitted an event ("mcp",
+  "langchain"); this names the position the text occupied within the call —
+  `user_turn`, `system`, `retrieved`, `tool_result`, `memory`, `unknown`. It
+  exists for triage: a `prompt_injection` found in a user turn is someone
+  probing your bot, and the identical finding in a tool result means an upstream
+  data source is already compromised. Set **only where an integration genuinely
+  knows** and absent everywhere else — today that is the MCP tool-result events
+  and LangChain's `tool.result`, all as `tool_result`. Never inferred from the
+  operation name or the payload shape, because a wrong value gets read as
+  evidence in exactly the incident where being wrong costs the most.
+  **Audit-record completeness only, deliberately not a policy input:** nothing
+  in detection, scoring, or gating reads it, since obsvr gates on session-taint
+  reachability rather than on classifying how far to trust a source. **Not
+  sealed:** the Merkle leaf, the `sdk_sig` preimage and the decision-input
+  document are each closed lists of named fields and this is in none of them, so
+  it sits outside the integrity proof and can be altered without breaking chain
+  or root verification — treat it as a triage hint, not as evidence. Optional
+  and absent by default; callers that ignore it see no change. Because ingest
+  has no column for the name yet, it also rides reserved
+  `metadata.obsvr_content_provenance`, the route `obsvr_tool_content_hash`
+  already takes.
 - **BREAKING: a 14th rule type, `protocol_facet`, matching parsed statement
   structure.** A rule can now address `sql.verb`, `sql.target`, `sql.tables`,
   `sql.functions` and `sql.multiple_statements` instead of matching characters:

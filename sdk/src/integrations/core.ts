@@ -1542,6 +1542,10 @@ export interface IntegrationEventParams {
   operation: string;
   /** Integration default source label (e.g. "langchain_js") */
   source: string;
+  /** Where inside the payload this event's content came from, set by the
+   * integration at its capture site and only where it genuinely knows — see
+   * `AuditEvent.content_provenance`. Never inferred; absent by default. */
+  contentProvenance?: AuditEvent["content_provenance"];
   prompt: string;
   response?: string;
   userInput?: string;
@@ -1662,6 +1666,10 @@ export function buildIntegrationEvent(
     model: params.model || "unknown",
     operation: params.operation,
     source: options.source || params.source || config.default_source || "integration",
+    // Where inside the payload the content below came from. Absent unless the
+    // integration passed one — never derived here, since this function cannot
+    // see anything its caller did not already know.
+    content_provenance: params.contentProvenance ?? undefined,
 
     // Content fields (canary-scrubbed — a leaked token never reaches storage)
     prompt: truncate(scrubbedPrompt, config.max_payload_chars),

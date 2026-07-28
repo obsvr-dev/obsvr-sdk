@@ -38,6 +38,21 @@ if TYPE_CHECKING:  # import cycle: errors -> reason_codes is fine, events -> err
 # the canonicalizer replaces it wholesale with {"_truncated": true}, destroying
 # trace_id / agent_run_id / the span envelope and orphaning the event.
 _METADATA_BUDGET_CHARS = 9000
+
+#: Reserved-metadata key ``content_provenance`` rides on until ingest has a
+#: column for it, following the ``obsvr_tool_content_hash`` carriage plan
+#: verbatim:
+#:
+#: 1. (now) the SDK stamps both the top-level field and this key; consumers
+#:    read it from metadata;
+#: 2. ingest declares a ``content_provenance`` column and backfills from here;
+#: 3. the SDK keeps mirroring for one minor release, then stops.
+#:
+#: Nothing downstream depends on the top-level name until step 2, so steps 1
+#: and 3 are additive and need no coordinated release. Twin:
+#: CONTENT_PROVENANCE_METADATA_KEY in sdk/src/proxy/sender/fire-and-forget.ts.
+CONTENT_PROVENANCE_METADATA_KEY = "obsvr_content_provenance"
+
 _RESERVED_META_KEYS = (
     "trace_id",
     "agent_run_id",
@@ -47,6 +62,7 @@ _RESERVED_META_KEYS = (
     "obsvr_external_backend",
     "obsvr_integrity_flags",
     "obsvr_tool_content_hash",
+    CONTENT_PROVENANCE_METADATA_KEY,
 )
 
 
@@ -141,6 +157,10 @@ def build_audit_event(
     model: str,
     operation: str,
     source: str,
+    # Keyword-only, so a defaulted parameter may precede the required `prompt`.
+    # See AuditEvent.content_provenance (sdk/src/proxy/types.ts) for the
+    # vocabulary and for why it is never inferred.
+    content_provenance: Optional[str] = None,
     prompt: str,
     response: str = "",
     user_input: Optional[str] = None,
@@ -239,6 +259,11 @@ def build_audit_event(
         or source
         or config.default_source
         or "integration",
+        # Where inside the payload the content below came from. Absent unless
+        # the caller passed one (None is stripped at the end of this builder) —
+        # never derived here, since this function cannot see anything its caller
+        # did not already know.
+        "content_provenance": content_provenance,
         # Content fields
         "prompt": truncate(prompt, config.max_payload_chars),
         "response": truncate(response or "", config.max_payload_chars),
@@ -305,6 +330,15 @@ def build_audit_event(
     if _external is not None:
         _md = dict(_event.get("metadata") or {})
         _md.setdefault("obsvr_external_backend", _external)
+        _event["metadata"] = _md
+    # Same route, same reason: ingest has no ``content_provenance`` column and
+    # strips unknown top-level fields, so the top-level name alone would lose
+    # the value silently. Mirror onto the reserved key the sender's trimmer
+    # preserves (parity with TS normalizeWireShape); drop the mirror once
+    # ingest declares the column.
+    if content_provenance is not None:
+        _md = dict(_event.get("metadata") or {})
+        _md.setdefault(CONTENT_PROVENANCE_METADATA_KEY, content_provenance)
         _event["metadata"] = _md
     # A detector layer that raised has no top-level ingest field either (and
     # must not widen the closed action_taken enum), so the record of WHICH

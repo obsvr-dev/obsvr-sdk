@@ -461,6 +461,16 @@ function normalizeWireShape(event: AuditEvent): void {
       obsvr_external_backend: event.external_backend,
     };
   }
+  // Same route, same reason: ingest has no `content_provenance` column and
+  // strips unknown top-level fields, so the top-level name alone would lose the
+  // value silently. Mirror it onto the reserved metadata key the trimmer
+  // preserves; drop the mirror once ingest declares the column.
+  if (event.content_provenance) {
+    event.metadata = {
+      ...(event.metadata ?? {}),
+      [CONTENT_PROVENANCE_METADATA_KEY]: event.content_provenance,
+    };
+  }
   const m = event.metadata as Record<string, unknown> | undefined;
   if (m) {
     if (event.delegation_chain === undefined && Array.isArray(m.delegation_chain)) {
@@ -476,6 +486,18 @@ function normalizeWireShape(event: AuditEvent): void {
   trimMetadataToBudget(event);
 }
 
+/**
+ * Reserved-metadata key `content_provenance` rides on until ingest has a column
+ * for it, following the `obsvr_tool_content_hash` carriage plan verbatim:
+ *   1. (now) the SDK stamps both the top-level field and this key; consumers
+ *      read it from metadata;
+ *   2. ingest declares a `content_provenance` column and backfills from here;
+ *   3. the SDK keeps mirroring for one minor release, then stops.
+ * Nothing downstream depends on the top-level name until step 2, so steps 1
+ * and 3 are additive and need no coordinated release.
+ */
+export const CONTENT_PROVENANCE_METADATA_KEY = "obsvr_content_provenance";
+
 /** Budget for metadata, kept under the ingest 10 KB canonical cap with headroom. */
 const METADATA_BUDGET_CHARS = 9000;
 /** Grouping / provenance keys that must survive trimming (or trace/run links break). */
@@ -487,6 +509,7 @@ const RESERVED_META_KEYS = [
   "obsvr_telemetry",
   "obsvr_external_backend",
   "obsvr_tool_content_hash",
+  CONTENT_PROVENANCE_METADATA_KEY,
   AUDIT_GAP_METADATA_KEY,
 ];
 

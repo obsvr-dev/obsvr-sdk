@@ -428,6 +428,10 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                 model="unknown",
                 operation="langchain.tool.result",
                 source=SOURCE,
+                # ``output_text`` is what the tool returned, handed to us by
+                # LangChain's own tool-end callback -- the one place in this
+                # integration where the origin of the text is not in doubt.
+                content_provenance="tool_result",
                 prompt="",
                 response=output_text,
                 metadata={"agent_run_id": agent_run_id},

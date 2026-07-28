@@ -692,7 +692,13 @@ def _build_governed_mcp_callables(
             _emit(
                 cfg,
                 provider="mcp", model="mcp", operation="mcp.tool.call",
-                source=SOURCE, prompt=final_prompt, response="",
+                source=SOURCE,
+                # The detections on this event came from scanning the TOOL's
+                # result, not from anything the user typed -- the stored
+                # response is emptied precisely because the tool returned
+                # something that had to be withheld.
+                content_provenance="tool_result",
+                prompt=final_prompt, response="",
                 latency_ms=latency_ms, success=False, status_code=403,
                 metadata={
                     "tool_name": tool_name,
@@ -805,7 +811,11 @@ def _build_governed_mcp_callables(
         _emit(
             cfg,
             provider="mcp", model="mcp", operation="mcp.tool.call",
-            source=SOURCE, prompt=final_prompt, response=response_text,
+            source=SOURCE,
+            # ``response_text`` is the tool's own result, read straight off the
+            # call result -- anything flagged in it entered from the tool.
+            content_provenance="tool_result",
+            prompt=final_prompt, response=response_text,
             latency_ms=latency_ms, success=True,
             metadata=event_metadata, options=event_options,
             compliance=event_compliance,

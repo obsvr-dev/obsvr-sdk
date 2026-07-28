@@ -745,6 +745,54 @@ export interface AuditEvent {
   provenance_source?: "provider_response" | "framework_reported" | "client_declared";
   operation: string;  // e.g., "chat.completion", "embedding"
   source: string;
+  /** Where INSIDE the payload this event's content came from — `source` names
+   * the integration that emitted the event, this names the position the text
+   * occupied within the call. `detected_types` says WHAT was found; this says
+   * WHERE it entered. `user_turn` = typed by the end user; `system` = the
+   * system prompt; `retrieved` = a document a retriever returned;
+   * `tool_result` = text a tool returned; `memory` = a prior-turn store
+   * replayed into this call; `unknown` = the emitter looked and could not tell.
+   *
+   * The distinction is an incident-triage one: a `prompt_injection` found in a
+   * `user_turn` is someone probing your bot, and the identical finding in
+   * `retrieved` or `tool_result` means an upstream data source is already
+   * compromised. Those are different incidents with different first responses.
+   *
+   * Set ONLY where an integration genuinely knows, and ABSENT everywhere else —
+   * never inferred from the operation name or the shape of the payload. An
+   * absent field is honest; a guessed one gets read as evidence in exactly the
+   * incident where being wrong costs the most.
+   *
+   * AUDIT-RECORD COMPLETENESS ONLY — deliberately not a policy input. Nothing
+   * in detection, scoring, or gating reads it. obsvr bets on session-taint
+   * reachability (`policy/session-taint.ts`) rather than on classifying how far
+   * to trust a source, and wiring this into a decision would quietly adopt the
+   * trust taxonomy that bet rejects.
+   *
+   * NOT SEALED, and that is load-bearing for how much weight it can carry. The
+   * ledger's Merkle leaf is a closed list of named fields (currently v8) and
+   * this is not one of them; neither the `sdk_sig` preimage
+   * (`proxy/chain-format.ts` — format, session, seq, timestamp, a hash of
+   * prompt+response, prev_sig) nor the canonical decision-input document
+   * (`policy/decision-record.ts`) covers it either. So it sits OUTSIDE the
+   * integrity proof: it can be altered after the fact without breaking chain
+   * verification or the anchored root. For a field whose whole purpose is
+   * asserting "this text arrived from a compromised upstream source," treat it
+   * as a triage hint rather than as evidence. Sealing it would be a leaf
+   * version bump, which is a deliberate decision and not this field's to make.
+   *
+   * Carriage: ingest has no column for this name yet and strips unknown
+   * top-level fields, so the sender also mirrors it onto reserved
+   * `metadata.obsvr_content_provenance` — the route `obsvr_external_backend`
+   * and `obsvr_tool_content_hash` already take, and one the metadata trimmer
+   * preserves. Read it from metadata until ingest declares the column. */
+  content_provenance?:
+    | "user_turn"
+    | "system"
+    | "retrieved"
+    | "tool_result"
+    | "memory"
+    | "unknown";
 
   // Content fields
   prompt: string;

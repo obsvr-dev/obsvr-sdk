@@ -647,6 +647,10 @@ export class ObsvrCallbackHandler {
         model: "unknown",
         operation: "langchain.tool.result",
         source: SOURCE,
+        // `output` is what the tool returned, handed to us by LangChain's own
+        // tool-end callback — the one place in this integration where the
+        // origin of the text is not in doubt.
+        contentProvenance: "tool_result",
         prompt: "",
         response: typeof output === "string" ? output : String(output ?? ""),
         metadata: { agent_run_id: agentRunId },

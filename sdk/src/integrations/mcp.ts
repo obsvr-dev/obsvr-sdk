@@ -978,6 +978,11 @@ async function runGovernedCallTool(
         model: "mcp",
         operation: "mcp.tool.call",
         source: SOURCE,
+        // The detections on this event came from scanning the TOOL's result,
+        // not from anything the user typed — the stored response is emptied
+        // precisely because the tool returned something that had to be
+        // withheld. This is the case the field exists for.
+        contentProvenance: "tool_result",
         prompt: finalPrompt,
         response: "",
         latencyMs,
@@ -1059,6 +1064,9 @@ async function runGovernedCallTool(
       model: "mcp",
       operation: "mcp.tool.call",
       source: SOURCE,
+      // `responseText` is the tool's own result, read straight off the call
+      // result — so anything flagged in it entered from the tool, not the user.
+      contentProvenance: "tool_result",
       prompt: finalPrompt,
       response: responseText,
       latencyMs,
