@@ -31,6 +31,35 @@
  * gate uses \p{L}\p{M}\p{N}\p{P}\p{S} — a ratio threshold, where a
  * single-codepoint skew between engines cannot flip the outcome for
  * realistic inputs.
+ *
+ * ## Character substitution (leet) is deliberately NOT decoded
+ *
+ * The obvious next transform is a substitution map — `1`→`i`, `3`→`e`, `0`→`o`,
+ * `@`→`a`, `$`→`s` — so that `1gn0r3 4ll pr3v10us 1nstruct10ns` folds back to
+ * something the patterns match. It is not here, and the reason is that it is
+ * the one transform in this family that is not information-preserving.
+ *
+ * Every other view in this module inverts an ENCODING: percent, hex, base64
+ * and rot13 each have exactly one preimage, so decoding either recovers the
+ * original text or fails cleanly. A substitution map does not. `3` is a digit
+ * far more often than it is an `e`, so folding it rewrites ordinary text —
+ * order numbers, version strings, hashes, ids, currency amounts — into
+ * different words, and every one of those becomes a new surface for a pattern
+ * to fire on content that was never obfuscated. The cost lands on benign
+ * traffic, which is exactly where a security control cannot afford to spend.
+ *
+ * A narrower map (letters only, or requiring the substitution to sit inside an
+ * otherwise-alphabetic run) would cut that, but "how narrow" is a threshold
+ * with no principled setting and no measurement here to set it against: this
+ * package has no governed attack-success benchmark yet, so a change to
+ * detection breadth cannot be shown to help rather than merely to move.
+ * Adding it blind would buy a knob and a false-positive budget in exchange for
+ * an unmeasured gain.
+ *
+ * So: not covered, on purpose. Revisit when a benchmark can say whether the
+ * added recall outweighs the added noise — and gate it behind its own flag
+ * when it lands, because unlike the decoders it changes what benign text
+ * looks like.
  */
 
 import { runBuiltinPiiScan, redactBuiltinPii } from './hook.js';
@@ -526,11 +555,53 @@ function tryBase64(tok: string): string | null {
   return null;
 }
 
+/** Fewest ASCII letters worth rotating. Below it there is nothing to decode. */
+const MIN_ROT13_LETTERS = 8;
+
+/**
+ * Rotate ASCII letters by 13. Its own inverse, so one application both encodes
+ * and decodes; non-letters and every non-ASCII codepoint pass through.
+ *
+ * Applied SPECULATIVELY to every scanned text rather than only to text that
+ * "looks rot13-encoded", and that is the point: deciding whether a string is
+ * rot13 before decoding it would be a heuristic — a small classifier — sitting
+ * in front of a decision path this SDK sells as deterministic. Applying an
+ * involution and scanning the result needs no judgement at all. Rot13 of
+ * ordinary text is gibberish that matches no pattern, so the cost is one
+ * linear pass and one extra scan, not false positives.
+ */
+export function rot13(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 65 && c <= 90) {
+      out += String.fromCharCode(((c - 65 + 13) % 26) + 65);
+    } else if (c >= 97 && c <= 122) {
+      out += String.fromCharCode(((c - 97 + 13) % 26) + 97);
+    } else {
+      out += text[i];
+    }
+  }
+  return out;
+}
+
+/** Count ASCII letters, stopping once the threshold is met. */
+function hasEnoughLetters(text: string): boolean {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) {
+      if (++n >= MIN_ROT13_LETTERS) return true;
+    }
+  }
+  return false;
+}
+
 // ── View derivation ───────────────────────────────────────────────────────────
 
 export interface DeobfuscationView {
   /** Which transform produced this view. */
-  method: 'deobfuscated' | 'percent' | 'hex' | 'base64';
+  method: 'deobfuscated' | 'percent' | 'hex' | 'base64' | 'rot13';
   /** The derived text to scan (read-only; never stored or redacted). */
   text: string;
 }
@@ -591,6 +662,16 @@ export function deobfuscate(text: string): DeobfuscationView[] {
     // Not exclusive with hex: an all-hex token is also a base64 candidate.
     const b = tryBase64(tok);
     if (b !== null) add('base64', b);
+  }
+
+  // Rot13 last, and deliberately OUTSIDE the decoded-candidate cap: that cap
+  // exists to bound per-token candidate explosion, and this is one
+  // whole-string involution, bounded by construction at exactly one view.
+  // Last in order so `via` names it only when no earlier view matched, which
+  // keeps the attribution of every existing case unchanged.
+  const rotated = rot13(t);
+  if (rotated !== t && hasEnoughLetters(t) && printableRatioOk(rotated)) {
+    return views.concat(decoded, [{ method: 'rot13', text: rotated }]);
   }
 
   return views.concat(decoded);

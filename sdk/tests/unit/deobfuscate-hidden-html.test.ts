@@ -109,7 +109,11 @@ describe('hidden HTML in the canonical view', () => {
   });
 
   it('derives no view when nothing was hidden', () => {
-    expect(deobfuscate('plain visible text')).toEqual([]);
+    // The claim is that nothing was HIDDEN, so no canonical view is derived.
+    // The unconditional rot13 view is not a statement about hidden markup.
+    expect(
+      deobfuscate('plain visible text').filter((v) => v.method !== 'rot13'),
+    ).toEqual([]);
   });
 
   it('an injection payload hidden whole is still caught by the raw scan', () => {

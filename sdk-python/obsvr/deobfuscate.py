@@ -29,6 +29,35 @@ runtime Unicode lookups, so both SDKs agree byte-for-byte regardless of
 interpreter Unicode version. Exception: the printable-ratio gate uses
 unicodedata categories — a ratio threshold, where a single-codepoint skew
 between runtimes cannot flip the outcome for realistic inputs.
+
+Character substitution (leet) is deliberately NOT decoded
+---------------------------------------------------------
+
+The obvious next transform is a substitution map - ``1``->``i``, ``3``->``e``,
+``0``->``o``, ``@``->``a``, ``$``->``s`` - so that ``1gn0r3 4ll pr3v10us
+1nstruct10ns`` folds back to something the patterns match. It is not here, and
+the reason is that it is the one transform in this family that is not
+information-preserving.
+
+Every other view in this module inverts an ENCODING: percent, hex, base64 and
+rot13 each have exactly one preimage, so decoding either recovers the original
+text or fails cleanly. A substitution map does not. ``3`` is a digit far more
+often than it is an ``e``, so folding it rewrites ordinary text - order
+numbers, version strings, hashes, ids, currency amounts - into different words,
+and every one of those becomes a new surface for a pattern to fire on content
+that was never obfuscated. The cost lands on benign traffic, which is exactly
+where a security control cannot afford to spend.
+
+A narrower map (letters only, or requiring the substitution to sit inside an
+otherwise-alphabetic run) would cut that, but "how narrow" is a threshold with
+no principled setting and no measurement here to set it against: this package
+has no governed attack-success benchmark yet, so a change to detection breadth
+cannot be shown to help rather than merely to move. Adding it blind would buy a
+knob and a false-positive budget in exchange for an unmeasured gain.
+
+So: not covered, on purpose. Revisit when a benchmark can say whether the added
+recall outweighs the added noise - and gate it behind its own flag when it
+lands, because unlike the decoders it changes what benign text looks like.
 """
 
 from __future__ import annotations
@@ -526,6 +555,42 @@ def _truncate_input(text: str) -> str:
 _TOKEN_SPLIT_RE = re.compile(r"[^A-Za-z0-9+/=_-]+")
 
 
+#: Fewest ASCII letters worth rotating. Below it there is nothing to decode.
+_MIN_ROT13_LETTERS = 8
+
+_ROT13_TABLE = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+    "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm",
+)
+
+
+def rot13(text: str) -> str:
+    """Rotate ASCII letters by 13. Its own inverse, so one application both
+    encodes and decodes; non-letters and every non-ASCII codepoint pass
+    through.
+
+    Applied SPECULATIVELY to every scanned text rather than only to text that
+    "looks rot13-encoded", and that is the point: deciding whether a string is
+    rot13 before decoding it would be a heuristic - a small classifier -
+    sitting in front of a decision path this SDK sells as deterministic.
+    Applying an involution and scanning the result needs no judgement at all.
+    Rot13 of ordinary text is gibberish that matches no pattern, so the cost is
+    one linear pass and one extra scan, not false positives.
+    """
+    return text.translate(_ROT13_TABLE)
+
+
+def _has_enough_letters(text: str) -> bool:
+    """Count ASCII letters, stopping once the threshold is met."""
+    n = 0
+    for ch in text:
+        if ("A" <= ch <= "Z") or ("a" <= ch <= "z"):
+            n += 1
+            if n >= _MIN_ROT13_LETTERS:
+                return True
+    return False
+
+
 def deobfuscate(text: str) -> List[Dict[str, str]]:
     """Derive scan views: at most one canonical "deobfuscated" view
     (strip-invisible → fold-confusables → strip-HTML-comments →
@@ -583,6 +648,15 @@ def deobfuscate(text: str) -> List[Dict[str, str]]:
         b = _try_base64(tok)
         if b is not None:
             _add("base64", b)
+
+    # Rot13 last, and deliberately OUTSIDE the decoded-candidate cap: that cap
+    # exists to bound per-token candidate explosion, and this is one
+    # whole-string involution, bounded by construction at exactly one view.
+    # Last in order so `via` names it only when no earlier view matched, which
+    # keeps the attribution of every existing case unchanged.
+    rotated = rot13(t)
+    if rotated != t and _has_enough_letters(t) and _printable_ratio_ok(rotated):
+        return views + decoded + [{"method": "rot13", "text": rotated}]
 
     return views + decoded
 

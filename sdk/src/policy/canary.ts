@@ -164,7 +164,7 @@ export function mintCanary(opts?: { label?: string }): MintedCanary {
   return { token, id, hashPrefix, registered };
 }
 
-export type CanaryVia = "raw" | "deobfuscated" | "percent" | "hex" | "base64";
+export type CanaryVia = "raw" | "deobfuscated" | "percent" | "hex" | "base64" | "rot13";
 
 /** A candidate canary token found in text, reduced to its hash (no raw token). */
 export interface CanaryCandidate {

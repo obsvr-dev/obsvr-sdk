@@ -126,7 +126,11 @@ def test_runs_after_html_comments_are_stripped():
 
 
 def test_derives_no_view_when_nothing_was_hidden():
-    assert deobfuscate("plain visible text") == []
+    # The claim is that nothing was HIDDEN, so no canonical view is derived.
+    # The unconditional rot13 view is not a statement about hidden markup.
+    assert [
+        v for v in deobfuscate("plain visible text") if v["method"] != "rot13"
+    ] == []
 
 
 def test_an_injection_payload_hidden_whole_is_still_caught_by_the_raw_scan():
