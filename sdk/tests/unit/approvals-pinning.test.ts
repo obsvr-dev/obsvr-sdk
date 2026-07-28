@@ -32,7 +32,7 @@ describe('hasApproval with rule hash pinning', () => {
   it('honors a grant whose hash matches the current rule', () => {
     const hash = deriveRuleHash(rule);
     updateApprovals([{ id: 'g1', rule_id: 'r-gate', expires_at: FUTURE, rule_hash: hash }]);
-    expect(hasApproval('r-gate', undefined, hash)).toBe(true);
+    expect(hasApproval({ ruleId: 'r-gate', ruleHash: hash })).toBe(true);
   });
 
   it('voids a grant minted under a different rule definition', () => {
@@ -40,12 +40,12 @@ describe('hasApproval with rule hash pinning', () => {
     const currentHash = deriveRuleHash(rule);
     expect(oldHash).not.toBe(currentHash);
     updateApprovals([{ id: 'g1', rule_id: 'r-gate', expires_at: FUTURE, rule_hash: oldHash }]);
-    expect(hasApproval('r-gate', undefined, currentHash)).toBe(false);
+    expect(hasApproval({ ruleId: 'r-gate', ruleHash: currentHash })).toBe(false);
   });
 
   it('honors legacy grants without a hash', () => {
     updateApprovals([{ id: 'g1', rule_id: 'r-gate', expires_at: FUTURE }]);
-    expect(hasApproval('r-gate', undefined, deriveRuleHash(rule))).toBe(true);
+    expect(hasApproval({ ruleId: 'r-gate', ruleHash: deriveRuleHash(rule) })).toBe(true);
   });
 });
 

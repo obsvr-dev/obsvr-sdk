@@ -244,20 +244,43 @@ def _evaluate_rules(
             # unexpired grant covers it; otherwise it blocks and marks the
             # result so the caller files an approval request.
             if rule.conditions.get("require_approval") is True:
+                from .approval_action import safe_approval_action_hash
                 from .remote import has_approval
-                meta = (context or {}).get("metadata") or {}
+                ctx = context or {}
+                meta = ctx.get("metadata") or {}
                 user_id = meta.get("user_id")
                 # Pin the approval to THIS rule definition: a grant minted
                 # under an older version of the rule (different hash) is void.
                 rule_hash = derive_rule_hash(rule)
-                if has_approval(rule.id, user_id, rule_hash):
+                # ...and to THIS action, so a grant issued for one call cannot
+                # be spent on a different call that trips the same rule.
+                action_hash = safe_approval_action_hash(
+                    rule_id=rule.id,
+                    rule_hash=rule_hash,
+                    action_name=ctx.get("action_name"),
+                    amount=ctx.get("amount"),
+                    caller_namespace=ctx.get("caller_namespace"),
+                    target_namespace=ctx.get("target_namespace"),
+                    user_id=user_id,
+                )
+                claim = {
+                    "rule_id": rule.id,
+                    "user_id": user_id,
+                    "rule_hash": rule_hash,
+                    "action_hash": action_hash,
+                }
+                if has_approval(rule.id, user_id, rule_hash, action_hash):
                     return {
                         "decision": "allow",
                         "rule_id": rule.id,
                         "reason_code": ReasonCode.APPROVAL_GRANTED.value,
                         "reason": f"approved: {rule.name}",
+                        "rule_hash": rule_hash,
+                        # Carried so the caller can re-check the grant after
+                        # the layers that can delay the call.
+                        "approval_granted": claim,
                     }
-                return {
+                result: Dict[str, Any] = {
                     "decision": "block",
                     "rule_id": rule.id,
                     "reason_code": ReasonCode.APPROVAL_REQUIRED.value,
@@ -265,6 +288,9 @@ def _evaluate_rules(
                     "approval_required": True,
                     "rule_hash": rule_hash,
                 }
+                if action_hash is not None:
+                    result["action_hash"] = action_hash
+                return result
             return {
                 "decision": "block",
                 "rule_id": rule.id,

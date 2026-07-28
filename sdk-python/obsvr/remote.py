@@ -383,17 +383,42 @@ def _parse_iso_utc(value: Any) -> Optional[datetime]:
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
+def update_approvals(next_grants: Any) -> None:
+    """Replace the grant set. The /policies poll does this inline; this is the
+    same operation as a named entry point, so the grant store has one way in
+    that tests and callers can both use (TS parity: updateApprovals)."""
+    with _grants_lock:
+        _grants.clear()
+        if isinstance(next_grants, list):
+            _grants.extend(g for g in next_grants if isinstance(g, dict))
+
+
+def _reset_approvals() -> None:
+    """@internal test hook - clears the grant store (TS parity: _resetApprovals)."""
+    with _grants_lock:
+        _grants.clear()
+
+
 def has_approval(
     rule_id: str,
     user_id: Optional[str] = None,
     rule_hash: Optional[str] = None,
+    action_hash: Optional[str] = None,
 ) -> bool:
-    """Whether an unexpired grant covers this rule (and user, when pinned).
+    """Whether an unexpired grant covers this claim (twin of TS hasApproval).
 
-    When both the grant and the caller carry a rule hash they must match:
-    a grant minted under a different rule definition is void (an approval
-    for yesterday's rule must never satisfy today's stricter one). Legacy
-    grants without a hash stay honored. Parity with TS hasApproval."""
+    Each pin only narrows: when BOTH the grant and the call carry a value they
+    must match; when either side is silent the check does not apply. That is
+    what lets a grant issuer adopt the bindings one at a time without every
+    outstanding grant going void on upgrade - and it is why an unbound grant is
+    exactly as strong as the issuer made it, no stronger.
+
+    ``rule_hash`` voids a grant once the rule is edited: an approval for
+    yesterday's rule must never satisfy today's stricter one. ``action_hash``
+    voids a grant spent on a different call: one human approving a $50
+    transfer must not leave a grant that satisfies a $5,000,000 one just
+    because both trip the same rule.
+    """
     now = datetime.now(timezone.utc)
     with _grants_lock:
         for g in _grants:
@@ -410,8 +435,33 @@ def has_approval(
                 continue
             if g.get("rule_hash") and rule_hash and g.get("rule_hash") != rule_hash:
                 continue
+            if g.get("action_hash") and action_hash and g.get("action_hash") != action_hash:
+                continue
             return True
     return False
+
+
+def revalidate_approval(claim: Dict[str, Any]) -> bool:
+    """Re-check a claim that was satisfied earlier in the same call.
+
+    The pre-call pipeline can spend real time between deciding and executing -
+    a customer hook has a two-second budget, an external policy backend has its
+    own - and a grant that expires inside that window would otherwise let a
+    call proceed on an authorization that is no longer live. This runs after
+    every layer that can delay the call and before the outbound request, so the
+    remaining gap is the SDK's own final assembly rather than a hook timeout.
+
+    It cannot close the gap entirely: nothing in an in-process library can make
+    the check and the provider's receipt of the request simultaneous. What it
+    removes is the part of the window measured in seconds. Twin:
+    ``revalidateApproval`` in policy/approvals.ts.
+    """
+    return has_approval(
+        claim.get("rule_id") or "",
+        claim.get("user_id"),
+        claim.get("rule_hash"),
+        claim.get("action_hash"),
+    )
 
 
 def request_approval(
@@ -421,8 +471,14 @@ def request_approval(
     operation: Optional[str] = None,
     user_id: Optional[str] = None,
     rule_hash: Optional[str] = None,
+    action_hash: Optional[str] = None,
 ) -> None:
-    """File an approval request with ingest (fire-and-forget thread)."""
+    """File an approval request with ingest (fire-and-forget thread).
+
+    ``action_hash`` names the exact call a human is being asked to authorize,
+    so the grant that comes back can be bound to it rather than to "anything
+    that trips this rule".
+    """
     if not config.ingest_url:
         return
 
@@ -434,6 +490,7 @@ def request_approval(
                 "operation": operation,
                 "user_id": user_id,
                 "rule_hash": rule_hash,
+                "action_hash": action_hash,
             }).encode("utf-8")
             req = Request(
                 f"{config.ingest_url}/approvals/request",

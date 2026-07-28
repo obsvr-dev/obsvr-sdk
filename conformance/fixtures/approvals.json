@@ -1,0 +1,498 @@
+{
+  "claimable": true,
+  "schema_version": 1,
+  "name": "approvals",
+  "description": "Human-in-the-loop approval binding. `action_cases` pin the canonical approval-action document and its digest: the facts that make one approvable action different from another, so a grant issued for one call cannot be spent on a different call that happens to trip the same rule. What the digest binds is the rule id, the rule definition hash, the action name, the amount, the caller and target namespaces, and the subject; what it deliberately does NOT bind is the free-text prompt, because an approved request and its retry differ in it more often than not and a binding that voids itself on a whitespace change is one operators switch off. `match_cases` pin the grant-matching rule as (grant, claim) -> satisfied: each pin only NARROWS - when both the grant and the call carry a value they must match, when either is silent the check does not apply - which is what lets a grant issuer adopt the bindings one at a time, and is also why an unbound grant is exactly as strong as the issuer made it. A case may declare `same_as` to name another case it is intentionally identical to; every other pair must hash differently, which is the property the digest exists for. Harnesses: sdk/tests/unit/approvals-conformance.test.ts, sdk-python/tests/test_approvals_conformance.py.",
+  "action_cases": [
+    {
+      "id": "minimal",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Only the two fields every action has. Absent values are OMITTED, never serialised as null, so 'no amount' and 'amount: null' cannot hash differently.",
+      "action": {
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire"
+        },
+        "hash": "873156cccd4e3c2151e148acac17d4c98b9b596b5b6b8cbd73641a2578117b30"
+      }
+    },
+    {
+      "id": "full",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Every bindable fact present.",
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 50,
+        "caller_namespace": "finance",
+        "target_namespace": "accounting",
+        "user_id": "alice",
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 50,
+          "caller_namespace": "finance",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire",
+          "target_namespace": "accounting",
+          "user_id": "alice"
+        },
+        "hash": "4d14ebe816b48c3b046163fa45dfab9597db977be5b6094b64c8bfea85f3dcba"
+      }
+    },
+    {
+      "id": "amount_differs",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "THE case this exists for: same rule, same action name, same subject - a different amount is a different action, so a grant for one cannot be spent on the other.",
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 5000000,
+        "caller_namespace": "finance",
+        "target_namespace": "accounting",
+        "user_id": "alice",
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 5000000,
+          "caller_namespace": "finance",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire",
+          "target_namespace": "accounting",
+          "user_id": "alice"
+        },
+        "hash": "f2f5e2a18b4bc35c68bade516d82f57e1710744131f08973a0acf30c01062866"
+      }
+    },
+    {
+      "id": "target_differs",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Same amount, different destination. Also a different action.",
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 50,
+        "caller_namespace": "finance",
+        "target_namespace": "external",
+        "user_id": "alice",
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 50,
+          "caller_namespace": "finance",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire",
+          "target_namespace": "external",
+          "user_id": "alice"
+        },
+        "hash": "9616174da7e557cc820395602b606f3dcacfd957558456aed32b155f63e29cc4"
+      }
+    },
+    {
+      "id": "subject_differs",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A grant approved for one end user does not cover another.",
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 50,
+        "caller_namespace": "finance",
+        "target_namespace": "accounting",
+        "user_id": "mallory",
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 50,
+          "caller_namespace": "finance",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire",
+          "target_namespace": "accounting",
+          "user_id": "mallory"
+        },
+        "hash": "7b31de7acec876f2fe867a6b4538ceaae7635815392778caa8ceb7ff5545c06e"
+      }
+    },
+    {
+      "id": "rule_hash_differs",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Editing the rule changes its hash and therefore the action, which is how a grant is voided by a policy edit.",
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 50,
+        "rule_hash": "fedcba9876543210",
+        "rule_id": "r-wire"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 50,
+          "rule_hash": "fedcba9876543210",
+          "rule_id": "r-wire"
+        },
+        "hash": "991b6f8918e6882564c3c68117c16b95a6fd0f164365f9799261b1d19741c7b8"
+      }
+    },
+    {
+      "id": "empty_strings_omitted",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "An empty string carries no information and is dropped, so it cannot hash differently from absent. `same_as` declares the collision as intended: the distinctness check below allows exactly the equivalences named here and no others.",
+      "action": {
+        "action_name": "",
+        "caller_namespace": "",
+        "target_namespace": "",
+        "user_id": "",
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire"
+        },
+        "hash": "873156cccd4e3c2151e148acac17d4c98b9b596b5b6b8cbd73641a2578117b30"
+      },
+      "same_as": "minimal"
+    },
+    {
+      "id": "zero_amount_is_kept",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Zero is a value, not an absence.",
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 0,
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 0,
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire"
+        },
+        "hash": "babe58fc53b76d636d31d0d0adebcb8e35a3dfa44681f2180140afadde1de558"
+      }
+    },
+    {
+      "id": "negative_amount_is_kept",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "action": {
+        "action_name": "refund",
+        "amount": -25,
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "refund",
+          "amount": -25,
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire"
+        },
+        "hash": "9c354e92752f174cdb08daea354a97ba5c09f3f2aa3fc3e7777f94805bccd5a1"
+      }
+    },
+    {
+      "id": "fractional_amount",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "action": {
+        "action_name": "wire_transfer",
+        "amount": 1234.56,
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "wire_transfer",
+          "amount": 1234.56,
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire"
+        },
+        "hash": "3cb4f00bab57ade241be3bf90665db0c3278b0c743304920a9867d246693926e"
+      }
+    },
+    {
+      "id": "unicode_action_name",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Both canonicalizers emit non-ASCII unescaped, so the digest agrees byte for byte.",
+      "action": {
+        "action_name": "transferência",
+        "user_id": "josé",
+        "rule_id": "r-wire",
+        "rule_hash": "0123456789abcdef"
+      },
+      "expect": {
+        "document": {
+          "schema": "obsvr-action/1",
+          "action_name": "transferência",
+          "rule_hash": "0123456789abcdef",
+          "rule_id": "r-wire",
+          "user_id": "josé"
+        },
+        "hash": "e2f429a8e97d269187861af8e3b85b214677202e0ea0e02ebf60058125ba4cbb"
+      }
+    }
+  ],
+  "match_cases": [
+    {
+      "id": "unbound_grant_satisfies_a_bound_call",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Compatibility: a grant issued before the SDK started binding actions still satisfies. This is a real weakening and it is the ISSUER's to close - the SDK cannot invent a binding the granting party never made.",
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "action_hash": "aaaa"
+      },
+      "expect": true
+    },
+    {
+      "id": "bound_grant_satisfies_the_same_action",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "action_hash": "aaaa"
+      },
+      "expect": true
+    },
+    {
+      "id": "bound_grant_refuses_a_different_action",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "THE case: the grant was minted for one call and a different call trips the same rule. It is refused.",
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "action_hash": "bbbb"
+      },
+      "expect": false
+    },
+    {
+      "id": "bound_grant_satisfies_a_call_with_no_action_hash",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "A call whose action could not be hashed presents no action_hash, and each pin only NARROWS - so the check does not apply. Stated rather than silent: the binding is only as strong as both sides make it.",
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire"
+      },
+      "expect": true
+    },
+    {
+      "id": "expired_grant_never_satisfies",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2000-01-01T00:00:00Z",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "action_hash": "aaaa"
+      },
+      "expect": false
+    },
+    {
+      "id": "wrong_rule_never_satisfies",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-other",
+        "action_hash": "aaaa"
+      },
+      "expect": false
+    },
+    {
+      "id": "user_pinned_grant_refuses_another_user",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "user_id": "alice",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "user_id": "mallory",
+        "action_hash": "aaaa"
+      },
+      "expect": false
+    },
+    {
+      "id": "rule_hash_mismatch_voids_even_with_matching_action",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "desc": "Every pin is independent: satisfying the action does not excuse a policy edit.",
+      "grants": [
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "rule_hash": "old",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "rule_hash": "new",
+        "action_hash": "aaaa"
+      },
+      "expect": false
+    },
+    {
+      "id": "one_matching_grant_among_several_satisfies",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "grants": [
+        {
+          "id": "g0",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "action_hash": "zzzz"
+        },
+        {
+          "id": "g1",
+          "rule_id": "r-wire",
+          "expires_at": "2999-01-01T00:00:00Z",
+          "action_hash": "aaaa"
+        }
+      ],
+      "claim": {
+        "rule_id": "r-wire",
+        "action_hash": "aaaa"
+      },
+      "expect": true
+    },
+    {
+      "id": "no_grants_never_satisfies",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "grants": [],
+      "claim": {
+        "rule_id": "r-wire",
+        "action_hash": "aaaa"
+      },
+      "expect": false
+    }
+  ]
+}

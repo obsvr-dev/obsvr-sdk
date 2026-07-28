@@ -4,7 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import type { PolicyDecisionResult, QuotaUnmetered } from './hook.js';
-import { hasApproval } from './approvals.js';
+import { hasApproval, safeApprovalActionHash } from './approvals.js';
 import { recordCheckOnlyFailure } from './detector-guard.js';
 import { incrementQuota, checkQuota, checkTokenBudget } from '../governance/quota.js';
 import { hasEscrow, spendEscrowShare, peekEscrowShare } from '../governance/escrow.js';
@@ -314,8 +314,29 @@ function evaluateRules(
         // Pin the approval to THIS rule definition: a grant minted under
         // an older version of the rule (different hash) is void.
         const ruleHash = deriveRuleHash(rule);
-        if (hasApproval(rule.id, userId, ruleHash)) {
-          return { decision: 'allow', rule_id: rule.id, reason_code: ReasonCode.APPROVAL_GRANTED, reason: `approved: ${rule.name}` };
+        // ...and to THIS action, so a grant issued for one call cannot be
+        // spent on a different call that happens to trip the same rule.
+        const actionHash = safeApprovalActionHash({
+          ruleId: rule.id,
+          ruleHash,
+          actionName: context?.actionName,
+          amount: context?.amount,
+          callerNamespace: context?.callerNamespace,
+          targetNamespace: context?.targetNamespace,
+          userId,
+        });
+        const claim = { ruleId: rule.id, userId, ruleHash, actionHash };
+        if (hasApproval(claim)) {
+          return {
+            decision: 'allow',
+            rule_id: rule.id,
+            reason_code: ReasonCode.APPROVAL_GRANTED,
+            reason: `approved: ${rule.name}`,
+            rule_hash: ruleHash,
+            // Carried so the caller can re-check the grant after the layers
+            // that can delay the call, immediately before it goes out.
+            approval_granted: claim,
+          };
         }
         return {
           decision: 'block',
@@ -324,6 +345,7 @@ function evaluateRules(
           reason: `approval_required: ${rule.name}`,
           approval_required: true,
           rule_hash: ruleHash,
+          ...(actionHash !== undefined ? { action_hash: actionHash } : {}),
         };
       }
       return { decision: 'block', rule_id: rule.id, reason_code: ruleTypeToReasonCode(rule.type), reason: rule.name };

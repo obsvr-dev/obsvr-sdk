@@ -16,6 +16,7 @@ import type {
 import type { OpenAIChatRequest } from "./extractors/types.js";
 import { getConfig, isWrapped, markWrapped, isPolicyEnforcementDegraded } from "./config.js";
 import { evaluatePolicyHook, redactBuiltinPii, resolvePiiPolicy, runBuiltinPiiScan } from "../policy/hook.js";
+import type { PolicyDecisionResult } from "../policy/hook.js";
 import {
   applyOutboundRedaction,
   applyOutboundRedactionAsync,
@@ -62,7 +63,7 @@ import {
 } from "../policy/external-backend.js";
 import type { ExternalBackendRecord } from "../policy/external-backend.js";
 import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js";
-import { requestApproval } from "../policy/approvals.js";
+import { requestApproval, revalidateApproval } from "../policy/approvals.js";
 import { recordTokenUsage } from "../governance/quota.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
 import { filterArgs } from "./filters/filter.js";
@@ -1079,6 +1080,9 @@ function createAuditedMethod(
     // event at the end, so the record says the call was blocked because
     // enforcement could not be applied - never that it was redacted.
     let outboundRedactionFailure: DetectorFailure | undefined;
+    // The approval claim a live grant satisfied during rule evaluation, if any.
+    // Re-checked below, after every layer that can delay the call.
+    let approvalClaim: PolicyDecisionResult["approval_granted"];
     // --- guarded detector section ------------------------------------
     // A detector defect resolves here instead of escaping into the
     // caller's own provider call. A closed resolution drives the
@@ -1360,6 +1364,7 @@ function createAuditedMethod(
         const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx, {
           failMode: config.failMode,
         });
+        approvalClaim = result.approval_granted;
         ruleId = result.rule_id;
         policyReason = result.reason;
         // The engine's own fine-grained code survives to the event and the
@@ -1397,6 +1402,10 @@ function createAuditedMethod(
               operation: methodPath,
               user_id: typeof meta.user_id === "string" ? meta.user_id : undefined,
               rule_hash: result.rule_hash,
+              // Names the exact call a human is being asked to authorize, so
+              // the grant that comes back can be bound to it rather than to
+              // "anything that trips this rule".
+              action_hash: result.action_hash,
             });
           }
         } else if (result.decision === "redact" && actionTaken !== "redacted") {
@@ -1709,6 +1718,23 @@ function createAuditedMethod(
           policyReason = `Denied by external ${config.external_policy_backend.type} policy backend (evaluation error, fail-closed)`;
         }
       }
+    }
+
+    // Re-check a spent approval grant. Everything above this point can take
+    // real time - the customer hook has a two-second budget by default and an
+    // external policy backend has its own - and a grant that expired inside
+    // that window authorized nothing by the time the call goes out. The
+    // remaining gap is this function's own assembly, which is microseconds; an
+    // in-process library cannot make the check and the provider's receipt of
+    // the request simultaneous, and this does not pretend to.
+    if (approvalClaim && actionTaken !== "blocked" && !revalidateApproval(approvalClaim)) {
+      actionTaken = "blocked";
+      actionReason = "policy_violation";
+      actionSource = "policy_rules";
+      reasonCode = ReasonCode.APPROVAL_REQUIRED;
+      ruleId = approvalClaim.ruleId;
+      policyReason = `approval_expired_before_execution: ${approvalClaim.ruleId}`;
+      debugLog(config, "warn", `Call blocked: ${policyReason}`);
     }
 
     // Shadow rules (EV-20/21): evaluated AFTER the active decision is

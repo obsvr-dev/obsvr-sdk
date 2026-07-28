@@ -42,6 +42,24 @@ export interface PolicyDecisionResult {
   /** Canonical hash of the fired rule's definition (approval pinning). */
   rule_hash?: string;
   /**
+   * Digest of the action a require_approval rule blocked on, so the approval
+   * request the caller files names the exact call a human is being asked to
+   * authorize rather than only the rule it tripped.
+   */
+  action_hash?: string;
+  /**
+   * The claim a live grant satisfied, carried so the caller can RE-check it
+   * immediately before the outbound call. The pre-call pipeline can spend
+   * seconds after this decision (a customer hook, an external backend), and a
+   * grant that expires inside that window must not still be spending.
+   */
+  approval_granted?: {
+    ruleId: string;
+    userId?: string;
+    ruleHash?: string;
+    actionHash?: string;
+  };
+  /**
    * Set when a quota rule could not be metered on this call because the
    * bounded store had no counter slot for the scope. Present on BOTH
    * resolutions — the caller stamps it on the event either way, so an

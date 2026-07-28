@@ -64,6 +64,7 @@ import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js
 import type { PolicyDecisionResult, PostCallDecisionResult, QuotaUnmetered } from "../policy/hook.js";
 import { normalizePostCallDecision } from "../policy/hook.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
+import { requestApproval, revalidateApproval } from "../policy/approvals.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
 import {
   ENGINE_VERSION,
@@ -742,6 +743,9 @@ export async function applyPreCallPolicy(
     // the thrown error; never re-collapsed to a coarse category downstream.
     let rulesReasonCode: string | undefined = floorReasonCode;
     let quotaUnmetered: QuotaUnmetered | undefined;
+    // The approval claim a live grant satisfied, re-checked at the end of the
+    // pipeline (below) after every layer that can delay the call.
+    let approvalClaim: PolicyDecisionResult["approval_granted"];
     if (config.policyRules && config.policyRules.length > 0 && actionTaken !== "blocked") {
       // Same context the floor above was handed, and the same one the proxy
       // wrapper and the Python shared pre-call build: model and environment are
@@ -758,10 +762,26 @@ export async function applyPreCallPolicy(
         metadata: evalMetadata,
       }, { failMode: config.failMode });
       quotaUnmetered = rulesResult.quota_unmetered;
+      approvalClaim = rulesResult.approval_granted;
       if (rulesResult.decision === 'block') {
         actionTaken = 'blocked';
         actionReason = 'policy_violation';
         actionSource = 'policy_rules';
+        // A require_approval rule blocked with no grant. File the request so a
+        // human can act on it — without this the integration path could reach
+        // approval_required and then never ask anyone, so the block was
+        // permanent rather than pending. The wrapper path already did this.
+        if (rulesResult.approval_required) {
+          requestApproval(config, {
+            rule_id: rulesResult.rule_id,
+            rule_name: rulesResult.reason,
+            operation,
+            user_id: identityUserId,
+            rule_hash: rulesResult.rule_hash,
+            // Names the exact call a human is being asked to authorize.
+            action_hash: rulesResult.action_hash,
+          });
+        }
       } else if (rulesResult.decision === 'redact' && actionTaken !== 'redacted') {
         actionTaken = 'redacted';
         actionReason = 'policy_violation';
@@ -949,6 +969,23 @@ export async function applyPreCallPolicy(
           backendPolicyReason = `Denied by external ${config.external_policy_backend.type} policy backend (evaluation error, fail-closed)`;
         }
       }
+    }
+
+    // Re-check a spent approval grant. Everything above can take real time -
+    // the customer hook has a two-second budget by default and an external
+    // policy backend has its own - and a grant that expired inside that window
+    // authorized nothing by the time the call goes out. The remaining gap is
+    // this function's own return path, which is microseconds; an in-process
+    // library cannot make the check and the provider's receipt of the request
+    // simultaneous, and this does not pretend to.
+    if (approvalClaim && actionTaken !== "blocked" && !revalidateApproval(approvalClaim)) {
+      actionTaken = "blocked";
+      actionReason = "policy_violation";
+      actionSource = "policy_rules";
+      rulesReasonCode = ReasonCode.APPROVAL_REQUIRED;
+      rulesRuleId = approvalClaim.ruleId;
+      rulesPolicyReason = `approval_expired_before_execution: ${approvalClaim.ruleId}`;
+      debugLog(config, "warn", `Call blocked: ${rulesPolicyReason}`);
     }
 
     const decisionInput = buildDecisionInput({

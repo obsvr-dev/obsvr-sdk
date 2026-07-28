@@ -199,6 +199,10 @@ class TestRegistryGate:
         "__init__.py",
         "_version.py",
         "agent_run.py",
+        # Canonical document + hash for an approval action; decides nothing on
+        # its own. The layer that DOES decide is policy_rules, which is
+        # declared. Same exemption reason as decision_record.py in TS.
+        "approval_action.py",
         "audit_gap.py",
         "auto.py",
         "chain_format.py",

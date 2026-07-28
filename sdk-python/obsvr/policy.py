@@ -1057,6 +1057,9 @@ def apply_pre_call_policy(
         # the raised error; never re-collapsed to a coarse category downstream.
         rules_reason_code: Optional[str] = floor_reason_code
         quota_unmetered: Optional[Dict[str, Any]] = None
+        # The approval claim a live grant satisfied, re-checked at the end of
+        # the pipeline after every layer that can delay the call.
+        approval_claim: Optional[Dict[str, Any]] = None
         if getattr(config, 'policy_rules', None) and action_taken != "blocked":
             from .rules import evaluate_policy_rules
             rules_result = evaluate_policy_rules(
@@ -1083,6 +1086,7 @@ def apply_pre_call_policy(
             # unenforced quota rule is indistinguishable from one that was
             # counted and found under limit. Parity with TS.
             quota_unmetered = rules_result.get("quota_unmetered")
+            approval_claim = rules_result.get("approval_granted")
             if rules_decision == "block" and action_taken != "blocked":
                 action_taken = "blocked"
                 action_reason = "policy_violation"
@@ -1101,6 +1105,10 @@ def apply_pre_call_policy(
                         operation=operation,
                         user_id=(metadata or {}).get("user_id"),
                         rule_hash=rules_result.get("rule_hash"),
+                        # Names the exact call a human is being asked to
+                        # authorize, so the grant can be bound to it rather
+                        # than to "anything that trips this rule".
+                        action_hash=rules_result.get("action_hash"),
                     )
             elif rules_decision == "redact" and action_taken != "redacted":
                 action_taken = "redacted"
@@ -1339,6 +1347,26 @@ def apply_pre_call_policy(
         except Exception as _shadow_exc:  # noqa: BLE001 - deliberate catch-all
             record_check_only_failure("policy_rules", _shadow_exc)
             shadow_outcome = None
+
+    # Re-check a spent approval grant. Everything above can take real time -
+    # the customer hook has a two-second budget by default and an external
+    # policy backend has its own - and a grant that expired inside that window
+    # authorized nothing by the time the call goes out. The remaining gap is
+    # this function's own return path, which is microseconds; an in-process
+    # library cannot make the check and the provider's receipt of the request
+    # simultaneous, and this does not pretend to. TS parity: the same position
+    # in wrapper.ts and integrations/core.ts.
+    if approval_claim and action_taken != "blocked":
+        from .remote import revalidate_approval
+        if not revalidate_approval(approval_claim):
+            action_taken = "blocked"
+            action_reason = "policy_violation"
+            action_source = "policy_rules"
+            rules_reason_code = ReasonCode.APPROVAL_REQUIRED.value
+            rules_rule_id = approval_claim.get("rule_id")
+            rules_reason = (
+                "approval_expired_before_execution: %s" % approval_claim.get("rule_id")
+            )
 
     # Canonical decision record (ADR-2): commit exactly what this decision ran
     # over. ``scan`` is the text the pipeline evaluated (pre-redaction).
