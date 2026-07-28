@@ -4,7 +4,7 @@ import { stableStringify } from '../../src/policy/rules';
 
 /**
  * B2 SDK-side policy-signature verification. A signature block is constructed
- * exactly as ingest/lib/policy-signing.ts would, then verifyPolicySignature is
+ * exactly as the ingest service would, then verifyPolicySignature is
  * exercised for the accept case and every fail-closed reject case.
  */
 

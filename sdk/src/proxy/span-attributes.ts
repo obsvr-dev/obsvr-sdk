@@ -1,5 +1,5 @@
 /**
- * Span attribute vocabulary (DASHBOARD_TELEMETRY.md M5, agent cluster).
+ * Span attribute vocabulary (telemetry design notes, milestone 5, agent cluster).
  *
  * These are the semantic-convention KEYS for the open `attributes` bag on a
  * span (see span.ts). They mirror the OpenTelemetry GenAI semantic

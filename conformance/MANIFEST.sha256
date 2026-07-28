@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 10c7f5470b5486ac33660e3824641048d1857a760fbae0b702f1898b0d66eaaa
+# corpus_sha256 = 8c48c2491fd4482b35570d1b831be49b8262b92e25e0a14d3a28c18aeff07396
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -23,7 +23,7 @@
 8897a8358801783b77db8df72915a3737df6f569d7357aceeedbfb6a9774d0d2  fixtures/canonical_json.json
 d77658342742e521477344e4ca363aefc4ec7989614fc8318228abd3944e3cf6  fixtures/decision_input.json
 933e2c94f21539865fc40dc5ad92a4670b0aa172fb9d6b67962dc54f4b8e27ef  fixtures/deobfuscation.json
-1f1719e95ebd5fdb3e1778fb6e20b1747b3b790e49a101484695bb2ac480e0bb  fixtures/effective_policy.json
+a31dd90a54ef9844b6c980ea86756ae1e8b6832b422f0bc72268fbf9294afdd2  fixtures/effective_policy.json
 084f276d8106e963a23bb28c9dca361c298d79a447438566ed713ea7526aa503  fixtures/error_parity.json
 01cf7787be0e04651eefad8c490c3fa450c7e5c2495d7fa31527272fbc2082db  fixtures/eval_semantics.json
 082188c8f61b33b57cfa55a1ec1d903cabe27710b23cd837ceb35540fa9ca77a  fixtures/external_backend.json
@@ -44,4 +44,4 @@ d02bc155db1af4c912afc25e80955560de3ebf7c2e7462509baad369b57b7996  fixtures/sessi
 354fc293a9187683f4000103d3a4f3c85c89935a6a467ba1f8f03efa220e8e31  fixtures/tool_descriptor_scan.json
 b0787f633aa0b96f6cdbd31ee4d4c13e3b6929002d5d79febd5b4a5abf063376  fixtures/tool_pinning.json
 4c6a7a88b4799fd94376157246484f98280c7a8e747bd6b29076259fd35e73a5  known-divergences.json
-47c4065f804ee79aa8674ca80a9a7095065ab964c578153a2edb2a8fe58bdfe8  known-divergences.md
+cc5a75d42a73dd98a09ea665064791e72d49c6706c22fb76dd4be94d3309c8d3  known-divergences.md

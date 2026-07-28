@@ -1,4 +1,4 @@
-"""Span primitive (DASHBOARD_TELEMETRY.md M3): a generic execution-graph node.
+"""Span primitive (telemetry design notes, milestone 3): a generic execution-graph node.
 
 Mirror of sdk/src/proxy/span.ts. A span carries a typed identity plus an open
 `attributes` bag, so new node kinds never require a schema change. Parent links

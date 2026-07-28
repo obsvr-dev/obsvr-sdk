@@ -126,8 +126,8 @@ _last_config: Optional[ResolvedConfig] = None
 def derive_signing_key(api_key: str) -> bytes:
     """HKDF-Extract (RFC 5869 section 2.2): PRK = HMAC-SHA256(salt, api_key).
 
-    Identical derivation to the TS SDK and ingest/lib/signing.ts, so the
-    server re-derives the same key from the stored API key.
+    Identical derivation to the TS SDK and to the ingest service's signing
+    path, so the server re-derives the same key from the stored API key.
     """
     return hmac_mod.new(SIGNING_SALT, api_key.encode("utf-8"), hashlib.sha256).digest()
 

@@ -1,5 +1,5 @@
 /**
- * Call telemetry extractor (DASHBOARD_TELEMETRY.md, Milestone 1).
+ * Call telemetry extractor (telemetry design notes, milestone 1).
  *
  * Pulls high-value, provider-tolerant scalar telemetry off the request and
  * response objects the wrapper already has in hand: request shape params,

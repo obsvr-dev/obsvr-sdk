@@ -1475,7 +1475,7 @@ export interface IntegrationEventParams {
   metadata?: Record<string, unknown>;
   options?: IntegrationOptions;
   compliance?: ComplianceInfo;
-  /** Optional curated call telemetry (DASHBOARD_TELEMETRY.md M1). Merged
+  /** Optional curated call telemetry (telemetry design notes, milestone 1). Merged
    * into metadata under the reserved key when supplied by an integration. */
   telemetry?: CallTelemetry;
   /** Canary-leak evidence for a PRE-CALL block (whose stored prompt is already

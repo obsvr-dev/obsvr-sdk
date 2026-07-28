@@ -1,8 +1,8 @@
 /**
- * Span primitive (DASHBOARD_TELEMETRY.md, Milestone 3): a generic node in the
+ * Span primitive (telemetry design notes, milestone 3): a generic node in the
  * execution graph. This is a FOUNDATIONAL data model, not a UI feature.
  *
- * Design decisions (see new_changes/DASHBOARD_TELEMETRY_M3.md):
+ * Design decisions:
  *  - Generic over feature-specific. A span carries a typed identity
  *    (span_id, parent_span_id, kind, name) plus an OPEN `attributes` bag.
  *    Kind-specific data (tool name, retrieval count, memory op) goes in

@@ -119,5 +119,4 @@ History:
   divergences were FIXED (not accepted) while wiring the conformance
   suite: Python labeled structured-rule outcomes action_source
   "builtin" (TS: "policy_rules"), and ingest's wire enum rejected
-  "policy_rules"/"builtin+presidio" events entirely. See
-  ingest/tests/unit/event-schema-contract.test.ts.
+  "policy_rules"/"builtin+presidio" events entirely.

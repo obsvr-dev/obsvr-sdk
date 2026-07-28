@@ -571,7 +571,7 @@ function buildAuditEvent(
       ? rawResolvedModel.trim()
       : undefined;
 
-  // Curated call telemetry (DASHBOARD_TELEMETRY.md M1): request shape,
+  // Curated call telemetry (telemetry design notes, milestone 1): request shape,
   // response metadata, cost-detail tokens. Rides in metadata under the
   // reserved key so the signed event schema is untouched.
   const callTelemetry = extractCallTelemetry(provider, request, response);

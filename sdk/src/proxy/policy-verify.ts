@@ -9,8 +9,8 @@
  * closed: it does NOT apply the fetched rules and keeps its last-good policy.
  *
  * Dependency-free (node:crypto). The canonical hash uses the SAME stableStringify
- * as the rules engine, so the hash the SDK recomputes matches the one ingest
- * signed byte-for-byte (ingest/lib/policy-signing.ts).
+ * as the rules engine, so the hash the SDK recomputes matches the one the
+ * ingest service signed, byte-for-byte.
  */
 
 import { createHash, createPublicKey, verify as edVerify } from 'node:crypto';

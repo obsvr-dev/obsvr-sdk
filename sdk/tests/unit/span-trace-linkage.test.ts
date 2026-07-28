@@ -4,7 +4,7 @@ import { _resetSender, flushQueue } from '../../src/proxy/sender/fire-and-forget
 import type { AuditEvent } from '../../src/proxy/types';
 
 /**
- * Span-to-trace linkage (SPAN_TRACE_LINKAGE.md): persists the functional proof
+ * Span-to-trace linkage: persists the functional proof
  * as a regression suite. A span scope carries a trace_id with the precedence
  *   explicit opts.trace_id > enclosing scope's trace_id > own span_id (self-root)
  * and emitSpanEvent stamps it into metadata.trace_id so ingest groups the span
