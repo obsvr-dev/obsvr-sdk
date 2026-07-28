@@ -120,15 +120,27 @@ cut, when it is renamed to that version.
   presence, concealment is its own signal, and a truncated schema walk says
   so. Reasons pinned exactly by `conformance/fixtures/tool_descriptor_scan.json`.
   ([`ca0c209`](https://github.com/obsvr-dev/obsvr-sdk/commit/ca0c209))
-- **Cross-SDK bookkeeping is validated data.** Fixture cases carry per-language
-  `sdk_support` (a gap shows as a recorded skip, not a missing test — first
-  used by the hidden-markup cases, since closed), fixtures carry `claimable` enforced
-  bidirectionally against the public docs, the known-divergences table became
-  the schema-checked `conformance/known-divergences.json`, and the spec's
-  seven uncovered EV statements are a checked partition in
-  `eval_semantics.json` rather than a prose admission.
+- **Cross-SDK bookkeeping is validated data.** Every conformance case now
+  carries per-language `sdk_support` (`required` / `optional` / `skip`) — 418
+  entries across 25 of the 26 fixtures — so a gap shows as a recorded skip
+  rather than a missing test. `claimable` is resolved on all 26 and enforced
+  bidirectionally against the public docs. The known-divergences table became
+  the schema-checked `conformance/known-divergences.json`, and the spec's seven
+  uncovered EV statements are a checked partition in `eval_semantics.json`
+  rather than a prose admission. **A support level is enforced, not
+  decorative:** both suites reject a non-`required` level whose consuming
+  harness does not read the field, so a `skip` nothing would act on fails the
+  bookkeeping rather than surfacing later as a confusing case-level failure. If
+  you consume the corpus, `required` is the level you can assume is exercised
+  everywhere; `optional` today means only the two signed-policy vectors that
+  need an Ed25519 backend Python resolves optionally.
   ([`2585ce0`](https://github.com/obsvr-dev/obsvr-sdk/commit/2585ce0),
-  [`97d82dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/97d82dd))
+  [`97d82dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/97d82dd),
+  [`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
+  [`dd914c8`](https://github.com/obsvr-dev/obsvr-sdk/commit/dd914c8),
+  [`aff2949`](https://github.com/obsvr-dev/obsvr-sdk/commit/aff2949),
+  [`662d63e`](https://github.com/obsvr-dev/obsvr-sdk/commit/662d63e),
+  [`f00e883`](https://github.com/obsvr-dev/obsvr-sdk/commit/f00e883))
 - **Dropped events are declared in the signed chain.** A bounded-queue overflow
   now signs a **gap marker** at the chain position where events were lost,
   stating how many. The count lives in the signature preimage, so editing it
@@ -338,9 +350,37 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   Semantics are unchanged.
   ([`3b0f13d`](https://github.com/obsvr-dev/obsvr-sdk/commit/3b0f13d))
 - `conformance/fixtures/signing_vectors.json` gained a `chain_verification`
-  block: thirteen tamper cases with the verdict both verifiers must produce.
-  Consumers of the existing `events` and key material are unaffected.
-  ([`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5))
+  block: tamper cases with the verdict both verifiers must produce. It landed
+  with thirteen and now holds twenty, the chain-format change above having
+  added the format-1, format-2, and mixed-chain cases. Consumers of the
+  existing `events` and key material are unaffected.
+  ([`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5),
+  [`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
+- `conformance/fixtures/eval_semantics.json` gained dedicated cases for EV-3,
+  EV-14, and EV-22 — statements `conformance/SPEC-evaluation.md` listed as
+  covered but which no fixture actually pinned — shrinking the uncovered list
+  from nine to seven. Cases now declare a `mode`: `rules` (the default),
+  `pipeline`, or `explain`. Semantics are unchanged; this pins behavior that
+  was already specified.
+  ([`4d1c423`](https://github.com/obsvr-dev/obsvr-sdk/commit/4d1c423))
+- **The conformance corpus hash changed — re-pin if you pinned it.**
+  `conformance/MANIFEST.sha256` moved from `corpus_sha256 = 1120116f…` to
+  `8c48c249…`, and both `conformance.pin` files with it. What moved is
+  bookkeeping and prose only: the per-case `sdk_support` and per-fixture
+  `claimable` keys described under Added, one divergence entry's `tracking`
+  text, and one fixture's `description`. **No vector, digest, canonical form,
+  or expected value changed** — with those two keys stripped, the only
+  remaining differences anywhere in the corpus are those two prose fields, so
+  your expected values are unmoved and only the pin needs updating.
+  ([`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
+  [`dd914c8`](https://github.com/obsvr-dev/obsvr-sdk/commit/dd914c8),
+  [`f3947d9`](https://github.com/obsvr-dev/obsvr-sdk/commit/f3947d9),
+  [`6767aa4`](https://github.com/obsvr-dev/obsvr-sdk/commit/6767aa4))
+- **The published GitHub Action pins its own dependency to a commit.** Its
+  `setup-node` step used a mutable tag, which every consumer's CI inherited
+  with no way to see or override it. It is now pinned to a commit SHA with the
+  version in a trailing comment.
+  ([`030dc8c`](https://github.com/obsvr-dev/obsvr-sdk/commit/030dc8c))
 
 ## [0.10.0] - 2026-07-20
 
