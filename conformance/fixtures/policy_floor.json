@@ -5,6 +5,7 @@
   "decision_cases": [
     {
       "id": "floor_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [
         {
           "id": "floor-secrets",
@@ -26,6 +27,7 @@
     },
     {
       "id": "floor_clean_allows",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [
         {
           "id": "floor-secrets",
@@ -47,6 +49,7 @@
     },
     {
       "id": "downgraded_floor_still_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [
         {
           "id": "floor-secrets",
@@ -69,6 +72,7 @@
     },
     {
       "id": "empty_floor_allows",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [],
       "input": "anything",
       "expect": {
@@ -79,6 +83,7 @@
   "version_cases": [
     {
       "id": "floor_a",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [
         {
           "id": "floor-secrets",
@@ -99,6 +104,7 @@
     },
     {
       "id": "downgraded_hashes_same_as_enforced",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [
         {
           "id": "floor-secrets",
@@ -120,6 +126,7 @@
     },
     {
       "id": "multi_sorted",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [
         {
           "id": "b-second",
@@ -152,6 +159,7 @@
     },
     {
       "id": "empty_is_none",
+      "sdk_support": { "ts": "required", "py": "required" },
       "floor": [],
       "expect": {
         "floor_version": "none"

@@ -15,6 +15,7 @@
   "cases": [
     {
       "id": "valid_signature_accepts",
+      "sdk_support": { "ts": "required", "py": "optional" },
       "desc": "a correctly signed policy from the pinned key is applied",
       "rules": [
         {
@@ -46,6 +47,7 @@
     },
     {
       "id": "tampered_rules_reject",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "rules altered in transit no longer hash to the signed rules_sha256",
       "rules": [
         {
@@ -78,6 +80,7 @@
     },
     {
       "id": "tampered_approvals_reject",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "approvals altered in transit no longer hash to the signed approvals_sha256",
       "rules": [
         {
@@ -115,6 +118,7 @@
     },
     {
       "id": "wrong_key_reject",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "a policy signed by a key other than the pinned one is refused before any crypto",
       "rules": [
         {
@@ -147,6 +151,7 @@
     },
     {
       "id": "forged_value_reject",
+      "sdk_support": { "ts": "required", "py": "optional" },
       "desc": "the block claims the pinned key but the signature was made by another private key",
       "rules": [
         {
@@ -179,6 +184,7 @@
     },
     {
       "id": "key_id_mismatch_reject",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "key_id must be derived from the public key it travels with",
       "rules": [
         {
@@ -211,6 +217,7 @@
     },
     {
       "id": "missing_signature_reject",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "with a key pinned, an unsigned response is refused",
       "rules": [
         {
@@ -235,6 +242,7 @@
     },
     {
       "id": "unsupported_alg_reject",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "only ed25519 is accepted",
       "rules": [
         {

@@ -15,18 +15,21 @@
   "preimage_cases": [
     {
       "id": "single_drop",
+      "sdk_support": { "ts": "required", "py": "required" },
       "dropped": 1,
       "reason": "queue_overflow",
       "prompt": "obsvr:audit-gap/1 dropped=1 reason=queue_overflow"
     },
     {
       "id": "burst",
+      "sdk_support": { "ts": "required", "py": "required" },
       "dropped": 8734,
       "reason": "queue_overflow",
       "prompt": "obsvr:audit-gap/1 dropped=8734 reason=queue_overflow"
     },
     {
       "id": "large_count_no_grouping",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "no thousands separators, no locale formatting - the number is written the same way in both languages",
       "dropped": 1000000,
       "reason": "queue_overflow",
@@ -37,42 +40,50 @@
   "parse_rejects": [
     {
       "id": "empty",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "",
       "desc": "an ordinary event with no prompt is not a marker"
     },
     {
       "id": "ordinary_prompt",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "summarize this document",
       "desc": "the overwhelmingly common case: real content"
     },
     {
       "id": "missing_reason",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "obsvr:audit-gap/1 dropped=12",
       "desc": "a truncated marker is not read as a partial one"
     },
     {
       "id": "unknown_format_version",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "obsvr:audit-gap/2 dropped=1 reason=queue_overflow",
       "desc": "a newer format is not guessed at by an older reader"
     },
     {
       "id": "negative_count",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "obsvr:audit-gap/1 dropped=-1 reason=queue_overflow",
       "desc": "a loss count cannot be negative"
     },
     {
       "id": "uppercase_reason",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "obsvr:audit-gap/1 dropped=1 reason=Queue_Overflow",
       "desc": "reasons are a lowercase token set; case is not normalized away"
     },
     {
       "id": "leading_text",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "note: obsvr:audit-gap/1 dropped=1 reason=queue_overflow",
       "desc": "a real prompt that merely quotes the format is not a marker",
       "attack": "otherwise any caller could mint a loss claim by putting the string in a prompt"
     },
     {
       "id": "trailing_text",
+      "sdk_support": { "ts": "required", "py": "required" },
       "prompt": "obsvr:audit-gap/1 dropped=1 reason=queue_overflow and more",
       "desc": "the statement is the whole content or it is not the statement"
     }
@@ -134,6 +145,7 @@
     "cases": [
       {
         "id": "valid_chain_declares_its_loss",
+        "sdk_support": { "ts": "required", "py": "required" },
         "mutations": [],
         "expect": {
           "valid": true,
@@ -144,6 +156,7 @@
       },
       {
         "id": "edited_count_breaks_the_signature",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "the whole point of signing the count: rewriting 1234 to 1 does not survive verification",
         "mutations": [
           {
@@ -164,6 +177,7 @@
       },
       {
         "id": "tally_covers_only_the_verified_prefix",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a break before the marker means its claim was never verified, so it is not counted",
         "mutations": [{ "op": "set", "index": 0, "field": "prompt", "value": "hello (edited)" }],
         "expect": {

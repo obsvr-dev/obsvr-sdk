@@ -9,6 +9,7 @@
   "cases": [
     {
       "id": "pii_block_builtin",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "the builtin scanner blocks on detected PII",
       "input": {
         "action_taken": "blocked",
@@ -33,6 +34,7 @@
     },
     {
       "id": "rule_block_carries_rule_id",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "a structured rule blocks; the deciding rule is on the error",
       "input": {
         "action_taken": "blocked",
@@ -58,6 +60,7 @@
     },
     {
       "id": "customer_hook_block",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "the customer hook blocks",
       "input": {
         "action_taken": "blocked",
@@ -82,6 +85,7 @@
     },
     {
       "id": "external_backend_deny",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "an external policy backend denies",
       "input": {
         "action_taken": "blocked",
@@ -107,6 +111,7 @@
     },
     {
       "id": "explicit_reason_code_wins",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "a deciding layer that already resolved a reason code keeps it rather than having one re-derived",
       "input": {
         "action_taken": "blocked",
@@ -132,6 +137,7 @@
     },
     {
       "id": "unknown_category_falls_back",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "a reason category this version does not know still produces a typed error, never a bare one",
       "input": {
         "action_taken": "blocked",
@@ -156,6 +162,7 @@
     },
     {
       "id": "sparse_input_still_typed",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "missing metadata does not degrade the error: the decision block is filled with explicit defaults",
       "input": {
         "action_taken": null,

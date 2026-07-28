@@ -6,6 +6,7 @@
   "cases": [
     {
       "id": "request-allow-all-scopes",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "request target, active rules, every scope identifier present, hook allowed",
       "input": {
         "rules_hash": "4bdd7fad795f7545",
@@ -36,6 +37,7 @@
     },
     {
       "id": "request-no-optionals",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "no rules enabled, empty evaluated text, no scope ids, no hook configured — absent optionals are OMITTED",
       "input": {
         "rules_hash": "none",
@@ -60,6 +62,7 @@
     },
     {
       "id": "response-target",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "response target digests into response_sha256 (prompt_sha256 absent)",
       "input": {
         "rules_hash": "4bdd7fad795f7545",
@@ -86,6 +89,7 @@
     },
     {
       "id": "unicode-scopes-and-text",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "non-ASCII scope identifiers and evaluated text: canonical bytes are raw UTF-8 (no \\u escapes)",
       "input": {
         "rules_hash": "4bdd7fad795f7545",
@@ -116,6 +120,7 @@
     },
     {
       "id": "degraded-kill-switch",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "kill switch active: degraded true + reason present, hook skipped (gate blocks are not overridable)",
       "input": {
         "rules_hash": "4bdd7fad795f7545",
@@ -142,6 +147,7 @@
     },
     {
       "id": "hook-timeout",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "customer hook timed out (disposition recorded even when fail-open allowed the call)",
       "input": {
         "rules_hash": "none",
@@ -168,6 +174,7 @@
     },
     {
       "id": "response-degraded-stale-hook-error",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "response target + fail-closed staleness + hook error, all in one document",
       "input": {
         "rules_hash": "0123456789abcdef",

@@ -6,6 +6,7 @@
   "key_cases": [
     {
       "id": "user_id_wins",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": "alice",
         "session_id": "s1",
@@ -15,6 +16,7 @@
     },
     {
       "id": "session_id_fallback",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "session_id": "s1",
         "tenant_id": "t1"
@@ -23,6 +25,7 @@
     },
     {
       "id": "tenant_id_fallback",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "tenant_id": "t1"
       },
@@ -30,16 +33,19 @@
     },
     {
       "id": "global_when_absent",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {},
       "expect": "global"
     },
     {
       "id": "global_when_none",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": null,
       "expect": "global"
     },
     {
       "id": "empty_user_id_falls_through",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": "",
         "session_id": "s1"
@@ -48,6 +54,7 @@
     },
     {
       "id": "empty_user_id_and_session",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": "",
         "session_id": ""
@@ -56,6 +63,7 @@
     },
     {
       "id": "all_empty_is_global",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": "",
         "session_id": "",
@@ -65,6 +73,7 @@
     },
     {
       "id": "numeric_zero_user_id_is_valid",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": 0,
         "session_id": "s1"
@@ -73,6 +82,7 @@
     },
     {
       "id": "numeric_user_id",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": 123
       },
@@ -80,6 +90,7 @@
     },
     {
       "id": "empty_then_tenant",
+      "sdk_support": { "ts": "required", "py": "required" },
       "metadata": {
         "user_id": "",
         "session_id": "",
@@ -91,6 +102,7 @@
   "decision_cases": [
     {
       "id": "untainted_flag_noop",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": false,
       "config": {
         "enabled": true,
@@ -102,6 +114,7 @@
     },
     {
       "id": "untainted_block_noop",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": false,
       "config": {
         "enabled": true,
@@ -113,6 +126,7 @@
     },
     {
       "id": "tainted_flag",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": true,
       "config": {
         "enabled": true,
@@ -124,6 +138,7 @@
     },
     {
       "id": "tainted_block",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": true,
       "config": {
         "enabled": true,
@@ -135,6 +150,7 @@
     },
     {
       "id": "tainted_default_action_is_flag",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": true,
       "config": {
         "enabled": true
@@ -145,6 +161,7 @@
     },
     {
       "id": "disabled_never_enforces",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": true,
       "config": {
         "enabled": false,
@@ -156,6 +173,7 @@
     },
     {
       "id": "no_config_noop",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tainted": true,
       "config": null,
       "expect": {
@@ -168,6 +186,7 @@
     "cases": [
       {
         "id": "untainted_destructive_tool_runs",
+        "sdk_support": { "ts": "required", "py": "required" },
         "tainted": false,
         "config": {
           "enabled": true,
@@ -183,6 +202,7 @@
       },
       {
         "id": "tainted_flag_nondestructive_flags",
+        "sdk_support": { "ts": "required", "py": "required" },
         "tainted": true,
         "config": {
           "enabled": true,
@@ -198,6 +218,7 @@
       },
       {
         "id": "tainted_flag_destructive_blocks",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "THE case: flag mode, and the destructive capability is still refused",
         "tainted": true,
         "config": {
@@ -215,6 +236,7 @@
       },
       {
         "id": "tainted_block_mode_blocks_everything",
+        "sdk_support": { "ts": "required", "py": "required" },
         "tainted": true,
         "config": {
           "enabled": true,
@@ -228,6 +250,7 @@
       },
       {
         "id": "empty_set_flag_stays_flag",
+        "sdk_support": { "ts": "required", "py": "required" },
         "tainted": true,
         "config": {
           "enabled": true,
@@ -241,6 +264,7 @@
       },
       {
         "id": "membership_is_exact_names_only",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "send_money_v2 is not send_money: no prefix or pattern matching, ever",
         "tainted": true,
         "config": {
@@ -257,6 +281,7 @@
       },
       {
         "id": "disabled_latch_never_gates",
+        "sdk_support": { "ts": "required", "py": "required" },
         "tainted": true,
         "config": null,
         "tool_name": "send_money",

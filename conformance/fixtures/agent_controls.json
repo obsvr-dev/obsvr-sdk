@@ -6,12 +6,14 @@
   "loop_cases": [
     {
       "id": "under_threshold_never_fires",
+      "sdk_support": { "ts": "required", "py": "required" },
       "detector": { "max_iterations": 3, "window_ms": 60000, "action": "block" },
       "iterations": 3,
       "expect": [null, null, null]
     },
     {
       "id": "fires_on_the_iteration_past_the_threshold",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The detector fires when the count EXCEEDS max_iterations, so a limit of 2 first fires on the 3rd iteration, reporting 3.",
       "detector": { "max_iterations": 2, "window_ms": 60000, "action": "block" },
       "iterations": 4,
@@ -24,6 +26,7 @@
     },
     {
       "id": "escalate_action_is_carried_through_verbatim",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The detector reports the configured action; deciding what to do with it belongs to the caller, not the detector.",
       "detector": { "max_iterations": 1, "window_ms": 60000, "action": "escalate" },
       "iterations": 3,
@@ -35,6 +38,7 @@
     },
     {
       "id": "a_zero_limit_fires_on_the_first_iteration",
+      "sdk_support": { "ts": "required", "py": "required" },
       "detector": { "max_iterations": 0, "window_ms": 60000, "action": "block" },
       "iterations": 2,
       "expect": [
@@ -46,12 +50,14 @@
   "delegation_cases": [
     {
       "id": "a_chain_within_every_limit_is_recorded",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tracker": { "max_depth": 3, "block_circular": true },
       "delegations": [["root", "a"], ["a", "b"], ["b", "c"]],
       "expect": [null, null, null]
     },
     {
       "id": "depth_exceeded_reports_the_would_be_depth",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The violation describes the delegation that was REFUSED, so chain and depth include the agent that never joined.",
       "tracker": { "max_depth": 2, "block_circular": true },
       "delegations": [["root", "a"], ["a", "b"], ["b", "c"]],
@@ -68,6 +74,7 @@
     },
     {
       "id": "circular_delegation_is_refused_when_block_circular_is_set",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tracker": { "max_depth": 10, "block_circular": true },
       "delegations": [["root", "a"], ["a", "b"], ["b", "a"]],
       "expect": [
@@ -83,12 +90,14 @@
     },
     {
       "id": "circular_delegation_is_allowed_when_block_circular_is_off",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tracker": { "max_depth": 10, "block_circular": false },
       "delegations": [["root", "a"], ["a", "b"], ["b", "a"]],
       "expect": [null, null, null]
     },
     {
       "id": "an_agent_outside_the_allowlist_is_refused",
+      "sdk_support": { "ts": "required", "py": "required" },
       "tracker": { "max_depth": 10, "allowed_delegates": ["a", "b"], "block_circular": true },
       "delegations": [["root", "a"], ["a", "c"]],
       "expect": [
@@ -103,6 +112,7 @@
     },
     {
       "id": "an_empty_allowlist_permits_nobody",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "An empty list is a declared allowlist, not an absent one.",
       "tracker": { "max_depth": 10, "allowed_delegates": [], "block_circular": true },
       "delegations": [["root", "a"]],
@@ -117,6 +127,7 @@
     },
     {
       "id": "the_allowlist_is_checked_before_depth",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "This delegation is both off-allowlist and past the depth limit; the check order decides which one the audit event names, so it is pinned.",
       "tracker": { "max_depth": 1, "allowed_delegates": ["a"], "block_circular": true },
       "delegations": [["root", "a"], ["a", "z"]],
@@ -132,6 +143,7 @@
     },
     {
       "id": "circularity_is_checked_before_depth",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "At max depth AND circular: circular wins.",
       "tracker": { "max_depth": 2, "block_circular": true },
       "delegations": [["root", "a"], ["a", "b"], ["b", "a"]],
@@ -148,6 +160,7 @@
     },
     {
       "id": "a_refused_delegation_does_not_join_the_chain",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "After a refusal the chain is unchanged, so the next legal delegation sits at the depth it would have had.",
       "tracker": { "max_depth": 2, "block_circular": true },
       "delegations": [["root", "a"], ["a", "b"], ["b", "c"], ["b", "a"]],
@@ -170,9 +183,9 @@
     }
   ],
   "circular_chain_cases": [
-    { "id": "empty_chain", "chain": [], "expect": false },
-    { "id": "no_repeat", "chain": ["a", "b", "c"], "expect": false },
-    { "id": "immediate_repeat", "chain": ["a", "a"], "expect": true },
-    { "id": "distant_repeat", "chain": ["a", "b", "c", "a"], "expect": true }
+    { "id": "empty_chain", "sdk_support": { "ts": "required", "py": "required" }, "chain": [], "expect": false },
+    { "id": "no_repeat", "sdk_support": { "ts": "required", "py": "required" }, "chain": ["a", "b", "c"], "expect": false },
+    { "id": "immediate_repeat", "sdk_support": { "ts": "required", "py": "required" }, "chain": ["a", "a"], "expect": true },
+    { "id": "distant_repeat", "sdk_support": { "ts": "required", "py": "required" }, "chain": ["a", "b", "c", "a"], "expect": true }
   ]
 }

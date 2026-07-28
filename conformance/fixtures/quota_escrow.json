@@ -12,6 +12,7 @@
   "cases": [
     {
       "id": "grant-spend-exhaust-report",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "A grant is spent one unit per call; the call after exhaustion blocks (quota_exceeded); the report tallies units actually consumed under the grant's epoch.",
       "steps": [
         { "op": "grant", "rule_id": "r1", "share": 2, "epoch": 1 },
@@ -24,6 +25,7 @@
     },
     {
       "id": "re-grant-resets-share-and-consumption",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "A fresh grant (new epoch) refills remaining and resets the per-epoch consumption counter; the next report is tagged with the new epoch.",
       "steps": [
         { "op": "grant", "rule_id": "r1", "share": 2, "epoch": 1 },
@@ -37,6 +39,7 @@
     },
     {
       "id": "zero-share-fails-closed",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "When the global budget is fully committed the allocator grants share 0; the instance blocks immediately (fail-closed) rather than overspending, and reports zero consumption so the whole grant is reclaimable.",
       "steps": [
         { "op": "grant", "rule_id": "r1", "share": 0, "epoch": 7 },
@@ -47,6 +50,7 @@
     },
     {
       "id": "partition-spends-residual-then-blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "On a poll failure no fresh grant arrives; the instance spends only its residual share and then blocks — it never fabricates share. The eventual successful poll reports what it used.",
       "steps": [
         { "op": "grant", "rule_id": "r1", "share": 2, "epoch": 3 },
@@ -59,6 +63,7 @@
     },
     {
       "id": "multi-rule-independent-shares",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "A poll_response grants shares for several rules at once; each rule's share depletes independently and both are reported.",
       "steps": [
         { "op": "poll_response", "escrow": { "r1": { "share": 1, "epoch": 1 }, "r2": { "share": 2, "epoch": 1 } } },
@@ -72,6 +77,7 @@
     },
     {
       "id": "absent-rule-falls-back-to-per-process",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "A rule absent from quota_escrow has no escrow in effect (spend signals escrow=false so the caller uses the per-process meter). An absent quota_escrow field (null) clears all escrow — backward compatible with servers that never send it.",
       "steps": [
         { "op": "poll_response", "escrow": { "r1": { "share": 1, "epoch": 1 } } },
@@ -85,6 +91,7 @@
     },
     {
       "id": "stale-grant-ignored",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "A grant whose epoch is not strictly greater than the current epoch (lower OR equal) is ignored, so a reordered or duplicated response can never resurrect a spent share; only a strictly newer epoch refills.",
       "steps": [
         { "op": "grant", "rule_id": "r1", "share": 3, "epoch": 5 },
@@ -101,6 +108,7 @@
     },
     {
       "id": "poll-refills-after-exhaustion",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "After a rule's share is exhausted and blocking, a later poll_response with a strictly newer epoch refills the share and unblocks; consumption is reported under the new epoch.",
       "steps": [
         { "op": "grant", "rule_id": "r1", "share": 1, "epoch": 1 },

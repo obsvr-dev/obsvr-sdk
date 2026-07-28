@@ -5,6 +5,7 @@
   "hash_cases": [
     {
       "id": "token_a",
+      "sdk_support": { "ts": "required", "py": "required" },
       "token": "obsvr-cnry-0123456789abcdef0123456789abcdef",
       "expect": {
         "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe"
@@ -12,6 +13,7 @@
     },
     {
       "id": "token_b",
+      "sdk_support": { "ts": "required", "py": "required" },
       "token": "obsvr-cnry-fedcba9876543210fedcba9876543210",
       "expect": {
         "hash": "a20fb8f4ad13c344e5ff38df6b324f61ec986b047a78b4e2a71017988166f9a4"
@@ -19,6 +21,7 @@
     },
     {
       "id": "uppercase_canonicalizes",
+      "sdk_support": { "ts": "required", "py": "required" },
       "token": "OBSVR-CNRY-0123456789ABCDEF0123456789ABCDEF",
       "expect": {
         "hash": "80c5168f73a7a3e98b9fc3c8b505163007db04bbeeabfc78a3da47c74871bdbe"
@@ -28,11 +31,13 @@
   "candidate_cases": [
     {
       "id": "clean_no_canary",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "the quick brown fox jumps",
       "expect": []
     },
     {
       "id": "raw_in_output",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "the assistant replied: obsvr-cnry-0123456789abcdef0123456789abcdef oops",
       "expect": [
         {
@@ -43,6 +48,7 @@
     },
     {
       "id": "two_distinct_tokens",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "obsvr-cnry-0123456789abcdef0123456789abcdef and obsvr-cnry-fedcba9876543210fedcba9876543210",
       "expect": [
         {
@@ -57,6 +63,7 @@
     },
     {
       "id": "duplicate_token_deduped",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "obsvr-cnry-0123456789abcdef0123456789abcdef obsvr-cnry-0123456789abcdef0123456789abcdef",
       "expect": [
         {
@@ -67,6 +74,7 @@
     },
     {
       "id": "uppercase_token",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "LEAK: OBSVR-CNRY-0123456789ABCDEF0123456789ABCDEF",
       "expect": [
         {
@@ -77,6 +85,7 @@
     },
     {
       "id": "base64_encoded_exfil",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "exfil payload: b2JzdnItY25yeS0wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==",
       "expect": [
         {
@@ -87,6 +96,7 @@
     },
     {
       "id": "hex_encoded_exfil",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "0x 6f627376722d636e72792d3031323334353637383961626364656630313233343536373839616263646566",
       "expect": [
         {
@@ -97,6 +107,7 @@
     },
     {
       "id": "zero_width_split",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "obsvr-cnry-0123\u200b456789abcdef0123456789abcdef",
       "expect": [
         {
@@ -107,6 +118,7 @@
     },
     {
       "id": "prefix_only_no_match",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": "obsvr-cnry-nothex",
       "expect": []
     }

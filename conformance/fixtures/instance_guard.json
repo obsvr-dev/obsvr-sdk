@@ -13,6 +13,7 @@
   "cases": [
     {
       "id": "single_instance_governs",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "one copy, one claim: it governs and logs nothing",
       "claims": [
         {
@@ -29,6 +30,7 @@
     },
     {
       "id": "second_copy_yields_and_logs_once",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "a second copy finds the slot taken, logs once, and does not govern",
       "claims": [
         {
@@ -55,6 +57,7 @@
     },
     {
       "id": "repeated_claims_by_the_yielded_copy_stay_quiet",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "the yielded copy re-initializing does not turn one duplicate install into a stream of warnings",
       "claims": [
         {
@@ -87,6 +90,7 @@
     },
     {
       "id": "governing_copy_reinit_keeps_governing",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "re-initializing the governing copy with new config is not duplication",
       "claims": [
         {
@@ -111,6 +115,7 @@
     },
     {
       "id": "older_incumbent_keeps_the_slot_and_is_named",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "a newer copy still yields to an older incumbent, and the log says the governing copy is older",
       "claims": [
         {
@@ -138,6 +143,7 @@
     },
     {
       "id": "newer_incumbent_is_not_flagged_as_older",
+      "sdk_support": { "ts": "required", "py": "required" },
       "desc": "the older-version note appears only when it is true",
       "claims": [
         {

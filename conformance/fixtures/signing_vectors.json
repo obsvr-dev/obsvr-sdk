@@ -10,6 +10,7 @@
     "cases": [
       {
         "id": "boundary_left",
+        "sdk_support": { "ts": "required", "py": "required" },
         "prompt": "AB",
         "response": "C",
         "digest": "9fe892df2d6b2e5c33a61519608de231214831c4de5a798a591adb9002bb02af",
@@ -17,6 +18,7 @@
       },
       {
         "id": "boundary_right",
+        "sdk_support": { "ts": "required", "py": "required" },
         "prompt": "A",
         "response": "BC",
         "digest": "b62c23704340d8dfdc035f3aaf95706ee7ad4be319878c3149396017266ff154",
@@ -24,6 +26,7 @@
       },
       {
         "id": "empty_prompt",
+        "sdk_support": { "ts": "required", "py": "required" },
         "prompt": "",
         "response": "x",
         "digest": "8e16ed4d4f5ee196951c6afdcdbf134204212ab6502270581110fd2b3641f75a",
@@ -31,6 +34,7 @@
       },
       {
         "id": "empty_response",
+        "sdk_support": { "ts": "required", "py": "required" },
         "prompt": "x",
         "response": "",
         "digest": "a993bafdbe32ae50b70f82d25b4643f1a6fe3a6894930176db055cfd3800c4f3",
@@ -38,6 +42,7 @@
       },
       {
         "id": "both_empty",
+        "sdk_support": { "ts": "required", "py": "required" },
         "prompt": "",
         "response": "",
         "digest": "2b81ff104e6dce42bc24913940fd9546c54f5a15ad5fd2b01e78d3a223cf99de",
@@ -45,6 +50,7 @@
       },
       {
         "id": "multibyte_utf8",
+        "sdk_support": { "ts": "required", "py": "required" },
         "note": "lengths count UTF-8 BYTES (2 each here), not code units - the one place the two runtimes could disagree",
         "prompt": "é",
         "response": "ü",
@@ -114,12 +120,14 @@
     "cases": [
       {
         "id": "valid_chain",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "the unmodified vectors verify, and the result names the format they verified under",
         "mutations": [],
         "expect": { "valid": true, "events_verified": 2, "chain_format": 2 }
       },
       {
         "id": "tampered_prompt",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "editing content after signing breaks that event's signature",
         "mutations": [{ "op": "set", "index": 1, "field": "prompt", "value": "foo (edited)" }],
         "expect": {
@@ -132,6 +140,7 @@
       },
       {
         "id": "boundary_resplit_rejected",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "moving text across the prompt/response boundary while keeping the concatenation intact ('hello'/'world' -> 'hellow'/'orld') breaks a format-2 signature. This is the attack format 2 exists to close: the length prefixes put the boundary itself under the HMAC.",
         "mutations": [
           { "op": "set", "index": 0, "field": "prompt", "value": "hellow" },
@@ -147,6 +156,7 @@
       },
       {
         "id": "forged_signature",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a fabricated signature does not recompute",
         "mutations": [
           {
@@ -166,6 +176,7 @@
       },
       {
         "id": "wrong_api_key",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a genuine chain does not verify under the wrong key",
         "mutations": [{ "op": "api_key", "value": "not-the-signing-key" }],
         "expect": {
@@ -178,6 +189,7 @@
       },
       {
         "id": "seq_gap",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a jumped sequence number is a gap",
         "mutations": [{ "op": "set", "index": 1, "field": "seq_no", "value": 9 }],
         "expect": {
@@ -190,6 +202,7 @@
       },
       {
         "id": "missing_seq_no",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "an event without a sequence number cannot be placed in the chain",
         "mutations": [{ "op": "delete", "index": 1, "field": "seq_no" }],
         "expect": {
@@ -202,6 +215,7 @@
       },
       {
         "id": "invalid_initial_seq_no",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "sequence numbers are 1-based",
         "mutations": [{ "op": "set", "index": 0, "field": "seq_no", "value": 0 }],
         "expect": {
@@ -214,6 +228,7 @@
       },
       {
         "id": "broken_prev_sig",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "the chain link must point at the prior event's signature",
         "mutations": [
           {
@@ -233,6 +248,7 @@
       },
       {
         "id": "session_mismatch",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "events spliced in from another session are rejected",
         "mutations": [
           {
@@ -252,6 +268,7 @@
       },
       {
         "id": "missing_session_id",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a chain with no session identity cannot be verified at all; the format is never established, so the result carries none",
         "mutations": [{ "op": "delete", "index": 0, "field": "sdk_session_id" }],
         "expect": {
@@ -263,6 +280,7 @@
       },
       {
         "id": "backdated_timestamp",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "timestamps never move backwards inside a session",
         "mutations": [
           { "op": "set", "index": 1, "field": "timestamp_sdk", "value": 1699999999999 }
@@ -277,6 +295,7 @@
       },
       {
         "id": "reordered_events",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "reordering is visible as a sequence gap",
         "mutations": [{ "op": "reverse" }],
         "expect": {
@@ -289,6 +308,7 @@
       },
       {
         "id": "mixed_format_chain_rejected",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a chain is one session, one process, one SDK build - no legitimate producer changes format mid-chain, so a later event declaring a different format is a break, not a negotiation",
         "mutations": [{ "op": "set", "index": 1, "field": "chain_format", "value": 1 }],
         "expect": {
@@ -301,6 +321,7 @@
       },
       {
         "id": "unknown_format_rejected",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a newer format is not guessed at by an older verifier - fail closed, and report no format because none was established",
         "mutations": [{ "op": "set", "index": 0, "field": "chain_format", "value": 3 }],
         "expect": {
@@ -312,6 +333,7 @@
       },
       {
         "id": "downgrade_stripped_marker_rejected",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "stripping chain_format from a format-2 chain reroutes verification to the legacy rule, where a format-2 signature can never recompute: the formats share no valid signature, so a downgrade is a break, not a bypass",
         "mutations": [
           { "op": "delete", "index": 0, "field": "chain_format" },
@@ -327,6 +349,7 @@
       },
       {
         "id": "legacy_chain_verifies_as_format_1",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "a chain signed before format 2 existed still verifies, and the result says which rule it verified under - never silently as a current chain",
         "events": "legacy_v1",
         "mutations": [],
@@ -334,6 +357,7 @@
       },
       {
         "id": "legacy_boundary_resplit_verifies",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "DOCUMENTED LIMIT of format 1, identical in both languages: the legacy digest is sha256(prompt + response), so re-splitting 'hello'/'world' as 'hellow'/'orld' preserves the concatenation and the signature still verifies. This is the defect format 2 closes. A format-1 chain therefore proves content-in-order but NOT the prompt/response attribution boundary - which is exactly why the verifier reports chain_format, so a consumer weighing legacy evidence knows what it does and does not bind. Pinned so the limit is a stated decision, not an oversight.",
         "events": "legacy_v1",
         "mutations": [
@@ -344,6 +368,7 @@
       },
       {
         "id": "format_claim_on_legacy_event_rejected",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "claiming format 2 on an event signed under format 1 fails: the recomputed format-2 payload never matches a format-1 signature",
         "events": "legacy_v1",
         "mutations": [{ "op": "set", "index": 0, "field": "chain_format", "value": 2 }],
@@ -357,6 +382,7 @@
       },
       {
         "id": "front_truncated_is_not_detectable",
+        "sdk_support": { "ts": "required", "py": "required" },
         "desc": "DOCUMENTED LIMIT, identical in both languages: verification proves the events it is given are genuine, in order, and unmodified - not that they are all of them. A suffix starting at seq_no 2 is internally consistent, and nothing inside an export says the session began at 1. Detecting a dropped prefix needs the session's known start (the server-side sequence guard and the sealed ledger). Pinned so the silence is a decision, not an oversight.",
         "mutations": [{ "op": "drop_event", "index": 0 }],
         "expect": { "valid": true, "events_verified": 1, "chain_format": 2 }

@@ -5,18 +5,21 @@
   "cases": [
     {
       "id": "two_turns_two_signals",
+      "sdk_support": { "ts": "required", "py": "required" },
       "turns": 2,
       "signals": ["instruction_reference", "secrecy_request"],
       "reason": "Multi-turn injection accumulation reached the threshold over 2 turn(s); this turn's signals: instruction_reference, secrecy_request"
     },
     {
       "id": "single_turn_no_signals",
+      "sdk_support": { "ts": "required", "py": "required" },
       "turns": 1,
       "signals": [],
       "reason": "Multi-turn injection accumulation reached the threshold over 1 turn(s); this turn's signals: none"
     },
     {
       "id": "many_turns_one_signal",
+      "sdk_support": { "ts": "required", "py": "required" },
       "turns": 17,
       "signals": ["role_pressure"],
       "reason": "Multi-turn injection accumulation reached the threshold over 17 turn(s); this turn's signals: role_pressure"

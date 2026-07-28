@@ -1,6 +1,6 @@
 {
   "claimable": true,
-  "description": "Effective-policy resolution fixtures (GOVERNANCE_ARCHITECTURE_REPORT.md §8). Pins ordering (pack < org < project), shadow-pack forcing, mandatory-override rejection with provenance flag, default-override application, provenance hash-neutrality, and the identity merge for org-less projects. Executed by ingest/tests/unit/effective-policy.test.ts.",
+  "description": "Effective-policy resolution fixtures (GOVERNANCE_ARCHITECTURE_REPORT.md §8). Pins ordering (pack < org < project), shadow-pack forcing, mandatory-override rejection with provenance flag, default-override application, provenance hash-neutrality, and the identity merge for org-less projects. Executed by ingest/tests/unit/effective-policy.test.ts. The only fixture here whose cases carry no sdk_support: that vocabulary says which of the two SDK suites runs a case, and neither runs these, so every value would be 'skip' - which the corpus forbids because skip-everywhere is deletion wearing a bookkeeping hat. The absence is the datum, and it is already tracked as this file's coverage exemption in scripts/generate-conformance-manifest.mjs.",
   "cases": [
     {
       "name": "identity merge: org-less project is byte-identical to today",

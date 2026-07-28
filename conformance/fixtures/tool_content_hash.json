@@ -8,6 +8,7 @@
   "document_cases": [
     {
       "id": "no_descriptor_mcp_shape",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The MCP call_tool shape: the producer holds only a name and arguments, so the document commits to those with the empty-descriptor digest.",
       "input": {
         "tool_name": "read_file",
@@ -24,6 +25,7 @@
     },
     {
       "id": "descriptor_and_args",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "tool_name": "read_file",
         "descriptor": {
@@ -54,6 +56,7 @@
     },
     {
       "id": "descriptor_key_order_irrelevant",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Same descriptor, keys supplied in a different order: canonicalization sorts, so the hash must equal descriptor_and_args.",
       "input": {
         "tool_name": "read_file",
@@ -85,6 +88,7 @@
     },
     {
       "id": "args_key_order_irrelevant",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Nested argument keys out of order, including inside a sub-object.",
       "input": {
         "tool_name": "send",
@@ -106,6 +110,7 @@
     },
     {
       "id": "args_key_order_reference",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The same arguments already sorted; must hash identically to args_key_order_irrelevant.",
       "input": {
         "tool_name": "send",
@@ -127,6 +132,7 @@
     },
     {
       "id": "unicode_is_hashed_by_its_bytes",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Accents, guillemets, CJK, and an emoji flag (a surrogate pair) in both halves. No escaping, no normalization: the UTF-8 bytes are the input.",
       "input": {
         "tool_name": "traduire",
@@ -147,6 +153,7 @@
     },
     {
       "id": "absent_args",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "No arguments at all.",
       "input": {
         "tool_name": "ping"
@@ -160,6 +167,7 @@
     },
     {
       "id": "empty_object_args",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Called with {}. Must equal absent_args: \"no arguments\" and \"empty arguments\" are the same call.",
       "input": {
         "tool_name": "ping",
@@ -174,6 +182,7 @@
     },
     {
       "id": "null_args",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Explicit JSON null arguments; also the empty-object digest.",
       "input": {
         "tool_name": "ping",
@@ -188,6 +197,7 @@
     },
     {
       "id": "null_descriptor_fields_omitted",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Null descriptor fields are OMITTED from the projection, never serialized as null, so this must equal descriptor_name_only.",
       "input": {
         "tool_name": "ping",
@@ -207,6 +217,7 @@
     },
     {
       "id": "descriptor_name_only",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "tool_name": "ping",
         "descriptor": {
@@ -223,6 +234,7 @@
     },
     {
       "id": "tool_name_falls_back_to_descriptor",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "No explicit tool name: the descriptor name is used.",
       "input": {
         "descriptor": {
@@ -239,6 +251,7 @@
     },
     {
       "id": "missing_name_is_empty_never_guessed",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Neither an explicit name nor a descriptor name: the field is empty, so the digest still commits to what was actually seen.",
       "input": {
         "args": {}
@@ -252,6 +265,7 @@
     },
     {
       "id": "schema_widening_changes_the_hash",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Name and description byte-identical to descriptor_and_args, input_schema widened by one property. The hash MUST differ - this is why input_schema is in the projection: a wrapper can keep the visible text and widen the schema to exfiltrate extra arguments.",
       "input": {
         "tool_name": "read_file",
@@ -286,6 +300,7 @@
     },
     {
       "id": "different_args_same_tool",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Same descriptor, different arguments: the hash is per call, not per descriptor.",
       "input": {
         "tool_name": "read_file",
@@ -317,6 +332,7 @@
     },
     {
       "id": "whole_valued_float",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "JSON 1.0 is an integer in JavaScript and a float in Python. Both must serialize it as 1 - a float formatter would silently fork the evidence.",
       "input": {
         "tool_name": "meter",
@@ -337,6 +353,7 @@
   "equivalence_groups": [
     {
       "note": "Key order never changes a digest.",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ids": [
         "descriptor_and_args",
         "descriptor_key_order_irrelevant"
@@ -344,6 +361,7 @@
     },
     {
       "note": "Key order never changes a digest, nested too.",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ids": [
         "args_key_order_irrelevant",
         "args_key_order_reference"
@@ -351,6 +369,7 @@
     },
     {
       "note": "Absent, empty, and null arguments are one call.",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ids": [
         "absent_args",
         "empty_object_args",
@@ -359,6 +378,7 @@
     },
     {
       "note": "Null descriptor fields are omitted, not nulled.",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ids": [
         "null_descriptor_fields_omitted",
         "descriptor_name_only"
@@ -368,6 +388,7 @@
   "distinction_cases": [
     {
       "id": "projections_differ_for_the_same_descriptor",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The pinning projection covers 6 descriptor fields; the evidence projection covers 3. Hashing the SAME descriptor under each MUST give different digests - the two hashes are different contracts and neither may be substituted for the other.",
       "descriptor": {
         "name": "read_file",
@@ -396,6 +417,7 @@
     },
     {
       "id": "behavior_hint_moves_the_pin_and_not_the_content_hash",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "annotations.destructiveHint flips false -> true. The PINNING hash changes (that is the rug-pull it defends against); the tool_content_hash does NOT, because annotations are outside the platform-defined evidence projection. Proves the two are genuinely distinct rather than differently-encoded versions of one digest.",
       "descriptor": {
         "name": "read_file",
@@ -433,6 +455,7 @@
   "unstable_number_cases": [
     {
       "id": "int_past_2_53",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Integers beyond the JS safe range do not round-trip identically; sealing one would seal a hash the other language cannot recompute.",
       "args": {
         "n": 9007199254740992
@@ -443,6 +466,7 @@
     },
     {
       "id": "exponent_form",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "A magnitude that JSON.stringify emits in exponent form and json.dumps does not.",
       "args": {
         "n": 1e+21
@@ -453,6 +477,7 @@
     },
     {
       "id": "plain_int",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Ordinary integers are fine.",
       "args": {
         "n": 42
@@ -464,6 +489,7 @@
     },
     {
       "id": "simple_decimal",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Ordinary decimals are fine.",
       "args": {
         "n": 1.5
@@ -475,6 +501,7 @@
     },
     {
       "id": "negative_zero",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Negative zero normalizes to 0 in both languages.",
       "args": {
         "n": 0

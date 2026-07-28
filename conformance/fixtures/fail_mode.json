@@ -25,6 +25,7 @@
   "layers": [
     {
       "id": "enforcement_integrity_gate",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/proxy/config.ts",
       "module_py": "sdk-python/obsvr/remote.py",
       "timeout": {
@@ -41,6 +42,7 @@
     },
     {
       "id": "policy_signature",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/proxy/policy-verify.ts",
       "module_py": "sdk-python/obsvr/policy_verify.py",
       "timeout": {
@@ -57,6 +59,7 @@
     },
     {
       "id": "session_taint",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/session-taint.ts",
       "module_py": "sdk-python/obsvr/session_taint.py",
       "timeout": {
@@ -73,6 +76,7 @@
     },
     {
       "id": "canary",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/canary.ts",
       "module_py": "sdk-python/obsvr/canary.py",
       "timeout": {
@@ -89,6 +93,7 @@
     },
     {
       "id": "builtin_pii_scan",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/hook.ts",
       "module_py": "sdk-python/obsvr/policy.py",
       "timeout": {
@@ -106,6 +111,7 @@
     },
     {
       "id": "presidio_merge",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/presidio.ts",
       "module_py": "sdk-python/obsvr/presidio.py",
       "timeout": {
@@ -122,6 +128,7 @@
     },
     {
       "id": "deobfuscation_views",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/deobfuscate.ts",
       "module_py": "sdk-python/obsvr/deobfuscate.py",
       "timeout": {
@@ -139,6 +146,7 @@
     },
     {
       "id": "multi_turn_injection",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/injection-session.ts",
       "module_py": "sdk-python/obsvr/injection_session.py",
       "timeout": {
@@ -155,6 +163,7 @@
     },
     {
       "id": "policy_floor",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/rules.ts",
       "module_py": "sdk-python/obsvr/rules.py",
       "timeout": {
@@ -171,6 +180,7 @@
     },
     {
       "id": "policy_rules",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/rules.ts",
       "module_py": "sdk-python/obsvr/rules.py",
       "timeout": {
@@ -187,6 +197,7 @@
     },
     {
       "id": "customer_hook",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/proxy/wrapper.ts",
       "module_py": "sdk-python/obsvr/policy.py",
       "timeout": {
@@ -203,6 +214,7 @@
     },
     {
       "id": "external_backend",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/external-backend.ts",
       "module_py": "sdk-python/obsvr/external_backend.py",
       "timeout": {
@@ -221,6 +233,7 @@
     },
     {
       "id": "mcp_tool_policy",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/integrations/mcp.ts",
       "module_py": "sdk-python/obsvr/integrations/mcp.py",
       "timeout": {
@@ -237,6 +250,7 @@
     },
     {
       "id": "tool_pinning",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/tool-pinning.ts",
       "module_py": "sdk-python/obsvr/tool_pinning.py",
       "timeout": {
@@ -254,6 +268,7 @@
     },
     {
       "id": "tool_result_scan",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/response-scan.ts",
       "module_py": "sdk-python/obsvr/response_scan.py",
       "timeout": {
@@ -270,6 +285,7 @@
     },
     {
       "id": "loop_detection",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/industry/devops.ts",
       "module_py": "sdk-python/obsvr/agent_policy.py",
       "timeout": {
@@ -286,6 +302,7 @@
     },
     {
       "id": "delegation_tracking",
+      "sdk_support": { "ts": "required", "py": "required" },
       "module_ts": "sdk/src/policy/industry/agentic.ts",
       "module_py": "sdk-python/obsvr/agent_policy.py",
       "timeout": {

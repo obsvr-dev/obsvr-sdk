@@ -6,6 +6,7 @@
   "hash_cases": [
     {
       "id": "name_description_only",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "read_file",
         "description": "Reads a file at a path."
@@ -17,6 +18,7 @@
     },
     {
       "id": "nested_unsorted_schema",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "query_db",
         "description": "Run a query.",
@@ -42,6 +44,7 @@
     },
     {
       "id": "unicode_description",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "\u00fcbersetzen",
         "description": "\u00dcbersetzt Text \u2014 \u7ffb\u8a33\u3057\u307e\u3059."
@@ -53,6 +56,7 @@
     },
     {
       "id": "null_fields_omitted",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "ping",
         "description": null,
@@ -65,6 +69,7 @@
     },
     {
       "id": "empty_descriptor",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {},
       "expect": {
         "canonical": "{}",
@@ -73,6 +78,7 @@
     },
     {
       "id": "full_descriptor",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "delete_row",
         "title": "Delete Row",
@@ -100,6 +106,7 @@
     },
     {
       "id": "array_order_preserved",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "t",
         "inputSchema": {
@@ -120,6 +127,7 @@
     },
     {
       "id": "integer_schema_constraints",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "q",
         "description": "d",
@@ -143,6 +151,7 @@
     },
     {
       "id": "whole_valued_float_normalizes",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "q",
         "inputSchema": {
@@ -158,6 +167,7 @@
     },
     {
       "id": "decimal_money_constraints",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "pay",
         "inputSchema": {
@@ -173,6 +183,7 @@
     },
     {
       "id": "nested_explicit_null_kept",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "t",
         "annotations": {
@@ -188,6 +199,7 @@
     },
     {
       "id": "array_of_numbers_order_kept",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "t",
         "inputSchema": {
@@ -209,6 +221,7 @@
     },
     {
       "id": "bool_and_int_distinct",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "t",
         "inputSchema": {
@@ -227,6 +240,7 @@
   "decision_cases": [
     {
       "id": "config_pin_match",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
         "tofu_pin": null,
@@ -245,6 +259,7 @@
     },
     {
       "id": "config_pin_match_case_insensitive",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0C8B57CD8C5F64C98CE35D38FE748BF4B7030D56806FC3BCA779B8FD696C9221",
         "tofu_pin": null,
@@ -263,6 +278,7 @@
     },
     {
       "id": "config_pin_mismatch_warn",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
         "tofu_pin": null,
@@ -281,6 +297,7 @@
     },
     {
       "id": "config_pin_mismatch_block",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
         "tofu_pin": null,
@@ -299,6 +316,7 @@
     },
     {
       "id": "config_beats_tofu",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
         "tofu_pin": "47f8fba04905ccea5a4add757c855bb9ab157b3f6c3b55eaab99096f3edc515a",
@@ -317,6 +335,7 @@
     },
     {
       "id": "tofu_match",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
@@ -335,6 +354,7 @@
     },
     {
       "id": "tofu_mismatch_swap_detected",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
@@ -353,6 +373,7 @@
     },
     {
       "id": "unpinned_lenient_passes",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": null,
@@ -371,6 +392,7 @@
     },
     {
       "id": "unpinned_strict_warn",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": null,
@@ -389,6 +411,7 @@
     },
     {
       "id": "unpinned_strict_block",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": null,
@@ -407,6 +430,7 @@
     },
     {
       "id": "hash_error_fails_closed",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
         "tofu_pin": null,
@@ -425,6 +449,7 @@
     },
     {
       "id": "hash_error_fails_closed_warn_nopin",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": null,
@@ -443,6 +468,7 @@
     },
     {
       "id": "requirePin_tofu_does_not_satisfy",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": null,
         "tofu_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
@@ -461,6 +487,7 @@
     },
     {
       "id": "requirePin_config_pin_still_satisfies",
+      "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "config_pin": "0c8b57cd8c5f64c98ce35d38fe748bf4b7030d56806fc3bca779b8fd696c9221",
         "tofu_pin": null,
@@ -481,6 +508,7 @@
   "hash_error_cases": [
     {
       "id": "tiny_exponent_number",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "t",
         "inputSchema": {
@@ -490,6 +518,7 @@
     },
     {
       "id": "huge_integer_past_2p53",
+      "sdk_support": { "ts": "required", "py": "required" },
       "descriptor": {
         "name": "t",
         "inputSchema": {
@@ -501,6 +530,7 @@
   "discovery_strip_cases": [
     {
       "id": "block_strips_the_mismatched_descriptor",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "The rug pull: get_weather was pinned to its benign descriptor and now lists a swapped one.",
       "tools": [
         {
@@ -525,6 +555,7 @@
     },
     {
       "id": "warn_leaves_the_listing_intact",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Same mismatch under the default mode: flagged on the event, never stripped.",
       "tools": [
         {
@@ -550,6 +581,7 @@
     },
     {
       "id": "block_leaves_a_matching_listing_intact",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Block mode is not a filter on pinned names; a descriptor that matches its pin survives.",
       "tools": [
         {
@@ -576,6 +608,7 @@
     },
     {
       "id": "require_pin_block_strips_the_unpinned_tool",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Strict mode: only a config-pinned tool survives, and the stripped one records no TOFU pin to ratify itself with.",
       "tools": [
         {
@@ -601,6 +634,7 @@
     },
     {
       "id": "block_strips_every_offender_at_once",
+      "sdk_support": { "ts": "required", "py": "required" },
       "note": "Two mismatches in one listing leave nothing behind.",
       "tools": [
         {

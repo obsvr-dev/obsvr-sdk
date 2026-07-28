@@ -93,6 +93,7 @@
   "cases": [
     {
       "id": "ev3_gate_paused",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-3",
       "mode": "pipeline",
       "desc": "A paused project / revoked key decides the call at the gate, BEFORE any content scanning, and no later step can override it - including a customer hook that explicitly allows.",
@@ -126,6 +127,7 @@
     },
     {
       "id": "ev6_first_match_block",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-6/EV-8",
       "rules": [
         {
@@ -163,6 +165,7 @@
     },
     {
       "id": "ev8_stored_order_decides",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-8",
       "rules": [
         {
@@ -200,6 +203,7 @@
     },
     {
       "id": "ev9_disabled_skipped",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-9",
       "rules": [
         {
@@ -225,6 +229,7 @@
     },
     {
       "id": "ev9_applies_to_skipped",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-9",
       "rules": [
         {
@@ -252,6 +257,7 @@
     },
     {
       "id": "ev10_redact",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-10",
       "rules": [
         {
@@ -277,6 +283,7 @@
     },
     {
       "id": "ev10_flag_allows_with_rule",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-10",
       "rules": [
         {
@@ -302,6 +309,7 @@
     },
     {
       "id": "ev10_topic_allow_short_circuits",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-10",
       "rules": [
         {
@@ -339,6 +347,7 @@
     },
     {
       "id": "ev12_malformed_rule_skipped",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-12",
       "rules": [
         {
@@ -404,6 +413,7 @@
     },
     {
       "id": "ev13_pathological_regex_never_matches",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-13",
       "rules": [
         {
@@ -427,6 +437,7 @@
     },
     {
       "id": "ev14_composition",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-14",
       "mode": "pipeline",
       "desc": "Most restrictive wins within a phase: a builtin PII block stands even though a later rule would only flag. A later step never weakens an earlier block.",
@@ -460,6 +471,7 @@
     },
     {
       "id": "ev20_shadow_inert_active_allow",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-20/EV-21",
       "rules": [
         {
@@ -490,6 +502,7 @@
     },
     {
       "id": "ev20_shadow_beside_active_block",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-20/EV-21",
       "rules": [
         {
@@ -532,6 +545,7 @@
     },
     {
       "id": "ev11_approval_required_block_shape",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-11",
       "rules": [
         {
@@ -562,6 +576,7 @@
     },
     {
       "id": "ns_asymmetric_caller_missing_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "NS-fail-closed",
       "note": "One namespace present, the other missing, is how an attacker nulls a namespace to defeat isolation: fail closed. Context carries both key spellings because TS reads camelCase (callerNamespace) and Python snake_case (caller_namespace); each SDK ignores the other's key.",
       "rules": [
@@ -588,6 +603,7 @@
     },
     {
       "id": "ns_asymmetric_target_missing_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "NS-fail-closed",
       "rules": [
         {
@@ -613,6 +629,7 @@
     },
     {
       "id": "ns_asymmetric_empty_string_blocks",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "NS-fail-closed",
       "note": "An empty-string namespace is treated as missing (falsy in both SDKs), so it is the same nulling attack and fails closed.",
       "rules": [
@@ -641,6 +658,7 @@
     },
     {
       "id": "ns_unnamespaced_call_allows",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "NS-fail-closed",
       "note": "Neither namespace set: the call is not namespaced, the isolation rule does not apply (no disruption to non-namespaced setups). Context carries an unrelated key so the Python evaluator exercises its both-absent branch rather than the empty-context guard.",
       "rules": [
@@ -668,6 +686,7 @@
     },
     {
       "id": "ev22_explain_pure",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-22",
       "mode": "explain",
       "desc": "explain() runs the same decision logic but consumes nothing. With a one-per-window quota rule, three explains leave the budget untouched: the next REAL evaluation is still allowed, and only the one after it is blocked.",
@@ -704,6 +723,7 @@
     },
     {
       "id": "reserved_rule_id_rejected",
+      "sdk_support": { "ts": "required", "py": "required" },
       "ev": "reserved-namespace",
       "desc": "an operator rule claiming the SDK's own verdict namespace (sdk:/backend:) is invalid before it can evaluate: a forged sdk:* rule would be indistinguishable from the SDK's own governance verdicts (sdk:canary_leak, sdk:session_tainted, ...) on the audit record, so the namespace is reserved at the validator, the same discipline as a schema-level reserved-reason pattern",
       "rules": [
