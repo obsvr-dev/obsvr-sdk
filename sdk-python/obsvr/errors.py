@@ -1,4 +1,4 @@
-"""The typed error a policy block raises (twin of sdk/src/policy/policy-error.ts).
+"""The typed error a policy block raises (twin of sdk-typescript/src/policy/policy-error.ts).
 
 A blocked call has to be distinguishable from a provider outage, a bad API key,
 or a network failure - the caller's fallback behavior is different for each, and

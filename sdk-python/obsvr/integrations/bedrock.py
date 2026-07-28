@@ -1,6 +1,6 @@
 """AWS Bedrock (Python) integration — governs a boto3 bedrock-runtime client.
 
-Parity with sdk/src/integrations/bedrock.ts. Wraps a boto3
+Parity with sdk-typescript/src/integrations/bedrock.ts. Wraps a boto3
 ``bedrock-runtime`` client and governs the two request families:
 
 - ``converse`` / ``converse_stream``                 (unified messages API)

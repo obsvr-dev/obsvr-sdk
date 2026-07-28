@@ -1,4 +1,4 @@
-"""Layered call cost (twin of sdk/src/governance/cost.ts).
+"""Layered call cost (twin of sdk-typescript/src/governance/cost.ts).
 
 Three layers, each overriding the one before it, and ALL of them retained:
 

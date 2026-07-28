@@ -1,5 +1,5 @@
 """Cross-SDK agent-run control conformance harness (Python side). Twin:
-sdk/tests/unit/agent-controls-conformance.test.ts. Runs every case in
+sdk-typescript/tests/unit/agent-controls-conformance.test.ts. Runs every case in
 conformance/fixtures/agent_controls.json; a divergence from the fixture (or
 from the TS harness) is a release blocker unless recorded in
 conformance/known-divergences.json."""

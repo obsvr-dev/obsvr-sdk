@@ -24,7 +24,7 @@ file is right.
 ## 2. Pre-call evaluation order
 
 Steps run in this exact order. Numbering matches the code sections in
-`sdk/src/proxy/wrapper.ts` and `sdk-python/obsvr/policy.py`.
+`sdk-typescript/src/proxy/wrapper.ts` and `sdk-python/obsvr/policy.py`.
 
 - EV-3 (Step 0, enforcement-integrity gate): if policy enforcement is
   degraded (stale policy beyond the staleness budget with fail_closed,

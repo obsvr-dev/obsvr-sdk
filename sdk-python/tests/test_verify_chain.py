@@ -2,7 +2,7 @@
 
 conformance/fixtures/signing_vectors.json is the contract of record for the
 signing chain; the TypeScript verifier is asserted against it in
-sdk/tests/unit/signing-vectors.test.ts. This suite asserts the Python
+sdk-typescript/tests/unit/signing-vectors.test.ts. This suite asserts the Python
 verifier accepts exactly the chain those vectors describe and rejects every
 way it can be tampered with, so a Python-only compliance team gets the same
 verdict a Node toolchain would give it.
@@ -220,7 +220,7 @@ class TestTamperDetection:
 
 def _apply(mutations, events, api_key):
     """Apply a fixture case's mutations. Twin of the TypeScript applier in
-    sdk/tests/unit/verify-chain-conformance.test.ts - both must interpret the
+    sdk-typescript/tests/unit/verify-chain-conformance.test.ts - both must interpret the
     same op vocabulary identically or the shared cases mean two things."""
     for m in mutations:
         op = m["op"]
@@ -244,7 +244,7 @@ class TestChainVerificationConformance:
 
     Every case in signing_vectors.json's `chain_verification.cases` must
     produce the same verdict here as in the TypeScript suite
-    (sdk/tests/unit/verify-chain-conformance.test.ts). The cases live in the
+    (sdk-typescript/tests/unit/verify-chain-conformance.test.ts). The cases live in the
     fixture rather than in either test file precisely so neither language can
     quietly drift its own expectations.
     """

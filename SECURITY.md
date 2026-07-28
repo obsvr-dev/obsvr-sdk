@@ -60,7 +60,7 @@ a vocabulary obsvr invented.
 | RFC 9334 role | obsvr | Notes |
 |---|---|---|
 | Attester | The SDK, in your process | Produces Evidence about the LLM/tool calls it intercepts. See the isolation caveat below — this is the load-bearing difference. |
-| Verifier | `obsvr-verify` (`sdk/src/cli-verify.ts`, `sdk-python/obsvr/cli_verify.py`) and the chain verifiers behind it; the ingest service, independently | Appraises a chain and produces a verdict. Shipped in this package precisely so a Relying Party can appraise Evidence itself rather than take an Attestation Result on trust. |
+| Verifier | `obsvr-verify` (`sdk-typescript/src/cli-verify.ts`, `sdk-python/obsvr/cli_verify.py`) and the chain verifiers behind it; the ingest service, independently | Appraises a chain and produces a verdict. Shipped in this package precisely so a Relying Party can appraise Evidence itself rather than take an Attestation Result on trust. |
 | Relying Party | Your auditor, regulator, or security team — anyone consuming an export or an evidence pack | Outside this package. |
 | Reference Value Provider | You, when you author policy: the rule set, the anti-tamper floor, operator tool-descriptor pins | Plus the SDK for its own frozen vectors. |
 | Verifier Owner | Nobody, deliberately | The offline verifier's appraisal rules are fixed in code, not configurable. A verifier whose rules the audited party can tune is not a verifier. |

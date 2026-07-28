@@ -1,5 +1,5 @@
 """End-to-end canary-leak pipeline wiring. Twin:
-sdk/tests/unit/canary-wiring.test.ts. The pure detection is fixture-pinned
+sdk-typescript/tests/unit/canary-wiring.test.ts. The pure detection is fixture-pinned
 (canary.json); these tests pin that the real pipelines BLOCK unsuppressibly on
 a leak, store a placeholder (never the raw token), and stamp CRITICAL evidence
 — and that with no canary minted the pipeline is byte-identical to before."""

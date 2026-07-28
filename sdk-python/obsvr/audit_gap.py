@@ -24,7 +24,7 @@ like any other event, and its claim is covered by the same HMAC. The structured 
 ``metadata.obsvr_audit_gap`` exists for querying; when the two disagree, the
 signed ``prompt`` is the one that means anything.
 
-Twin of sdk/src/proxy/audit-gap.ts, and dependency-free for the same reason:
+Twin of sdk-typescript/src/proxy/audit-gap.ts, and dependency-free for the same reason:
 the verifier must not import the sender's module-level state to read a string.
 The preimage is byte-identical across both SDKs, pinned by
 conformance/fixtures/audit_gap.json.

@@ -46,7 +46,7 @@ const SDK_NAMES = new Set(['ts', 'py']);
 
 /** Where a harness for each language lives. */
 const TEST_DIRS: Record<string, string> = {
-  ts: path.join(REPO_ROOT, 'sdk', 'tests'),
+  ts: path.join(REPO_ROOT, 'sdk-typescript', 'tests'),
   py: path.join(REPO_ROOT, 'sdk-python', 'tests'),
 };
 
@@ -206,7 +206,7 @@ describe('fixture bookkeeping: claimable matches the public docs', () => {
     // the two cannot drift. BENCHMARKS.md is in the set because a published
     // number is a claim like any other: a fixture cited only there must come
     // out claimable, and dropping it would silently require the opposite.
-    const docs = ['README.md', 'SECURITY.md', 'BENCHMARKS.md', 'sdk/README.md', 'sdk-python/README.md']
+    const docs = ['README.md', 'SECURITY.md', 'BENCHMARKS.md', 'sdk-typescript/README.md', 'sdk-python/README.md']
       .map((d) => path.join(REPO_ROOT, d))
       .filter((d) => fs.existsSync(d))
       .map((d) => fs.readFileSync(d, 'utf-8'))

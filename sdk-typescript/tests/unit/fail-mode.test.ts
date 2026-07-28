@@ -204,7 +204,7 @@ describe('failure-disposition registry: the gate', () => {
   ]);
 
   it('declares every detector module in src/policy/', () => {
-    const policyDir = path.dirname(findFixture('sdk/src/policy/hook.ts'));
+    const policyDir = path.dirname(findFixture('sdk-typescript/src/policy/hook.ts'));
     const declaredModules = new Set(FAILURE_DISPOSITIONS.map((e) => path.basename(e.module)));
     const undeclared = fs
       .readdirSync(policyDir, { withFileTypes: true })

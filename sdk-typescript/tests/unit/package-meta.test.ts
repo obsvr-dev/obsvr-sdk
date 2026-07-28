@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// Jest runs with cwd = sdk/.
+// Jest runs with cwd = sdk-typescript/.
 const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
 const license = readFileSync(join(process.cwd(), "LICENSE"), "utf-8");
 const notice = readFileSync(join(process.cwd(), "NOTICE"), "utf-8");

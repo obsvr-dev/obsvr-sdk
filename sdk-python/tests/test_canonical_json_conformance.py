@@ -1,6 +1,6 @@
 """The frozen rules-hash canonicalizer, from both directions.
 
-Twin of sdk/tests/unit/canonical-json-conformance.test.ts.
+Twin of sdk-typescript/tests/unit/canonical-json-conformance.test.ts.
 
 ``_canonical_json`` feeds policy_version and rules_hash, so it has to agree
 with the TypeScript ``stableStringify`` byte for byte or the same policy

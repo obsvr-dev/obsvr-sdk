@@ -1,5 +1,5 @@
 """Shared PII type constants — single source of truth for Python SDK.
-Mirrors sdk/src/policy/pii-types.ts exactly.
+Mirrors sdk-typescript/src/policy/pii-types.ts exactly.
 """
 from typing import Dict, List, Literal
 

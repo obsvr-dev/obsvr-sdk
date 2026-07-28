@@ -1,5 +1,5 @@
 """Cross-SDK session-taint conformance harness (Python side). Twin:
-sdk/tests/unit/session-taint-conformance.test.ts. Pins the deterministic key
+sdk-typescript/tests/unit/session-taint-conformance.test.ts. Pins the deterministic key
 derivation + enforcement decision, plus the store invariants (monotonic
 reason, bounded eviction)."""
 

@@ -1,6 +1,6 @@
 """SDK-side verification of the Ed25519-signed policy payload.
 
-Behavioral twin of ``sdk/src/proxy/policy-verify.ts``: same checks, same
+Behavioral twin of ``sdk-typescript/src/proxy/policy-verify.ts``: same checks, same
 order, same verdicts, and reason strings carrying the same substrings the
 shared fixture pins (``conformance/fixtures/policy_signature.json``).
 

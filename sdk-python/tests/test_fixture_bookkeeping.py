@@ -1,5 +1,5 @@
 """Conformance-corpus bookkeeping (Python side). Twin:
-sdk/tests/unit/fixture-bookkeeping.test.ts - both suites validate the SAME
+sdk-typescript/tests/unit/fixture-bookkeeping.test.ts - both suites validate the SAME
 structural vocabulary over the SAME corpus, so a malformed entry fails CI in
 either language.
 
@@ -37,7 +37,7 @@ SDK_NAMES = {"ts", "py"}
 
 # Where a harness for each language lives.
 TEST_DIRS = {
-    "ts": REPO_ROOT / "sdk" / "tests",
+    "ts": REPO_ROOT / "sdk-typescript" / "tests",
     "py": REPO_ROOT / "sdk-python" / "tests",
 }
 
@@ -173,7 +173,7 @@ def test_fixture_is_claimable_iff_a_public_doc_cites_it():
             "README.md",
             "SECURITY.md",
             "BENCHMARKS.md",
-            "sdk/README.md",
+            "sdk-typescript/README.md",
             "sdk-python/README.md",
         )
         if (REPO_ROOT / d).exists()

@@ -1,4 +1,4 @@
-"""Central failure-disposition registry (twin of sdk/src/policy/failure-dispositions.ts).
+"""Central failure-disposition registry (twin of sdk-typescript/src/policy/failure-dispositions.ts).
 
 One question, answered in exactly one place: when a governance layer cannot
 render a verdict - because it timed out, threw, or is running degraded - does

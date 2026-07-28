@@ -1,5 +1,5 @@
 """Retriever callbacks -> SIGNED execution spans (Python twin of
-sdk/tests/unit/langchain-retrieval-spans.test.ts). The handler must emit
+sdk-typescript/tests/unit/langchain-retrieval-spans.test.ts). The handler must emit
 through the M3B span pipeline with query hash + document count only, linked
 to the enclosing agent run's trace when resolvable."""
 

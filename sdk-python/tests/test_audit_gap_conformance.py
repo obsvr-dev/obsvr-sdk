@@ -1,6 +1,6 @@
 """Cross-language audit-gap conformance (Python side).
 
-Twin: sdk/tests/unit/audit-gap-conformance.test.ts. The marker's canonical
+Twin: sdk-typescript/tests/unit/audit-gap-conformance.test.ts. The marker's canonical
 statement goes through SHA-256 into the HMAC, so a single character of drift
 between the two SDKs makes them sign different markers for the same loss - and
 a chain would then verify in one language and not the other. The format lives

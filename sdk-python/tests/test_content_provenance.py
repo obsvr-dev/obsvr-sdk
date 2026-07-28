@@ -1,5 +1,5 @@
 """Content-provenance on audit events. Twin:
-sdk/tests/unit/content-provenance.test.ts.
+sdk-typescript/tests/unit/content-provenance.test.ts.
 
 ``source`` names the integration that emitted an event; ``content_provenance``
 names where inside the payload the content came from. The distinction is an

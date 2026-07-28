@@ -1,7 +1,7 @@
 """Tests for obsvr.wrap() - the Python client interceptor.
 
 Fake clients duck-type the three supported providers so no network or real
-SDK is needed. Parity target: sdk/tests/unit/wrapper.test.ts behaviors.
+SDK is needed. Parity target: sdk-typescript/tests/unit/wrapper.test.ts behaviors.
 """
 import asyncio
 import sys

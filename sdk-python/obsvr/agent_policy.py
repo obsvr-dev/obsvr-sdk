@@ -1,8 +1,8 @@
 """Agent-run controls: loop detection and delegation tracking.
 
-Twins of sdk/src/policy/industry/devops.ts (``LoopDetector``) and
-sdk/src/policy/industry/agentic.ts (``DelegationTracker``), plus the emitting
-halves that live in sdk/src/integrations/core.ts (``applyLoopDetection`` /
+Twins of sdk-typescript/src/policy/industry/devops.ts (``LoopDetector``) and
+sdk-typescript/src/policy/industry/agentic.ts (``DelegationTracker``), plus the emitting
+halves that live in sdk-typescript/src/integrations/core.ts (``applyLoopDetection`` /
 ``applyDelegationPolicy``). These are the owning controls for the
 ``LOOP_DETECTED`` and ``DELEGATION_BLOCKED`` reason codes.
 
@@ -63,7 +63,7 @@ class LoopDetector:
 
     Tracks iteration timestamps in a rolling window. When the number of
     iterations within ``window_ms`` exceeds ``max_iterations``, the detector
-    fires. Twin: ``LoopDetector`` in sdk/src/policy/industry/devops.ts.
+    fires. Twin: ``LoopDetector`` in sdk-typescript/src/policy/industry/devops.ts.
     """
 
     __slots__ = ("_max_iterations", "_window_ms", "_action", "_timestamps")
@@ -175,7 +175,7 @@ def apply_loop_detection(
 
 class DelegationTracker:
     """Tracks agent-to-agent delegation chains over an in-memory directed
-    graph. Twin: ``DelegationTracker`` in sdk/src/policy/industry/agentic.ts.
+    graph. Twin: ``DelegationTracker`` in sdk-typescript/src/policy/industry/agentic.ts.
     """
 
     __slots__ = (

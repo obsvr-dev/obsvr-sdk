@@ -1,6 +1,6 @@
 """MCP tool-descriptor content-hash pinning (rug-pull defense).
 
-EXACT parity with sdk/src/policy/tool-pinning.ts.
+EXACT parity with sdk-typescript/src/policy/tool-pinning.ts.
 
 The attack: a tool presents a benign descriptor at review/discovery time,
 then the server swaps it later -- a poisoned description the model will

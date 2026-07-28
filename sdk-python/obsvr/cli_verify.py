@@ -2,7 +2,7 @@
 
     obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps]
 
-Behavioral twin of the TypeScript CLI (sdk/src/cli-verify.ts): same input
+Behavioral twin of the TypeScript CLI (sdk-typescript/src/cli-verify.ts): same input
 shapes, same two tiers, same exit codes, same verdicts. It exists so a
 Python-only compliance team can check its own evidence without adopting a Node
 toolchain - the verification claim is language-unqualified, and until now the

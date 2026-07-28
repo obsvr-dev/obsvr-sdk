@@ -1,4 +1,4 @@
-"""Safe regex guard — parity with sdk/src/utils/safe-regex.ts.
+"""Safe regex guard — parity with sdk-typescript/src/utils/safe-regex.ts.
 
 Guards against ReDoS (catastrophic backtracking) from customer-supplied
 regex patterns. Policy rules are dashboard-editable and executed inside the

@@ -82,7 +82,7 @@
     <circle cx="670" cy="330" r="6" fill="#f59e0b"/>
     <text x="686" y="322" fill="#e6e7ee" font-size="16" font-weight="700">Verdict</text>
     <!-- FIXED: "review" was not a decision the engine can return. The four
-         values are allow / block / redact / flag (sdk/src/policy/rules.ts). -->
+         values are allow / block / redact / flag (sdk-typescript/src/policy/rules.ts). -->
     <text x="686" y="341" fill="#7c7f95" font-size="13">allow · block · redact · flag</text>
   </g>
 

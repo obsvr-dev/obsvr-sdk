@@ -10,7 +10,7 @@
  *
  * Three artifacts, one command:
  *   conformance/MANIFEST.sha256   per-file sha256 of every corpus file, sorted
- *   sdk/conformance.pin           the corpus hash, committed by the TS consumer
+ *   sdk-typescript/conformance.pin           the corpus hash, committed by the TS consumer
  *   sdk-python/conformance.pin    the corpus hash, committed by the Py consumer
  *
  * Usage:
@@ -29,8 +29,8 @@ import { dirname, join, relative, sep } from "node:path";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CONFORMANCE_DIR = join(root, "conformance");
 const MANIFEST_PATH = join(CONFORMANCE_DIR, "MANIFEST.sha256");
-const PIN_PATHS = [join(root, "sdk", "conformance.pin"), join(root, "sdk-python", "conformance.pin")];
-const TEST_DIRS = [join(root, "sdk", "tests"), join(root, "sdk-python", "tests")];
+const PIN_PATHS = [join(root, "sdk-typescript", "conformance.pin"), join(root, "sdk-python", "conformance.pin")];
+const TEST_DIRS = [join(root, "sdk-typescript", "tests"), join(root, "sdk-python", "tests")];
 
 /**
  * Fixtures with no in-repo consumer, each with the reason it is exempt. An
@@ -53,7 +53,7 @@ const manifestHeader = (hash) => `# Conformance corpus manifest - the hash pin o
 #
 # UPDATE PROTOCOL. A fixture change is a cross-language change, so it lands as
 # ONE coordinated commit: edit the fixture, update both language suites,
-# regenerate this manifest AND the two pin files (sdk/conformance.pin,
+# regenerate this manifest AND the two pin files (sdk-typescript/conformance.pin,
 # sdk-python/conformance.pin), and commit them together. Changing a fixture
 # without regenerating fails CI; regenerating without both pins fails CI.
 #

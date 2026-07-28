@@ -201,7 +201,7 @@ class _LoopAction:
 
 
 def test_langchain_loop_detection_blocks_and_emits(sent):
-    """Twin: sdk/tests/unit/langchain-handler.test.ts. The detector is built at
+    """Twin: sdk-typescript/tests/unit/langchain-handler.test.ts. The detector is built at
     chain start from agent_policy and driven once per agent step, so the third
     step past a limit of 2 both emits LOOP_DETECTED and stops the run."""
     obsvr.init(

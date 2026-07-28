@@ -1,6 +1,6 @@
 """Destructive-capability hints read off tool descriptors.
 
-Twin of ``sdk/src/policy/capability-hints.ts``; the decision table is pinned
+Twin of ``sdk-typescript/src/policy/capability-hints.ts``; the decision table is pinned
 cross-language in ``conformance/fixtures/session_taint.json``.
 
 The session-taint latch's strongest control is the destructive-capability set:

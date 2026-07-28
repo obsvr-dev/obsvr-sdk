@@ -1,6 +1,6 @@
 """MCP (Model Context Protocol) governance for Python.
 
-Parity with sdk/src/integrations/mcp.ts:
+Parity with sdk-typescript/src/integrations/mcp.ts:
 
 - patch_mcp(ClientSessionClass) patches call_tool once on the class; every
   tool call on every connected MCP server is then policy-checked

@@ -1,5 +1,5 @@
 """Slice-6 anti-tamper policy-floor ADVERSARIAL-REVIEW follow-up (Python side).
-Twin: sdk/tests/unit/policy-floor-review-fixes.test.ts. Pins the review-confirmed
+Twin: sdk-typescript/tests/unit/policy-floor-review-fixes.test.ts. Pins the review-confirmed
 defects so the floor guarantee holds on every pre/post surface:
   - a floor action:'redact' FAILS CLOSED to a block (no unredacted prompt);
   - response-target floor rules (applies_to 'response'/'both') enforce, and the

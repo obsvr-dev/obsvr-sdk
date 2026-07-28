@@ -1,6 +1,6 @@
 """MCP tool-RESULT governance (ADR-6, response-side interception).
 
-EXACT parity with sdk/src/policy/response-scan.ts.
+EXACT parity with sdk-typescript/src/policy/response-scan.ts.
 
 MCP governance historically scanned only the discovery (list_tools) and request
 (call_tool arguments) phases. But the tool RESULT is the exfiltration /

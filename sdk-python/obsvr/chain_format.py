@@ -1,7 +1,7 @@
 """Audit-chain format - the content-hash preimage and signature payload.
 
 Shared by the signer (sender.py) and the verifier (verify_chain.py) so the
-two cannot drift apart. Twin: sdk/src/proxy/chain-format.ts. Pinned by
+two cannot drift apart. Twin: sdk-typescript/src/proxy/chain-format.ts. Pinned by
 conformance/fixtures/signing_vectors.json, which both languages consume.
 
 WHY FORMAT 2 EXISTS. Format 1 hashed the bare concatenation

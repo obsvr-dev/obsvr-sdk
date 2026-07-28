@@ -1,6 +1,6 @@
 """obsvr.wrap(client) - transparent client interception for Python.
 
-Parity with sdk/src/proxy/wrapper.ts: a recursive attribute proxy walks the
+Parity with sdk-typescript/src/proxy/wrapper.ts: a recursive attribute proxy walks the
 client object; when an auditable method path is reached the call is routed
 through the full governance pipeline:
 
@@ -462,7 +462,7 @@ def _tel_get(obj: Any, *names: str) -> Any:
 def _extract_telemetry(provider: str, kwargs: dict, result: Any) -> Dict[str, Any]:
     """Curated call telemetry (telemetry design notes, milestone 1): request shape,
     response metadata, cost-detail tokens. Provider-tolerant, best-effort,
-    never raises. Mirrors sdk/src/proxy/extractors/telemetry.ts.
+    never raises. Mirrors sdk-typescript/src/proxy/extractors/telemetry.ts.
     """
     def _num(v: Any) -> Optional[float]:
         return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None

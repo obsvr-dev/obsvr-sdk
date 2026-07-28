@@ -1,5 +1,5 @@
 """Cross-SDK CloudEvents v1.0 export conformance (Python side). Twin:
-sdk/tests/unit/cloudevents-conformance.test.ts.
+sdk-typescript/tests/unit/cloudevents-conformance.test.ts.
 
 The canonical STRING is the contract - an interchange envelope that two SDKs
 render differently is not an interchange envelope - so each case asserts the

@@ -1,5 +1,5 @@
 """Shadow mode (EV-20/21) and check-only explain (EV-22) tests, twin of
-sdk/tests/unit/shadow-explain.test.ts."""
+sdk-typescript/tests/unit/shadow-explain.test.ts."""
 
 import json
 

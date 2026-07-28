@@ -1,4 +1,4 @@
-"""Presidio integration (parity with sdk/src/policy/presidio.ts).
+"""Presidio integration (parity with sdk-typescript/src/policy/presidio.ts).
 
 NLP-level PII detection and redaction via the Microsoft Presidio analyzer
 and anonymizer services. Every function is failure-safe: network errors and

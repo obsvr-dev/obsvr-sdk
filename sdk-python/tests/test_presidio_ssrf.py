@@ -1,7 +1,7 @@
 """SSRF guard on the presidio analyzer/anonymizer endpoints (init-time).
 These receive the PROMPT/PII content to scan — the endpoint that sees the MOST
 sensitive data — so a misconfigured/hijacked URL is both an SSRF primitive and
-an exfiltration surface. Twin: sdk/tests/unit/presidio-ssrf.test.ts.
+an exfiltration surface. Twin: sdk-typescript/tests/unit/presidio-ssrf.test.ts.
 
 Guard policy for presidio (localhost-sidecar norm): cloud-metadata / link-local
 is ALWAYS refused; private/loopback is PERMITTED (a presidio sidecar is normally

@@ -402,7 +402,7 @@ def test_stored_copy_redactor_never_persists_unvetted_text():
     guarded there rather than at each of its call sites because the answer is
     the same at all of them, which is what P-02 means by one resolution point.
 
-    Twin: sdk/tests/unit/detector-guard-response.test.ts.
+    Twin: sdk-typescript/tests/unit/detector-guard-response.test.ts.
     """
     from obsvr.deobfuscate import redact_for_storage
     from obsvr.policy import UNSCANNED_PLACEHOLDER, get_detector_error_count
@@ -443,7 +443,7 @@ class TestOutboundRedactionApplication:
     policy floor already uses: never forward content that cannot be guaranteed
     redacted.
 
-    Twin: sdk/tests/unit/detector-guard-outbound.test.ts.
+    Twin: sdk-typescript/tests/unit/detector-guard-outbound.test.ts.
     """
 
     def test_fails_closed_on_both_fail_modes(self):
@@ -563,7 +563,7 @@ class TestCheckOnlyAndProvenanceSurfaces:
     cannot do. The policy version is a provenance field recording which rules a
     decision ran under.
 
-    Twin: sdk/tests/unit/detector-guard-response.test.ts.
+    Twin: sdk-typescript/tests/unit/detector-guard-response.test.ts.
     """
 
     def test_the_policy_version_hash_never_raises_at_its_callers(self):

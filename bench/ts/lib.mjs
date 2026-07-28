@@ -21,15 +21,15 @@ import os from "node:os";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { obsvr, verifyAuditChain } from "../../sdk/dist/index.js";
+import { obsvr, verifyAuditChain } from "../../sdk-typescript/dist/index.js";
 import {
   getSenderStats,
   getQueueSize,
   _resetSender,
-} from "../../sdk/dist/proxy/sender/fire-and-forget.js";
-import { _resetAllQuotas } from "../../sdk/dist/governance/quota.js";
-import { _resetEscrow } from "../../sdk/dist/governance/escrow.js";
-import { _resetInjectionSessions } from "../../sdk/dist/policy/injection-session.js";
+} from "../../sdk-typescript/dist/proxy/sender/fire-and-forget.js";
+import { _resetAllQuotas } from "../../sdk-typescript/dist/governance/quota.js";
+import { _resetEscrow } from "../../sdk-typescript/dist/governance/escrow.js";
+import { _resetInjectionSessions } from "../../sdk-typescript/dist/policy/injection-session.js";
 
 export {
   obsvr,
@@ -41,11 +41,11 @@ export {
 
 // Repo-relative so the harness runs from any clone (this file is bench/ts/lib.mjs).
 const REPO_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const SDK_DIR = join(REPO_DIR, "sdk");
+const SDK_DIR = join(REPO_DIR, "sdk-typescript");
 const RESULTS_DIR = join(REPO_DIR, "bench", "results");
 
-// ── Signing (replicated from sdk/src/governance/verify-chain.ts +
-//    sdk/src/proxy/sender/fire-and-forget.ts; salt is constant across the SDK) ──
+// ── Signing (replicated from sdk-typescript/src/governance/verify-chain.ts +
+//    sdk-typescript/src/proxy/sender/fire-and-forget.ts; salt is constant across the SDK) ──
 const SIGNING_SALT = "obsvr-sdk-signing-v1";
 
 export function deriveSigningKey(apiKey) {

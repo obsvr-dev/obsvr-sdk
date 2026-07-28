@@ -38,7 +38,7 @@ def test_regex_rule():
     assert evaluate_policy_rules(rules, "code 1234-5678")["decision"] == "block"
 
 
-# ── model_gate (parity with TS sdk/tests/unit/model-gate-token-budget.test.ts) ──
+# ── model_gate (parity with TS sdk-typescript/tests/unit/model-gate-token-budget.test.ts) ──
 
 def test_model_gate_blocks_model_not_on_allowlist():
     rules = [make_rule(type="model_gate", conditions={"allowed_models": ["gpt-4o", "claude-sonnet-5"]})]
@@ -193,7 +193,7 @@ def test_token_quota_is_separate_from_request_quota():
     assert evaluate_policy_rules([tok], "hi", context={"metadata": {}})["decision"] == "allow"
 
 
-# ── quota store bound (parity with sdk/tests/unit/governance-quota.test.ts) ──
+# ── quota store bound (parity with sdk-typescript/tests/unit/governance-quota.test.ts) ──
 # Both meters are keyed by a caller-supplied scope value, so they must not grow
 # for the life of the process. Past the cap they refuse NEW scopes rather than
 # evicting live counters — see _make_room for why.

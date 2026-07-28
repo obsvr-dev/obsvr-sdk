@@ -1,4 +1,4 @@
-"""Policy change audit log — parity with sdk/src/policy/policy-log.ts."""
+"""Policy change audit log — parity with sdk-typescript/src/policy/policy-log.ts."""
 import json
 import logging
 import threading

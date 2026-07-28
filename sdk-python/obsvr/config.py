@@ -1,6 +1,6 @@
 """Singleton configuration manager.
 
-Mirrors sdk/src/proxy/config.ts: validation, defaults, sample-rate
+Mirrors sdk-typescript/src/proxy/config.ts: validation, defaults, sample-rate
 clamping, trailing-slash stripping and legacy pii_policy conversion.
 """
 
@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 # No default destination. A defaulted ingest URL means a misconfigured process
 # streams governed events - including redacted prompt text on blocked calls - to
 # whatever happens to be listening on that port. Unset is unset: the SDK warns
-# loudly and delivers nothing. (Twin: DEFAULT_INGEST_URL in sdk/src/constants.ts.)
+# loudly and delivers nothing. (Twin: DEFAULT_INGEST_URL in sdk-typescript/src/constants.ts.)
 DEFAULT_INGEST_URL = ""
 DEFAULT_TIMEOUT_S = 5.0
 DEFAULT_MAX_PAYLOAD_CHARS = 100000
@@ -293,7 +293,7 @@ def init(
     url = (ingest_url or DEFAULT_INGEST_URL).rstrip("/")
     if not url:
         # Same condition, severity, and content as the TypeScript SDK's warning
-        # (sdk/src/proxy/config.ts). Governance still runs; only delivery stops.
+        # (sdk-typescript/src/proxy/config.ts). Governance still runs; only delivery stops.
         logging.getLogger("obsvr").warning(
             "WARNING: ingest_url is not configured. Audit events will not be "
             "delivered until ingest_url is set in obsvr.init()."

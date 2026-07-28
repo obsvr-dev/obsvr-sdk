@@ -1,7 +1,7 @@
 """Audit event builder + emitter.
 
 Field mapping is identical to the TS SDK's buildAuditEvent /
-buildIntegrationEvent (sdk/src/integrations/core.ts) and matches the
+buildIntegrationEvent (sdk-typescript/src/integrations/core.ts) and matches the
 ingest RawEventSchema (snake_case, compliance fields, truncation marker).
 """
 
@@ -50,7 +50,7 @@ _METADATA_BUDGET_CHARS = 9000
 #:
 #: Nothing downstream depends on the top-level name until step 2, so steps 1
 #: and 3 are additive and need no coordinated release. Twin:
-#: CONTENT_PROVENANCE_METADATA_KEY in sdk/src/proxy/sender/fire-and-forget.ts.
+#: CONTENT_PROVENANCE_METADATA_KEY in sdk-typescript/src/proxy/sender/fire-and-forget.ts.
 CONTENT_PROVENANCE_METADATA_KEY = "obsvr_content_provenance"
 
 _RESERVED_META_KEYS = (
@@ -158,7 +158,7 @@ def build_audit_event(
     operation: str,
     source: str,
     # Keyword-only, so a defaulted parameter may precede the required `prompt`.
-    # See AuditEvent.content_provenance (sdk/src/proxy/types.ts) for the
+    # See AuditEvent.content_provenance (sdk-typescript/src/proxy/types.ts) for the
     # vocabulary and for why it is never inferred.
     content_provenance: Optional[str] = None,
     prompt: str,

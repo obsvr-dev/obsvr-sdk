@@ -6,7 +6,7 @@ markup, whitespace padding, or base64/hex/percent encoding are still seen by
 the pattern scanners.
 Behavior-identical to the server-side normalizer,
 pinned by conformance/fixtures/deobfuscation.json. Twin:
-sdk/src/policy/deobfuscate.ts.
+sdk-typescript/src/policy/deobfuscate.ts.
 
 Invariants (same as the gateway):
  - NON-MUTATING: views are derived copies; the caller's text, stored
@@ -357,7 +357,7 @@ def strip_hidden_html(text: str) -> str:
      - an unterminated hidden element drops the remainder, matching
        ``strip_html_comments``.
 
-    Twin: ``stripHiddenHtml`` in sdk/src/policy/deobfuscate.ts.
+    Twin: ``stripHiddenHtml`` in sdk-typescript/src/policy/deobfuscate.ts.
     """
     if "<" not in text:
         return text
@@ -756,7 +756,7 @@ def redact_for_storage(text: str, via: Optional[str]) -> str:
     "[REDACTED..." token, because "we could not scan this" must not read as "we
     scanned it and removed something".
 
-    Twin: sdk/src/policy/deobfuscate.ts (``redactForStorage``).
+    Twin: sdk-typescript/src/policy/deobfuscate.ts (``redactForStorage``).
     """
     try:
         if via is not None:

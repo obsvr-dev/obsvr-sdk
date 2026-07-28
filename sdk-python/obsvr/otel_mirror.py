@@ -1,4 +1,4 @@
-"""Optional OpenTelemetry mirror (parity with sdk/src/proxy/otel-mirror.ts).
+"""Optional OpenTelemetry mirror (parity with sdk-typescript/src/proxy/otel-mirror.ts).
 
 When otel={"enabled": True} and the opentelemetry-api package is installed
 (optional, never a hard dependency), every audit event is mirrored as a

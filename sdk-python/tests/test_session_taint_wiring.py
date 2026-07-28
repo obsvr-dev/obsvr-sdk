@@ -1,5 +1,5 @@
 """End-to-end session taint latch wiring. Twin:
-sdk/tests/unit/session-taint-wiring.test.ts. Pins that a detected injection /
+sdk-typescript/tests/unit/session-taint-wiring.test.ts. Pins that a detected injection /
 canary leak taints the session and escalates its SUBSEQUENT egress, keyed by
 the caller's session id, without double-penalising the tainting turn — and
 that with the latch off the pipeline is unchanged."""

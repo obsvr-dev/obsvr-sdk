@@ -5,7 +5,7 @@
   "signing_key_hex": "82063a1c5c8964553bf0ff6f9957e7b8063424a0d8aaaa09299a1ffd7ed468fd",
   "chain_format": 2,
   "content_hash": {
-    "description": "The format-2 content-hash preimage: sha256('obsvr:content/2' || 0x00 || u64be(len(prompt)) || prompt || u64be(len(response)) || response), fields as UTF-8 bytes, lengths in bytes. Format 1 was sha256(prompt + response), and a bare concatenation does not remember where the boundary was: the digest pairs below marked equal_under_legacy demonstrate the defect - two different attributions of the same bytes, one digest. The length prefixes make the preimage unambiguous by construction; the leading tag domain-separates this digest from every other sha256 in the SDK. Producers: sdk/src/proxy/chain-format.ts, sdk-python/obsvr/chain_format.py. Consumers: sdk/tests/unit/signing-vectors.test.ts, sdk-python/tests/test_signing.py.",
+    "description": "The format-2 content-hash preimage: sha256('obsvr:content/2' || 0x00 || u64be(len(prompt)) || prompt || u64be(len(response)) || response), fields as UTF-8 bytes, lengths in bytes. Format 1 was sha256(prompt + response), and a bare concatenation does not remember where the boundary was: the digest pairs below marked equal_under_legacy demonstrate the defect - two different attributions of the same bytes, one digest. The length prefixes make the preimage unambiguous by construction; the leading tag domain-separates this digest from every other sha256 in the SDK. Producers: sdk-typescript/src/proxy/chain-format.ts, sdk-python/obsvr/chain_format.py. Consumers: sdk-typescript/tests/unit/signing-vectors.test.ts, sdk-python/tests/test_signing.py.",
     "domain_tag": "obsvr:content/2",
     "cases": [
       {
@@ -109,7 +109,7 @@
     ]
   },
   "chain_verification": {
-    "description": "Chain-verification verdicts over the events above. Both verifiers (sdk/src/governance/verify-chain.ts and sdk-python/obsvr/verify_chain.py) build the chain from `events` (or `legacy_v1_events.events` when a case says `events: legacy_v1`), apply each case's mutations in order, verify, and must produce THIS verdict - identical valid/broken_at/reason/chain_format in both languages. A divergence is a release blocker: it means a customer's evidence verifies in one language and not the other.",
+    "description": "Chain-verification verdicts over the events above. Both verifiers (sdk-typescript/src/governance/verify-chain.ts and sdk-python/obsvr/verify_chain.py) build the chain from `events` (or `legacy_v1_events.events` when a case says `events: legacy_v1`), apply each case's mutations in order, verify, and must produce THIS verdict - identical valid/broken_at/reason/chain_format in both languages. A divergence is a release blocker: it means a customer's evidence verifies in one language and not the other.",
     "mutation_ops": {
       "set": "events[index][field] = value",
       "delete": "remove events[index][field]",

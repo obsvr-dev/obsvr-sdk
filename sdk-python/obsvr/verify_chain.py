@@ -3,7 +3,7 @@
 Recomputes every event's HMAC-SHA256 signature and validates the chain
 linking, so evidence can be checked offline by whoever holds the API key -
 without trusting obsvr, and without a Node toolchain. Twin of the TypeScript
-``verifyAuditChain`` (sdk/src/governance/verify-chain.ts): same checks, same
+``verifyAuditChain`` (sdk-typescript/src/governance/verify-chain.ts): same checks, same
 order, same verdicts, same reason strings, so a mixed-language shop gets one
 answer rather than two.
 
@@ -32,7 +32,7 @@ cannot diverge between languages the way locale-aware string collation can.
 
 Parity is pinned by conformance/fixtures/signing_vectors.json, which both
 suites consume (tests/test_verify_chain.py here,
-sdk/tests/unit/signing-vectors.test.ts and the TS verifier there).
+sdk-typescript/tests/unit/signing-vectors.test.ts and the TS verifier there).
 
 One documented edge: an event carrying an explicit ``null`` timestamp_sdk
 mid-chain is rejected by both languages at the same index, but the reason

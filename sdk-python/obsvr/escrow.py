@@ -1,4 +1,4 @@
-"""Fleet-quota escrow — client side of ADR-7 (twin of sdk/src/governance/escrow.ts).
+"""Fleet-quota escrow — client side of ADR-7 (twin of sdk-typescript/src/governance/escrow.ts).
 
 WHY: the per-process quota meter in ``rules.py`` enforces a rule PER SDK
 INSTANCE, so N horizontally-scaled workers get up to N x the configured limit

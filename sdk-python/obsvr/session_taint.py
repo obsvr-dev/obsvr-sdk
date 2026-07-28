@@ -1,6 +1,6 @@
 """Session taint latch.
 
-EXACT parity with sdk/src/policy/session-taint.ts.
+EXACT parity with sdk-typescript/src/policy/session-taint.ts.
 
 When a prompt-injection or a canary leak is detected in a session, the session
 is marked TAINTED. Subsequent EGRESS in that session -- a tool call, tool-call

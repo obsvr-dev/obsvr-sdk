@@ -1,6 +1,6 @@
 """Duplicate-SDK-instance guard (Python side).
 
-Twin: sdk/tests/unit/instance-guard.test.ts. Both drive the claim sequences in
+Twin: sdk-typescript/tests/unit/instance-guard.test.ts. Both drive the claim sequences in
 conformance/fixtures/instance_guard.json and must reach the same outcome,
 because "one governing instance per process" has to mean the same thing in a
 mixed-language shop.

@@ -1,6 +1,6 @@
 """The CSS-hidden / aria-hidden stripping pass in the canonical-view builder.
 
-Twin of sdk/tests/unit/deobfuscate-hidden-html.test.ts, case for case.
+Twin of sdk-typescript/tests/unit/deobfuscate-hidden-html.test.ts, case for case.
 
 Two properties matter and they are easy to confuse. A payload sitting whole
 inside a hidden element is already plain text in the raw prompt, and the raw

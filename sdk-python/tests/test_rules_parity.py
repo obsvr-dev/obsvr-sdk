@@ -1,6 +1,6 @@
 """Rule-type parity tests: the 8 context-dependent rule types ported from TS.
 
-Parity targets: sdk/tests/unit/fintech-rules.test.ts, saas-rules.test.ts,
+Parity targets: sdk-typescript/tests/unit/fintech-rules.test.ts, saas-rules.test.ts,
 healthcare-rules.test.ts, devops-rules.test.ts, legal-rules.test.ts,
 governance-quota.test.ts.
 """

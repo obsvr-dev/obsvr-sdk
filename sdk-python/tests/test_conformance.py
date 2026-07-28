@@ -1,5 +1,5 @@
 """Cross-SDK conformance harness (Python side). Twin:
-sdk/tests/unit/conformance.test.ts. Runs every case in
+sdk-typescript/tests/unit/conformance.test.ts. Runs every case in
 conformance/fixtures/eval_semantics.json through validator + evaluator +
 shadow evaluator. A divergence from the fixture (or from the TS harness)
 is a release blocker unless recorded in conformance/known-divergences.md.

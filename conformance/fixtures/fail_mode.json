@@ -2,7 +2,7 @@
   "claimable": true,
   "schema_version": 1,
   "name": "fail_mode",
-  "description": "Central failure-disposition registry, shared by both SDKs. TS source: sdk/src/policy/failure-dispositions.ts. Python twin: sdk-python/obsvr/failure_dispositions.py. Both staleness suites (sdk/tests/unit/fail-mode.test.ts, sdk-python/tests/test_fail_mode.py) assert their registry equals `layers` here, that every layer declares all three failure states, and that the declarations match observed behavior for the states a unit test can drive. This table DESCRIBES shipped behavior and is read by no call path. A new detector class must appear here, in both registries, before it can land: the gate test fails on any detector module without a declaration. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",
+  "description": "Central failure-disposition registry, shared by both SDKs. TS source: sdk-typescript/src/policy/failure-dispositions.ts. Python twin: sdk-python/obsvr/failure_dispositions.py. Both staleness suites (sdk-typescript/tests/unit/fail-mode.test.ts, sdk-python/tests/test_fail_mode.py) assert their registry equals `layers` here, that every layer declares all three failure states, and that the declarations match observed behavior for the states a unit test can drive. This table DESCRIBES shipped behavior and is read by no call path. A new detector class must appear here, in both registries, before it can land: the gate test fails on any detector module without a declaration. A divergence is a release blocker unless recorded in conformance/known-divergences.md.",
   "vocabulary": {
     "states": [
       "timeout",
@@ -29,7 +29,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/proxy/config.ts",
+      "module_ts": "sdk-typescript/src/proxy/config.ts",
       "module_py": "sdk-python/obsvr/remote.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -49,7 +49,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/proxy/policy-verify.ts",
+      "module_ts": "sdk-typescript/src/proxy/policy-verify.ts",
       "module_py": "sdk-python/obsvr/policy_verify.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -69,7 +69,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/session-taint.ts",
+      "module_ts": "sdk-typescript/src/policy/session-taint.ts",
       "module_py": "sdk-python/obsvr/session_taint.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -89,7 +89,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/canary.ts",
+      "module_ts": "sdk-typescript/src/policy/canary.ts",
       "module_py": "sdk-python/obsvr/canary.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -109,7 +109,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/hook.ts",
+      "module_ts": "sdk-typescript/src/policy/hook.ts",
       "module_py": "sdk-python/obsvr/policy.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -130,7 +130,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/presidio.ts",
+      "module_ts": "sdk-typescript/src/policy/presidio.ts",
       "module_py": "sdk-python/obsvr/presidio.py",
       "timeout": {
         "disposition": "open"
@@ -150,7 +150,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/deobfuscate.ts",
+      "module_ts": "sdk-typescript/src/policy/deobfuscate.ts",
       "module_py": "sdk-python/obsvr/deobfuscate.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -171,7 +171,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/injection-session.ts",
+      "module_ts": "sdk-typescript/src/policy/injection-session.ts",
       "module_py": "sdk-python/obsvr/injection_session.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -191,7 +191,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/rules.ts",
+      "module_ts": "sdk-typescript/src/policy/rules.ts",
       "module_py": "sdk-python/obsvr/rules.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -211,7 +211,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/rules.ts",
+      "module_ts": "sdk-typescript/src/policy/rules.ts",
       "module_py": "sdk-python/obsvr/rules.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -231,7 +231,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/proxy/wrapper.ts",
+      "module_ts": "sdk-typescript/src/proxy/wrapper.ts",
       "module_py": "sdk-python/obsvr/policy.py",
       "timeout": {
         "disposition": "fail_mode"
@@ -251,7 +251,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/external-backend.ts",
+      "module_ts": "sdk-typescript/src/policy/external-backend.ts",
       "module_py": "sdk-python/obsvr/external_backend.py",
       "timeout": {
         "disposition": "closed",
@@ -273,7 +273,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/integrations/mcp.ts",
+      "module_ts": "sdk-typescript/src/integrations/mcp.ts",
       "module_py": "sdk-python/obsvr/integrations/mcp.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -293,7 +293,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/tool-pinning.ts",
+      "module_ts": "sdk-typescript/src/policy/tool-pinning.ts",
       "module_py": "sdk-python/obsvr/tool_pinning.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -314,7 +314,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/protocol-facets.ts",
+      "module_ts": "sdk-typescript/src/policy/protocol-facets.ts",
       "module_py": "sdk-python/obsvr/protocol_facets.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -334,7 +334,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/capability-hints.ts",
+      "module_ts": "sdk-typescript/src/policy/capability-hints.ts",
       "module_py": "sdk-python/obsvr/capability_hints.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -354,7 +354,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/response-scan.ts",
+      "module_ts": "sdk-typescript/src/policy/response-scan.ts",
       "module_py": "sdk-python/obsvr/response_scan.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -374,7 +374,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/industry/devops.ts",
+      "module_ts": "sdk-typescript/src/policy/industry/devops.ts",
       "module_py": "sdk-python/obsvr/agent_policy.py",
       "timeout": {
         "disposition": "not_applicable"
@@ -394,7 +394,7 @@
         "ts": "required",
         "py": "required"
       },
-      "module_ts": "sdk/src/policy/industry/agentic.ts",
+      "module_ts": "sdk-typescript/src/policy/industry/agentic.ts",
       "module_py": "sdk-python/obsvr/agent_policy.py",
       "timeout": {
         "disposition": "not_applicable"

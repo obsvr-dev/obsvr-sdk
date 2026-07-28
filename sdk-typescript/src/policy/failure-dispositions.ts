@@ -89,7 +89,7 @@ const s = (disposition: Disposition, qualifier?: DispositionQualifier): StateDis
 export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.freeze([
   {
     id: "enforcement_integrity_gate",
-    module: "sdk/src/proxy/config.ts",
+    module: "sdk-typescript/src/proxy/config.ts",
     timeout: s("not_applicable"),
     error: s("open"),
     degraded: s("closed"),
@@ -99,7 +99,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "policy_signature",
-    module: "sdk/src/proxy/policy-verify.ts",
+    module: "sdk-typescript/src/proxy/policy-verify.ts",
     timeout: s("not_applicable"),
     error: s("open"),
     degraded: s("open"),
@@ -109,7 +109,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "session_taint",
-    module: "sdk/src/policy/session-taint.ts",
+    module: "sdk-typescript/src/policy/session-taint.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
@@ -118,7 +118,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "canary",
-    module: "sdk/src/policy/canary.ts",
+    module: "sdk-typescript/src/policy/canary.ts",
     timeout: s("not_applicable"),
     error: s("closed"),
     degraded: s("not_applicable"),
@@ -127,7 +127,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "builtin_pii_scan",
-    module: "sdk/src/policy/hook.ts",
+    module: "sdk-typescript/src/policy/hook.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode", "redaction_application_closed"),
     degraded: s("not_applicable"),
@@ -136,7 +136,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "presidio_merge",
-    module: "sdk/src/policy/presidio.ts",
+    module: "sdk-typescript/src/policy/presidio.ts",
     timeout: s("open"),
     error: s("open"),
     degraded: s("open"),
@@ -146,7 +146,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "deobfuscation_views",
-    module: "sdk/src/policy/deobfuscate.ts",
+    module: "sdk-typescript/src/policy/deobfuscate.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode", "redaction_application_closed"),
     degraded: s("not_applicable"),
@@ -155,7 +155,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "multi_turn_injection",
-    module: "sdk/src/policy/injection-session.ts",
+    module: "sdk-typescript/src/policy/injection-session.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
@@ -164,7 +164,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "policy_floor",
-    module: "sdk/src/policy/rules.ts",
+    module: "sdk-typescript/src/policy/rules.ts",
     timeout: s("not_applicable"),
     error: s("closed"),
     degraded: s("not_applicable"),
@@ -173,7 +173,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "policy_rules",
-    module: "sdk/src/policy/rules.ts",
+    module: "sdk-typescript/src/policy/rules.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
@@ -182,7 +182,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "customer_hook",
-    module: "sdk/src/proxy/wrapper.ts",
+    module: "sdk-typescript/src/proxy/wrapper.ts",
     timeout: s("fail_mode"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
@@ -192,7 +192,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "external_backend",
-    module: "sdk/src/policy/external-backend.ts",
+    module: "sdk-typescript/src/policy/external-backend.ts",
     timeout: s("closed", "shadow_exempt"),
     error: s("closed", "shadow_exempt"),
     degraded: s("not_applicable"),
@@ -202,7 +202,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "mcp_tool_policy",
-    module: "sdk/src/integrations/mcp.ts",
+    module: "sdk-typescript/src/integrations/mcp.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("closed"),
@@ -212,7 +212,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "tool_pinning",
-    module: "sdk/src/policy/tool-pinning.ts",
+    module: "sdk-typescript/src/policy/tool-pinning.ts",
     timeout: s("not_applicable"),
     error: s("closed", "warn_mode_flags"),
     degraded: s("not_applicable"),
@@ -222,7 +222,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "protocol_facets",
-    module: "sdk/src/policy/protocol-facets.ts",
+    module: "sdk-typescript/src/policy/protocol-facets.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
@@ -232,7 +232,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "destructive_capability_hints",
-    module: "sdk/src/policy/capability-hints.ts",
+    module: "sdk-typescript/src/policy/capability-hints.ts",
     timeout: s("not_applicable"),
     error: s("closed"),
     degraded: s("not_applicable"),
@@ -242,7 +242,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "tool_result_scan",
-    module: "sdk/src/policy/response-scan.ts",
+    module: "sdk-typescript/src/policy/response-scan.ts",
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
@@ -251,7 +251,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "loop_detection",
-    module: "sdk/src/policy/industry/devops.ts",
+    module: "sdk-typescript/src/policy/industry/devops.ts",
     timeout: s("not_applicable"),
     error: s("open"),
     degraded: s("not_applicable"),
@@ -260,7 +260,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
   },
   {
     id: "delegation_tracking",
-    module: "sdk/src/policy/industry/agentic.ts",
+    module: "sdk-typescript/src/policy/industry/agentic.ts",
     timeout: s("not_applicable"),
     error: s("open"),
     degraded: s("not_applicable"),

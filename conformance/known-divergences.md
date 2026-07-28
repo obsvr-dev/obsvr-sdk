@@ -8,7 +8,7 @@ entry; silent divergence is never acceptable (conformance discipline).
 **The live entries moved to `known-divergences.json`** — a machine-readable
 catalog whose structure (exact key set, `status` restricted to `intended`,
 `sdk`/`category` vocabularies) is validated by BOTH test suites
-(`sdk/tests/unit/fixture-bookkeeping.test.ts`,
+(`sdk-typescript/tests/unit/fixture-bookkeeping.test.ts`,
 `sdk-python/tests/test_fixture_bookkeeping.py`), so a malformed or
 vocabulary-expanding entry fails CI in either language. Prose could only
 describe the discipline; the catalog lets CI hold it. This file keeps what a

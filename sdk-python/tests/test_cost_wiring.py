@@ -1,5 +1,5 @@
 """The layered cost reaches the record. Twin:
-sdk/tests/unit/cost-wiring.test.ts.
+sdk-typescript/tests/unit/cost-wiring.test.ts.
 
 The resolution itself is pinned in cost.json; what these pin is that a real
 call resolves it from real usage, that all three layers survive to the event

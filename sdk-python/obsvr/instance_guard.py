@@ -1,4 +1,4 @@
-"""Process-level duplicate-instance guard (twin of sdk/src/proxy/instance-guard.ts).
+"""Process-level duplicate-instance guard (twin of sdk-typescript/src/proxy/instance-guard.ts).
 
 The SDK can end up in a process twice: installed directly by the application
 and again as a transitive dependency of something else, at two versions, in two

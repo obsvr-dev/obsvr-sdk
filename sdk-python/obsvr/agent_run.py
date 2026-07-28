@@ -1,6 +1,6 @@
 """Agent-run context — the run-lifecycle counterpart to the span primitive.
 
-Mirror of sdk/src/proxy/agent-run.ts + sdk/src/integrations/agent-run.ts. An
+Mirror of sdk-typescript/src/proxy/agent-run.ts + sdk-typescript/src/integrations/agent-run.ts. An
 "agent run" is one agentic execution: a top-level agent invocation that fans out
 into LLM calls, tool calls, and sub-steps. The dashboard groups these into a
 single Runs-tab row keyed on ``agent_run_id``; the ingest run aggregator marks a

@@ -1,5 +1,5 @@
 """Cross-SDK pre-call eval-context conformance (Python side). Twin:
-sdk/tests/unit/eval-context-conformance.test.ts.
+sdk-typescript/tests/unit/eval-context-conformance.test.ts.
 
 Each fixture case is one customer rule plus the four context values a gate
 reads, and the verdict that rule must reach. Python has ONE shared pre-call

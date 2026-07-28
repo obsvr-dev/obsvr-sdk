@@ -1,5 +1,5 @@
 """§6 matching-time normalization — Python side of the cross-SDK conformance
-harness. Twin: sdk/tests/unit/normalization.test.ts. Every case in
+harness. Twin: sdk-typescript/tests/unit/normalization.test.ts. Every case in
 conformance/fixtures/normalization.json must normalize to the pinned string
 byte-for-byte (and match the TS twin). A divergence is a release blocker."""
 

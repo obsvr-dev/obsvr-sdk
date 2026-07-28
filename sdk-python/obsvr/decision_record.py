@@ -15,7 +15,7 @@ insignificant whitespace, absent optionals OMITTED (never null). It reuses
 ``_canonical_json`` -- the same helper the cross-language rules hash is pinned
 on -- so both SDKs produce byte-identical documents. Parity is pinned by
 conformance/fixtures/decision_input.json (twin:
-sdk/src/policy/decision-record.ts).
+sdk-typescript/src/policy/decision-record.ts).
 """
 
 import hashlib

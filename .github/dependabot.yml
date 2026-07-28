@@ -20,7 +20,7 @@ version: 2
 # a routine bump.
 updates:
   - package-ecosystem: npm
-    directory: /sdk
+    directory: /sdk-typescript
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

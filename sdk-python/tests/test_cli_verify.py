@@ -1,6 +1,6 @@
 """obsvr-verify console script: modes, exit codes, and the entry point.
 
-Contract of record: sdk/src/cli-verify.ts. Byte-level parity with that CLI over
+Contract of record: sdk-typescript/src/cli-verify.ts. Byte-level parity with that CLI over
 one shared export is asserted separately by
 scripts/check-cli-verify-parity.mjs, which drives BOTH binaries; these tests
 pin the Python side's own behavior and the packaging that makes it reachable

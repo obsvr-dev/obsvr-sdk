@@ -54,12 +54,12 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
       - run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: Property suites at depth
-        working-directory: sdk
+        working-directory: sdk-typescript
         # 100x a PR run. Measured at ~4s for 20,000, so this stays cheap even
         # at this count - the reason it is not the PR default is feedback
         # latency, not machine time.
@@ -76,14 +76,14 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
       - run: npm run build
-        working-directory: sdk
+        working-directory: sdk-typescript
       - run: python -m pip install --quiet hypothesis==6.163.0
 
       - name: Generate a seed
@@ -114,14 +114,14 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
       - run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
       - run: npm test
-        working-directory: sdk
+        working-directory: sdk-typescript
       - run: python -m pip install --quiet -e ".[dev]"
         working-directory: sdk-python
       - run: python -m pytest -q

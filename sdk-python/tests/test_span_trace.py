@@ -3,7 +3,7 @@ as a regression suite. A span scope carries a trace_id with the precedence
   explicit trace_id > enclosing scope's trace_id > own span_id (self-root)
 and _emit_span_event stamps it into metadata["trace_id"] so ingest groups the
 span with its run instead of orphaning it.
-Twin: sdk/tests/unit/span-trace-linkage.test.ts.
+Twin: sdk-typescript/tests/unit/span-trace-linkage.test.ts.
 """
 
 import obsvr

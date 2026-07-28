@@ -4,7 +4,7 @@ This is the SINGLE shared source of the reason-code vocabulary for the
 Python SDK. Every policy verdict the engine emits carries a ``reason_code``
 drawn from this enum PLUS an optional free-form ``reason`` detail (so no
 information is lost). It mirrors the TypeScript twin
-(sdk/src/governance/reason-codes.ts) byte for byte, and both are pinned to
+(sdk-typescript/src/governance/reason-codes.ts) byte for byte, and both are pinned to
 the shared fixture ``conformance/fixtures/reason_codes.json``.
 
 A CI staleness check (tests/test_reason_codes.py + the TS

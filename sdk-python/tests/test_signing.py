@@ -2,7 +2,7 @@
 
 Asserts the Python signer produces byte-identical signatures to the shared
 vectors in conformance/fixtures/signing_vectors.json (twin:
-sdk/tests/unit/signing-vectors.test.ts). If either language's signing logic
+sdk-typescript/tests/unit/signing-vectors.test.ts). If either language's signing logic
 drifts, these vectors fail in that language's suite.
 
 The vectors pin THREE things: the signing-key derivation, the format-2

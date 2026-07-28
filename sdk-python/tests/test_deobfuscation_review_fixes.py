@@ -1,5 +1,5 @@
 """Regression pins for the adversarial-review findings on the de-obfuscation
-wiring. Twin: sdk/tests/unit/deobfuscation-review-fixes.test.ts.
+wiring. Twin: sdk-typescript/tests/unit/deobfuscation-review-fixes.test.ts.
 
 1. CRITICAL -- multi-turn gate: enabling deobfuscation must never SUPPRESS an
    accumulation block (view-aware had_full did exactly that when no

@@ -2,7 +2,7 @@
 /**
  * Differential property test over the two canonicalizers.
  *
- * `stableStringify` (sdk/src/policy/rules.ts) and `_canonical_json`
+ * `stableStringify` (sdk-typescript/src/policy/rules.ts) and `_canonical_json`
  * (sdk-python/obsvr/rules.py) must produce byte-identical output, because
  * policy_version and rules_hash are SHA-256 over that output. A rule set that
  * canonicalizes differently in the two SDKs stamps two different
@@ -26,10 +26,10 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import fc from "../sdk/node_modules/fast-check/lib/fast-check.js";
+import fc from "../sdk-typescript/node_modules/fast-check/lib/fast-check.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const { stableStringify } = await import(join(REPO, "sdk/dist/policy/rules.js"));
+const { stableStringify } = await import(join(REPO, "sdk-typescript/dist/policy/rules.js"));
 
 const argv = process.argv.slice(2);
 const argOf = (name, dflt) => {

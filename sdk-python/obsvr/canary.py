@@ -1,6 +1,6 @@
 """Canary-leak detection (honeytoken tripwire).
 
-EXACT parity with sdk/src/policy/canary.ts.
+EXACT parity with sdk-typescript/src/policy/canary.ts.
 
 The app MINTS a canary token and PLANTS it where only the model should ever
 see it -- a system prompt, a retrieved document, a tool description, a

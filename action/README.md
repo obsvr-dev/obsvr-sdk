@@ -2,7 +2,7 @@
 
 Verify an exported [obsvr](https://github.com/obsvr) evidence bundle as a CI/PR
 check. This composite action installs a pinned `@obsvr/sdk` and runs its shipped
-[`obsvr-verify`](../sdk/src/cli-verify.ts) CLI against a bundle you provide,
+[`obsvr-verify`](../sdk-typescript/src/cli-verify.ts) CLI against a bundle you provide,
 failing the job if the tamper-evident audit chain does not verify.
 
 Two verification tiers, chosen by whether you supply an `api-key`:

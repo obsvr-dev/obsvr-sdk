@@ -5,7 +5,7 @@ Bounded queue.Queue(100) + daemon worker thread, urllib.request POST to
 atexit flush. Never blocks or breaks the caller's LLM path.
 
 Every enqueued event is stamped with the SDK integrity chain, byte-for-byte
-compatible with the TypeScript SDK (sdk/src/proxy/sender/fire-and-forget.ts)
+compatible with the TypeScript SDK (sdk-typescript/src/proxy/sender/fire-and-forget.ts)
 so ingest-side verification code treats both identically:
 
 - sdk_session_id : stable UUID per process lifetime

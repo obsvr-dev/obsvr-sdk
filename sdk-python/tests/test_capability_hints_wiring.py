@@ -1,6 +1,6 @@
 """End-to-end: a tool that declares itself destructive in its MCP descriptor
 joins the destructive-capability set at discovery, with NO operator
-configuration. Twin: sdk/tests/unit/capability-hints-wiring.test.ts.
+configuration. Twin: sdk-typescript/tests/unit/capability-hints-wiring.test.ts.
 
 The gap this closes is that the capability gate - the strongest control in the
 SDK - used to require an operator to write a list of tool names, and a

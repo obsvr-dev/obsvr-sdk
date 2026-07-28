@@ -1,5 +1,5 @@
 """Cross-SDK conformance harness (Python side) for fleet-quota escrow (ADR-7).
-Twin: sdk/tests/unit/escrow-conformance.test.ts. Both drive every
+Twin: sdk-typescript/tests/unit/escrow-conformance.test.ts. Both drive every
 (grant, spend, report) sequence in conformance/fixtures/quota_escrow.json and
 must reach identical allow/block decisions and consumption reports. A
 divergence is a release blocker."""

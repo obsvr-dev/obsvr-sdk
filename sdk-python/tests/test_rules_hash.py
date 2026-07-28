@@ -1,5 +1,5 @@
 """Cross-SDK canonical rules-hash fixture tests (twin of
-sdk/tests/unit/rules-hash.test.ts). A divergence from the fixture is a
+sdk-typescript/tests/unit/rules-hash.test.ts). A divergence from the fixture is a
 release blocker: the hash is the policy_version on every audit event
 and the pin for approvals."""
 

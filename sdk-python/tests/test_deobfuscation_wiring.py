@@ -1,6 +1,6 @@
 """Pipeline wiring for the de-obfuscation view layer (server-side normalizer mirror).
 
-Twin: sdk/tests/unit/deobfuscation-wiring.test.ts. The pure decision
+Twin: sdk-typescript/tests/unit/deobfuscation-wiring.test.ts. The pure decision
 semantics are fixture-pinned (deobfuscation.json decision/storage/policy
 cases); these tests pin that the REAL pipelines actually route through
 them: opt-in gate, redact->block escalation, whole-text stored copies,

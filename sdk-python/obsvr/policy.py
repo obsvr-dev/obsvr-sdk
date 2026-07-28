@@ -1,6 +1,6 @@
 """Built-in PII scanner + per-type policy resolution.
 
-EXACT parity with sdk/src/policy/hook.ts:
+EXACT parity with sdk-typescript/src/policy/hook.ts:
   - same pattern set (labels, regexes, placeholders, confidence, category)
   - same Luhn validation for credit cards
   - same confidence-based overlap suppression over positioned spans
@@ -600,7 +600,7 @@ def record_check_only_failure(layer: str, exc: BaseException) -> None:
     check-only unit stop a call, which is the one thing shadow mode promises it
     cannot do.
 
-    Twin: sdk/src/policy/detector-guard.ts (``recordCheckOnlyFailure``).
+    Twin: sdk-typescript/src/policy/detector-guard.ts (``recordCheckOnlyFailure``).
     """
     global _detector_errors
     _detector_errors += 1
@@ -641,7 +641,7 @@ def apply_outbound_redaction(
     from the event: a record asserting a redaction that did not happen is worse
     than none, because it tells an auditor the content was cleaned.
 
-    Twin: sdk/src/policy/detector-guard.ts (``applyOutboundRedaction``).
+    Twin: sdk-typescript/src/policy/detector-guard.ts (``applyOutboundRedaction``).
     """
     global _detector_errors
     try:
@@ -685,7 +685,7 @@ def outbound_redaction_blocked_compliance(
     found move to ``blocked_types``, which is what they now are - the reason the
     call was refused rather than a list of things removed.
 
-    Twin: sdk/src/integrations/core.ts (``outboundRedactionBlockedCompliance``).
+    Twin: sdk-typescript/src/integrations/core.ts (``outboundRedactionBlockedCompliance``).
     """
     merged = dict(base)
     merged.update(
@@ -718,7 +718,7 @@ def safe_policy_version(config: ResolvedConfig) -> str:
     Same lesson as the stored-copy fallback: nothing on the failure path may
     re-run the code that failed and assume it works this time.
 
-    Twin: sdk/src/policy/detector-guard.ts (`safePolicyVersion`).
+    Twin: sdk-typescript/src/policy/detector-guard.ts (`safePolicyVersion`).
     """
     try:
         from .rules import derive_policy_version

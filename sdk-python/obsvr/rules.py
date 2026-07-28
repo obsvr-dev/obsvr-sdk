@@ -1,4 +1,4 @@
-"""Structured policy rules engine - parity with sdk/src/policy/rules.ts.
+"""Structured policy rules engine - parity with sdk-typescript/src/policy/rules.ts.
 
 Rule types (same set as TS): keyword, regex, topic_deny, topic_allow, pii,
 action_gate, namespace_isolation, cross_tenant_block, destructive_op_gate,
@@ -525,7 +525,7 @@ def compute_grounding_score(output: str, sources: List[str]) -> float:
     return len(grounded) / len(words)
 
 
-# ── In-memory quota store (parity with sdk/src/governance/quota.ts) ─────────
+# ── In-memory quota store (parity with sdk-typescript/src/governance/quota.ts) ─────────
 # Per-process fixed windows. Same caveat as TS: by default N workers = N x the
 # budget. Fleet-quota escrow (ADR-7, obsvr/escrow.py) closes that gap for
 # request-unit rules the server escrows on the /policies poll — this meter is
@@ -986,7 +986,7 @@ def derive_policy_version(rules: List[PolicyRule]) -> str:
     version that cannot be computed must not block a call. "unknown" is the
     honest value and is distinguishable from the legitimate "none".
 
-    Twin: sdk/src/policy/rules.ts (``derivePolicyVersion``).
+    Twin: sdk-typescript/src/policy/rules.ts (``derivePolicyVersion``).
     """
     try:
         if not rules:

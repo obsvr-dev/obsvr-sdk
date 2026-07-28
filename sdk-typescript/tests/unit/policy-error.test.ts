@@ -166,7 +166,7 @@ describe('every block-throw surface uses the one choke point', () => {
     // inlined per call site, which is how two sites come to classify the same
     // block differently. Only policy-error.ts may build one.
     const srcDir = path
-      .dirname(findFixture('sdk/src/policy/policy-error.ts'))
+      .dirname(findFixture('sdk-typescript/src/policy/policy-error.ts'))
       .replace(/\/policy$/, '');
     const offenders: string[] = [];
     const walk = (dir: string) => {

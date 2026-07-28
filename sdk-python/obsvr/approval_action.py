@@ -1,5 +1,5 @@
 """The canonical approval-action document (twin of the action half of
-sdk/src/policy/approvals.ts).
+sdk-typescript/src/policy/approvals.ts).
 
 A grant scoped only to a rule id answers "did someone approve something?". For
 a product whose claim is that the record proves what was authorized, the

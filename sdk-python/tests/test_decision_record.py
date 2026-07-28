@@ -1,5 +1,5 @@
 """Canonical decision records (ADR-2) — Python side. Twin:
-sdk/tests/unit/decision-record.test.ts.
+sdk-typescript/tests/unit/decision-record.test.ts.
 
 Two layers:
  1. Cross-SDK parity against conformance/fixtures/decision_input.json: both

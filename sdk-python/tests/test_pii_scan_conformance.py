@@ -1,5 +1,5 @@
 """Built-in PII/secret/injection scanner — Python side of the cross-SDK
-conformance harness. Twin: sdk/tests/unit/pii-scan-conformance.test.ts. Every
+conformance harness. Twin: sdk-typescript/tests/unit/pii-scan-conformance.test.ts. Every
 case in conformance/fixtures/pii_scan.json must produce the pinned
 detected_types (unique labels in span order after overlap suppression, Luhn
 validation applied) and redacted output byte-for-byte. A divergence is a

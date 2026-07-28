@@ -1,5 +1,5 @@
 """End-to-end anti-tamper policy floor wiring. Twin:
-sdk/tests/unit/policy-floor-wiring.test.ts. Pins: a floor block cannot be
+sdk-typescript/tests/unit/policy-floor-wiring.test.ts. Pins: a floor block cannot be
 un-blocked by the customer hook (and the attempt is recorded as
 floor_override_ignored — the differentiator over a swallowed log line); a
 remote sync replacing policy_rules cannot delete the floor; floor_version

@@ -1,5 +1,5 @@
 """Python consumer of conformance/fixtures/tool_content_hash.json. Twin:
-sdk/tests/unit/tool-content-hash-conformance.test.ts.
+sdk-typescript/tests/unit/tool-content-hash-conformance.test.ts.
 
 The fixture is the contract of record for obsvr-tool-content-v1, and this is
 the half that proves the Python producer reproduces every byte of it. Literals

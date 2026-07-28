@@ -1,5 +1,5 @@
 """Descriptor content-scan conformance (Python side). Twin:
-sdk/tests/unit/tool-poisoning.test.ts (the tool_descriptor_scan.json
+sdk-typescript/tests/unit/tool-poisoning.test.ts (the tool_descriptor_scan.json
 describe). The fixture pins the exact reason arrays (order included) for
 both SDKs: schema description/default surfaces, comment-concealment, bidi
 presence, the opt-in decoding boundary, and the loud walk cap. A divergence

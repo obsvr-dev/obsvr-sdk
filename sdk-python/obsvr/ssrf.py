@@ -1,6 +1,6 @@
 """SSRF guard for outbound backend URLs (ADR-4 external policy backend).
 
-Twin of sdk/src/utils/ssrf.ts. An external policy backend URL is UNTRUSTED
+Twin of sdk-typescript/src/utils/ssrf.ts. An external policy backend URL is UNTRUSTED
 input (it may arrive from server-pushed config or a multi-tenant dashboard), so
 a naive request would be a server-side request forgery primitive. This module
 blocks non-http(s) schemes and private / loopback / link-local / metadata

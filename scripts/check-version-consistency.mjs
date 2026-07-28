@@ -3,7 +3,7 @@
  * fail a publish (or CI) if the version is not identical across every
  * source of truth, so a release can never encode a self-contradictory version.
  *
- * Checks: sdk/package.json .version  ==  sdk/src/constants.ts SDK_VERSION
+ * Checks: sdk-typescript/package.json .version  ==  sdk-typescript/src/constants.ts SDK_VERSION
  *         ==  sdk-python/obsvr/_version.py __version__
  *         ==  action/action.yml `version` input default
  *
@@ -29,12 +29,12 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-const pkg = JSON.parse(read("sdk/package.json")).version;
+const pkg = JSON.parse(read("sdk-typescript/package.json")).version;
 
-const constantsMatch = read("sdk/src/constants.ts").match(
+const constantsMatch = read("sdk-typescript/src/constants.ts").match(
   /SDK_VERSION\s*=\s*['"]([^'"]+)['"]/,
 );
-if (!constantsMatch) fail("could not find SDK_VERSION in sdk/src/constants.ts");
+if (!constantsMatch) fail("could not find SDK_VERSION in sdk-typescript/src/constants.ts");
 const constants = constantsMatch[1];
 
 const versionPyMatch = read("sdk-python/obsvr/_version.py").match(
@@ -51,8 +51,8 @@ if (!actionMatch) fail("could not find the version input default in action/actio
 const actionVersion = actionMatch[1];
 
 const sources = {
-  "sdk/package.json": pkg,
-  "sdk/src/constants.ts (SDK_VERSION)": constants,
+  "sdk-typescript/package.json": pkg,
+  "sdk-typescript/src/constants.ts (SDK_VERSION)": constants,
   "sdk-python/obsvr/_version.py (__version__)": versionPy,
   "action/action.yml (version input default)": actionVersion,
 };

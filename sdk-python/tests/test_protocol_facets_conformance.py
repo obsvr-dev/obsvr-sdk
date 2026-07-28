@@ -1,5 +1,5 @@
 """Cross-SDK protocol-facet conformance (Python side). Twin:
-sdk/tests/unit/protocol-facets-conformance.test.ts.
+sdk-typescript/tests/unit/protocol-facets-conformance.test.ts.
 
 Two layers are pinned: the decomposition itself, and the rule semantics on top
 of it - including the direction that matters most, which is that text the

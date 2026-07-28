@@ -172,7 +172,7 @@ function checkMcpToolPolicy(
  *
  * @example
  * ```ts
- * import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+ * import { Client } from '@modelcontextprotocol/sdk-typescript/client/index.js';
  * import { obsvrGovernMCP } from '@obsvr/sdk/integrations/mcp';
  * obsvrGovernMCP(Client, resolvedConfig);
  * ```
@@ -243,7 +243,7 @@ export function patchMCP(
   }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    mod = require("@modelcontextprotocol/sdk/client/index.js");
+    mod = require("@modelcontextprotocol/sdk-typescript/client/index.js");
   } catch {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports

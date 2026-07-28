@@ -1,5 +1,5 @@
 """Cross-SDK anti-tamper policy-floor conformance harness (Python side). Twin:
-sdk/tests/unit/policy-floor-conformance.test.ts. Pins the floor evaluation
+sdk-typescript/tests/unit/policy-floor-conformance.test.ts. Pins the floor evaluation
 (downgraded floor rule still enforces; empty floor allows) and the floor
 version hash (downgrade hashes identically to enforced)."""
 

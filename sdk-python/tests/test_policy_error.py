@@ -1,6 +1,6 @@
 """The typed policy-block error (Python side).
 
-Twin: sdk/tests/unit/policy-error.test.ts. Both drive every case in
+Twin: sdk-typescript/tests/unit/policy-error.test.ts. Both drive every case in
 conformance/fixtures/error_parity.json through their own construction choke
 point and must produce the same serialized fields, because the promise is that
 a caller can branch on a policy block identically in either language.

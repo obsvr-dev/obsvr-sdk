@@ -1,7 +1,7 @@
 """Remote policy sync: polling, kill switch, fail-closed, approvals.
 
-Parity with sdk/src/proxy/config.ts (policy poll + sync health) and
-sdk/src/policy/approvals.ts:
+Parity with sdk-typescript/src/proxy/config.ts (policy poll + sync health) and
+sdk-typescript/src/policy/approvals.ts:
 
 - A daemon thread polls {ingest_url}/policies every refresh interval
   (immediate first poll), replacing config.policy_rules with server rules

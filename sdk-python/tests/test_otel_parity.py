@@ -1,4 +1,4 @@
-"""OTel attribute parity (E29), twin of sdk/tests/unit/otel-parity.test.ts:
+"""OTel attribute parity (E29), twin of sdk-typescript/tests/unit/otel-parity.test.ts:
 the mirrored span's attribute KEY SET must match
 conformance/fixtures/otel_attributes.json exactly in both SDKs."""
 

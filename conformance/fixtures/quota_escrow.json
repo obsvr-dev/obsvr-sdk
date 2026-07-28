@@ -1,6 +1,6 @@
 {
   "claimable": false,
-  "description": "Fleet-quota escrow (ADR-7) client decision semantics. Pins the allow/block decision at each governed call and the consumption report so the escrow client is behavior-identical in the TypeScript SDK (sdk/src/governance/escrow.ts, driven by sdk/tests/unit/escrow-conformance.test.ts) and the Python SDK (sdk-python/obsvr/escrow.py, driven by sdk-python/tests/test_escrow_conformance.py).",
+  "description": "Fleet-quota escrow (ADR-7) client decision semantics. Pins the allow/block decision at each governed call and the consumption report so the escrow client is behavior-identical in the TypeScript SDK (sdk-typescript/src/governance/escrow.ts, driven by sdk-typescript/tests/unit/escrow-conformance.test.ts) and the Python SDK (sdk-python/obsvr/escrow.py, driven by sdk-python/tests/test_escrow_conformance.py).",
   "authoritative_source": "This repo. The client decision cases here must stay identical across TS and Python.",
   "ops": {
     "grant": "apply one escrow grant for rule_id with {share, epoch}; a non-strictly-increasing epoch is ignored (stale/replayed)",

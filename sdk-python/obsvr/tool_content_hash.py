@@ -1,6 +1,6 @@
 """tool_content_hash producer (``obsvr-tool-content-v1``).
 
-Twin of sdk/src/policy/tool-content-hash.ts; the byte contract of record is
+Twin of sdk-typescript/src/policy/tool-content-hash.ts; the byte contract of record is
 conformance/fixtures/tool_content_hash.json, and every vector there must
 produce the same 64-hex digest in both languages.
 

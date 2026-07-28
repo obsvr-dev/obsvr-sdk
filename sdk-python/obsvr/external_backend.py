@@ -1,6 +1,6 @@
 """Inbound external policy backend (ADR-4): OPA or Cedar.
 
-Twin of sdk/src/policy/external-backend.ts. A customer points the SDK at their
+Twin of sdk-typescript/src/policy/external-backend.ts. A customer points the SDK at their
 existing policy-as-code engine (an OPA HTTP endpoint or a Cedar authorization
 endpoint) and that engine's verdict participates in the pre-call decision.
 

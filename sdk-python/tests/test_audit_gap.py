@@ -10,7 +10,7 @@ that make that marker evidence rather than a log line: it is IN the chain
 (chained, signed, verifiable), and its count is INSIDE the signature preimage,
 so editing the count breaks verification.
 
-Twin: sdk/tests/unit/audit-gap.test.ts.
+Twin: sdk-typescript/tests/unit/audit-gap.test.ts.
 """
 
 import pytest

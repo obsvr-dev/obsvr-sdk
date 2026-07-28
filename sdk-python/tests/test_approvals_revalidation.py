@@ -1,6 +1,6 @@
 """An approval is re-checked after the layers that can delay a call, not only
 when the rules engine first consults it. Twin:
-sdk/tests/unit/approvals-revalidation.test.ts.
+sdk-typescript/tests/unit/approvals-revalidation.test.ts.
 
 The window this closes is real rather than theoretical: the customer hook has a
 two-second budget by default and an external policy backend has its own, so a

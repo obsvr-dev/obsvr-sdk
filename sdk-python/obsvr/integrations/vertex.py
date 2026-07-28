@@ -1,6 +1,6 @@
 """Google Vertex AI (Python) integration — governs a GenerativeModel.
 
-Parity with sdk/src/integrations/vertex.ts. Wraps a Vertex AI
+Parity with sdk-typescript/src/integrations/vertex.ts. Wraps a Vertex AI
 ``GenerativeModel`` (``vertexai.generative_models.GenerativeModel`` or
 ``google.cloud.aiplatform``'s equivalent) and governs ``generate_content``
 (and its streaming form ``generate_content`` with ``stream=True``, plus

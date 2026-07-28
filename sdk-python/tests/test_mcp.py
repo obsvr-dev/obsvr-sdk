@@ -1,7 +1,7 @@
 """Tests for Python MCP governance (patch_mcp + tool-poisoning defense).
 
 A fake ClientSession duck-types the official mcp package so no server or
-dependency is needed. Parity target: sdk/tests/unit/mcp-integration.test.ts
+dependency is needed. Parity target: sdk-typescript/tests/unit/mcp-integration.test.ts
 and tool-poisoning.test.ts.
 """
 import asyncio

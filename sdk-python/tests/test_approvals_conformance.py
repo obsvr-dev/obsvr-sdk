@@ -1,5 +1,5 @@
 """Cross-SDK approval-binding conformance (Python side). Twin:
-sdk/tests/unit/approvals-conformance.test.ts.
+sdk-typescript/tests/unit/approvals-conformance.test.ts.
 
 A grant scoped only to a rule id says someone approved something. These cases
 pin the stronger claim: that a grant names the call it was issued for and

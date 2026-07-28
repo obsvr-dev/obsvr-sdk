@@ -1,5 +1,5 @@
 """Reserved-reason-registry staleness check (Python side). Twin:
-sdk/tests/unit/reason-codes.test.ts.
+sdk-typescript/tests/unit/reason-codes.test.ts.
 
 Mirrors the repo's shared-fixture contract-test pattern: the closed
 reason-code registry is pinned in conformance/fixtures/reason_codes.json,

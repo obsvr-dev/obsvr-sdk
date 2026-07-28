@@ -2,7 +2,7 @@
   "claimable": true,
   "schema_version": 1,
   "name": "instance_guard",
-  "description": "Duplicate-SDK-instance guard, shared by both SDKs. TS source: sdk/src/proxy/instance-guard.ts (Symbol.for global slot). Python twin: sdk-python/obsvr/instance_guard.py (a sys.modules slot - a module-level variable would not survive the very duplication this guards against). Both suites (sdk/tests/unit/instance-guard.test.ts, sdk-python/tests/test_instance_guard.py) drive these sequences and must reach the same outcome. The SDK can appear in one process twice - installed directly and again as a transitive dependency - and two copies would each poll, each wrap, and each emit, producing duplicate evidence for a single call.",
+  "description": "Duplicate-SDK-instance guard, shared by both SDKs. TS source: sdk-typescript/src/proxy/instance-guard.ts (Symbol.for global slot). Python twin: sdk-python/obsvr/instance_guard.py (a sys.modules slot - a module-level variable would not survive the very duplication this guards against). Both suites (sdk-typescript/tests/unit/instance-guard.test.ts, sdk-python/tests/test_instance_guard.py) drive these sequences and must reach the same outcome. The SDK can appear in one process twice - installed directly and again as a transitive dependency - and two copies would each poll, each wrap, and each emit, producing duplicate evidence for a single call.",
   "semantics": {
     "first_claim_wins": "the first copy to initialize governs; later copies yield",
     "reinit_is_not_duplication": "the governing copy re-initializing (new config) keeps governing and logs nothing",

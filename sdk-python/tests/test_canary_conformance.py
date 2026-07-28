@@ -1,5 +1,5 @@
 """Cross-SDK canary-leak conformance harness (Python side). Twin:
-sdk/tests/unit/canary-conformance.test.ts. Pins the deterministic,
+sdk-typescript/tests/unit/canary-conformance.test.ts. Pins the deterministic,
 registry-independent detection (hash of the canonical token; candidate
 extraction over raw + de-obfuscation views). Minting randomness is not
 fixture-pinned; the stateful mint/scan integration is tested separately."""

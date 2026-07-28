@@ -1,4 +1,4 @@
-"""CloudEvents v1.0 export (twin of sdk/src/proxy/cloudevents.ts).
+"""CloudEvents v1.0 export (twin of sdk-typescript/src/proxy/cloudevents.ts).
 
 An audit event is obsvr's own shape and every consumer of it needs an adapter.
 CloudEvents is the CNCF interchange envelope those consumers already speak, so

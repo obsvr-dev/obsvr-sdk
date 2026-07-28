@@ -1,7 +1,7 @@
 """ADR-6 MCP response-side interception + Phase-1A quota residual (Python).
 
-Parity target: sdk/tests/unit/mcp-response-scan.test.ts and
-sdk/tests/unit/quota-residual.test.ts. A governed MCP tool RESULT is scanned for
+Parity target: sdk-typescript/tests/unit/mcp-response-scan.test.ts and
+sdk-typescript/tests/unit/quota-residual.test.ts. A governed MCP tool RESULT is scanned for
 PII / secrets / injection and BLOCK / SANITIZE / LOG'd before it reaches the
 caller; user-scoped quota rules meter the caller principal's bucket, not
 'default'.

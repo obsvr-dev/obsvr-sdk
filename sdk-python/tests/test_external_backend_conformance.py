@@ -1,6 +1,6 @@
 """Cross-SDK conformance harness (Python side) for the inbound OPA/Cedar
 external policy backend (ADR-4). Twin:
-sdk/tests/unit/external-backend-conformance.test.ts. Both drive every case in
+sdk-typescript/tests/unit/external-backend-conformance.test.ts. Both drive every case in
 conformance/fixtures/external_backend.json through the DENY-WINS merge
 (merge_external_backend_decision) and the provenance computation
 (backend_provenance) and must reach identical results. A divergence is a

@@ -19,7 +19,7 @@
  * and verdicts are the contract; the prose is compared too because it costs
  * nothing and catches a drift the verdict alone would hide.
  *
- * Requires the TypeScript SDK to be built (sdk/dist/cli-verify.js). Run:
+ * Requires the TypeScript SDK to be built (sdk-typescript/dist/cli-verify.js). Run:
  *   npm --prefix sdk run build && node scripts/check-cli-verify-parity.mjs
  */
 import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const TS_CLI = join(root, "sdk", "dist", "cli-verify.js");
+const TS_CLI = join(root, "sdk-typescript", "dist", "cli-verify.js");
 const PY_DIR = join(root, "sdk-python");
 
 if (!existsSync(TS_CLI)) {

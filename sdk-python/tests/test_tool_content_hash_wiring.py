@@ -1,5 +1,5 @@
 """tool_content_hash at the real Python tool boundary. Twin of the MCP half of
-sdk/tests/unit/tool-content-hash-wiring.test.ts.
+sdk-typescript/tests/unit/tool-content-hash-wiring.test.ts.
 
 The producer module is fixture-pinned elsewhere; this file pins that the
 shipping path actually stamps it, on the right events, in the right place.

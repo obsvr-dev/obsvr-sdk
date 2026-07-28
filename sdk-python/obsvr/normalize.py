@@ -1,6 +1,6 @@
 """Matching-time text normalization (§6).
 
-EXACT parity with sdk/src/policy/normalize.ts.
+EXACT parity with sdk-typescript/src/policy/normalize.ts.
 
 Attackers bypass keyword / regex / PII / injection rules with lookalike or
 invisible characters: a fullwidth "ｏｖｅｒｒｉｄｅ",
@@ -27,7 +27,7 @@ on the original text). Kept intentionally minimal and launch-safe.
 
 The step order and character tables are pinned by
 conformance/fixtures/normalization.json and must stay byte-for-byte identical to
-the TypeScript twin (sdk/src/policy/normalize.ts).
+the TypeScript twin (sdk-typescript/src/policy/normalize.ts).
 """
 
 import re

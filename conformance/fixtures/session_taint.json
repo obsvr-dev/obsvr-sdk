@@ -2,7 +2,7 @@
   "claimable": true,
   "schema_version": 1,
   "name": "session_taint",
-  "description": "Cross-SDK session taint latch fixtures. key_cases pin derive_session_key/deriveSessionKey (metadata.user_id ?? session_id ?? tenant_id ?? 'global'). decision_cases pin evaluate_session_taint/evaluateSessionTaint: the harness mark_tainted's the key when `tainted`, then asserts the enforcement (none|flag|block) for the given config (action defaults to flag; disabled/absent config never enforces). Both SDK harnesses (sdk/tests/unit/session-taint-conformance.test.ts, sdk-python/tests/test_session_taint_conformance.py) must agree; divergence is a release blocker unless recorded in known-divergences.md.",
+  "description": "Cross-SDK session taint latch fixtures. key_cases pin derive_session_key/deriveSessionKey (metadata.user_id ?? session_id ?? tenant_id ?? 'global'). decision_cases pin evaluate_session_taint/evaluateSessionTaint: the harness mark_tainted's the key when `tainted`, then asserts the enforcement (none|flag|block) for the given config (action defaults to flag; disabled/absent config never enforces). Both SDK harnesses (sdk-typescript/tests/unit/session-taint-conformance.test.ts, sdk-python/tests/test_session_taint_conformance.py) must agree; divergence is a release blocker unless recorded in known-divergences.md.",
   "key_cases": [
     {
       "id": "user_id_wins",

@@ -1,4 +1,4 @@
-"""Deterministic protocol facets (twin of sdk/src/policy/protocol-facets.ts).
+"""Deterministic protocol facets (twin of sdk-typescript/src/policy/protocol-facets.ts).
 
 A policy rule that matches a regex against a SQL string is guessing. The same
 statement written with a comment, a different quote style, or a line break

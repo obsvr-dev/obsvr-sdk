@@ -1,4 +1,4 @@
-"""Approval pinning (twin of sdk/tests/unit/approvals-pinning.test.ts):
+"""Approval pinning (twin of sdk-typescript/tests/unit/approvals-pinning.test.ts):
 a grant minted under one rule definition must not satisfy the rule after
 it is edited; legacy grants without a hash stay honored."""
 

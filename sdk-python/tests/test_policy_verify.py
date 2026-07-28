@@ -1,7 +1,7 @@
 """Python consumer of the shared signed-policy vectors.
 
 Contract of record: conformance/fixtures/policy_signature.json - the same file
-the TypeScript suite (sdk/tests/unit/policy-verify.test.ts) consumes. Both
+the TypeScript suite (sdk-typescript/tests/unit/policy-verify.test.ts) consumes. Both
 languages must accept and refuse the same vectors for the same cause, which is
 why every rejecting case also pins a substring its reason must contain.
 

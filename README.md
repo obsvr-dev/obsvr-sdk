@@ -11,7 +11,7 @@ Intercept every model and tool call. Enforce deterministic policy **before** the
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
 
-[Website](https://obsvr.dev) · [TypeScript SDK](sdk/) · [Python SDK](sdk-python/)
+[Website](https://obsvr.dev) · [TypeScript SDK](sdk-typescript/) · [Python SDK](sdk-python/)
 
 </div>
 
@@ -27,7 +27,7 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 
 | Package                    | Language                  | Version | Directory                    |
 | -------------------------- | ------------------------- | ------- | ---------------------------- |
-| [`@obsvr/sdk`](sdk/)       | TypeScript / Node.js ≥ 22 | 0.10.0  | [`sdk/`](sdk/)               |
+| [`@obsvr/sdk`](sdk-typescript/)       | TypeScript / Node.js ≥ 22 | 0.10.0  | [`sdk-typescript/`](sdk-typescript/)               |
 | [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.10.0  | [`sdk-python/`](sdk-python/) |
 
 ## Table of contents
@@ -150,7 +150,7 @@ client.chat.completions.create(
 )
 ```
 
-Anthropic and Google Gemini wrap identically. See [`sdk/README.md`](sdk/README.md) and [`sdk-python/README.md`](sdk-python/README.md) for the full policy reference, MCP governance, and framework integrations.
+Anthropic and Google Gemini wrap identically. See [`sdk-typescript/README.md`](sdk-typescript/README.md) and [`sdk-python/README.md`](sdk-python/README.md) for the full policy reference, MCP governance, and framework integrations.
 
 ---
 
@@ -463,7 +463,7 @@ The two SDKs are kept byte-for-byte compatible by shared fixtures in [`conforman
 
 A fixture failing in one language is a release blocker unless recorded in [`conformance/known-divergences.json`](conformance/known-divergences.json) — a machine-readable catalog of accepted divergences whose structure (exact key set, a single legal `status` of `intended`, what must stay identical vs. what may differ) is validated by both test suites, with the narrative history of *fixed* divergences kept in [`conformance/known-divergences.md`](conformance/known-divergences.md). Any behavior change must update the fixtures **and** both implementations in the same change.
 
-The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixture, and `sdk/conformance.pin` / `sdk-python/conformance.pin` record the corpus hash each package's suite was written against. CI fails on a fixture edited without regenerating the pin, on the two pins disagreeing, and on a fixture with no in-repo consumer — so a forked copy fails loudly instead of quietly passing its own suite forever.
+The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixture, and `sdk-typescript/conformance.pin` / `sdk-python/conformance.pin` record the corpus hash each package's suite was written against. CI fails on a fixture edited without regenerating the pin, on the two pins disagreeing, and on a fixture with no in-repo consumer — so a forked copy fails loudly instead of quietly passing its own suite forever.
 
 ---
 

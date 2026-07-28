@@ -123,7 +123,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/obsvr-dev/obsvr-sdk.git",
-    "directory": "sdk"
+    "directory": "sdk-typescript"
   },
   "bugs": {
     "url": "https://github.com/obsvr-dev/obsvr-sdk/issues"

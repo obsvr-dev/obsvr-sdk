@@ -2,7 +2,7 @@
 action inside it auto-joins via the ambient ``agent_run_id``. This is what
 populates the dashboard Runs tab for tool-governed frameworks.
 
-Twin: sdk/tests/unit/agent-run.test.ts.
+Twin: sdk-typescript/tests/unit/agent-run.test.ts.
 """
 
 import obsvr

@@ -1,5 +1,5 @@
 """End-to-end MCP descriptor-pinning wiring (rug-pull scenarios). Twin:
-sdk/tests/unit/tool-pinning-wiring.test.ts. The pure hash/decision semantics
+sdk-typescript/tests/unit/tool-pinning-wiring.test.ts. The pure hash/decision semantics
 are fixture-pinned (tool_pinning.json); these tests pin that the governed
 session actually detects and enforces a descriptor swap."""
 import asyncio

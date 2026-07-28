@@ -1,5 +1,5 @@
 """Quoted-injection DOWNGRADE semantics. Twin:
-sdk/tests/unit/injection-quoting.test.ts.
+sdk-typescript/tests/unit/injection-quoting.test.ts.
 
 Text that QUOTES an attack phrase is not performing one, so rewriting it to
 ``[BLOCKED_INJECTION]`` makes the stored record disagree with what the model was

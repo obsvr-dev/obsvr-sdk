@@ -1,6 +1,6 @@
 """fail_mode ('open' | 'closed') parity tests for the Python SDK.
 
-Mirrors sdk/tests/unit/fail-mode.test.ts. Default is 'open' (hook
+Mirrors sdk-typescript/tests/unit/fail-mode.test.ts. Default is 'open' (hook
 timeout/error -> allow); 'closed' blocks on hook failure.
 """
 import time

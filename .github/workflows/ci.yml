@@ -31,19 +31,19 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
 
       - name: Install dependencies
         run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: Build
         run: npm run build
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: Test
         run: npm test
-        working-directory: sdk
+        working-directory: sdk-typescript
         env:
           NODE_ENV: test
 
@@ -96,29 +96,29 @@ jobs:
           test -f conformance/fixtures/tool_content_hash.json
           test -f conformance/fixtures/canonical_json.json
           test -f conformance/fixtures/agent_controls.json
-          grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/signing-vectors.test.ts
-          grep -q "conformance/fixtures/signing_vectors.json" sdk/tests/unit/verify-chain-conformance.test.ts
+          grep -q "conformance/fixtures/signing_vectors.json" sdk-typescript/tests/unit/signing-vectors.test.ts
+          grep -q "conformance/fixtures/signing_vectors.json" sdk-typescript/tests/unit/verify-chain-conformance.test.ts
           grep -q "conformance/fixtures/signing_vectors.json" sdk-python/tests/test_verify_chain.py
-          grep -q "conformance/fixtures/eval_semantics.json" sdk/tests/unit/conformance.test.ts
-          grep -q "conformance/fixtures/reason_codes.json" sdk/tests/unit/reason-codes.test.ts
-          grep -q "conformance/fixtures/pii_scan.json" sdk/tests/unit/pii-scan-conformance.test.ts
+          grep -q "conformance/fixtures/eval_semantics.json" sdk-typescript/tests/unit/conformance.test.ts
+          grep -q "conformance/fixtures/reason_codes.json" sdk-typescript/tests/unit/reason-codes.test.ts
+          grep -q "conformance/fixtures/pii_scan.json" sdk-typescript/tests/unit/pii-scan-conformance.test.ts
           grep -q "conformance/fixtures/signing_vectors.json" sdk-python/tests/test_signing.py
           grep -q "conformance/fixtures/eval_semantics.json" sdk-python/tests/test_conformance.py
           grep -q "conformance/fixtures/reason_codes.json" sdk-python/tests/test_reason_codes.py
           grep -q "conformance/fixtures/pii_scan.json" sdk-python/tests/test_pii_scan_conformance.py
-          grep -q "conformance/fixtures/fail_mode.json" sdk/tests/unit/fail-mode.test.ts
+          grep -q "conformance/fixtures/fail_mode.json" sdk-typescript/tests/unit/fail-mode.test.ts
           grep -q "conformance/fixtures/fail_mode.json" sdk-python/tests/test_fail_mode.py
-          grep -q "conformance/fixtures/policy_signature.json" sdk/tests/unit/policy-verify.test.ts
+          grep -q "conformance/fixtures/policy_signature.json" sdk-typescript/tests/unit/policy-verify.test.ts
           grep -q "conformance/fixtures/policy_signature.json" sdk-python/tests/test_policy_verify.py
-          grep -q "conformance/fixtures/error_parity.json" sdk/tests/unit/policy-error.test.ts
+          grep -q "conformance/fixtures/error_parity.json" sdk-typescript/tests/unit/policy-error.test.ts
           grep -q "conformance/fixtures/error_parity.json" sdk-python/tests/test_policy_error.py
-          grep -q "conformance/fixtures/instance_guard.json" sdk/tests/unit/instance-guard.test.ts
+          grep -q "conformance/fixtures/instance_guard.json" sdk-typescript/tests/unit/instance-guard.test.ts
           grep -q "conformance/fixtures/instance_guard.json" sdk-python/tests/test_instance_guard.py
-          grep -q "conformance/fixtures/tool_content_hash.json" sdk/tests/unit/tool-content-hash-conformance.test.ts
+          grep -q "conformance/fixtures/tool_content_hash.json" sdk-typescript/tests/unit/tool-content-hash-conformance.test.ts
           grep -q "conformance/fixtures/tool_content_hash.json" sdk-python/tests/test_tool_content_hash_conformance.py
-          grep -q "conformance/fixtures/canonical_json.json" sdk/tests/unit/canonical-json-conformance.test.ts
+          grep -q "conformance/fixtures/canonical_json.json" sdk-typescript/tests/unit/canonical-json-conformance.test.ts
           grep -q "conformance/fixtures/canonical_json.json" sdk-python/tests/test_canonical_json_conformance.py
-          grep -q "conformance/fixtures/agent_controls.json" sdk/tests/unit/agent-controls-conformance.test.ts
+          grep -q "conformance/fixtures/agent_controls.json" sdk-typescript/tests/unit/agent-controls-conformance.test.ts
           grep -q "conformance/fixtures/agent_controls.json" sdk-python/tests/test_agent_controls_conformance.py
 
       - name: Use Node.js 22.x
@@ -126,7 +126,7 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
 
       # Corpus drift, both pin files, and the coverage rule (every fixture has
       # an in-repo consumer). A forked copy of a "shared" fixture passes its own
@@ -141,11 +141,11 @@ jobs:
 
       - name: Install TypeScript SDK deps
         run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: TypeScript fixture suites (signing vectors + chain verification + eval semantics + reason codes + pii scan + failure dispositions)
         run: npm test -- tests/unit/signing-vectors.test.ts tests/unit/verify-chain-conformance.test.ts tests/unit/conformance.test.ts tests/unit/reason-codes.test.ts tests/unit/pii-scan-conformance.test.ts tests/unit/fail-mode.test.ts tests/unit/policy-verify.test.ts tests/unit/policy-error.test.ts tests/unit/instance-guard.test.ts tests/unit/tool-content-hash-conformance.test.ts tests/unit/canonical-json-conformance.test.ts tests/unit/agent-controls-conformance.test.ts
-        working-directory: sdk
+        working-directory: sdk-typescript
         env:
           NODE_ENV: test
 
@@ -184,11 +184,11 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
 
       - name: Install TypeScript SDK deps
         run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       # WHAT FAILS THE BUILD, AND WHY IT IS SPLIT IN TWO.
       #
@@ -201,7 +201,7 @@ jobs:
       # there is something to catch is a gate nobody remembers to add.
       - name: npm audit (published tree — blocking)
         run: npm audit --omit=dev --audit-level=low
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       # The dev tree is ~490 packages of jest/eslint tooling that never
       # reaches a published artifact. Failing the build on it would mean a red
@@ -217,7 +217,7 @@ jobs:
       # what obliges someone to act.
       - name: npm audit (dev tree — report only)
         run: npm audit || true
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: Set up Python 3.12
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -257,15 +257,15 @@ jobs:
         with:
           node-version: 22.x
           cache: npm
-          cache-dependency-path: sdk/package-lock.json
+          cache-dependency-path: sdk-typescript/package-lock.json
 
       - name: Install TypeScript SDK deps
         run: npm ci
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: ESLint (correctness rules)
         run: npm run lint
-        working-directory: sdk
+        working-directory: sdk-typescript
 
       - name: Set up Python 3.12
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

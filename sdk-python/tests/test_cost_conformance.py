@@ -1,5 +1,5 @@
 """Cross-SDK layered-cost conformance (Python side). Twin:
-sdk/tests/unit/cost-conformance.test.ts.
+sdk-typescript/tests/unit/cost-conformance.test.ts.
 
 The amounts are integer micro-units and the rounding rule is written out in
 both languages rather than delegated to a built-in, so these cases are exact: a
