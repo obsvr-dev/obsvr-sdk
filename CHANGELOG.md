@@ -170,6 +170,31 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **Declared peer floors now name releases the code can actually work with.**
+  Every floor below was checked by building a throwaway environment per
+  candidate version, installing that version alone, and importing the exact
+  symbol the integration binds — not by reading a changelog. A floor that is
+  merely *safe* was rejected the same as one that is wrong, so these are the
+  lowest working versions rather than the lowest convenient ones.
+
+  | Package | Was | Now | Why the old floor was false |
+  | --- | --- | --- | --- |
+  | `ai` | `>=3.0.0` | `>=3.3.28` | the middleware API `obsvrMiddleware()` attaches to does not exist below 3.3.28 — roughly 130 advertised releases where the integration cannot be constructed at all |
+  | `llamaindex` | `>=0.5.0` | `>=0.5.9` | 0.5.0 and 0.5.8 register the handler and emit **no audit events at all**: the call succeeds, the provider returns usage, and nothing is recorded |
+  | `@aws-sdk/client-bedrock-runtime` | `>=3.422.0` | `>=3.586.0` | `ConverseCommand` / `ConverseStreamCommand` — two of the four commands the integration dispatches on — do not exist below 3.586.0 |
+  | `pydantic-ai-slim` | `>=0.0.14` | `>=0.4.4` | `pydantic_ai.toolsets.WrapperToolset` does not exist below 0.4.4; below it `govern_toolset()` still returns an object, so denied-tool policy, per-tool auditing and step limits are silently inert |
+  | `google-adk` | `>=0.1.0` | `>=1.2.0` | every release through 1.1.0 installs but cannot import (`google.adk.models` raises `ModuleNotFoundError: deprecated`, reached through the OpenTelemetry stack) |
+  | `semantic-kernel` | `>=1.0.0` | `>=1.16.0` | 1.14.0 and 1.15.0 install but cannot import against any modern pydantic; below 1.14.0 CPython 3.13 has no candidate at all |
+  | `smolagents` | `>=1.0.0` | `>=1.4.0,!=1.5.0` | below 1.4.0 the import fails against a current `transformers`; 1.5.0 does not pull `transformers` in at all, and 1.5.1 restored it. The hole is excluded rather than rounded up, because 1.4.x genuinely works |
+
+  Most of these are upstream packaging problems rather than obsvr renames, but
+  a declaration that advertises a release the integration cannot bind on is
+  obsvr's to correct either way. **Migration:** none, unless you pinned a
+  version inside one of the removed ranges — in which case the integration was
+  not working there, silently, and the resolver error is the first honest
+  signal you have had.
+  ([`cca8158`](https://github.com/obsvr-dev/obsvr-sdk/commit/cca8158))
+
 - **`content_provenance` on audit events: where inside the payload the content
   came from.** `source` names the integration that emitted an event ("mcp",
   "langchain"); this names the position the text occupied within the call —
