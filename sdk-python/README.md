@@ -12,11 +12,20 @@ pip install obsvr-sdk
 
 Requires **Python >= 3.10**. No runtime dependencies.
 
+Optional extras for the provider clients `obsvr.register` / `obsvr.auto` patch:
+
+```bash
+pip install "obsvr-sdk[openai]"           # OpenAI client governance
+pip install "obsvr-sdk[anthropic]"        # Anthropic client governance
+pip install "obsvr-sdk[openai-agents]"    # OpenAI Agents tracing processor
+pip install "obsvr-sdk[mcp]"              # MCP tool governance (mcp 1.x)
+```
+
 Optional extras for framework integrations:
 
 ```bash
 pip install "obsvr-sdk[langchain]"        # LangChain callback handler
-pip install "obsvr-sdk[crewai]"           # CrewAI integration
+pip install "obsvr-sdk[crewai]"           # CrewAI integration (Python < 3.14)
 pip install "obsvr-sdk[autogen]"          # AutoGen integration
 pip install "obsvr-sdk[llamaindex]"       # LlamaIndex integration
 pip install "obsvr-sdk[fastapi]"          # FastAPI / Starlette middleware
@@ -28,6 +37,14 @@ pip install "obsvr-sdk[haystack]"         # Haystack 2.x governance component
 pip install "obsvr-sdk[smolagents]"       # smolagents tool governance
 pip install "obsvr-sdk[agent-framework]"  # Microsoft Agent Framework middleware
 pip install "obsvr-sdk[semantic-kernel]"  # Semantic Kernel filter
+```
+
+Ed25519 verification of signed remote policy needs one of two backends —
+install either, not both:
+
+```bash
+pip install "obsvr-sdk[crypto]"           # cryptography (preferred)
+pip install "obsvr-sdk[crypto-nacl]"      # PyNaCl (alternative)
 ```
 
 ## Quick Start

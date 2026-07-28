@@ -41,9 +41,36 @@ Repository = "https://github.com/obsvr-dev/obsvr-sdk"
 Issues = "https://github.com/obsvr-dev/obsvr-sdk/issues"
 
 [project.optional-dependencies]
+# Direct provider clients. obsvr.register patches openai/anthropic client
+# classes and obsvr.auto wires the OpenAI Agents tracing processor, so these
+# are imported by the package even though no framework integration names them.
+# Each floor is the earliest release carrying the symbol the code reads:
+# openai 1.0.0 introduced AsyncOpenAI, anthropic 0.3.0 introduced
+# AsyncAnthropic, openai-agents 0.0.2 introduced add_trace_processor.
+openai = ["openai>=1.0.0"]
+anthropic = ["anthropic>=0.3.0"]
+openai-agents = ["openai-agents>=0.0.2"]
+# Bounded below 2.0 on evidence, not caution. mcp 2.0.0 moved the protocol
+# types to a snake_case base model (alias_generator=to_camel), so the three
+# descriptor fields obsvr/integrations/mcp.py reads through getattr are renamed
+# and the camelCase spellings survive only as serialization aliases:
+# Tool.inputSchema -> input_schema, PaginatedResult.nextCursor -> next_cursor,
+# ToolAnnotations.destructiveHint -> destructive_hint. On 2.x every one of them
+# would read as absent rather than raise, which silently switches off the
+# schema-surface poisoning scan, drops inputSchema out of the descriptor pin
+# hash (a rug-pull that edits only the schema would then hash identically), and
+# empties the destructive-capability gate. Upstream advises the same bound for
+# callers that have not migrated.
+mcp = ["mcp>=1.0.0,<2.0.0"]
 langchain = ["langchain-core>=0.2.0"]
 llamaindex = ["llama-index-core>=0.10.0"]
-crewai = ["crewai>=0.30.0"]
+# No crewai release permits 3.14 — every one of them caps at <3.14 or <=3.13 —
+# while this package requires only >=3.10. Without the marker a 3.14 user
+# backtracks the whole release history before failing on a resolution error
+# that never names the interpreter. The marker makes the extra resolve to
+# nothing there instead, which is the same practical outcome (crewai is
+# uninstallable on 3.14) reached cleanly and stated in the manifest.
+crewai = ["crewai>=0.30.0; python_version < '3.14'"]
 autogen = ["pyautogen>=0.2.0"]
 fastapi = ["starlette>=0.30.0"]
 otel = ["opentelemetry-api>=1.20.0"]
@@ -53,13 +80,22 @@ adk = ["google-adk>=0.1.0"]
 pydantic-ai = ["pydantic-ai-slim>=0.0.14"]
 haystack = ["haystack-ai>=2.0.0"]
 smolagents = ["smolagents>=1.0.0"]
-agent-framework = ["agent-framework>=0.1.0"]
+# The 0.x line has never existed on PyPI: the earliest published release is
+# 1.0.0, preceded only by 1.0.0b* prereleases.
+agent-framework = ["agent-framework>=1.0.0"]
 semantic-kernel = ["semantic-kernel>=1.0.0"]
 # Ed25519 verification of signed remote policy. Optional because the package
 # ships zero mandatory runtime dependencies and Python has no stdlib Ed25519;
 # without it a pinned policy key still fails closed, and events carry
 # policy_verification_unavailable. PyNaCl is accepted as an alternative.
 crypto = ["cryptography>=41.0.0"]
+# The PyNaCl half of that alternative, as its own extra rather than a second
+# entry in `crypto`. policy_verify resolves ONE backend — cryptography first,
+# then PyNaCl — so listing both under `crypto` would install a second Ed25519
+# implementation that never gets called. Install `crypto` or `crypto-nacl`,
+# not both. 1.0 is the earliest release carrying nacl.signing.VerifyKey and
+# nacl.exceptions.BadSignatureError.
+crypto-nacl = ["PyNaCl>=1.0.0"]
 dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0"]
 
 [tool.setuptools.dynamic]
