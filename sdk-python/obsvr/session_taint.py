@@ -125,24 +125,45 @@ def evaluate_session_taint(
 
 
 def evaluate_tool_taint_gate(
-    session_key: str, config: Optional[Dict[str, Any]], tool_name: str
+    session_key: str,
+    config: Optional[Dict[str, Any]],
+    tool_name: str,
+    declared_destructive: bool = False,
 ) -> Dict[str, Any]:
     """Tool-aware enforcement decision at a TOOL egress point (fixture-pinned
     in session_taint.json ``tool_gate_cases``; twin of the TS
     evaluateToolTaintGate).
 
     Composes :func:`evaluate_session_taint` with the destructive-capability
-    set: a tainted session in ``flag`` mode still has its calls to tools in
-    ``destructive_tools`` REFUSED, because the flag posture exists so one
-    detection never bricks a session - not so a compromised session keeps its
-    most dangerous capabilities. Exact name membership, nothing else; does NOT
-    mutate the store. A block from the set carries ``destructive: True``.
+    set: a tainted session in ``flag`` mode still has its calls to destructive
+    tools REFUSED, because the flag posture exists so one detection never
+    bricks a session - not so a compromised session keeps its most dangerous
+    capabilities. Does NOT mutate the store.
+
+    The set is the UNION of two sources, both add-only: the operator's
+    ``destructive_tools``, matched on exact names (a capability set that
+    pattern-matched would be a detector again), and ``declared_destructive``,
+    the descriptor hint the caller resolved at discovery (capability_hints.py).
+
+    The operator's entry wins in the only sense that matters: it applies even
+    when the descriptor says nothing or claims the tool is harmless. The hint
+    cannot subtract, so there is no case where the two disagree and the
+    descriptor prevails. A block from the set carries ``destructive: True`` and
+    ``destructive_source`` naming which of the two put it there.
     """
     base = evaluate_session_taint(session_key, config)
     if base["enforcement"] != "flag":
         return base
-    if tool_name in ((config or {}).get("destructive_tools") or []):
-        return {"enforcement": "block", "reason": base.get("reason"), "destructive": True}
+    cfg = config or {}
+    operator_listed = tool_name in (cfg.get("destructive_tools") or [])
+    hinted = declared_destructive and cfg.get("honor_destructive_hints") is not False
+    if operator_listed or hinted:
+        return {
+            "enforcement": "block",
+            "reason": base.get("reason"),
+            "destructive": True,
+            "destructive_source": "operator" if operator_listed else "descriptor_hint",
+        }
     return base
 
 
@@ -160,5 +181,16 @@ def resolve_session_taint(config: Any) -> Optional[Dict[str, Any]]:
         # is not the lever - reachability is: a missed injection is harmless
         # if it cannot reach send_money. Exact names only; a capability set
         # that pattern-matched would be a detector again.
+        #
+        # No longer the only source: a discovered MCP tool whose descriptor
+        # declares annotations.destructiveHint True joins the set on its own
+        # (capability_hints.py). The two compose by union, so an entry here
+        # always counts regardless of what a descriptor claims.
         "destructive_tools": [n for n in (raw_tools or []) if isinstance(n, str)],
+        # Whether a descriptor's own hint may add to the set. Default True - a
+        # capability gate that only works for operators who wrote a list is a
+        # gate most deployments do not have. Setting it False restricts the set
+        # to destructive_tools alone; because the hint can only ever ADD, that
+        # never tightens anything.
+        "honor_destructive_hints": t.get("honor_destructive_hints") is not False,
     }

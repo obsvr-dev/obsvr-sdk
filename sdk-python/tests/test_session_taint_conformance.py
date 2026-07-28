@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from obsvr.capability_hints import declares_destructive
 from obsvr.session_taint import (
     MAX_TAINTED_SESSIONS,
     _reset_session_taint,
@@ -59,10 +60,27 @@ def test_tool_aware_taint_gate(case):
     _reset_session_taint()
     if case["tainted"]:
         mark_tainted("k", "prompt_injection", 1.0)
-    verdict = evaluate_tool_taint_gate("k", case["config"], case["tool_name"])
+    verdict = evaluate_tool_taint_gate(
+        "k",
+        case["config"],
+        case["tool_name"],
+        case.get("declared_destructive") is True,
+    )
     assert verdict["enforcement"] == case["expect"]["enforcement"], case["id"]
     assert verdict.get("destructive") == case["expect"].get("destructive"), case["id"]
+    assert verdict.get("destructive_source") == case["expect"].get(
+        "destructive_source"
+    ), case["id"]
     _reset_session_taint()
+
+
+@pytest.mark.parametrize(
+    "case",
+    FIXTURE["descriptor_hint_cases"]["cases"],
+    ids=[c["id"] for c in FIXTURE["descriptor_hint_cases"]["cases"]],
+)
+def test_descriptor_hint_is_read_one_directionally(case):
+    assert declares_destructive(case["tool"]) is case["expect"], case["id"]
 
 
 class TestStoreInvariants:

@@ -738,6 +738,16 @@ def _resolve_detector_failure(
     }
 
 
+def destructive_source_label(source: Optional[str]) -> str:
+    """How a denied capability got into the destructive set, in words an
+    operator reading the audit trail can act on. "The server told us this about
+    itself" and "I wrote this name down" are different facts and lead to
+    different next steps, so the record distinguishes them. Twin:
+    ``destructiveSourceLabel`` in integrations/core.ts.
+    """
+    return "tool descriptor hint" if source == "descriptor_hint" else "operator list"
+
+
 def apply_pre_call_policy(
     prompt_text: str,
     config: ResolvedConfig,
@@ -748,6 +758,7 @@ def apply_pre_call_policy(
     model: Optional[str] = None,
     scan_text: Optional[str] = None,
     tool_name: Optional[str] = None,
+    tool_declared_destructive: bool = False,
 ) -> Dict[str, Any]:
     """Compliance boundary before an LLM call (real enforcement).
 
@@ -831,16 +842,23 @@ def apply_pre_call_policy(
         taint_reason: Optional[str] = None
         if taint_cfg and session_taint_size() > 0 and action_taken != "blocked":
             # Tool-aware when the caller is a tool boundary: a tainted session
-            # in flag mode still loses its DESTRUCTIVE capabilities
-            # (session_taint destructive_tools) - the composition that stops
-            # indirect injection without bricking the session (TS parity).
-            verdict = evaluate_tool_taint_gate(taint_key, taint_cfg, tool_name or "")
+            # in flag mode still loses its DESTRUCTIVE capabilities - the
+            # composition that stops indirect injection without bricking the
+            # session (TS parity). The set is the operator's destructive_tools
+            # union whatever the tool's own descriptor declared at discovery.
+            verdict = evaluate_tool_taint_gate(
+                taint_key, taint_cfg, tool_name or "", tool_declared_destructive is True
+            )
             if verdict["enforcement"] != "none":
                 touch_taint(taint_key, time.monotonic())  # LRU: keep victim alive
                 taint_rule_id = "sdk:session_tainted"
                 taint_reason = (
-                    "Session previously compromised (%s); destructive capability '%s' denied"
-                    % (verdict["reason"], tool_name)
+                    "Session previously compromised (%s); destructive capability '%s' denied (%s)"
+                    % (
+                        verdict["reason"],
+                        tool_name,
+                        destructive_source_label(verdict.get("destructive_source")),
+                    )
                     if verdict.get("destructive")
                     else "Session previously compromised (%s); egress escalated"
                     % verdict["reason"]

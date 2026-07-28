@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = b930da3f14c836419f52310ed12fad830ebbdaa8e9f0ee7d32b03be9cadc344c
+# corpus_sha256 = 100aa8be188aa81d70c903ed0d40c3afce5aba025331b0d2b095fff8b2197d34
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -28,7 +28,7 @@ a31dd90a54ef9844b6c980ea86756ae1e8b6832b422f0bc72268fbf9294afdd2  fixtures/effec
 e2eb05ebd6bb173c714338d851b85160bc4cfa5382323612def39d60eefa3508  fixtures/eval_context.json
 01cf7787be0e04651eefad8c490c3fa450c7e5c2495d7fa31527272fbc2082db  fixtures/eval_semantics.json
 082188c8f61b33b57cfa55a1ec1d903cabe27710b23cd837ceb35540fa9ca77a  fixtures/external_backend.json
-f2c18ed8bcdade4029ec43745d0c201d02d5b58caaa1921b601322dd67e60e82  fixtures/fail_mode.json
+201de28633fe44f03cf48b6679ec17236c77e5d100d73c74566cc7f02ff7ea4a  fixtures/fail_mode.json
 25b3dac6708f30dbe5ff14cba25df31e576fda3b9fe9a49de33048b45baa5cc4  fixtures/injection_reason.json
 879626c9160d66451041843829faef914f7594ef909f4e8ac730ba4d419086ca  fixtures/instance_guard.json
 850bd9d4a1268ae91c12386424b294b62495891d5c313a0e14313ddc3b43ca3a  fixtures/normalization.json
@@ -39,7 +39,7 @@ ec2505549c68066f4f15b1cc20a60a82bc5c34191607a2335fd51437197c9078  fixtures/polic
 ec98c54509c25d6508982bafcab453b826e1b702864762b2ee4215b9a47e5495  fixtures/quota_escrow.json
 a6cc3ea5af9e9897e93117a3dbc8d45db1039576c53f7edb7ccd082449f8ba4b  fixtures/reason_codes.json
 4ec513bbb3cdd557415f1a00849cf7a2d0cdfb06e5f3aac70027c8ba7ab66b68  fixtures/rules_hash.json
-d02bc155db1af4c912afc25e80955560de3ebf7c2e7462509baad369b57b7996  fixtures/session_taint.json
+57253e5792ab602e8fe239be8770ffcb6c836ca8ca7e3d6bc0317552b51c1ed1  fixtures/session_taint.json
 3d4f98b20297db04c98189f051ca9a4165b2d9e73d4f1e09ef28ba2cc3b5c2df  fixtures/signing_vectors.json
 08482aabc075d5ac22e1db5f0930e34eb0ffa039d0ba064a8c012de4d2f4675b  fixtures/tool_content_hash.json
 354fc293a9187683f4000103d3a4f3c85c89935a6a467ba1f8f03efa220e8e31  fixtures/tool_descriptor_scan.json

@@ -40,8 +40,24 @@ export interface SessionTaintConfig {
    * still only flagged) while the capabilities that could do damage go dark.
    * Cost at the tool gate is one set-membership test. Exact names only — a
    * capability set that pattern-matched would be a detector again.
+   *
+   * This list is no longer the only source: a discovered MCP tool whose
+   * descriptor declares `annotations.destructiveHint: true` joins the set on
+   * its own (policy/capability-hints.ts). The two compose by union, so an
+   * entry here always counts regardless of what a descriptor claims.
    */
   destructiveTools?: string[];
+  /**
+   * Whether a tool descriptor's own `destructiveHint` may add that tool to the
+   * destructive set. Default TRUE — a capability gate that only works for
+   * operators who wrote a list is a gate most deployments do not have.
+   *
+   * Set false to restrict the set to `destructiveTools` alone. The hint can
+   * only ever ADD (see capability-hints.ts), so turning this off never
+   * tightens anything; it exists for an operator who wants the set to be
+   * exactly what their config says and nothing a server can influence.
+   */
+  honorDestructiveHints?: boolean;
 }
 
 interface TaintRecord {
@@ -162,26 +178,59 @@ export interface ToolTaintVerdict extends TaintVerdict {
   /** True when the block came from the destructive-capability set rather
    * than a blanket `action: "block"` posture. */
   destructive?: boolean;
+  /**
+   * Which source put the tool in the destructive set: the operator's
+   * `destructiveTools` list, or the tool descriptor's own hint. Present only
+   * on a `destructive` block, and worth recording — "I listed this" and "the
+   * server said this about itself" are different facts for whoever reads the
+   * audit trail later.
+   */
+  destructiveSource?: "operator" | "descriptor_hint";
 }
 
 /**
  * Tool-aware enforcement decision at a TOOL egress point (fixture-pinned in
  * session_taint.json `tool_gate_cases`). Composes {@link evaluateSessionTaint}
  * with the destructive-capability set: a tainted session in `flag` mode still
- * has its calls to tools in `destructiveTools` REFUSED, because the flag
- * posture exists so one detection never bricks a session — not so a
- * compromised session keeps its most dangerous capabilities. Exact name
- * membership, nothing else; does NOT mutate the store.
+ * has its calls to destructive tools REFUSED, because the flag posture exists
+ * so one detection never bricks a session — not so a compromised session keeps
+ * its most dangerous capabilities. Does NOT mutate the store.
+ *
+ * The set is the UNION of two sources, both add-only:
+ *  - the operator's `destructiveTools`, matched on exact names (a capability
+ *    set that pattern-matched would be a detector again);
+ *  - `declaredDestructive`, the descriptor hint the caller resolved at
+ *    discovery (policy/capability-hints.ts).
+ *
+ * The operator's entry wins in the only sense that matters: it applies even
+ * when the descriptor says nothing or claims the tool is harmless. The hint
+ * cannot subtract, so there is no case where the two disagree and the
+ * descriptor prevails.
  */
 export function evaluateToolTaintGate(
   sessionKey: string,
-  config: { enabled?: boolean; action?: "block" | "flag"; destructiveTools?: string[] } | undefined,
+  config:
+    | {
+        enabled?: boolean;
+        action?: "block" | "flag";
+        destructiveTools?: string[];
+        honorDestructiveHints?: boolean;
+      }
+    | undefined,
   toolName: string,
+  declaredDestructive = false,
 ): ToolTaintVerdict {
   const base = evaluateSessionTaint(sessionKey, config);
   if (base.enforcement !== "flag") return base;
-  if ((config?.destructiveTools ?? []).includes(toolName)) {
-    return { enforcement: "block", reason: base.reason, destructive: true };
+  const operatorListed = (config?.destructiveTools ?? []).includes(toolName);
+  const hinted = declaredDestructive && config?.honorDestructiveHints !== false;
+  if (operatorListed || hinted) {
+    return {
+      enforcement: "block",
+      reason: base.reason,
+      destructive: true,
+      destructiveSource: operatorListed ? "operator" : "descriptor_hint",
+    };
   }
   return base;
 }
@@ -189,7 +238,12 @@ export function evaluateToolTaintGate(
 /** Resolve the taint sub-config (absent/disabled => undefined). */
 export function resolveSessionTaint(
   config: { sessionTaint?: SessionTaintConfig } | undefined,
-): Required<Pick<SessionTaintConfig, "enabled" | "action">> & { destructiveTools: string[] } | undefined {
+):
+  | (Required<Pick<SessionTaintConfig, "enabled" | "action">> & {
+      destructiveTools: string[];
+      honorDestructiveHints: boolean;
+    })
+  | undefined {
   const t = config?.sessionTaint;
   if (!t?.enabled) return undefined;
   return {
@@ -198,5 +252,6 @@ export function resolveSessionTaint(
     destructiveTools: Array.isArray(t.destructiveTools)
       ? t.destructiveTools.filter((n): n is string => typeof n === "string")
       : [],
+    honorDestructiveHints: t.honorDestructiveHints !== false,
   };
 }

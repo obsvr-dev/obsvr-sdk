@@ -46,6 +46,11 @@ import { normalizeForMatching } from "../policy/normalize.js";
 import { deobfuscate, stripHtmlComments } from "../policy/deobfuscate.js";
 import { canaryRegistrySize } from "../policy/canary.js";
 import { sessionTaintSize } from "../policy/session-taint.js";
+import {
+  createCapabilityStore,
+  declaresDestructive,
+  type CapabilityStore,
+} from "../policy/capability-hints.js";
 import { safeToolContentHash, toolContentMetadata } from "../policy/tool-content-hash.js";
 import {
   createToolPinStore,
@@ -108,6 +113,24 @@ function pinStoreForPatchedInstance(instance: unknown): ToolPinStore | undefined
   if (!store) {
     store = createToolPinStore();
     patchPathPinStores.set(instance, store);
+  }
+  return store;
+}
+
+/**
+ * Per-client destructive-capability stores, keyed the same way and for the
+ * same reason: tool names are unique only within one server, so a hint read
+ * from one server's descriptor must not gate another server's tool of the
+ * same name.
+ */
+const patchPathCapabilityStores = new WeakMap<object, CapabilityStore>();
+
+function capabilityStoreForPatchedInstance(instance: unknown): CapabilityStore | undefined {
+  if (instance === null || typeof instance !== "object") return undefined;
+  let store = patchPathCapabilityStores.get(instance);
+  if (!store) {
+    store = createCapabilityStore();
+    patchPathCapabilityStores.set(instance, store);
   }
   return store;
 }
@@ -385,9 +408,26 @@ function processListToolsResult(
   opts: IntegrationOptions,
   pinStore?: ToolPinStore,
   listArgs?: unknown[],
+  capabilityStore?: CapabilityStore,
 ): unknown {
   const tools: Array<McpToolDescriptor> =
     (result as { tools?: Array<McpToolDescriptor> })?.tools ?? [];
+
+  // Destructive-capability hints, read once per listing and held for the
+  // call-time taint gate. Unconditional: the capability gate is independent of
+  // descriptor pinning, and gating it on an unrelated feature flag is how a
+  // control ends up switched off by accident. Recording is add-only, so a
+  // later listing that drops the hint does not un-declare the tool.
+  const hintedDestructive: string[] = [];
+  if (capabilityStore) {
+    for (const tool of tools) {
+      const name = mcpToolName(tool);
+      if (declaresDestructive(tool)) {
+        capabilityStore.record(name, true);
+        hintedDestructive.push(name);
+      }
+    }
+  }
 
   const flagged: Array<{ name: string; reasons: string[] }> = [];
   for (const tool of tools) {
@@ -545,6 +585,14 @@ function processListToolsResult(
       // the signed inventory event — the operator copies an observed hash
       // into config pins, and the record proves which definitions were live.
       // After opts.metadata: sealed pin evidence wins over key collisions.
+      // Which discovered tools declared themselves destructive, and whether
+      // the store refused any. A capability restriction the operator never
+      // configured has to be visible on the record, or the first they hear of
+      // it is a blocked call they cannot explain.
+      ...(hintedDestructive.length > 0
+        ? { destructive_hinted_tools: hintedDestructive.slice().sort() }
+        : {}),
+      ...(capabilityStore?.saturated() ? { destructive_hint_store_saturated: true } : {}),
       ...(pinning && pinStore
         ? {
             tool_hashes: toolHashes,
@@ -603,10 +651,11 @@ async function runGovernedListTools(
   listOriginal: (...args: unknown[]) => Promise<unknown>,
   args: unknown[],
   pinStore?: ToolPinStore,
+  capabilityStore?: CapabilityStore,
 ): Promise<unknown> {
   const currentConfig = tryGetConfig() ?? config;
   const result = await listOriginal(...args);
-  return processListToolsResult(result, currentConfig, opts, pinStore, args);
+  return processListToolsResult(result, currentConfig, opts, pinStore, args, capabilityStore);
 }
 
 /** Governed callTool: enforce policy + PII, run the original, record the
@@ -619,6 +668,7 @@ async function runGovernedCallTool(
   params: { name: string; arguments?: Record<string, unknown> },
   rest: unknown[],
   pinStore?: ToolPinStore,
+  capabilityStore?: CapabilityStore,
 ): Promise<unknown> {
     const currentConfig = tryGetConfig() ?? config;
     const toolName = params?.name ?? "unknown";
@@ -807,8 +857,10 @@ async function runGovernedCallTool(
           userId: principal.user_id,
           serviceName: principal.service_name,
           tenantId: principal.tenant_id,
-          // Session-taint destructive-capability gate needs the tool identity.
+          // Session-taint destructive-capability gate needs the tool identity,
+          // plus whether its descriptor declared it destructive at discovery.
           toolName,
+          toolDeclaredDestructive: capabilityStore?.isDestructive(toolName) === true,
           metadata: opts.metadata,
         });
 
@@ -1067,13 +1119,17 @@ function governClientInstance<T extends object>(
   // so TOFU pins must not be shared across clients (name collisions would
   // cross-contaminate two servers' descriptors).
   const pinStore = createToolPinStore();
+  // Same scoping argument for the capability store: a destructiveHint read
+  // from one server must not gate another server's same-named tool.
+  const capabilityStore = createCapabilityStore();
 
   const governedCall = origCall
     ? (params: { name: string; arguments?: Record<string, unknown> }, ...rest: unknown[]) =>
-        runGovernedCallTool(config, opts, origCall, params, rest, pinStore)
+        runGovernedCallTool(config, opts, origCall, params, rest, pinStore, capabilityStore)
     : undefined;
   const governedList = origList
-    ? (...args: unknown[]) => runGovernedListTools(config, opts, origList, args, pinStore)
+    ? (...args: unknown[]) =>
+        runGovernedListTools(config, opts, origList, args, pinStore, capabilityStore)
     : undefined;
 
   return new Proxy(client, {
@@ -1116,6 +1172,7 @@ function _applyMCPPatch(
         (...a) => (originalListTools as Function).apply(this, a),
         args,
         pinStoreForPatchedInstance(this),
+        capabilityStoreForPatchedInstance(this),
       );
     };
   }
@@ -1129,6 +1186,7 @@ function _applyMCPPatch(
       (p, ...r) => (originalCallTool as Function).call(this, p, ...r),
       params, rest,
       pinStoreForPatchedInstance(this),
+      capabilityStoreForPatchedInstance(this),
     );
   };
   proto[PATCHED_SYMBOL] = true;

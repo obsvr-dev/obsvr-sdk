@@ -31,6 +31,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+from ..capability_hints import CapabilityStore, create_capability_store, declares_destructive
 from ..config import ResolvedConfig, get_config, try_get_config
 from ..events import build_audit_event
 from ..normalize import normalize_for_matching
@@ -379,6 +380,11 @@ def _build_governed_mcp_callables(
     # scoping is per-instance on both paths (TS parity: per-client stores).
     _pin_stores: "weakref.WeakKeyDictionary[Any, ToolPinStore]" = weakref.WeakKeyDictionary()
     _pin_store_by_id: Dict[int, ToolPinStore] = {}
+    # Per-session destructive-capability stores, scoped the same way and for
+    # the same reason: a destructiveHint read from one server's descriptor must
+    # not gate another server's same-named tool.
+    _cap_stores: "weakref.WeakKeyDictionary[Any, CapabilityStore]" = weakref.WeakKeyDictionary()
+    _cap_store_by_id: Dict[int, CapabilityStore] = {}
 
     def _pin_store_for(session: Any) -> ToolPinStore:
         try:
@@ -398,6 +404,20 @@ def _build_governed_mcp_callables(
             if store is None:
                 store = ToolPinStore()
                 _pin_store_by_id[id(session)] = store
+            return store
+
+    def _capability_store_for(session: Any) -> CapabilityStore:
+        try:
+            store = _cap_stores.get(session)
+            if store is None:
+                store = create_capability_store()
+                _cap_stores[session] = store
+            return store
+        except TypeError:
+            store = _cap_store_by_id.get(id(session))
+            if store is None:
+                store = create_capability_store()
+                _cap_store_by_id[id(session)] = store
             return store
 
     def _principal_and_meta():
@@ -584,6 +604,9 @@ def _build_governed_mcp_callables(
                 result = apply_pre_call_policy(
                     prompt_text, cfg, provider="mcp", operation="mcp.tool.call",
                     metadata=identity_meta or None, tool_name=tool_name,
+                    tool_declared_destructive=_capability_store_for(self).is_destructive(
+                        tool_name
+                    ),
                 )
                 compliance = result["compliance"]
                 final_prompt = result["redacted_prompt"]
@@ -820,6 +843,20 @@ def _build_governed_mcp_callables(
             # metadata below is added ONLY when pinning is enabled, so
             # existing events stay byte-identical. TS parity:
             # processListToolsResult.
+            # Destructive-capability hints, read once per listing and held for
+            # the call-time taint gate. Unconditional: the capability gate is
+            # independent of descriptor pinning, and gating it on an unrelated
+            # feature flag is how a control ends up switched off by accident.
+            # Recording is add-only, so a later listing that drops the hint does
+            # not un-declare the tool. TS parity: processListToolsResult.
+            capability_store = _capability_store_for(self)
+            hinted_destructive = []
+            for tool in tools:
+                if declares_destructive(tool):
+                    name = _tool_name_of(tool)
+                    capability_store.record(name, True)
+                    hinted_destructive.append(name)
+
             pinning = resolve_tool_pinning(_mcp_tool_policy(cfg))
             pin_store = _pin_store_for(self) if pinning else None
             pin_violations = []
@@ -927,6 +964,14 @@ def _build_governed_mcp_callables(
             # TS inventory-event precedence parity).
             inventory_meta = dict(base_options.get("metadata") or {})
             inventory_meta["flagged_tools"] = [f["name"] for f in flagged]
+            # Which discovered tools declared themselves destructive, and
+            # whether the store refused any. A capability restriction the
+            # operator never configured has to be visible on the record, or the
+            # first they hear of it is a blocked call they cannot explain.
+            if hinted_destructive:
+                inventory_meta["destructive_hinted_tools"] = sorted(hinted_destructive)
+            if capability_store.saturated():
+                inventory_meta["destructive_hint_store_saturated"] = True
             if pinning and pin_store is not None:
                 # Pin surface: per-tool descriptor hashes ride the signed
                 # inventory event — the operator copies an observed hash into

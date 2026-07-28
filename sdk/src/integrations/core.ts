@@ -170,6 +170,18 @@ export const DEFAULT_COMPLIANCE: ComplianceInfo = {
 };
 
 /**
+ * How a denied capability got into the destructive set, in words an operator
+ * reading the audit trail can act on. "The server told us this about itself"
+ * and "I wrote this name down" are different facts and lead to different next
+ * steps, so the record distinguishes them.
+ */
+export function destructiveSourceLabel(
+  source: "operator" | "descriptor_hint" | undefined,
+): string {
+  return source === "descriptor_hint" ? "tool descriptor hint" : "operator list";
+}
+
+/**
  * Get the resolved config, or null when the SDK is uninitialized or
  * disabled. Observe-only handlers use this so they never throw inside
  * a framework callback.
@@ -434,6 +446,13 @@ export async function applyPreCallPolicy(
      * LLM-call boundaries.
      */
     toolName?: string;
+    /**
+     * Whether the tool's own descriptor declared it destructive at discovery
+     * (`annotations.destructiveHint: true`). Resolved by the caller, which is
+     * the layer that saw the descriptor; see policy/capability-hints.ts for
+     * why the hint can only ever ADD to the destructive set.
+     */
+    toolDeclaredDestructive?: boolean;
     /** Extra rule-evaluation context (e.g. tenant_id, session_id). */
     metadata?: Record<string, unknown>;
   },
@@ -505,15 +524,21 @@ export async function applyPreCallPolicy(
     let taintPolicyReason: string | undefined;
     if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
       // Tool-aware when the caller is a tool boundary: a tainted session in
-      // flag mode still loses its DESTRUCTIVE capabilities
-      // (sessionTaint.destructiveTools) — the composition that stops
-      // indirect injection without bricking the session.
-      const verdict = evaluateToolTaintGate(taintKey, taintCfg, ctx.toolName ?? "");
+      // flag mode still loses its DESTRUCTIVE capabilities — the composition
+      // that stops indirect injection without bricking the session. The set is
+      // the operator's `destructiveTools` union whatever the tool's own
+      // descriptor declared at discovery.
+      const verdict = evaluateToolTaintGate(
+        taintKey,
+        taintCfg,
+        ctx.toolName ?? "",
+        ctx.toolDeclaredDestructive === true,
+      );
       if (verdict.enforcement !== "none") {
         touchTaint(taintKey, Date.now()); // LRU: keep an enforced victim alive
         taintRuleId = "sdk:session_tainted";
         taintPolicyReason = verdict.destructive
-          ? `Session previously compromised (${verdict.reason}); destructive capability '${ctx.toolName}' denied`
+          ? `Session previously compromised (${verdict.reason}); destructive capability '${ctx.toolName}' denied (${destructiveSourceLabel(verdict.destructiveSource)})`
           : `Session previously compromised (${verdict.reason}); egress escalated`;
         if (verdict.enforcement === "block") {
           actionTaken = "blocked";

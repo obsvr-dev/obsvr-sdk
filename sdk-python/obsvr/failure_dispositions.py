@@ -230,6 +230,15 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         ),
     },
     {
+        "id": "destructive_capability_hints",
+        "module": "sdk-python/obsvr/capability_hints.py",
+        "timeout": _s("not_applicable"),
+        "error": _s("closed"),
+        "degraded": _s("not_applicable"),
+        "hook_overridable": False,
+        "notes": "Reads a tool descriptor's own destructiveHint at discovery and adds the tool to the destructive-capability set. A descriptor the SDK cannot read resolves to destructive, never to safe: an unreadable field is the same escape as a lying one, so 'closed' here means the capability is restricted rather than the call refused. Restriction only bites a session that is already tainted, and the hint can only ever ADD - an operator's own list entry is never removed by anything a server says.",
+    },
+    {
         "id": "tool_result_scan",
         "module": "sdk-python/obsvr/response_scan.py",
         "timeout": _s("not_applicable"),

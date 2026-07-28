@@ -192,8 +192,16 @@ export interface ObsvrConfig {
     /** @default "flag" */
     action?: "block" | "flag";
     /** Destructive-capability set: EXACT tool names a TAINTED session may
-     * never invoke, even under the default "flag" action. */
+     * never invoke, even under the default "flag" action. Unioned with the
+     * tools whose own MCP descriptor declares `destructiveHint: true`, so a
+     * deployment that configures nothing still gets a capability gate. */
     destructiveTools?: string[];
+    /** Whether a tool descriptor's own `destructiveHint` may add that tool to
+     * the destructive set. The hint can only ever ADD - a server can never
+     * remove a tool from the set by describing itself as harmless - so turning
+     * this off never tightens anything; it restricts the set to
+     * `destructiveTools` alone. @default true */
+    honorDestructiveHints?: boolean;
   };
 
   /**
@@ -421,6 +429,8 @@ export interface LLMAuditInitConfig {
     enabled?: boolean;
     action?: "block" | "flag";
     destructiveTools?: string[];
+    /** See ObsvrConfig.sessionTaint.honorDestructiveHints. @default true */
+    honorDestructiveHints?: boolean;
   };
 
   /** De-obfuscation scan views (see ObsvrConfig.deobfuscation). */
@@ -559,6 +569,8 @@ export interface ResolvedConfig {
     enabled?: boolean;
     action?: "block" | "flag";
     destructiveTools?: string[];
+    /** See ObsvrConfig.sessionTaint.honorDestructiveHints. @default true */
+    honorDestructiveHints?: boolean;
   };
   /** De-obfuscation scan views (server-side normalizer mirror), detection-only. */
   deobfuscation?: { enabled?: boolean };

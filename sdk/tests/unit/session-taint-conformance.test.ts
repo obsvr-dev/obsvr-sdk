@@ -10,6 +10,7 @@ import {
   sessionTaintSize,
   _resetSessionTaint,
 } from '../../src/policy/session-taint';
+import { declaresDestructive } from '../../src/policy/capability-hints';
 
 /**
  * Cross-SDK session-taint conformance harness (TS side). Twin:
@@ -45,9 +46,22 @@ interface ToolGateCase {
   tainted: boolean;
   /** Fixture configs use the wire spelling; destructive_tools maps to the
    * TS resolved-config key destructiveTools. */
-  config: { enabled?: boolean; action?: 'block' | 'flag'; destructive_tools?: string[] } | null;
+  config: {
+    enabled?: boolean;
+    action?: 'block' | 'flag';
+    destructive_tools?: string[];
+    honor_destructive_hints?: boolean;
+  } | null;
   tool_name: string;
-  expect: { enforcement: string; destructive?: boolean };
+  /** Whether the tool's descriptor declared it destructive at discovery. */
+  declared_destructive?: boolean;
+  expect: { enforcement: string; destructive?: boolean; destructive_source?: string };
+}
+interface DescriptorHintCase {
+  id: string;
+  desc?: string;
+  tool: { annotations?: unknown } | null;
+  expect: boolean;
 }
 
 const fixture = JSON.parse(
@@ -56,6 +70,7 @@ const fixture = JSON.parse(
   key_cases: KeyCase[];
   decision_cases: DecisionCase[];
   tool_gate_cases: { cases: ToolGateCase[] };
+  descriptor_hint_cases: { cases: DescriptorHintCase[] };
 };
 
 describe('conformance: session key derivation', () => {
@@ -87,11 +102,13 @@ describe('conformance: tool-aware taint gate (destructive-capability set)', () =
             enabled: c.config.enabled,
             action: c.config.action,
             destructiveTools: c.config.destructive_tools,
+            honorDestructiveHints: c.config.honor_destructive_hints,
           }
         : undefined;
-      const verdict = evaluateToolTaintGate('k', cfg, c.tool_name);
+      const verdict = evaluateToolTaintGate('k', cfg, c.tool_name, c.declared_destructive === true);
       expect(verdict.enforcement).toBe(c.expect.enforcement);
       expect(verdict.destructive).toBe(c.expect.destructive);
+      expect(verdict.destructiveSource).toBe(c.expect.destructive_source);
       _resetSessionTaint();
     });
   }
@@ -128,4 +145,12 @@ describe('taint store invariants (not fixture-expressible: stateful)', () => {
     markTainted('attacker', 'prompt_injection', 200_000); // evicts the OLDEST (a flood entry)
     expect(taintReason('victim')).toBe('prompt_injection'); // survived
   });
+});
+
+describe('conformance: descriptor destructiveHint is read one-directionally', () => {
+  for (const c of fixture.descriptor_hint_cases.cases) {
+    it(c.id, () => {
+      expect(declaresDestructive(c.tool)).toBe(c.expect);
+    });
+  }
 });

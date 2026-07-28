@@ -221,6 +221,16 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
       "A descriptor that cannot be hashed is treated as a mismatch, never as a pass. Enforcement follows the configured pinning mode (block blocks, warn flags); neither is silent. Contained per tool so one unhashable entry cannot abort discovery.",
   },
   {
+    id: "destructive_capability_hints",
+    module: "sdk/src/policy/capability-hints.ts",
+    timeout: s("not_applicable"),
+    error: s("closed"),
+    degraded: s("not_applicable"),
+    hookOverridable: false,
+    notes:
+      "Reads a tool descriptor's own destructiveHint at discovery and adds the tool to the destructive-capability set. A descriptor the SDK cannot read resolves to destructive, never to safe: an unreadable field is the same escape as a lying one, so 'closed' here means the capability is restricted rather than the call refused. Restriction only bites a session that is already tainted, and the hint can only ever ADD - an operator's own list entry is never removed by anything a server says.",
+  },
+  {
     id: "tool_result_scan",
     module: "sdk/src/policy/response-scan.ts",
     timeout: s("not_applicable"),
