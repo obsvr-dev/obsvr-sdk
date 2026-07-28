@@ -32,7 +32,7 @@ echo "machine load: $(uptime)"
 LOAD1=$(uptime | awk -F'load averages?: ' '{print $2}' | awk '{print $1}' | tr -d ',')
 awk -v l="$LOAD1" 'BEGIN { if (l+0 > 4) print "WARNING: 1-min load average " l " > 4 — results may be noisy. Quiesce the machine for publishable numbers." }'
 echo "building TS SDK (tsc)..."
-(cd sdk && npm run build --silent)
+(cd sdk-typescript && npm run build --silent)
 echo "python: $("$PY" --version 2>&1)"
 
 for (( r=1; r<=REPEAT; r++ )); do

@@ -162,7 +162,7 @@ jobs:
       # forever while disagreeing with the other; only this catches that.
       - name: obsvr-verify CLI parity (both languages, one export)
         run: |
-          npm --prefix sdk run build
+          npm --prefix sdk-typescript run build
           node scripts/check-cli-verify-parity.mjs
 
       # The fixture above pins the divergence classes we KNOW about. This

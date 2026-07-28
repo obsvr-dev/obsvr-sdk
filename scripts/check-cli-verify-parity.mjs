@@ -20,7 +20,7 @@
  * nothing and catches a drift the verdict alone would hide.
  *
  * Requires the TypeScript SDK to be built (sdk-typescript/dist/cli-verify.js). Run:
- *   npm --prefix sdk run build && node scripts/check-cli-verify-parity.mjs
+ *   npm --prefix sdk-typescript run build && node scripts/check-cli-verify-parity.mjs
  */
 import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -33,7 +33,7 @@ const TS_CLI = join(root, "sdk-typescript", "dist", "cli-verify.js");
 const PY_DIR = join(root, "sdk-python");
 
 if (!existsSync(TS_CLI)) {
-  console.error(`✗ ${TS_CLI} is missing. Build it first: npm --prefix sdk run build`);
+  console.error(`✗ ${TS_CLI} is missing. Build it first: npm --prefix sdk-typescript run build`);
   process.exit(2);
 }
 
