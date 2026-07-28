@@ -145,6 +145,53 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **BREAKING: a 14th rule type, `protocol_facet`, matching parsed statement
+  structure.** A rule can now address `sql.verb`, `sql.target`, `sql.tables`,
+  `sql.functions` and `sql.multiple_statements` instead of matching characters:
+  `{ type: "protocol_facet", conditions: { facet: "sql.verb", facet_not_in:
+  ["select"] } }`. A comment between `DROP` and `TABLE` defeats a regex and
+  does not defeat this, and it does not fire on prose that merely mentions the
+  word. **Read this before adopting it: the failure direction is the opposite
+  of every other rule type.** Text the decomposer cannot decompose MATCHES, so
+  a facet rule refuses rather than permits what it could not read — an attacker
+  who can make a statement unparseable would otherwise have found the bypass.
+  The decomposition is stdlib-only and lexical rather than a full grammar (this
+  package ships no runtime dependencies), and is explicit about what it does
+  not handle: subquery scopes, CTEs, dialect syntax, precedence. Bounded at 8
+  KiB and 2,048 tokens, beyond which it reports unparseable. BREAKING only in
+  that the new reason code `PROTOCOL_FACET_MATCHED` is an addition to a closed
+  enum; nothing existing changes meaning. Pinned by
+  `conformance/fixtures/protocol_facets.json`.
+  ([`9c8b425`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c8b425))
+- **BREAKING: rot13 is decoded before the scanners run.** With `deobfuscation`
+  enabled, a `rot13` view is now derived from any text carrying at least eight
+  ASCII letters, so an injection payload the scanners already recognise no
+  longer walks past them rotated. The view is derived last and outside the
+  decoded-candidate cap, so it displaces nothing and never changes an existing
+  detection's `via` attribution. BREAKING only in that `"rot13"` is an addition
+  to the closed `via` / `CanaryVia` value sets, which breaks an exhaustive
+  switch over them. **Note the cost, which is deliberate:** rot13 is applied
+  speculatively rather than gated on the text looking encoded, because deciding
+  that first would be a heuristic in front of a deterministic decision path — so
+  every scanned text pays one extra linear pass. Character substitution (leet)
+  is deliberately not decoded; the reasoning is in the deobfuscation module in
+  both SDKs.
+  ([`2fdf8e3`](https://github.com/obsvr-dev/obsvr-sdk/commit/2fdf8e3))
+- **Layered call cost (`costPolicy` / `cost_policy`), off by default.** Three
+  layers, each overriding the one before and all three retained on the record:
+  what the caller said a call would cost (`metadata.cost_estimate_micros`),
+  what you declare it costs, and the metered figure from provider-reported
+  usage at your own rates. The signed gap between the estimate and the metered
+  value rides `metadata.obsvr_cost`, because an estimator that is persistently
+  an order of magnitude out is only visible if both numbers survive. **No
+  provider price list ships in this package** — prices change on the vendor's
+  schedule and a stale rate baked into a release seals a wrong number, which
+  cannot be reissued — so rates are yours to declare. Every amount is an
+  integer count of millionths of a currency unit with a half-up rounding rule
+  written out in both languages, because money in binary floating point does
+  not agree between two runtimes at the edges. With no cost policy configured,
+  events are unchanged. Pinned by `conformance/fixtures/cost.json`.
+  ([`6dc3b54`](https://github.com/obsvr-dev/obsvr-sdk/commit/6dc3b54))
 - **CloudEvents v1.0 export.** `toCloudEvent` / `to_cloud_event` project an
   audit event onto a CloudEvents envelope, and `serializeCloudEvent` /
   `serialize_cloud_event` produce its canonical string form, byte-identical
