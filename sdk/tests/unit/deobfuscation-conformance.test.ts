@@ -8,7 +8,7 @@ import {
   redactForStorage,
   DeobfuscationView,
 } from '../../src/policy/deobfuscate';
-import { resolvePiiPolicy } from '../../src/policy/hook';
+import { resolvePiiPolicy, runBuiltinPiiScan } from '../../src/policy/hook';
 
 /**
  * Cross-SDK de-obfuscation conformance harness (TS side). Twin:
@@ -153,9 +153,15 @@ describe('conformance: composed pipeline decision (scan -> resolve -> escalate)'
 describe('conformance: config gate (runConfiguredPiiScan)', () => {
   it('flag off (or absent) is byte-identical to the raw scanner: no views, no via', () => {
     const encoded = 'bXkgc3NuIGlzIDEyMy00NS02Nzg5'; // base64 SSN, raw-clean
+    // Compared against the raw scanner itself rather than a literal: the claim
+    // is "the gate adds nothing when off", which must keep holding as the scan
+    // result grows fields, not be re-pinned every time one is added.
+    const rawScan = runBuiltinPiiScan(encoded);
+    expect(rawScan.pii_detected).toBe(false);
+    expect(rawScan.detected_types).toEqual([]);
     for (const deob of [undefined, {}, { enabled: false }] as const) {
       const r = runConfiguredPiiScan(encoded, deob as { enabled?: boolean } | undefined);
-      expect(r).toEqual({ pii_detected: false, detected_types: [] });
+      expect(r).toEqual(rawScan);
     }
     expect(runConfiguredPiiScan(encoded, { enabled: true }).via).toBe('base64');
   });

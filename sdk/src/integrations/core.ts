@@ -657,7 +657,14 @@ export async function applyPreCallPolicy(
       // proxy wrapper's step 1.2 comment: a view-aware full match would
       // suppress the accumulation gate below with no single-turn enforcement
       // replacing it when pii_policy is absent).
-      const hadFullMatch = runBuiltinPiiScan(promptText).detected_types.includes("prompt_injection");
+      // A QUOTED injection phrase is a weak signal, not a full match (see the
+      // proxy wrapper's step 1.2 comment): the detection still fires, it just
+      // stops counting as the single-turn full match. Downgrade, not
+      // suppression — the phrase still accrues weak-signal score.
+      const injectionScan = runBuiltinPiiScan(promptText);
+      const hadFullMatch = injectionScan.matches.some(
+        (m) => m.label === "prompt_injection" && !m.quoted,
+      );
       const mt = scoreTurn(sessionKey, promptText, hadFullMatch, {
         threshold: config.multiTurnInjection.threshold ?? 1.0,
         halfLifeMs: config.multiTurnInjection.halfLifeMs ?? 600_000,

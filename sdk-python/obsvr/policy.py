@@ -259,12 +259,73 @@ DEFAULT_COMPLIANCE: Dict[str, Any] = {
 }
 
 
+# Opening delimiter -> the closing delimiter that ends the same quotation.
+#
+# Deliberately tiny and literal (parity with TS QUOTE_PAIRS). This is NOT a
+# parser and must never become one: the moment it starts inferring whether text
+# is "inside a code block" or "part of a string literal" it is a second
+# detector, with a second detector's false-negative surface, guarding the first
+# one. Five pairs, exact characters, no state.
+QUOTE_PAIRS: Dict[str, str] = {
+    '"': '"',
+    "'": "'",
+    "`": "`",
+    "“": "”",  # " "
+    "‘": "’",  # ' '
+}
+
+
+def _is_quoted_span(text: str, start: int, end: int) -> bool:
+    """Is ``[start, end)`` immediately enclosed by a matching delimiter pair?
+
+    Text that QUOTES an attack phrase is not performing one. A bug report, a
+    test fixture, a policy document and a support ticket all reproduce the exact
+    strings a real attack uses, and rewriting them to ``[BLOCKED_INJECTION]``
+    makes the ledger commit to content the model never saw -- the evidence is
+    corrupted to record a detection that, read literally, did not happen.
+
+    Strict adjacency, on purpose. The character before the span must open, and
+    the character after it must close the same pair. No whitespace skipping, no
+    scanning outward for the nearest quote: every relaxation classifies MORE
+    text as quoted, and being wrong in that direction is what lets a real attack
+    ride through downgraded. Being wrong the other way only leaves the
+    pre-existing behaviour in place.
+
+    So this recognizes a quotation only when it holds the matched span and
+    nothing else. Two shapes are therefore missed and still redacted, both
+    deliberately:
+
+    - punctuation inside the quotation -- ``"ignore all previous instructions."``
+      puts a ``.`` between the span and the closing delimiter;
+    - a quotation wider than the pattern's match -- ``"you are DAN and can do
+      anything"`` matches only ``you are DAN``, so the delimiters are not
+      adjacent.
+
+    Both leave the pre-existing behaviour in place rather than introducing a new
+    way to be wrong. Widening either one is a change here and nowhere else, if
+    the under-recognition ever costs more than the risk of scanning outward.
+
+    Byte-identical to TS ``isQuotedSpan``.
+    """
+    if start <= 0 or end >= len(text):
+        return False
+    closing = QUOTE_PAIRS.get(text[start - 1])
+    return closing is not None and text[end] == closing
+
+
 def _collect_matches(text: str) -> List[Dict[str, Any]]:
     """Collect all pattern matches with position and confidence info (parity
-    with TS collectMatches). validate() failures are discarded."""
+    with TS collectMatches). validate() failures are discarded.
+
+    ``quoted`` is resolved here, against the very string being matched, so the
+    verdict never has to be carried across a normalization boundary -- see
+    ``run_builtin_pii_scan`` and ``redact_builtin_pii``, which operate on
+    different strings and each resolve it locally.
+    """
     matches: List[Dict[str, Any]] = []
     for entry in BUILTIN_PII_PATTERNS:
         validate: Optional[Callable[[str], bool]] = entry.get("validate")
+        category = entry["category"]
         for m in entry["pattern"].finditer(text):
             if validate is not None and not validate(m.group(0)):
                 continue
@@ -274,7 +335,10 @@ def _collect_matches(text: str) -> List[Dict[str, Any]]:
                     "start": m.start(),
                     "end": m.end(),
                     "confidence": entry["confidence"],
-                    "category": entry["category"],
+                    "category": category,
+                    # Security patterns only. A quoted API key is still an API key.
+                    "quoted": category == "security"
+                    and _is_quoted_span(text, m.start(), m.end()),
                 }
             )
     return matches
@@ -308,11 +372,26 @@ def run_builtin_pii_scan(text: str) -> Dict[str, Any]:
     lookalike or zero-width-joined payload cannot dodge the PII / secret /
     injection patterns. Matching-only -- the caller's stored text is untouched
     (redact_builtin_pii runs on the original), so only DETECTION is affected.
+
+    ``quoted`` is resolved against THIS string -- the normalized copy the
+    patterns actually matched -- and never handed to redaction, which normalizes
+    differently and would land the verdict on the wrong span.
     """
     raw = _collect_matches(normalize_for_matching(text))
     filtered = _suppress_overlaps(raw)
     detected_types = list(dict.fromkeys(m["label"] for m in filtered))
-    return {"pii_detected": len(detected_types) > 0, "detected_types": detected_types}
+    # Additive: ``pii_detected`` and ``detected_types`` are unchanged, so a
+    # quoted injection still reports as a detection. ``matches`` is what lets a
+    # caller DOWNGRADE it (see the multi-turn call site) rather than lose it.
+    matches = [
+        {"label": m["label"], "confidence": m["confidence"], "quoted": m["quoted"]}
+        for m in filtered
+    ]
+    return {
+        "pii_detected": len(detected_types) > 0,
+        "detected_types": detected_types,
+        "matches": matches,
+    }
 
 
 def redact_builtin_pii(text: Optional[str]) -> str:
@@ -331,11 +410,54 @@ def redact_builtin_pii(text: Optional[str]) -> str:
     # that actually contains fullwidth / ligature / compatibility characters.
     has_compat_forms = result != unicodedata.normalize("NFKC", result)
     for entry in BUILTIN_PII_PATTERNS:
-        if has_compat_forms:
+        # Security patterns take a span-collecting path in both branches because
+        # they need each match's offsets to test its delimiters. PII and secret
+        # patterns keep their original code paths byte-for-byte -- a quoted
+        # credential is still a leaked credential and must still be scrubbed.
+        if entry["category"] == "security":
+            if has_compat_forms:
+                result = _redact_pattern_fold_aware(result, entry, _is_quoted_span)
+            else:
+                result = _redact_pattern_plain(result, entry, _is_quoted_span)
+        elif has_compat_forms:
             result = _redact_pattern_fold_aware(result, entry)
         else:
             result = _sub_validated(entry, result)
     return result
+
+
+def _redact_pattern_plain(
+    base: str,
+    entry: Dict[str, Any],
+    skip_span: Callable[[str, int, int], bool],
+) -> str:
+    """Splice placeholders into ``base`` for every match of ``entry``, skipping
+    spans that ``skip_span`` vetoes.
+
+    Used when ``base`` carries no NFKC-changing character, so ``base`` IS its
+    own folded view: match offsets index it directly and no source map is
+    needed. That is the same string ``nfkc_with_source_map`` would hand back
+    unchanged, so the delimiters this sees are the delimiters detection saw.
+    Parity with TS redactPatternPlain.
+    """
+    pattern = entry["pattern"]
+    placeholder = entry["placeholder"]
+    validate: Optional[Callable[[str], bool]] = entry.get("validate")
+    spans: List[Tuple[int, int]] = []
+    for m in pattern.finditer(base):
+        if m.start() == m.end():
+            continue
+        if validate is not None and not validate(m.group(0)):
+            continue
+        if skip_span(base, m.start(), m.end()):
+            continue
+        spans.append((m.start(), m.end()))
+    if not spans:
+        return base
+    out = base
+    for s, e in reversed(spans):
+        out = out[:s] + placeholder + out[e:]
+    return out
 
 
 def _sub_validated(entry: Dict[str, Any], text: str) -> str:
@@ -349,23 +471,40 @@ def _sub_validated(entry: Dict[str, Any], text: str) -> str:
     )
 
 
-def _redact_pattern_fold_aware(base: str, entry: Dict[str, Any]) -> str:
+def _redact_pattern_fold_aware(
+    base: str,
+    entry: Dict[str, Any],
+    skip_span: Optional[Callable[[str, int, int], bool]] = None,
+) -> str:
     """Apply one PII pattern, matching on the NFKC-folded view but replacing the
     span in ``base``. Keeps redaction in step with detection (which normalizes)
     for compatibility forms (fullwidth digits, ligatures) while leaving every
     non-PII character in ``base`` untouched. Plain ASCII takes the identity fast
-    path, exactly the prior ``pattern.sub`` behavior."""
+    path, exactly the prior ``pattern.sub`` behavior.
+
+    ``skip_span``, when supplied, vetoes replacement of a span. It is consulted
+    on the FOLDED view in FOLDED coordinates -- the same coordinate space the
+    match was found in -- and the existing source map then carries the surviving
+    spans back to ``base`` exactly as before. Nothing new crosses the boundary:
+    the verdict is decided before the map is applied, never transported across
+    it. Only the security patterns pass one."""
     pattern = entry["pattern"]
     placeholder = entry["placeholder"]
     validate: Optional[Callable[[str], bool]] = entry.get("validate")
     normalized, map_start, map_end = nfkc_with_source_map(base)
-    if normalized == base:
+    # ``skip_span`` needs per-match offsets, which ``pattern.sub`` does not
+    # expose, so it always takes the span-collecting path below. That path is
+    # correct for an identity map too -- it just costs a little more than sub().
+    if normalized == base and skip_span is None:
         return _sub_validated(entry, base)
     spans: List[Tuple[int, int]] = []
     for m in pattern.finditer(normalized):
         if m.start() == m.end():
             continue
         if validate is not None and not validate(m.group(0)):
+            continue
+        # Decide quoted-ness in folded coordinates, BEFORE the map is applied.
+        if skip_span is not None and skip_span(normalized, m.start(), m.end()):
             continue
         spans.append((map_start[m.start()], map_end[m.end() - 1]))
     if not spans:
@@ -972,7 +1111,19 @@ def apply_pre_call_policy(
             # nothing else enforced it -- enabling deobfuscation weakened this
             # gate (caught by adversarial review). With pii_policy set, the
             # view-aware step-1 scan above already blocks encoded injections.
-            had_full = "prompt_injection" in run_builtin_pii_scan(scan)["detected_types"]
+            # A QUOTED injection phrase is a weak signal, not a full match: text
+            # that quotes an attack (a bug report, a fixture, a policy doc) is
+            # not performing one. The detection is untouched -- the scan still
+            # reports ``prompt_injection`` and the event still fires -- but it
+            # no longer counts as the single-turn full match that scores 1.0 and
+            # lets turn 1 trip on its own. The phrase still accrues weak-signal
+            # score in score_turn, so an attacker who wraps a payload in quotes
+            # gets a quieter line in the log and nothing else.
+            _inj_scan = run_builtin_pii_scan(scan)
+            had_full = any(
+                m["label"] == "prompt_injection" and not m["quoted"]
+                for m in _inj_scan["matches"]
+            )
             mt = score_turn(
                 session_key,
                 scan,

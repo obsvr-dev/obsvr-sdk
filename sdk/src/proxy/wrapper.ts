@@ -1311,7 +1311,18 @@ function createAuditedMethod(
         // nothing else enforced it — enabling deobfuscation weakened this gate
         // (caught by adversarial review). With pii_policy set, the view-aware
         // step-1 scan above already blocks encoded injections.
-        const hadFullMatch = runBuiltinPiiScan(promptText).detected_types.includes("prompt_injection");
+        // A QUOTED injection phrase is a weak signal, not a full match: text
+        // that quotes an attack (a bug report, a fixture, a policy doc) is not
+        // performing one. The detection is untouched — the scan still reports
+        // `prompt_injection` and the event still fires — but it no longer
+        // counts as the single-turn full match that scores 1.0 and lets turn 1
+        // trip on its own. The phrase still accrues weak-signal score below, so
+        // an attacker who wraps a payload in quotes gets a quieter line in the
+        // log and nothing else.
+        const injectionScan = runBuiltinPiiScan(promptText);
+        const hadFullMatch = injectionScan.matches.some(
+          (m) => m.label === "prompt_injection" && !m.quoted,
+        );
         const mt = scoreTurn(sessionKey, promptText, hadFullMatch, {
           threshold: config.multiTurnInjection.threshold ?? 1.0,
           halfLifeMs: config.multiTurnInjection.halfLifeMs ?? 600_000,

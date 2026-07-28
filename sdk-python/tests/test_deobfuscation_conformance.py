@@ -17,7 +17,7 @@ from obsvr.deobfuscate import (
     run_configured_pii_scan,
     run_deobfuscated_scan,
 )
-from obsvr.policy import resolve_pii_policy
+from obsvr.policy import resolve_pii_policy, run_builtin_pii_scan
 
 FIXTURE = json.loads(
     (Path(__file__).parent / "../../conformance/fixtures/deobfuscation.json")
@@ -81,11 +81,14 @@ def test_composed_pipeline_decision(case):
 
 def test_config_gate_flag_off_is_raw_scanner():
     encoded = "bXkgc3NuIGlzIDEyMy00NS02Nzg5"  # base64 SSN, raw-clean
+    # Compared against the raw scanner itself rather than a literal: the claim
+    # is "the gate adds nothing when off", which must keep holding as the scan
+    # result grows fields, not be re-pinned every time one is added.
+    raw_scan = run_builtin_pii_scan(encoded)
+    assert raw_scan["pii_detected"] is False
+    assert raw_scan["detected_types"] == []
     for deob in (None, {}, {"enabled": False}):
-        assert run_configured_pii_scan(encoded, deob) == {
-            "pii_detected": False,
-            "detected_types": [],
-        }
+        assert run_configured_pii_scan(encoded, deob) == raw_scan
     assert run_configured_pii_scan(encoded, {"enabled": True})["via"] == "base64"
 
 
