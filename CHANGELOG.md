@@ -33,6 +33,28 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **BREAKING: an MCP tool that declares `destructiveHint: true` is now in the
+  destructive-capability set by default.** With `sessionTaint` enabled, a
+  tainted session's calls to destructive tools are refused even under the
+  default `flag` action — but membership used to come only from an
+  operator-written `destructiveTools` list, so a deployment that configured no
+  list got no capability gate at all and no indication of it. Tool descriptors
+  seen at `tools/list` are now read for `annotations.destructiveHint`, and a
+  tool that affirmatively declares itself destructive joins the set. **This
+  changes behaviour for anyone using MCP with taint enabled and no
+  `destructiveTools` configured: calls a tainted session previously made now
+  block.** Set `sessionTaint.honorDestructiveHints: false`
+  (`honor_destructive_hints` in Python) to restrict the set to your configured
+  list. The hint can only ever ADD — a server cannot describe itself out of the
+  set, an operator entry applies regardless of what a descriptor claims, and a
+  later listing that drops the hint does not un-declare the tool. An absent
+  hint means non-destructive; a descriptor the SDK cannot read at all resolves
+  to destructive. Discovery-time only, no hot-path cost. Blocked events name
+  which source decided (`operator list` / `tool descriptor hint`) and the
+  discovery event carries `destructive_hinted_tools`. Pinned by
+  `tool_gate_cases` and `descriptor_hint_cases` in
+  `conformance/fixtures/session_taint.json`.
+  ([`1ad2470`](https://github.com/obsvr-dev/obsvr-sdk/commit/1ad2470))
 - **BREAKING: `model_gate` and `environment_gate` rules now fire on the
   framework-integration path.** `applyPreCallPolicy` built the customer-rules
   evaluation context without the request model or the environment, so a rule of
