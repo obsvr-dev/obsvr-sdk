@@ -20,8 +20,8 @@ on:
     # Daily, clear of the working day so a red nightly is read in the morning
     # rather than mid-task. Deliberately NOT on the hour: GitHub delays or
     # drops scheduled runs under load, and every repo that schedules on the
-    # hour piles into the same minute. The reference repos that run the most
-    # scheduled work all offset (langfuse 17/31, otel 12/17/39, opa 17).
+    # hour piles into the same minute. Projects that run a lot of scheduled
+    # work all pick an off-hour minute for this reason.
     - cron: "23 3 * * *"
   workflow_dispatch:
     inputs:

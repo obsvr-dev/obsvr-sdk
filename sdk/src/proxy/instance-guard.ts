@@ -23,10 +23,10 @@
  * not cosmetic, and it names the fix: deduplicate the dependency so one copy
  * remains.
  *
- * Version stance follows opentelemetry-js: the incumbent keeps the slot. An
- * older incumbent is called out explicitly in the log, because "the copy
- * governing your traffic is older than the one you installed" is exactly the
- * surprise an operator needs told.
+ * Version stance: the incumbent keeps the slot. An older incumbent is called
+ * out explicitly in the log, because "the copy governing your traffic is
+ * older than the one you installed" is exactly the surprise an operator
+ * needs told.
  *
  * @packageDocumentation
  */

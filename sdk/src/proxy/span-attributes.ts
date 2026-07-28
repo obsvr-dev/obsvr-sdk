@@ -2,8 +2,8 @@
  * Span attribute vocabulary (DASHBOARD_TELEMETRY.md M5, agent cluster).
  *
  * These are the semantic-convention KEYS for the open `attributes` bag on a
- * span (see span.ts). They mirror the OpenTelemetry GenAI / OpenLIT conventions
- * catalogued in DASHBOARD_TELEMETRY.md. Using shared keys is what lets the
+ * span (see span.ts). They mirror the OpenTelemetry GenAI semantic
+ * conventions. Using shared keys is what lets the
  * dashboard render known attributes without the SDK growing feature-specific
  * fields: the primitive stays generic, the vocabulary grows.
  *

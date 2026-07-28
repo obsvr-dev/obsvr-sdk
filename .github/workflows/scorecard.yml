@@ -5,11 +5,9 @@ name: Scorecard
 # dependencies, least-privilege tokens, CodeQL, signed releases, branch
 # protection) and reports what it finds, without taking our word for any of it.
 #
-# The most-adopted practice among the mature repositories surveyed - cedar,
-# opa, opentelemetry-collector, and the Microsoft agent-governance-toolkit all
-# run it. For a project selling independent verification of AI decisions,
-# having its own supply chain graded by a third party is the same argument
-# applied to itself.
+# Widely adopted across mature open-source infrastructure projects. For a
+# project selling independent verification of AI decisions, having its own
+# supply chain graded by a third party is the same argument applied to itself.
 #
 # Results land in the Security tab as SARIF. The badge is worth adding to the
 # README once the first run has a score to show.
