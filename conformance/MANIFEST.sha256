@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = cdf8afffd14a5998005dcad3016fe44a463f1402fc44564005a88d29521fe3f9
+# corpus_sha256 = 44bab58b49a16e23019a7b566619647bde3815a6b553aea75ac4e9226e59b09f
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -25,7 +25,7 @@
 fa3e058cb2956888d2cc1938502ad1d2f16b96994efa6e17ef27082aaea45fc8  fixtures/cloudevents.json
 cbf092cf8421023be96908e93eb8b01752f7c1161be19b716c6b496d20dde636  fixtures/cost.json
 d77658342742e521477344e4ca363aefc4ec7989614fc8318228abd3944e3cf6  fixtures/decision_input.json
-2995e70e677a273615dc0c5034792c8c5510b3943223aaf7322e8c9a68f514c7  fixtures/deobfuscation.json
+46a836d4476fed5fff50e4dfa1baa5a6a2e69613b32270ef9be73a48dbc06e9f  fixtures/deobfuscation.json
 a31dd90a54ef9844b6c980ea86756ae1e8b6832b422f0bc72268fbf9294afdd2  fixtures/effective_policy.json
 084f276d8106e963a23bb28c9dca361c298d79a447438566ed713ea7526aa503  fixtures/error_parity.json
 e2eb05ebd6bb173c714338d851b85160bc4cfa5382323612def39d60eefa3508  fixtures/eval_context.json
@@ -43,7 +43,7 @@ a28c47eb4c0f1ea029c81a4646e1c27e91f73836782eb9230a0a6866801b2441  fixtures/proto
 ec98c54509c25d6508982bafcab453b826e1b702864762b2ee4215b9a47e5495  fixtures/quota_escrow.json
 bed31c194fb5ea1df6efb4f14fcda6f85b11ce6a22e9897f52f5c56299e00c92  fixtures/reason_codes.json
 4ec513bbb3cdd557415f1a00849cf7a2d0cdfb06e5f3aac70027c8ba7ab66b68  fixtures/rules_hash.json
-57253e5792ab602e8fe239be8770ffcb6c836ca8ca7e3d6bc0317552b51c1ed1  fixtures/session_taint.json
+6839bf9588871b1bc717ba4592cd5528cbc20727ec7c679cef89131e5f4d1948  fixtures/session_taint.json
 3d4f98b20297db04c98189f051ca9a4165b2d9e73d4f1e09ef28ba2cc3b5c2df  fixtures/signing_vectors.json
 08482aabc075d5ac22e1db5f0930e34eb0ffa039d0ba064a8c012de4d2f4675b  fixtures/tool_content_hash.json
 354fc293a9187683f4000103d3a4f3c85c89935a6a467ba1f8f03efa220e8e31  fixtures/tool_descriptor_scan.json

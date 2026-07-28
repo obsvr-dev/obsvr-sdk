@@ -51,7 +51,7 @@ Everything above is described in this project's own words. RFC 9334 — the IETF
 Remote ATtestation procedureS architecture — already has words for most of it,
 and a reader who evaluates attestation systems for a living should not have to
 translate. This section is that translation, including the parts where obsvr
-does not fit and the roles it does not implement. It adds no behaviour; it is
+does not fit and the roles it does not implement. It adds no behavior; it is
 here so the claims above can be checked against a standard rather than against
 a vocabulary obsvr invented.
 

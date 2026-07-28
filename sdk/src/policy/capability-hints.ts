@@ -25,7 +25,7 @@
  *    from any source is worth acting on; the worst case is over-restriction of
  *    an already-compromised session.
  *  - `destructiveHint: false` does nothing. It is a safety claim from an
- *    untrusted author, and honouring it would be letting a hostile server talk
+ *    untrusted author, and honoring it would be letting a hostile server talk
  *    its way out of the gate by writing one word in its own descriptor.
  *  - An ABSENT hint likewise does nothing: the tool is treated as
  *    non-destructive unless the operator listed it. This is the compatible
@@ -38,9 +38,9 @@
  * MCP itself, where an unspecified `destructiveHint` is read as true. That
  * reading makes sense for a client deciding how loudly to prompt a user. It
  * does not survive here, because a default of "destructive unless told
- * otherwise" only works if `destructiveHint: false` is honoured — and the
+ * otherwise" only works if `destructiveHint: false` is honored — and the
  * whole point of this module is that it must not be. Given the choice between
- * honouring a hostile server's denial and treating silence as an accusation,
+ * honoring a hostile server's denial and treating silence as an accusation,
  * the SDK does neither: only an affirmative claim moves anything, and the
  * operator's own list is always available for the tools that matter.
  *

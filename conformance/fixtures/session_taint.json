@@ -469,7 +469,7 @@
         }
       },
       {
-        "id": "hints_off_still_honours_the_operator_list",
+        "id": "hints_off_still_honors_the_operator_list",
         "sdk_support": {
           "ts": "required",
           "py": "required"
@@ -512,7 +512,7 @@
     ]
   },
   "descriptor_hint_cases": {
-    "desc": "declaresDestructive / declares_destructive: reading annotations.destructiveHint off a tool descriptor. ONE-DIRECTIONAL by design - only an affirmative `true` counts. The descriptor is authored by the tool server, which is the party the taint latch defends against, so a `false` and an absent hint are the same thing here: neither is evidence of safety worth acting on, and honouring `false` would let a hostile server leave the destructive set by writing one word about itself. Reading is strict equality, not truthiness, so the table is exactly expressible and identical in both languages; a server wanting out can just omit the field, so strictness costs nothing. NOTE this deliberately differs from MCP's own reading of the field, where an unspecified destructiveHint is treated as true - that default only works if `false` is honoured, and here it must not be.",
+    "desc": "declaresDestructive / declares_destructive: reading annotations.destructiveHint off a tool descriptor. ONE-DIRECTIONAL by design - only an affirmative `true` counts. The descriptor is authored by the tool server, which is the party the taint latch defends against, so a `false` and an absent hint are the same thing here: neither is evidence of safety worth acting on, and honoring `false` would let a hostile server leave the destructive set by writing one word about itself. Reading is strict equality, not truthiness, so the table is exactly expressible and identical in both languages; a server wanting out can just omit the field, so strictness costs nothing. NOTE this deliberately differs from MCP's own reading of the field, where an unspecified destructiveHint is treated as true - that default only works if `false` is honored, and here it must not be.",
     "cases": [
       {
         "id": "explicit_true_declares",

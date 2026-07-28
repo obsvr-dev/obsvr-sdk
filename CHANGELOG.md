@@ -53,7 +53,7 @@ cut, when it is renamed to that version.
   request, leaving the block permanent rather than pending — it now files one;
   and the request carries the action hash so the granting party can mint a
   bound grant at all. Pinned by `conformance/fixtures/approvals.json`.
-  ([`052702e`](https://github.com/obsvr-dev/obsvr-sdk/commit/052702e))
+  ([`4836c6d`](https://github.com/obsvr-dev/obsvr-sdk/commit/4836c6d))
 - **BREAKING: an MCP tool that declares `destructiveHint: true` is now in the
   destructive-capability set by default.** With `sessionTaint` enabled, a
   tainted session's calls to destructive tools are refused even under the
@@ -62,7 +62,7 @@ cut, when it is renamed to that version.
   list got no capability gate at all and no indication of it. Tool descriptors
   seen at `tools/list` are now read for `annotations.destructiveHint`, and a
   tool that affirmatively declares itself destructive joins the set. **This
-  changes behaviour for anyone using MCP with taint enabled and no
+  changes behavior for anyone using MCP with taint enabled and no
   `destructiveTools` configured: calls a tainted session previously made now
   block.** Set `sessionTaint.honorDestructiveHints: false`
   (`honor_destructive_hints` in Python) to restrict the set to your configured
@@ -75,7 +75,7 @@ cut, when it is renamed to that version.
   discovery event carries `destructive_hinted_tools`. Pinned by
   `tool_gate_cases` and `descriptor_hint_cases` in
   `conformance/fixtures/session_taint.json`.
-  ([`1ad2470`](https://github.com/obsvr-dev/obsvr-sdk/commit/1ad2470))
+  ([`fcfdc3a`](https://github.com/obsvr-dev/obsvr-sdk/commit/fcfdc3a))
 - **BREAKING: `model_gate` and `environment_gate` rules now fire on the
   framework-integration path.** `applyPreCallPolicy` built the customer-rules
   evaluation context without the request model or the environment, so a rule of
@@ -92,7 +92,7 @@ cut, when it is renamed to that version.
   keyed on `allowed_providers` evaluates everywhere. Pinned by the new
   `conformance/fixtures/eval_context.json`, whose ten cases are asserted
   through both TypeScript entry points and through Python's shared pre-call.
-  ([`fbbb76a`](https://github.com/obsvr-dev/obsvr-sdk/commit/fbbb76a))
+  ([`2094f08`](https://github.com/obsvr-dev/obsvr-sdk/commit/2094f08))
 - **BREAKING: a rule with `action: "redact"` now redacts on the `wrap()`
   path.** The wrapper's rules step acted only on a `block` verdict, so a redact
   rule forwarded the prompt unmodified and recorded `action_taken: "allowed"` —
@@ -104,7 +104,7 @@ cut, when it is renamed to that version.
   applied the call is blocked rather than sent, regardless of `failMode`. A
   rule that needs to suppress non-PII content should declare `action: "block"`
   — `redact` has always meant PII redaction on the other paths.
-  ([`aae1240`](https://github.com/obsvr-dev/obsvr-sdk/commit/aae1240))
+  ([`df8a326`](https://github.com/obsvr-dev/obsvr-sdk/commit/df8a326))
 - **Rules claiming the SDK's verdict namespace are rejected.** A policy rule
   whose `id` starts with `sdk:` or `backend:` is now invalid — those prefixes
   identify verdicts minted by the SDK's own governance layers, and an
@@ -161,8 +161,13 @@ cut, when it is renamed to that version.
   KiB and 2,048 tokens, beyond which it reports unparseable. BREAKING only in
   that the new reason code `PROTOCOL_FACET_MATCHED` is an addition to a closed
   enum; nothing existing changes meaning. Pinned by
-  `conformance/fixtures/protocol_facets.json`.
-  ([`9c8b425`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c8b425))
+  `conformance/fixtures/protocol_facets.json`. **Migration:** nothing is
+  required to keep working — no existing rule changes behavior, and the new
+  type only applies to rules that ask for it. If you exhaustively switch over
+  the rule-type union or the reason-code registry in TypeScript, add a
+  `protocol_facet` / `PROTOCOL_FACET_MATCHED` case; a JavaScript or Python
+  consumer needs no change.
+  ([`13b71dc`](https://github.com/obsvr-dev/obsvr-sdk/commit/13b71dc))
 - **BREAKING: rot13 is decoded before the scanners run.** With `deobfuscation`
   enabled, a `rot13` view is now derived from any text carrying at least eight
   ASCII letters, so an injection payload the scanners already recognise no
@@ -175,8 +180,13 @@ cut, when it is renamed to that version.
   that first would be a heuristic in front of a deterministic decision path — so
   every scanned text pays one extra linear pass. Character substitution (leet)
   is deliberately not decoded; the reasoning is in the deobfuscation module in
-  both SDKs.
-  ([`2fdf8e3`](https://github.com/obsvr-dev/obsvr-sdk/commit/2fdf8e3))
+  both SDKs. **Migration:** nothing is required unless you exhaustively switch
+  over `via` or `CanaryVia` in TypeScript, where a `"rot13"` case must be
+  added. Detections that already fired keep their existing `via` attribution
+  unchanged; a JavaScript or Python consumer needs no change. To opt out of the
+  extra pass, disable `deobfuscation` — there is no rot13-specific switch,
+  because a per-transform opt-out is a bypass an attacker can aim for.
+  ([`f5a5583`](https://github.com/obsvr-dev/obsvr-sdk/commit/f5a5583))
 - **Layered call cost (`costPolicy` / `cost_policy`), off by default.** Three
   layers, each overriding the one before and all three retained on the record:
   what the caller said a call would cost (`metadata.cost_estimate_micros`),
@@ -191,7 +201,7 @@ cut, when it is renamed to that version.
   written out in both languages, because money in binary floating point does
   not agree between two runtimes at the edges. With no cost policy configured,
   events are unchanged. Pinned by `conformance/fixtures/cost.json`.
-  ([`6dc3b54`](https://github.com/obsvr-dev/obsvr-sdk/commit/6dc3b54))
+  ([`34659b2`](https://github.com/obsvr-dev/obsvr-sdk/commit/34659b2))
 - **CloudEvents v1.0 export.** `toCloudEvent` / `to_cloud_event` project an
   audit event onto a CloudEvents envelope, and `serializeCloudEvent` /
   `serialize_cloud_event` produce its canonical string form, byte-identical
@@ -206,7 +216,7 @@ cut, when it is renamed to that version.
   carried verbatim as `data`. The serializer refuses values the two runtimes
   cannot render identically rather than emit bytes that quietly differ; use
   `safeSerializeCloudEvent` / `safe_serialize_cloud_event` to skip those.
-  ([`fdb0d2e`](https://github.com/obsvr-dev/obsvr-sdk/commit/fdb0d2e))
+  ([`d856c17`](https://github.com/obsvr-dev/obsvr-sdk/commit/d856c17))
 - **Python agent-run controls: loop detection and delegation tracking.**
   `obsvr.LoopDetector` / `obsvr.DelegationTracker` (and their `create_*`
   factories) are the twins of the TypeScript controls, with identical
