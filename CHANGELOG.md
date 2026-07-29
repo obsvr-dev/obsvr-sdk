@@ -55,6 +55,19 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **Decided: the LlamaIndex integration is observability-only and will not get a
+  tool gate.** It was previously described as having none, which reads as pending
+  work; it is now stated as a decision. `agent_policy` has no effect there,
+  nothing is refused, and no policy event is emitted — so its events must not be
+  read as evidence that a gate permitted a tool.
+
+  The reason is the one the rest of this release documents: a callback handler
+  fires *around* an operation, not at its boundary, so a check hung off one either
+  arrives too late to prevent anything or is never delivered. Adding a gate that
+  could not refuse would manufacture exactly the false record this release removes
+  in three places. To refuse a LlamaIndex tool, put the capability behind MCP;
+  TypeScript can also gate the tool itself with `obsvrGovernTool`, which Python
+  has no equivalent of.
 - **Both front doors now carry per-integration, per-language tool-policy
   grading.** It existed in exactly one of three READMEs, and that was the
   least-read of them: a reader arriving at the repository or at the npm package

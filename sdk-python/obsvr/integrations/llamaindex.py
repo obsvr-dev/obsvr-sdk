@@ -14,6 +14,29 @@ manually::
     from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler
 
     Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler())
+
+NO TOOL POLICY, AND THAT IS A DECISION RATHER THAN AN OMISSION. This integration
+carries no tool allow/deny list, no step limit and no destructive-capability
+gate. ``agent_policy`` has no effect here: nothing is refused and no policy event
+is emitted, so an operator must not read this handler's events as evidence that a
+tool was permitted by a gate.
+
+It is a callback handler, and a callback handler is the wrong place for a gate —
+that is the lesson the rest of this package paid for. Observability callbacks
+fire around an operation, not at its boundary, so a check hung off one either
+arrives too late to prevent anything or is never delivered at all. Adding a gate
+here that could not refuse would produce exactly the false record this SDK now
+goes out of its way not to emit.
+
+**To govern LlamaIndex tools, gate the tools themselves.** The TypeScript SDK's
+``obsvrGovernTool`` wraps a tool's own execute function and refuses before
+delegating, which is the shape that works; it is verified enforcing. Python has
+no equivalent yet, so on this side a LlamaIndex tool cannot be gated by obsvr
+at all — put a capability that must be refused behind the MCP integration
+instead, where the gate sits on ``call_tool``.
+
+Pinned by ``tests/test_enforcement_reporting_invariant.py``, which fails if a
+tool-policy helper appears in this module without the grading being updated.
 """
 
 # Interception: LlamaIndex Python BaseCallbackHandler API (non-mutating). Register via Settings.callback_manager.add_handler() — no internals modified.
