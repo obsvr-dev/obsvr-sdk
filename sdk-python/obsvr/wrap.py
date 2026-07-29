@@ -66,8 +66,30 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 #: COVERAGE BOUNDARY. Mirrors the TypeScript AUDITABLE_METHODS table, which
 #: carries the full statement of what is excluded because it bears no chat text
 #: (embeddings, images, audio, files, fine-tuning) versus what is text-bearing
-#: but out of reach of a method-path table (the ``.stream()`` helpers and tool
-#: runners, the batch surfaces, ``count_tokens``, and Gemini's ``start_chat``).
+#: but genuinely out of reach of a method-path table (the batch surfaces,
+#: ``count_tokens``, and Gemini's ``start_chat``, whose ChatSession calls a
+#: module-level function rather than a property on the proxied model, so no
+#: property read on the proxy ever happens).
+#:
+#: CORRECTION, and it was a real one. This comment used to list the
+#: ``.stream()`` helpers and the tool runners among the out-of-reach surfaces.
+#: That is false, and TypeScript disproves it: the obstacle was never
+#: reachability, it is that those helpers return their runner object
+#: SYNCHRONOUSLY while the audited-method wrapper is async, so listing them in
+#: a method table hands the caller a promise where the provider's contract
+#: promises a stream object. TypeScript solved it with a deferred runner that
+#: returns a stand-in immediately and reaches the provider only once governance
+#: resolves, and now governs four ``.stream()`` paths and both tool runners.
+#:
+#: So on this side they are UNBUILT, not unreachable — the equivalent mechanism
+#: has not been written here. The distinction matters because the old wording
+#: closed the question. Measured: a real ``messages.stream()`` call through a
+#: wrapped client emits ZERO events while its text accumulates normally.
+#:
+#: This is silent ABSENCE, not silent fabrication: no event is emitted, so
+#: nothing claims the call was approved. It is a coverage hole, and it does not
+#: put a false verdict on the record.
+#:
 #: The beta namespaces are enumerated rather than matched by stripping a
 #: leading ``beta.`` segment, so a provider shipping a new beta namespace does
 #: not silently widen governance without review.
