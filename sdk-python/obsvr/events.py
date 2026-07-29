@@ -427,6 +427,21 @@ def build_audit_event(
                 _event["rule_id"] = "sdk:canary_leak"
             if not _event.get("policy_reason"):
                 _event["policy_reason"] = "Canary token leaked in emitted content"
+    # Cost and token-quota metering, OPT-IN on this path.
+    #
+    # The wrap() client-proxy path has always metered; this one never has, so
+    # every framework integration has been invisible to cost reporting and to
+    # token budgets since it shipped. Switching it on unconditionally would make
+    # budgets that never bound start binding — an outage for anyone already
+    # running a token quota — so it is gated and defaults to off. Absent the
+    # flag this call site is the only difference from the previous behaviour and
+    # it does nothing. Run BEFORE the metadata trim below so the cost fragment
+    # is subject to the same budget as every other reserved key.
+    if getattr(config, "meter_integration_events", False):
+        from .metering import meter_event
+
+        meter_event(config, _event)
+
     # cap metadata so ingest doesn't replace it wholesale (losing grouping keys).
     _event["metadata"] = _trim_metadata_to_budget(_event.get("metadata"))
     # Drop keys whose value is None so the strict ingest schema (which wants

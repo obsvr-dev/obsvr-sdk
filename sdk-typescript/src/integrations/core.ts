@@ -21,6 +21,7 @@ import { withRunMetadata } from "../proxy/agent-run.js";
 import { getCurrentSubject } from "../proxy/subject.js";
 import { createPolicyError, resolveReasonCode, type ObsvrPolicyError } from "../policy/policy-error.js";
 import { ReasonCode } from "../governance/reason-codes.js";
+import { meterEvent } from "../governance/metering.js";
 import {
   preCallFailureCompliance,
   recordDetectorFailure,
@@ -1823,6 +1824,19 @@ export function buildIntegrationEvent(
       event.rule_id = event.rule_id ?? "sdk:canary_leak";
       event.policy_reason = event.policy_reason ?? "Canary token leaked in emitted content";
     }
+  }
+
+  // Cost and token-quota metering, OPT-IN on this path.
+  //
+  // The wrap() client-proxy path has always metered; this one never has, so
+  // every framework integration has been invisible to cost reporting and to
+  // token budgets since it shipped. Switching it on unconditionally would make
+  // budgets that never bound start binding — an outage for anyone already
+  // running a token quota — so it is gated and defaults to off. Absent the
+  // flag this call site is the only difference from the previous behaviour and
+  // it does nothing.
+  if (config.meterIntegrationEvents) {
+    meterEvent(config, event);
   }
 
   return event;

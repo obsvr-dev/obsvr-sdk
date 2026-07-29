@@ -231,6 +231,12 @@ class TestRegistryGate:
         "events.py",
         "failure_dispositions.py",
         "instance_guard.py",
+        # Post-call metering: arithmetic over counts the event already carries,
+        # producing a record field and a quota increment. Decides nothing — a
+        # cost never blocks a call on its own; the quota RULE does, and that is
+        # declared. Same exemption reason as cost.py, whose two halves this
+        # module now holds.
+        "metering.py",
         "normalize.py",
         "otel_mirror.py",
         "pii_types.py",

@@ -65,7 +65,7 @@ import type { ExternalBackendRecord } from "../policy/external-backend.js";
 import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js";
 import { requestApproval, revalidateApproval } from "../policy/approvals.js";
 import { resolveCallCost, resolveCostPolicy, costMetadata } from "../governance/cost.js";
-import { recordTokenUsage } from "../governance/quota.js";
+import { recordTokenUsageForRules, stampCost } from "../governance/metering.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
 import { filterArgs } from "./filters/filter.js";
 import {
@@ -773,31 +773,6 @@ function buildAuditEvent(
   return event;
 }
 
-/**
- * Resolve and stamp this call's layered cost onto the event's reserved
- * telemetry metadata. No-op unless a cost policy is configured.
- *
- * The caller's own estimate is read from `metadata.cost_estimate_micros` -
- * the channel a tool or framework already has - and is the WEAKEST layer: an
- * operator-declared cost for the same action or model replaces it, because a
- * cost claimed by the party being governed is not evidence about that party.
- */
-function stampCost(config: ResolvedConfig, event: AuditEvent): void {
-  const policy = resolveCostPolicy(config);
-  if (!policy) return;
-  const metadata = (event.metadata ?? {}) as Record<string, unknown>;
-  const cost = resolveCallCost({
-    policy,
-    model: event.model_resolved ?? event.model,
-    actionName: event.action_name,
-    callerEstimateMicros: metadata.cost_estimate_micros,
-    inputTokens: event.input_tokens,
-    outputTokens: event.output_tokens,
-  });
-  const fragment = costMetadata(cost);
-  if (Object.keys(fragment).length === 0) return;
-  event.metadata = { ...metadata, ...fragment };
-}
 
 /**
  * EV-1: governance runs in two phases, pre_call AND
@@ -822,29 +797,6 @@ async function applyPostCallGovernance(
   }
 }
 
-/**
- * Feed provider-reported token usage into every enabled token-unit quota
- * rule's budget bucket. Scope value resolution mirrors rule evaluation
- * (metadata[scope], falling back to event user_id for user_id scope).
- */
-function recordTokenUsageForRules(config: ResolvedConfig, event: AuditEvent): void {
-  const rules = config.policyRules;
-  if (!rules?.length) return;
-  for (const rule of rules) {
-    if (!rule.enabled || rule.type !== 'quota') continue;
-    const c = rule.conditions;
-    if (c.quota_unit !== 'tokens' || !c.quota_limit || !c.quota_window_ms || !c.quota_scope) continue;
-    const meta = (event.metadata ?? {}) as Record<string, unknown>;
-    const scopeValue = c.quota_scope === 'project'
-      ? 'project'
-      : String(
-          meta[c.quota_scope]
-            ?? (c.quota_scope === 'user_id' ? event.user_id : undefined)
-            ?? 'default',
-        );
-    recordTokenUsage(c.quota_scope, scopeValue, event.total_tokens ?? 0, c.quota_window_ms);
-  }
-}
 
 /**
  * Wraps an async-iterable stream, yielding each chunk unchanged while

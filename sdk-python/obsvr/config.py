@@ -144,6 +144,25 @@ class ResolvedConfig:
     deobfuscation: Optional[Dict[str, Any]] = None
     # Mirror audit events as OpenTelemetry spans (optional opentelemetry-api)
     otel: Optional[Dict[str, Any]] = None
+    # Meter framework-integration events for cost and token quota. Default
+    # False. Framework-integration events (LangChain, LlamaIndex, Vercel AI, the
+    # agent frameworks) are UNMETERED UNLESS THIS IS SET: they carry no cost
+    # fragment and never increment a token-unit quota. Only the wrap()
+    # client-proxy path is metered by default, and it is metered either way —
+    # this flag does not affect it.
+    #
+    # The default is off because turning it on is not a neutral correction. A
+    # quota_unit "tokens" budget that has never bound on framework traffic
+    # begins binding, and calls that previously succeeded start being blocked
+    # once the budget is reached. For someone already running a token quota that
+    # is an outage, not a fix, so it has to be a deliberate choice.
+    #
+    # One flag covers BOTH cost and quota rather than two, because the two only
+    # make sense together: metering what a call cost without counting it against
+    # the budget it belongs to produces an audit record that disagrees with
+    # itself, and a governance record that contradicts itself is worse than one
+    # that is silent. Twin: ObsvrConfig.meterIntegrationEvents (TypeScript).
+    meter_integration_events: bool = False
     # Inbound external policy backend (ADR-4): OPA/Cedar, merged DENY-WINS with
     # local rules. Dict shape: {"type": "opa"|"cedar", "url": str, "shadow"?: bool,
     # "timeout_ms"?: int, "headers"?: dict, "name"?: str, "policy"?: str,
@@ -188,6 +207,7 @@ def init(
     cost_policy: Optional[Dict[str, Any]] = None,
     deobfuscation: Optional[Dict[str, Any]] = None,
     otel: Optional[Dict[str, Any]] = None,
+    meter_integration_events: bool = False,
     external_policy_backend: Optional[Dict[str, Any]] = None,
     auto: Optional[bool] = None,
 ) -> None:
@@ -348,6 +368,7 @@ def init(
         cost_policy=cost_policy,
         deobfuscation=deobfuscation,
         otel=otel,
+        meter_integration_events=bool(meter_integration_events),
         external_policy_backend=external_policy_backend,
     )
     _state["initialized"] = True

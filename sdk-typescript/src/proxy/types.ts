@@ -251,6 +251,33 @@ export interface ObsvrConfig {
    * an optional peer - never a hard dependency). Off by default.
    */
   otel?: { enabled?: boolean; tracerName?: string };
+  /**
+   * Meter framework-integration events for cost and token quota. Default
+   * **false**.
+   *
+   * Framework-integration events (LangChain, LlamaIndex, Vercel AI, the agent
+   * frameworks) are **UNMETERED UNLESS THIS IS SET**: they carry no cost
+   * fragment and never increment a token-unit quota. Only the `wrap()`
+   * client-proxy path is metered by default, and it is metered either way —
+   * this flag does not affect it.
+   *
+   * The default is off because turning it on is not a neutral correction. A
+   * `quota_unit: "tokens"` budget that has never bound on framework traffic
+   * begins binding, and calls that previously succeeded start being blocked
+   * once the budget is reached. For someone already running a token quota that
+   * is an outage, not a fix, so it has to be a deliberate choice.
+   *
+   * One flag covers BOTH cost and quota rather than two, because the two only
+   * make sense together: metering what a call cost without counting it against
+   * the budget it belongs to produces an audit record that disagrees with
+   * itself, and a governance record that contradicts itself is worse than one
+   * that is silent.
+   *
+   * With no `costPolicy` and no token-unit quota rule configured, enabling this
+   * changes nothing — both halves are independently configured and the flag
+   * only removes the path-level block.
+   */
+  meterIntegrationEvents?: boolean;
 
   /** Run-level agent policy for agentic frameworks (CrewAI, AutoGen, LangChain agents). */
   agentPolicy?: AgentPolicy;
@@ -462,6 +489,8 @@ export interface LLMAuditInitConfig {
 
   /** Mirror audit events as OTel spans (see ObsvrConfig.otel). */
   otel?: { enabled?: boolean; tracerName?: string };
+  /** Meter framework-integration events (see ObsvrConfig.meterIntegrationEvents). */
+  meterIntegrationEvents?: boolean;
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool
@@ -602,6 +631,8 @@ export interface ResolvedConfig {
   deobfuscation?: { enabled?: boolean };
   /** Mirror audit events as OTel spans (optional @opentelemetry/api peer). */
   otel?: { enabled?: boolean; tracerName?: string };
+  /** Meter framework-integration events (see ObsvrConfig.meterIntegrationEvents). */
+  meterIntegrationEvents?: boolean;
 
   /** Run-level agent policy for agentic frameworks. */
   agentPolicy?: AgentPolicy;
