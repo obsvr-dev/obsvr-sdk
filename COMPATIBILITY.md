@@ -6,14 +6,14 @@ artifact actually establishes; **Basis** is how strong that artifact is — `LIV
 captured audit event, `PE` a binding check only, `DECLARED ONLY` nothing at all.
 Every boundary links to a detail section naming the artifact behind it.
 
-> Evidence captured at `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite); SDK HEAD has moved on since (8 commits).
+> Evidence captured at `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite); SDK HEAD has moved on since (10 commits).
 > Boundaries are unaffected — they are facts about upstream releases. See
 > [Evidence currency](#evidence-currency).
 
 ## Contents
 
 - [Python](#python) — [ag2](#ag2-python) · [anthropic](#anthropic-python) · [crewai](#crewai-python) · [google-generativeai](#google-generativeai-python) · [haystack-ai](#haystack-ai-python) · [langchain-core](#langchain-core-python) · [llama-index-core](#llama-index-core-python) · [mcp](#mcp-python) · [openai](#openai-python) · [openai-agents](#openai-agents-python) · [pydantic-ai-slim](#pydantic-ai-slim-python) · [starlette](#starlette-python)
-- [TypeScript](#typescript) — [@anthropic-ai/sdk](#anthropic-aisdk-typescript) · [@aws-sdk/client-bedrock-runtime](#aws-sdkclient-bedrock-runtime-typescript) · [@google-cloud/vertexai](#google-cloudvertexai-typescript) · [@google/generative-ai](#googlegenerative-ai-typescript) · [@langchain/core](#langchaincore-typescript) · [@modelcontextprotocol/sdk](#modelcontextprotocolsdk-typescript) · [@openai/agents](#openaiagents-typescript) · [@opentelemetry/api](#opentelemetryapi-typescript) · [ai](#ai-typescript) · [llamaindex](#llamaindex-typescript) · [openai](#openai-typescript) · [together-ai](#together-ai-typescript)
+- [TypeScript](#typescript) — [@anthropic-ai/sdk](#anthropic-aisdk-typescript) · [@aws-sdk/client-bedrock-runtime](#aws-sdkclient-bedrock-runtime-typescript) · [@google-cloud/vertexai](#google-cloudvertexai-typescript) · [@google/genai](#googlegenai-typescript) · [@google/generative-ai](#googlegenerative-ai-typescript) · [@langchain/core](#langchaincore-typescript) · [@modelcontextprotocol/sdk](#modelcontextprotocolsdk-typescript) · [@openai/agents](#openaiagents-typescript) · [@opentelemetry/api](#opentelemetryapi-typescript) · [ai](#ai-typescript) · [llamaindex](#llamaindex-typescript) · [openai](#openai-typescript) · [together-ai](#together-ai-typescript)
 - [Per-method-path boundaries](#per-method-path-boundaries) — [openai (Python)](#openai-method-paths-python) · [anthropic (Python)](#anthropic-method-paths-python) · [openai (TypeScript)](#openai-method-paths-typescript) · [@anthropic-ai/sdk (TypeScript)](#anthropic-aisdk-method-paths-typescript)
 - [Credential-blocked surfaces](#credential-blocked-surfaces)
 - [Exclusions](#exclusions)
@@ -42,7 +42,7 @@ Declared ranges read from `sdk-python/pyproject.toml`.
 | `pydantic-ai-slim` | `>=0.4.4` | `0.4.4` – `2.19.0`\* | LIVE | [detail](#pydantic-ai-slim-python) |
 | `starlette` | `>=0.30.0` | `0.30.0` – `1.3.1`\* | LIVE† | [detail](#starlette-python) |
 
-`*` — **12 of 12 rows.** A boundary rests on a single cell rather than an adjacent tested pair: it shows that version works, and would not have located a break. The floors that *are* measured boundaries — a tested cell directly below that fails — are `anthropic` (`0.8.0`), `pydantic-ai-slim` (`0.4.4`); every other floor is the lowest cell tried, not a located edge.
+`*` — **12 of 12 evidenced rows.** A boundary rests on a single cell rather than an adjacent tested pair: it shows that version works, and would not have located a break. The floors that *are* measured boundaries — a tested cell directly below that fails — are `anthropic` (`0.8.0`), `pydantic-ai-slim` (`0.4.4`); every other floor is the lowest cell tried, not a located edge.
 
 `†` — an **endpoint of the range is PE only**, weaker than the row's overall basis. Which end is in the detail section.
 
@@ -84,6 +84,9 @@ Only `1.15.8` is evidenced. The declared range also carries the environment mark
 ### `google-generativeai` (Python)
 
 Declared — *(no extra declares it)* · verified `0.8.6` · LIVE
+
+> **Legacy package.** End-of-life 2025-08. Its successor line is not integrated by this SDK. So the 1 cell below is coverage of a package that is no longer the current one, however deep that coverage goes.
+> Ecosystem facts from `data/ecosystem.json` (npm registry — package metadata and weekly download counts, recorded 2026-07-29).
 
 - **Floor** `0.8.6` PASS — no cell below it was tested
   · `results/gemini-python.jsonl:1`
@@ -189,6 +192,7 @@ Declared ranges read from `sdk-typescript/package.json`.
 | `@anthropic-ai/sdk` | `>=0.20.0` | `0.20.0` – `0.115.0`\* | LIVE | [detail](#anthropic-aisdk-typescript) |
 | `@aws-sdk/client-bedrock-runtime` | `>=3.586.0` | `3.1096.0`\* | PE | [detail](#aws-sdkclient-bedrock-runtime-typescript) |
 | `@google-cloud/vertexai` | `>=1.0.0` | `1.0.0` – `1.12.0`\* | PE | [detail](#google-cloudvertexai-typescript) |
+| `@google/genai` | — *(not integrated)* | — | **NOT SUPPORTED** | [detail](#googlegenai-typescript) |
 | `@google/generative-ai` | `>=0.1.0 <1.0.0` | `0.1.0` – `0.24.1`\* | LIVE | [detail](#googlegenerative-ai-typescript) |
 | `@langchain/core` | `>=0.2.0` | `0.2.0` – `1.2.3`\* | LIVE | [detail](#langchaincore-typescript) |
 | `@modelcontextprotocol/sdk` | `>=1.0.0 <1.25.0 \|\| >=1.30.0` | `1.30.0`\* | PE | [detail](#modelcontextprotocolsdk-typescript) |
@@ -199,7 +203,7 @@ Declared ranges read from `sdk-typescript/package.json`.
 | `openai` | `>=6.0.0 <8.0.0` | `6.0.0` – `7.0.0`\* | LIVE | [detail](#openai-typescript) |
 | `together-ai` | `>=0.6.0 <1.0.0` | `0.6.0` – `0.44.0`\* | LIVE | [detail](#together-ai-typescript) |
 
-`*` — **12 of 12 rows.** A boundary rests on a single cell rather than an adjacent tested pair: it shows that version works, and would not have located a break. The floors that *are* measured boundaries — a tested cell directly below that fails — are `llamaindex` (`0.5.9`); every other floor is the lowest cell tried, not a located edge.
+`*` — **12 of 12 evidenced rows.** A boundary rests on a single cell rather than an adjacent tested pair: it shows that version works, and would not have located a break. The floors that *are* measured boundaries — a tested cell directly below that fails — are `llamaindex` (`0.5.9`); every other floor is the lowest cell tried, not a located edge.
 
 `†` — an **endpoint of the range is PE only**, weaker than the row's overall basis. Which end is in the detail section.
 
@@ -236,9 +240,26 @@ Declared `>=1.0.0` · verified `1.0.0` – `1.12.0` · PE
 
 Introspection only — no credential, so no call. The symbols the integration reads are present at every tested cell.
 
+### `@google/genai` (TypeScript)
+
+**NOT SUPPORTED.** No declared range, no artifact, no row in either manifest.
+
+- latest `2.13.0` · **16,859,427/wk**
+- Supersedes `@google/generative-ai`, which is the package this SDK does integrate — and carries **4.3× its traffic** (16,859,427/wk against 3,926,410/wk).
+- No integration in either SDK binds it: it is absent from the TypeScript manifest's peerDependencies and from the Python manifest's extras, and no artifact in this corpus exercises it.
+
+This row exists so the omission is stated rather than silent. A matrix whose
+job is saying what is and is not backed should not leave out the more widely
+used of two sibling distributions merely because nothing here measured it.
+
+Ecosystem facts from `data/ecosystem.json` (npm registry — package metadata and weekly download counts, recorded 2026-07-29); supplied to the generator as input data; not measured by any probe in this repository.
+
 ### `@google/generative-ai` (TypeScript)
 
 Declared `>=0.1.0 <1.0.0` · verified `0.1.0` – `0.24.1` · LIVE
+
+> **Legacy package.** End-of-life 2025-08. Superseded by `@google/genai`, which this SDK does not integrate — see its row. So the 25 cells below are coverage of a package that is no longer the current one, however deep that coverage goes.
+> Ecosystem facts from `data/ecosystem.json` (npm registry — package metadata and weekly download counts, recorded 2026-07-29).
 
 - **Floor** `0.1.0` PASS — no cell below it was tested
   · `results/gemini-matrix-final.jsonl:1`
@@ -596,12 +617,13 @@ around it correct, so an unchecked hash is a link that reads fine and 404s:
 | Resolved to | Records | How it resolved |
 | --- | --: | --- |
 | `486923f` | 649 | repointed by tree — the hash the artifacts recorded was retired by a history rewrite |
-| `cef5b94` | 4 | repointed by tree — recorded before the rewrite that stripped two commit trailers |
+| `cef5b94` | 4 | repointed by tree — the hash the artifacts recorded was retired by a history rewrite |
 
 The retired hashes themselves are deliberately not reproduced here: an
-unresolvable hash in a published document is the failure this section exists to
-prevent, and every one of them is still readable in the artifact that recorded
-it. The mapping is the artifact's `sdk_git_head` field to the row above it.
+unresolvable hash in a published document is the failure this section exists
+to prevent, and every one of them is still readable in the artifact that
+recorded it. The mapping is that artifact's `sdk_git_head` field to the row
+above it.
 
 Repointing matches on **tree**, never on subject: the rewrite replayed messages
 and reworded some commits, so a subject match would miss exactly the cases this
@@ -612,7 +634,7 @@ Independently of any hash, the artifacts name the SDK build itself: **node 0.10.
 A version is not retired by a history rewrite, so it is the durable half of this
 provenance and the fallback when a hash cannot be resolved.
 
-Measured from `486923f` (repointed by tree — the recorded hash was retired) to the SDK's current HEAD, 8 commits have landed since,
+Measured from `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite) to the SDK's current HEAD, 10 commits have landed since,
 4 of them touching the manifests this document reproduces or
 the integration sources its findings describe:
 
