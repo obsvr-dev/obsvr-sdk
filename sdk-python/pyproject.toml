@@ -63,7 +63,18 @@ openai-agents = ["openai-agents>=0.0.2"]
 # callers that have not migrated.
 mcp = ["mcp>=1.0.0,<2.0.0"]
 langchain = ["langchain-core>=0.2.0"]
-llamaindex = ["llama-index-core>=0.10.0"]
+# NOTE: this floor rests on WEAKER evidence than the others in this file, and
+# the difference is deliberate. The other floors name the first release that
+# demonstrably works; this one names the lowest release VERIFIED working live
+# (0.11.23: provider attributed, tokens captured, one event per call). Versions
+# below it are excluded because they could not be MEASURED, not because they
+# were proven broken — the 0.10.x line pulls an early-2024 dependency set whose
+# first import downloads an NLTK corpus into a fresh environment and then hangs
+# against a current openai/httpx, so no probe of it completes. What is known:
+# the declared 0.10.0 emits no audit event at all, and the TypeScript twin at
+# the same era (llamaindex 0.5.0/0.5.8) has the identical defect. A conservative
+# floor that states its own basis beats an unverifiable claim left standing.
+llamaindex = ["llama-index-core>=0.11.23"]
 # No crewai release permits 3.14 — every one of them caps at <3.14 or <=3.13 —
 # while this package requires only >=3.10. Without the marker a 3.14 user
 # backtracks the whole release history before failing on a resolution error
