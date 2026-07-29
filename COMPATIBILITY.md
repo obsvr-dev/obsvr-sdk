@@ -6,7 +6,7 @@ artifact actually establishes; **Basis** is how strong that artifact is — `LIV
 captured audit event, `PE` a binding check only, `DECLARED ONLY` nothing at all.
 Every boundary links to a detail section naming the artifact behind it.
 
-> Evidence captured at `486923f` (recorded as 9cc290e, retired; repointed by tree); SDK HEAD has moved on since (8 commits).
+> Evidence captured at `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite); SDK HEAD has moved on since (8 commits).
 > Boundaries are unaffected — they are facts about upstream releases. See
 > [Evidence currency](#evidence-currency).
 
@@ -593,10 +593,15 @@ the SDK's current history before it is written here — this branch has been
 rewritten more than once, and a rewrite retires a hash while leaving the prose
 around it correct, so an unchecked hash is a link that reads fine and 404s:
 
-| Recorded | Records | Resolution |
+| Resolved to | Records | How it resolved |
 | --- | --: | --- |
-| 9cc290e | 649 | `486923f` — recorded hash retired by a history rewrite; this is the ancestor carrying an identical tree |
-| eeb4d4b | 4 | an ancestor of HEAD — verified as recorded, nothing to repoint |
+| `486923f` | 649 | repointed by tree — the hash the artifacts recorded was retired by a history rewrite |
+| `cef5b94` | 4 | repointed by tree — recorded before the rewrite that stripped two commit trailers |
+
+The retired hashes themselves are deliberately not reproduced here: an
+unresolvable hash in a published document is the failure this section exists to
+prevent, and every one of them is still readable in the artifact that recorded
+it. The mapping is the artifact's `sdk_git_head` field to the row above it.
 
 Repointing matches on **tree**, never on subject: the rewrite replayed messages
 and reworded some commits, so a subject match would miss exactly the cases this
@@ -607,11 +612,11 @@ Independently of any hash, the artifacts name the SDK build itself: **node 0.10.
 A version is not retired by a history rewrite, so it is the durable half of this
 provenance and the fallback when a hash cannot be resolved.
 
-Measured from `486923f` (recorded as 9cc290e, retired; repointed by tree) to the SDK's current HEAD, 8 commits have landed since,
+Measured from `486923f` (repointed by tree — the recorded hash was retired) to the SDK's current HEAD, 8 commits have landed since,
 4 of them touching the manifests this document reproduces or
 the integration sources its findings describe:
 
-- `5dddf13 Stamp each audited path with the release it first appears at`
+- `b5a5203 Stamp each audited path with the release it first appears at`
 - `807e519 Publish the compatible-endpoint wrapper the docs already sold`
 - `b1187ec Name the one surface the capability gate actually holds on`
 - `a349638 Anchor the two client ranges where auditing actually begins`

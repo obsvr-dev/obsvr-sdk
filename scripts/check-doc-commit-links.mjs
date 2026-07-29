@@ -34,13 +34,25 @@ import { readFileSync } from "node:fs";
 const git = (args) =>
   execFileSync("git", args, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
-// A markdown backlink (…/commit/<hash>) or a bare backticked hash in prose —
-// BENCHMARKS.md records a build that way, with no URL around it.
-const PATTERNS = [/commit\/([0-9a-f]{7,40})\b/g, /`([0-9a-f]{7,40})`/g];
-// Hex strings that are not commits: content hashes, corpus digests, keys. Any
-// full-length sha256 is 64 chars and never matches; these are the shorter ones
-// that would.
-const NOT_COMMITS = new Set(["deadbeef", "cafebabe"]);
+// Two tiers, because "is this token a hash?" is only answerable sometimes.
+//
+// TIER A — unambiguous references. A `…/commit/<hash>` URL, or a backtick span
+// whose FIRST token is a hash (`abc1234`, or `abc1234 Some subject line` — the
+// shape a generated commit list uses). These are hash references by
+// construction, so they must exist AND be ancestors. An earlier version of
+// this file matched only whole-span backticks and so walked straight past
+// `abc1234 Some subject`, which is how five dead references survived a sweep.
+const TIER_A = [
+  /commit\/([0-9a-f]{7,40})\b/g,
+  /`([0-9a-f]{7,40})(?:[ \n][^`]*)?`/g,
+];
+// TIER B — a bare hex token loose in prose. Might be a hash, might be a
+// truncated digest (`corpus_sha256 = 1120116f…`) or a plain number. Judged only
+// if git resolves it to a commit: a token that is not an object at all is
+// ignored, because nothing distinguishes a dead hash from a number here. That
+// is a real limit, and it is why writing a hash as a bare token is discouraged
+// — tier A is the shape that gets checked properly.
+const TIER_B = /(?<![0-9a-zA-Z`/])([0-9a-f]{7,40})(?![0-9a-zA-Z`])/g;
 
 if (git(["rev-parse", "--is-shallow-repository"]) === "true") {
   console.error("✗ shallow clone — ancestry is unknowable here, so this guard cannot run.");
@@ -54,25 +66,36 @@ const refs = [];
 for (const file of files) {
   const lines = readFileSync(file, "utf-8").split("\n");
   lines.forEach((line, idx) => {
-    const found = new Set();
-    for (const pattern of PATTERNS) {
-      for (const m of line.matchAll(pattern)) found.add(m[1]);
+    const strict = new Set();
+    for (const pattern of TIER_A) {
+      for (const m of line.matchAll(pattern)) strict.add(m[1]);
     }
-    for (const hash of found) {
-      if (NOT_COMMITS.has(hash) || hash.length === 64) continue;
-      refs.push({ file, line: idx + 1, hash });
+    const loose = new Set();
+    for (const m of line.matchAll(TIER_B)) if (!strict.has(m[1])) loose.add(m[1]);
+    for (const [set, tier] of [[strict, "A"], [loose, "B"]]) {
+      for (const hash of set) {
+        if (hash.length === 64) continue; // a full sha256 is never a commit ref
+        refs.push({ file, line: idx + 1, hash, tier });
+      }
     }
   });
 }
 
 const verdicts = new Map();
-for (const { hash } of refs) {
+for (const { hash, tier } of refs) {
   if (verdicts.has(hash)) continue;
   let type = "";
   try {
     type = git(["cat-file", "-t", hash]);
   } catch {
-    verdicts.set(hash, { ok: false, why: "no such object in this repository" });
+    // Tier A said this is a reference, so a missing object is a dead one.
+    // Tier B cannot tell a dead hash from a number, so it stays quiet.
+    verdicts.set(
+      hash,
+      tier === "A"
+        ? { ok: false, why: "no such object in this repository" }
+        : { ok: true, why: "not an object — treated as prose, not a hash" },
+    );
     continue;
   }
   if (type !== "commit") {
