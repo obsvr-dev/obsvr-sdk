@@ -116,6 +116,36 @@ def classify_error(error: Any) -> str:
     return "api_error"
 
 
+def infer_provider_from_model(model: str) -> str:
+    """Provider for a MODEL name, where :func:`infer_provider_from_string`
+    answers for a PROVIDER id.
+
+    The two are different questions, and conflating them is why LlamaIndex
+    events came out unattributed: the provider-id form matches vendor tokens
+    ("openai", "anthropic", "google"), which an id like "openai.responses"
+    contains and a model name like "gpt-4o-mini" does not. Anthropic and Google
+    model names happen to carry their vendor ("claude-", "gemini-") so they
+    resolved by accident; OpenAI's never do.
+
+    Only families that map to exactly ONE supported provider are recognised.
+    Llama, Mistral and Qwen models are deliberately absent: the same weights are
+    served by Bedrock, Together and others, so a guess would be a fabricated
+    attribution rather than a missing one. Those stay "unknown", which is the
+    honest answer.
+    """
+    import re
+
+    by_vendor_token = infer_provider_from_string(model)
+    if by_vendor_token != "unknown":
+        return by_vendor_token
+    s = (model or "").lower().strip()
+    if re.match(r"^(gpt-|chatgpt-|o[1345](-|$)|davinci|babbage|text-davinci)", s):
+        return "openai"
+    if re.match(r"^(palm|bison|text-bison|chat-bison)", s):
+        return "google"
+    return "unknown"
+
+
 def infer_provider_from_string(identifier: str) -> str:
     """Infer a provider label from an arbitrary identifier string."""
     s = identifier.lower()

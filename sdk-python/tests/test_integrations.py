@@ -283,6 +283,91 @@ def _payload(**kw):
     return kw
 
 
+def test_llamaindex_attributes_provider_and_tokens(sent):
+    """Two defects at once, and neither was a reader that broke: the model was
+    only read from the llm-start payload (absent on newer llama-index-core, so
+    the provider inferred from it was always "unknown"), and there was no
+    token-reading code on this path AT ALL. LlamaIndex traffic could therefore
+    never be attributed to a provider in any report, nor metered, nor counted
+    against a token budget."""
+    _init()
+    from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler
+    h = ObsvrLlamaIndexHandler()
+
+    class Raw:
+        model = "gpt-4o-mini-2024-07-18"
+        usage = {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13}
+
+    class Msg:
+        content = "four"
+
+    class Resp:
+        message = Msg()
+        raw = Raw()
+
+    h.on_event_start(LLM_EVENT, payload={"messages": []}, event_id="tok-1")
+    h.on_event_end(LLM_EVENT, payload={"response": Resp()}, event_id="tok-1")
+
+    assert len(sent) == 1
+    ev = sent[0]
+    assert ev["provider"] == "openai"
+    assert ev["model"] == "gpt-4o-mini-2024-07-18"
+    assert ev["input_tokens"] == 12
+    assert ev["output_tokens"] == 1
+    assert ev["total_tokens"] == 13
+
+
+def test_llamaindex_gemini_shaped_usage(sent):
+    _init()
+    from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler
+    h = ObsvrLlamaIndexHandler()
+
+    class Raw:
+        model_version = "gemini-2.5-flash"
+        usage_metadata = {
+            "prompt_token_count": 4,
+            "candidates_token_count": 2,
+            "total_token_count": 6,
+        }
+
+    class Msg:
+        content = "ok"
+
+    class Resp:
+        message = Msg()
+        raw = Raw()
+
+    h.on_event_start(LLM_EVENT, payload={"messages": []}, event_id="gem-1")
+    h.on_event_end(LLM_EVENT, payload={"response": Resp()}, event_id="gem-1")
+
+    ev = sent[0]
+    assert ev["provider"] == "google"
+    assert ev["model"] == "gemini-2.5-flash"
+    assert ev["input_tokens"] == 4
+    assert ev["total_tokens"] == 6
+
+
+def test_llamaindex_unknown_stays_unknown_and_counts_stay_absent(sent):
+    """"unknown" has to keep meaning something. With no raw provider response
+    there is nothing to infer from, and the counts stay absent rather than
+    becoming a zero nobody measured."""
+    _init()
+    from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler
+    h = ObsvrLlamaIndexHandler()
+
+    class Resp:
+        text = "ok"
+
+    h.on_event_start(LLM_EVENT, payload={"messages": []}, event_id="unk-1")
+    h.on_event_end(LLM_EVENT, payload={"response": Resp()}, event_id="unk-1")
+
+    ev = sent[0]
+    assert ev["provider"] == "unknown"
+    assert ev["model"] == "unknown"
+    assert "input_tokens" not in ev
+    assert "total_tokens" not in ev
+
+
 def test_llamaindex_start_to_end(sent):
     _init()
     from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler

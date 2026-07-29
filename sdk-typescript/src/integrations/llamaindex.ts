@@ -33,7 +33,10 @@ import {
   tryGetConfig,
   type ComplianceInfo,
   type IntegrationOptions,
+  inferProviderFromModel,
 } from "./core.js";
+import { readTokenUsage } from "../proxy/extractors/token-usage.js";
+import type { TokenUsage } from "../proxy/extractors/types.js";
 
 const SOURCE = "llamaindex_ts";
 
@@ -120,17 +123,46 @@ function extractResponseText(payload: Record<string, unknown>): string {
 }
 
 /**
- * Provider-RESOLVED model snapshot for temporal provenance. LlamaIndex keeps
- * the underlying provider response on `response.raw`; OpenAI puts the serving
- * model there as `model`, Gemini as `modelVersion`. Undefined when absent.
+ * The underlying provider response LlamaIndex keeps on `response.raw`.
+ *
+ * This is the provider's own wire payload, not a LlamaIndex abstraction over
+ * it, which is why the model snapshot and the token counts can both be read
+ * from it with the same readers every other integration uses.
+ */
+function rawProviderResponse(
+  payload: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const response = payload.response as Record<string, unknown> | undefined;
+  const raw = response?.raw;
+  return raw && typeof raw === "object" ? (raw as Record<string, unknown>) : undefined;
+}
+
+/**
+ * Provider-RESOLVED model snapshot for temporal provenance. OpenAI puts the
+ * serving model on the raw response as `model`, Gemini as `modelVersion`.
+ * Undefined when absent.
  */
 function extractResolvedModel(payload: Record<string, unknown>): string | undefined {
-  const response = payload.response as Record<string, unknown> | undefined;
-  const raw = response?.raw as Record<string, unknown> | undefined;
+  const raw = rawProviderResponse(payload);
   const candidate = raw?.model ?? raw?.modelVersion;
   return typeof candidate === "string" && candidate.trim().length > 0
     ? candidate.trim()
     : undefined;
+}
+
+/**
+ * Token counts for a LlamaIndex LLM call.
+ *
+ * There was no token-reading code on this path at all — not a reader that
+ * broke, one that was never written — so LlamaIndex traffic could never be
+ * metered or counted against a token budget, at any version, in either
+ * language. The counts are on the provider's raw response in its own wire
+ * format, and `usage_metadata` covers the Gemini spelling.
+ */
+function extractUsage(payload: Record<string, unknown>): TokenUsage | undefined {
+  const raw = rawProviderResponse(payload);
+  if (!raw) return undefined;
+  return readTokenUsage(raw.usage ?? raw.usageMetadata ?? raw.usage_metadata);
 }
 
 function extractChunkText(payload: Record<string, unknown>): string {
@@ -223,10 +255,27 @@ export function obsvrLlamaIndexHandler<T extends CallbackManagerLike>(
       // `llm-end` (payload.response.raw.model). Backfill from the
       // resolved snapshot rather than emitting a knowably-wrong "unknown".
       const model = state.model !== "unknown" ? state.model : (resolvedModel ?? state.model);
+      // `provider` was a hardcoded "unknown" literal at every version — never
+      // implemented rather than drifted — so LlamaIndex traffic could not be
+      // attributed to a provider in any report, and a per-provider spend or
+      // policy breakdown silently excluded it or bucketed it under unknown.
+      // The model string the backfill above already recovers is enough to
+      // infer it; "unknown" now means genuinely undetermined.
+      const provider = inferProviderFromModel(model);
+      const usage = extractUsage(payload);
+      // When `model` had to be backfilled it holds the SERVED SNAPSHOT, not the
+      // configured alias — the llm-start payload carries no model to record.
+      // Say so, rather than leaving a reader to infer it from model equalling
+      // model_resolved, which is also what a caller who pinned an exact
+      // snapshot would produce.
+      const aliasUnavailable = state.model === "unknown" && model !== "unknown";
       emitIntegrationEvent({
         config,
-        provider: "unknown",
+        provider,
         model,
+        inputTokens: usage?.input_tokens,
+        outputTokens: usage?.output_tokens,
+        totalTokens: usage?.total_tokens,
         model_resolved: resolvedModel,
         // Read from LlamaIndex's response.raw abstraction (framework-mediated) → framework_reported.
         provenance_source: resolvedModel ? "framework_reported" : undefined,
@@ -242,6 +291,7 @@ export function obsvrLlamaIndexHandler<T extends CallbackManagerLike>(
           ? redactForStorage(state.userText, state.storedRedactionVia)
           : state.userText,
         latencyMs: Math.round(performance.now() - state.startTime),
+        metadata: aliasUnavailable ? { model_alias_unavailable: true } : undefined,
         options: opts,
         compliance: state.compliance,
       });

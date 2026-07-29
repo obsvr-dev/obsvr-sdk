@@ -42,6 +42,84 @@ describe('obsvrLlamaIndexHandler', () => {
     );
   });
 
+  it('attributes the provider and captures tokens off the raw provider response', async () => {
+    // Two defects at once, and neither was a reader that broke: `provider` was
+    // a hardcoded "unknown" literal, and there was no token-reading code on
+    // this path AT ALL. So LlamaIndex traffic could never be attributed to a
+    // provider in any report, and could never be metered or counted against a
+    // token budget, at any version.
+    init({ api_key: 'test', sample_rate: 1 });
+    const manager = new FakeCallbackManager();
+    obsvrLlamaIndexHandler(manager);
+
+    manager.dispatch('llm-start', {
+      id: 'evt-p',
+      messages: [{ role: 'user', content: 'what is 2+2' }],
+    });
+    manager.dispatch('llm-end', {
+      id: 'evt-p',
+      response: {
+        message: { content: 'four' },
+        raw: {
+          model: 'gpt-4o-mini-2024-07-18',
+          usage: { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13 },
+        },
+      },
+    });
+
+    await waitForEvents(1);
+    const e = sentEvents[0];
+    expect(e.provider).toBe('openai');
+    expect(e.model).toBe('gpt-4o-mini-2024-07-18');
+    expect(e.model_resolved).toBe('gpt-4o-mini-2024-07-18');
+    expect(e.input_tokens).toBe(12);
+    expect(e.output_tokens).toBe(1);
+    expect(e.total_tokens).toBe(13);
+  });
+
+  it('reads Gemini-shaped usage off the same raw response', async () => {
+    init({ api_key: 'test', sample_rate: 1 });
+    const manager = new FakeCallbackManager();
+    obsvrLlamaIndexHandler(manager);
+
+    manager.dispatch('llm-start', { id: 'evt-g', messages: [{ role: 'user', content: 'hi' }] });
+    manager.dispatch('llm-end', {
+      id: 'evt-g',
+      response: {
+        message: { content: 'ok' },
+        raw: {
+          modelVersion: 'gemini-2.5-flash',
+          usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2, totalTokenCount: 6 },
+        },
+      },
+    });
+
+    await waitForEvents(1);
+    const e = sentEvents[0];
+    expect(e.provider).toBe('google');
+    expect(e.model).toBe('gemini-2.5-flash');
+    expect(e.input_tokens).toBe(4);
+    expect(e.total_tokens).toBe(6);
+  });
+
+  it('says unknown only when the provider is genuinely undetermined', async () => {
+    // "unknown" has to keep meaning something. With no raw response there is
+    // nothing to infer from, and the counts stay absent rather than zero.
+    init({ api_key: 'test', sample_rate: 1 });
+    const manager = new FakeCallbackManager();
+    obsvrLlamaIndexHandler(manager);
+
+    manager.dispatch('llm-start', { id: 'evt-u', messages: [{ role: 'user', content: 'hi' }] });
+    manager.dispatch('llm-end', { id: 'evt-u', response: { message: { content: 'ok' } } });
+
+    await waitForEvents(1);
+    const e = sentEvents[0];
+    expect(e.provider).toBe('unknown');
+    expect(e.model).toBe('unknown');
+    expect(e.input_tokens).toBeUndefined();
+    expect(e.total_tokens).toBeUndefined();
+  });
+
   it('pairs llm-start -> llm-end by id', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     const manager = new FakeCallbackManager();

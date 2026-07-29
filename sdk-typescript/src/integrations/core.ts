@@ -2005,6 +2005,34 @@ export function applyDelegationPolicy(
  * Infer a provider label from an arbitrary identifier string
  * (LangChain serialized ids, Vercel AI model.provider, class names...).
  */
+/**
+ * Provider for a MODEL name, where {@link inferProviderFromString} answers for a
+ * PROVIDER id.
+ *
+ * The two are different questions and conflating them is why LlamaIndex events
+ * came out unattributed: `inferProviderFromString` matches vendor tokens
+ * ("openai", "anthropic", "google"), which a provider id like
+ * "openai.responses" contains and a model name like "gpt-4o-mini" does not.
+ * Anthropic and Google model names happen to carry their vendor ("claude-",
+ * "gemini-") so they resolved by accident; OpenAI's never do.
+ *
+ * Only families that map to exactly ONE supported provider are recognised.
+ * Llama, Mistral and Qwen models are deliberately absent: the same weights are
+ * served by Bedrock, Together and others, so a guess would be a fabricated
+ * attribution rather than a missing one. Those stay "unknown", which is the
+ * honest answer.
+ */
+export function inferProviderFromModel(model: string): IntegrationProvider {
+  const byVendorToken = inferProviderFromString(model);
+  if (byVendorToken !== "unknown") return byVendorToken;
+  const s = model.toLowerCase().trim();
+  if (/^(gpt-|chatgpt-|o[1345](-|$)|davinci|babbage|text-davinci)/.test(s)) {
+    return "openai";
+  }
+  if (/^(palm|bison|text-bison|chat-bison)/.test(s)) return "google";
+  return "unknown";
+}
+
 export function inferProviderFromString(id: string): IntegrationProvider {
   const s = id.toLowerCase();
   if (s.includes("azure")) return "azure_openai";

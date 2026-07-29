@@ -6,7 +6,7 @@ EventPayload.PROMPT/MESSAGES/RESPONSE/COMPLETION payload keys.
 REGISTRATION. ``obsvr.init()`` already adds this handler to
 ``Settings.callback_manager`` whenever ``llama_index`` is importable, so the
 normal setup is init() alone — do not add it a second time. Adding it yourself
-is harmless (the duplicate is inert, see _claim_governing_handler) but
+is harmless (the call is recorded once either way, see obsvr/dedupe.py) but
 unnecessary. If you opted out with ``obsvr.init(auto=False)``, register it
 manually::
 
@@ -23,9 +23,11 @@ from typing import Any, Dict, Optional
 
 from .. import sender as _sender
 from ..config import try_get_config
-from ..events import emit_event, infer_provider_from_string
+from ..events import emit_event, infer_provider_from_model
 from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
+from ..token_usage import read_token_usage
+from ..dedupe import claim_emission
 
 try:  # pragma: no cover - exercised only when llama-index-core is installed
     from llama_index.core.callbacks.base_handler import (  # type: ignore
@@ -42,39 +44,6 @@ except ImportError:  # shim base class so import never fails
 
 
 SOURCE = "llamaindex_py"
-
-#: The handler that governs this process. See _claim_governing_handler.
-_GOVERNING: Any = None
-
-
-def _claim_governing_handler(handler: Any) -> bool:
-    """Whether ``handler`` is the one that emits, or an inert duplicate.
-
-    obsvr.init() auto-registers a handler on Settings.callback_manager whenever
-    ``llama_index`` is importable, and this module's own docstring tells the
-    reader to add one too — so following the documented setup put TWO handlers
-    on the callback manager and emitted every LLM event twice, with distinct
-    request_ids that made the pair look like two real calls. Duplicate evidence
-    for one governed call is a defect in a governance product: it inflates any
-    count taken over the trail, and now that tokens ARE captured on this path
-    it would double every cost and quota figure derived from it.
-
-    obsvr never mutates the callback manager it registers into, so it cannot
-    remove the duplicate from the outside. The stance is the one
-    instance_guard.py takes for a duplicated module: the incumbent keeps the
-    slot and later arrivals are inert, so exactly one record is produced no
-    matter how many times obsvr was registered or in what order.
-    """
-    global _GOVERNING
-    if _GOVERNING is None:
-        _GOVERNING = handler
-    return _GOVERNING is handler
-
-
-def _reset_governing_handler() -> None:
-    """Test seam: forget the incumbent so each test starts clean."""
-    global _GOVERNING
-    _GOVERNING = None
 
 
 def _enum_value(value: Any) -> Any:
@@ -144,6 +113,54 @@ def _extract_response_text(payload: Any) -> str:
     return ""
 
 
+def _raw_provider_response(payload: Any) -> Any:
+    """The provider's own wire payload, which LlamaIndex keeps on
+    ``response.raw``.
+
+    This is the provider response itself rather than a LlamaIndex abstraction
+    over it, so the model snapshot and the token counts can both be read from
+    it with the same readers every other integration uses.
+    """
+    response = _payload_get(payload, "response")
+    if response is None:
+        return None
+    return _get(response, "raw")
+
+
+def _resolved_model(payload: Any) -> Optional[str]:
+    """Provider-RESOLVED model snapshot. OpenAI puts the serving model on the
+    raw response as ``model``, Gemini as ``model_version``/``modelVersion``."""
+    raw = _raw_provider_response(payload)
+    if raw is None:
+        return None
+    for key in ("model", "model_version", "modelVersion"):
+        candidate = _get(raw, key)
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _extract_usage(payload: Any) -> Dict[str, Optional[int]]:
+    """Token counts for a LlamaIndex LLM call.
+
+    There was no token-reading code on this path at all — not a reader that
+    broke, one that was never written — so LlamaIndex traffic could never be
+    metered or counted against a token budget, at any version, in either
+    language. The counts sit on the provider's raw response in its own wire
+    format.
+    """
+    raw = _raw_provider_response(payload)
+    if raw is None:
+        return read_token_usage(None)
+    for key in ("usage", "usage_metadata", "usageMetadata"):
+        container = _get(raw, key)
+        if container is not None:
+            usage = read_token_usage(container)
+            if any(v is not None for v in usage.values()):
+                return usage
+    return read_token_usage(None)
+
+
 class ObsvrLlamaIndexHandler(BaseCallbackHandler):
     """Register on Settings.callback_manager to audit LLM events."""
 
@@ -154,7 +171,6 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
             pass
         self._runs: Dict[str, Dict[str, Any]] = {}
         self._options = options
-        self._governs = _claim_governing_handler(self)
 
     def on_event_start(
         self,
@@ -164,8 +180,6 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
         parent_id: str = "",
         **kwargs: Any,
     ) -> str:
-        if not self._governs:
-            return event_id
         try:
             if _enum_value(event_type) != "llm":
                 return event_id
@@ -213,8 +227,6 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
         event_id: str = "",
         **kwargs: Any,
     ) -> None:
-        if not self._governs:
-            return
         try:
             if _enum_value(event_type) != "llm":
                 return
@@ -235,16 +247,41 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
                 if user_text is not None:
                     user_text = redact_for_storage(user_text, via)
 
+            # init() auto-wires a handler and a caller may register one too;
+            # both then see this same event_id. Claiming it here records the
+            # call exactly once however many handlers are attached — and,
+            # unlike letting one handler win, it still records the call when a
+            # caller REPLACES the callback manager obsvr wired into rather than
+            # adding to it, which would otherwise emit nothing at all.
+            if not claim_emission(f"llamaindex.llm:{event_id}" if event_id else None):
+                return
+
+            # The llm-start payload carries no model on newer llama-index-core,
+            # so state["model"] is "unknown" at capture time and the provider
+            # inferred from it was "unknown" too — every LlamaIndex call
+            # unattributable in any per-provider report. The real model only
+            # appears at llm-end on the provider's raw response.
+            resolved = _resolved_model(payload)
+            model = state["model"] if state["model"] != "unknown" else (resolved or "unknown")
+            usage = _extract_usage(payload)
+            # A backfilled model is the SERVED SNAPSHOT, not the configured
+            # alias, because the llm-start payload carried none to record. Say
+            # so rather than leaving a reader to infer it.
+            alias_unavailable = state["model"] == "unknown" and model != "unknown"
             emit_event(
                 config,
-                provider=infer_provider_from_string(state["model"]),
-                model=state["model"],
+                provider=infer_provider_from_model(model),
+                model=model,
+                input_tokens=usage["input_tokens"],
+                output_tokens=usage["output_tokens"],
+                total_tokens=usage["total_tokens"],
                 operation="llamaindex.llm",
                 source=SOURCE,
                 prompt=prompt,
                 response=text,
                 user_input=user_text,
                 latency_ms=(time.time() - state["start_time"]) * 1000,
+                metadata={"model_alias_unavailable": True} if alias_unavailable else None,
                 compliance=state["compliance"],
                 options=self._options or None,
             )
