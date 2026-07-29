@@ -151,3 +151,86 @@ def test_blocked_result_is_not_a_bare_dict_when_MAF_types_are_present(sent):
             "obsvr_blocked": True,
             "text": "[obsvr] Agent run blocked by policy",
         }
+
+
+# ── the record describes the outcome, not the intention ─────────────────────
+#
+# The allowed-path event used to be emitted BEFORE call_next() with
+# response="" hardcoded and no latency, so it asserted success before the
+# outcome existed. A live agent run confirmed it: the agent returned "ok" and
+# the event recorded an empty response with success true. These pin the repair.
+
+class ResultRecorder:
+    """A next-handler that behaves like a real agent: it leaves a result."""
+
+    def __init__(self, text="the answer", boom=None):
+        self.called = False
+        self._text = text
+        self._boom = boom
+        self.ctx = None
+
+    def bind(self, ctx):
+        self.ctx = ctx
+        return self
+
+    async def __call__(self):
+        self.called = True
+        if self._boom:
+            raise self._boom
+        self.ctx.result = type(
+            "FakeAgentResponse", (), {"messages": [FakeMessage(self._text, "assistant")]}
+        )()
+
+
+def test_allowed_run_records_the_agents_response(sent):
+    _init()
+    ctx = FakeContext([FakeMessage("hello there")])
+    nxt = ResultRecorder("the answer").bind(ctx)
+    _run(obsvr_agent_middleware(ctx, nxt))
+
+    assert nxt.called is True
+    ev = sent[-1]
+    assert ev["operation"] == "agent_framework.agent.run"
+    # The whole point: what came back is on the record.
+    assert ev["response"] == "the answer"
+    assert ev["success"] is True
+    # Emitted after the run, so a duration exists to report.
+    assert isinstance(ev.get("latency_ms"), int)
+
+
+def test_a_run_that_raises_is_not_recorded_as_a_success(sent):
+    _init()
+    ctx = FakeContext([FakeMessage("hello there")])
+    boom = RuntimeError("provider exploded")
+    nxt = ResultRecorder(boom=boom).bind(ctx)
+
+    # The exception still reaches the caller — obsvr reports the outcome, it
+    # does not swallow it.
+    try:
+        _run(obsvr_agent_middleware(ctx, nxt))
+        raise AssertionError("the middleware swallowed the agent's exception")
+    except RuntimeError as exc:
+        assert exc is boom
+
+    ev = sent[-1]
+    assert ev["operation"] == "agent_framework.agent.run"
+    assert ev["success"] is False
+    # Exactly one event for the run, not a start/finish pair.
+    runs = [e for e in sent if e["operation"] == "agent_framework.agent.run"]
+    assert len(runs) == 1
+
+
+def test_class_middleware_records_the_outcome_too(sent):
+    _init()
+    ctx = FakeContext([FakeMessage("hello there")])
+    nxt = ResultRecorder("from the class").bind(ctx)
+    _run(ObsvrAgentMiddleware().process(ctx, nxt))
+    assert sent[-1]["response"] == "from the class"
+
+
+def test_bound_middleware_records_the_outcome_too(sent):
+    _init()
+    ctx = FakeContext([FakeMessage("hello there")])
+    nxt = ResultRecorder("from the factory").bind(ctx)
+    _run(make_agent_middleware(user_id="u1")(ctx, nxt))
+    assert sent[-1]["response"] == "from the factory"

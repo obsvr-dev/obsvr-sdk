@@ -39,6 +39,7 @@ Usage::
 # executes. Nothing MAF owns is patched — the class middleware subclasses MAF's
 # own published AgentMiddleware base.
 
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from ..config import try_get_config
@@ -180,12 +181,16 @@ def _identity_meta(options: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return meta or None
 
 
-async def _govern(context: Any, options: Dict[str, Any]) -> bool:
-    """Run the pre-call pipeline. Returns True if BLOCKED (caller must not
-    proceed); False to proceed. Sets context.result on block."""
+async def _govern(context: Any, options: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Run the pre-call pipeline.
+
+    Returns None if BLOCKED (the caller must not proceed; the blocked event is
+    emitted here and ``context.result`` is set). Otherwise returns the pending
+    record the post-run emit needs.
+    """
     cfg = try_get_config()
     if cfg is None:
-        return False
+        return None
     opts = options or None
     prompt_text, user_text = _input_text(context)
     result = apply_pre_call_policy(
@@ -213,32 +218,101 @@ async def _govern(context: Any, options: Dict[str, Any]) -> bool:
             context.result = _blocked_response("[obsvr] Agent run blocked by policy")
         except Exception:
             pass
-        return True
+        return None
 
+    # NOT emitted here. The allowed-path event used to fire at this point with
+    # response="" and no latency, which meant the record asserted success
+    # BEFORE the agent ran: a run that raised afterwards was filed as having
+    # succeeded, and the response was never captured at all. The verdict is
+    # carried out to _run_governed and the event is emitted once the outcome
+    # exists. The BLOCK above still emits here, correctly — there the outcome
+    # is known, because the agent never runs.
+    return {
+        "cfg": cfg,
+        "prompt": result["redacted_prompt"],
+        "user_input": user_text,
+        "compliance": compliance,
+        "options": opts,
+        "started": time.perf_counter(),
+    }
+
+
+def _result_text(context: Any) -> str:
+    """The agent's own output, read off the context after the run.
+
+    Defensive across MAF versions on purpose: this runs in the post-run path,
+    so a shape it does not recognise must cost the response text and nothing
+    else — never the event.
+    """
+    result = getattr(context, "result", None)
+    if result is None:
+        return ""
+    try:
+        msgs = getattr(result, "messages", None)
+        if isinstance(msgs, (list, tuple)) and msgs:
+            return _message_text(msgs[-1])
+        text = getattr(result, "text", None)
+        if isinstance(text, str):
+            return text
+        if isinstance(result, dict):
+            return str(result.get("text") or "")
+        return str(result)
+    except Exception:  # pragma: no cover - defensive
+        return ""
+
+
+async def _run_governed(
+    context: Any, call_next: NextHandler, options: Dict[str, Any]
+) -> None:
+    """Govern, run, then record what actually happened.
+
+    One event per run, emitted AFTER the outcome exists. A run that raises is
+    recorded as a failure rather than left with the success the old pre-call
+    emit had already asserted, and the exception still propagates — obsvr
+    reports the outcome, it does not swallow it.
+    """
+    pending = await _govern(context, options)
+    if pending is None:
+        return  # blocked: the agent never runs, and _govern already recorded it
+
+    try:
+        await call_next()
+    except Exception as exc:
+        _emit_run(pending, context, success=False, error=exc)
+        raise
+    _emit_run(pending, context, success=True, error=None)
+
+
+def _emit_run(
+    pending: Dict[str, Any], context: Any, *, success: bool, error: Any
+) -> None:
     emit_event(
-        cfg, provider=PROVIDER, model="unknown", operation="agent_framework.agent.run",
-        source=SOURCE, prompt=result["redacted_prompt"], response="",
-        user_input=user_text, compliance=compliance, options=opts,
+        pending["cfg"],
+        provider=PROVIDER,
+        model="unknown",
+        operation="agent_framework.agent.run",
+        source=SOURCE,
+        prompt=pending["prompt"],
+        response=_result_text(context) if success else "",
+        user_input=pending["user_input"],
+        success=success,
+        error=error,
+        latency_ms=int((time.perf_counter() - pending["started"]) * 1000),
+        compliance=pending["compliance"],
+        options=pending["options"],
     )
-    return False
 
 
 async def obsvr_agent_middleware(context: AgentContext, call_next: NextHandler) -> None:
     """Function-style MAF agent middleware. Governs the run pre-execution."""
-    blocked = await _govern(context, {})
-    if blocked:
-        return  # do NOT call call_next -> the agent never runs
-    await call_next()
+    await _run_governed(context, call_next, {})
 
 
 def make_agent_middleware(**options: Any) -> Callable[..., Awaitable[None]]:
     """Build a function middleware bound to caller-identity ``options``."""
 
     async def middleware(context: AgentContext, call_next: NextHandler) -> None:
-        blocked = await _govern(context, options)
-        if blocked:
-            return
-        await call_next()
+        await _run_governed(context, call_next, options)
 
     return middleware
 
@@ -262,7 +336,4 @@ class ObsvrAgentMiddleware(_MiddlewareBase):
         self._options = options
 
     async def process(self, context: AgentContext, call_next: NextHandler) -> None:
-        blocked = await _govern(context, self._options)
-        if blocked:
-            return
-        await call_next()
+        await _run_governed(context, call_next, self._options)
