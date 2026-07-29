@@ -6,7 +6,7 @@ artifact actually establishes; **Basis** is how strong that artifact is — `LIV
 captured audit event, `PE` a binding check only, `DECLARED ONLY` nothing at all.
 Every boundary links to a detail section naming the artifact behind it.
 
-> Evidence captured at `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite); SDK HEAD has moved on since (10 commits).
+> Evidence captured at `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite); SDK HEAD has moved on since (13 commits).
 > Boundaries are unaffected — they are facts about upstream releases. See
 > [Evidence currency](#evidence-currency).
 
@@ -32,7 +32,7 @@ Declared ranges read from `sdk-python/pyproject.toml`.
 | `ag2` | `>=0.3.2,<1.0` | `0.3.2` – `0.14.0`\* | LIVE | [detail](#ag2-python) |
 | `anthropic` | `>=0.16.0` | `0.8.0` – `0.120.2`\* | LIVE | [detail](#anthropic-python) |
 | `crewai` | `>=0.30.0` | `1.15.8`\* | LIVE | [detail](#crewai-python) |
-| `google-generativeai` | — *(no extra declares it)* | `0.8.6`\* | LIVE | [detail](#google-generativeai-python) |
+| `google-generativeai` | any version *(no bound declared)* | `0.8.6`\* | LIVE | [detail](#google-generativeai-python) |
 | `haystack-ai` | `>=2.0.0` | `2.0.0` – `3.0.0`\* | LIVE | [detail](#haystack-ai-python) |
 | `langchain-core` | `>=0.2.0` | `0.2.0` – `1.5.2`\* | LIVE | [detail](#langchain-core-python) |
 | `llama-index-core` | `>=0.11.23` | `0.11.23` – `0.14.23`\* | LIVE | [detail](#llama-index-core-python) |
@@ -83,7 +83,7 @@ Only `1.15.8` is evidenced. The declared range also carries the environment mark
 
 ### `google-generativeai` (Python)
 
-Declared — *(no extra declares it)* · verified `0.8.6` · LIVE
+Declared any version *(no bound declared)* · verified `0.8.6` · LIVE
 
 > **Legacy package.** End-of-life 2025-08. Its successor line is not integrated by this SDK. So the 1 cell below is coverage of a package that is no longer the current one, however deep that coverage goes.
 > Ecosystem facts from `data/ecosystem.json` (npm registry — package metadata and weekly download counts, recorded 2026-07-29).
@@ -93,7 +93,7 @@ Declared — *(no extra declares it)* · verified `0.8.6` · LIVE
 - **Ceiling** `0.8.6` PASS — single cell, nothing above it was tested
   · `results/gemini-python.jsonl:1`
 
-**Evidenced but undeclared**: no extra in the manifest names this distribution, so the row has a verified floor and no range to compare it against. The auto path emitted **0 events** at this cell — `init()` alone does not pick this client up, and the event above came from an explicit wrap. The asymmetry with the other language is a documentation defect, not a structural one.
+Now declared, but with **no version bound**: the extra names this distribution at any version, and the single cell below is the whole of the evidence behind that. The auto path emitted **0 events** at this cell — `init()` alone does not pick this client up, and the event above came from an explicit wrap. The asymmetry with the other language is a documentation defect, not a structural one.
 
 ### `haystack-ai` (Python)
 
@@ -634,10 +634,12 @@ Independently of any hash, the artifacts name the SDK build itself: **node 0.10.
 A version is not retired by a history rewrite, so it is the durable half of this
 provenance and the fallback when a hash cannot be resolved.
 
-Measured from `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite) to the SDK's current HEAD, 10 commits have landed since,
-4 of them touching the manifests this document reproduces or
+Measured from `486923f` (repointed by tree — the hash the artifacts recorded was retired by a history rewrite) to the SDK's current HEAD, 13 commits have landed since,
+6 of them touching the manifests this document reproduces or
 the integration sources its findings describe:
 
+- `5d8a3f9 Declare the Gemini client, and which of the two it is`
+- `710396e Upgrade both floor notes from a boundary to a located edge`
 - `b5a5203 Stamp each audited path with the release it first appears at`
 - `807e519 Publish the compatible-endpoint wrapper the docs already sold`
 - `b1187ec Name the one surface the capability gate actually holds on`
