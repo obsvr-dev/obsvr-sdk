@@ -100,8 +100,13 @@ haystack = ["haystack-ai>=2.0.0"]
 # that is merely safe misdescribes the range as much as one that is wrong.
 smolagents = ["smolagents>=1.4.0,!=1.5.0"]
 # The 0.x line has never existed on PyPI: the earliest published release is
-# 1.0.0, preceded only by 1.0.0b* prereleases.
-agent-framework = ["agent-framework>=1.0.0"]
+# 1.0.0, preceded only by 1.0.0b* prereleases. 1.0.0 through 1.10.0 are all
+# UNINSTALLABLE under default resolution (ResolutionImpossible: the meta-package
+# pins a core version its own siblings contradict), so the floor is the first
+# release a plain `pip install` can actually produce. The middleware contract is
+# identical across the published range; 1.11.0 and later are verified to
+# register against the framework's own categorize_middleware.
+agent-framework = ["agent-framework>=1.11.0"]
 # Interpreter-dependent, and stated rather than assumed: on CPython 3.13 pip
 # offers no candidate below 1.14.0, and 1.14.0/1.15.0 install but cannot import
 # (semantic_kernel.functions raises ImportError for pydantic.networks.Url
