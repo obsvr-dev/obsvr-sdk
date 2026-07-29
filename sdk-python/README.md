@@ -143,7 +143,7 @@ does not merely log.
 | --- | --- | --- | --- |
 | LangChain | `integrations.langchain` | `BaseCallbackHandler` | observe + stored-copy PII |
 | CrewAI | `integrations.crewai` | `step_callback` / kickoff callbacks | tool allow-deny, step limit, output policy |
-| AutoGen | `integrations.autogen` | `process_message_before_send` hook | pre-send block/redact, tool + step limits |
+| AutoGen (ag2) | `integrations.autogen` | `process_message_before_send` hook | pre-send block/redact (tool + step limits run in the same hook but are **not yet exercised by a live test**) |
 | LlamaIndex | `integrations.llamaindex` | `BaseCallbackHandler` | observe + stored-copy PII |
 | OpenAI Agents | `integrations.openai_agents` | `TracingProcessor` | tool allow-deny, step limit |
 | MCP | `integrations.mcp` | `ClientSession.call_tool` / `list_tools` | request + response + discovery governance |

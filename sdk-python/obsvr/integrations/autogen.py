@@ -1,5 +1,14 @@
 """AutoGen integration — hook-based audit with real pre-send enforcement.
 
+TARGETS THE ag2 DISTRIBUTION, not the older one the extra used to name. This
+code binds `ConversableAgent.register_hook`, the AutoGen 0.2.x API whose
+maintained continuation is ag2. The previously declared distribution now
+resolves to the 0.4+ rewrite, whose agent class has neither `register_hook` nor
+`initiate_chat` — `register_obsvr()` raises there and nothing is governed.
+Supported range is `ag2>=0.3.2,<1.0`; ag2 1.0.0 removed `ConversableAgent` and
+renamed the import package. Binding is duck-typed, so an existing install of the
+old distribution inside its working range still works.
+
 register_obsvr(agent) registers two ConversableAgent hooks:
   - process_all_messages_before_reply: captures the conversation context
   - process_message_before_send: audits the outgoing reply and CAN
@@ -9,6 +18,11 @@ register_obsvr(agent) registers two ConversableAgent hooks:
 patch_initiate_chat(agent) wraps agent.initiate_chat to add run-level
 tracing (start/finish events) and agent_policy enforcement (tool checks,
 step limits, strict PII).
+
+NOT YET LIVE-TESTED: the tool-policy branches — denied_tools, the allowlist and
+the step limit — all hang off _extract_function_name() inside the send hook.
+The hook itself is proven to fire against a real agent, which is necessary and
+not sufficient; no tool-calling agent has been driven through it.
 """
 
 # Interception: AutoGen register_hook() API (non-mutating). Hooks are registered through the framework's official hook system; no agent attributes are mutated.

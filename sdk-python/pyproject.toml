@@ -82,7 +82,25 @@ llamaindex = ["llama-index-core>=0.11.23"]
 # nothing there instead, which is the same practical outcome (crewai is
 # uninstallable on 3.14) reached cleanly and stated in the manifest.
 crewai = ["crewai>=0.30.0; python_version < '3.14'"]
-autogen = ["pyautogen>=0.2.0"]
+# autogen.py codes to ConversableAgent.register_hook — the AutoGen 0.2.x API,
+# whose maintained continuation is the ag2 distribution. The previously declared
+# distribution is no longer that project: its 0.10.0 is a proxy for the 0.4+
+# rewrite, whose AssistantAgent has neither register_hook nor initiate_chat, so
+# register_obsvr() raises and nothing is governed. The old floor was worse than
+# wrong — 0.2.0 has no register_hook at all.
+#
+# THE CEILING IS LOAD-BEARING, not caution: ag2 1.0.0 removed ConversableAgent
+# outright and renamed the import package from `autogen` to `ag2`, so the two
+# symbols this integration binds are both gone above it.
+#
+# Floor is the first ag2 release, verified live. Every stable 0.x release
+# between the endpoints was tested for binding — 57 of 58 bind, and the 58th is
+# yanked on the index so no resolver selects it.
+#
+# This changes what the extra INSTALLS, not what the integration BINDS: binding
+# is duck-typed on ConversableAgent.register_hook, so an existing install of the
+# old distribution in its working range keeps being governed.
+autogen = ["ag2>=0.3.2,<1.0"]
 fastapi = ["starlette>=0.30.0"]
 otel = ["opentelemetry-api>=1.20.0"]
 bedrock = ["boto3>=1.34.0"]
