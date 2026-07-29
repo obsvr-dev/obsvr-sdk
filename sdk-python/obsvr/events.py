@@ -455,7 +455,7 @@ def build_audit_event(
 
 
 def tool_denied_compliance() -> Dict[str, Any]:
-    """Blocked-tool verdict shared by the agent-framework integrations.
+    """Blocked-tool verdict shared by the agent integrations.
 
     TOOL_DENIED covers both refusal shapes - an explicit deny-list hit and
     absence from a configured allowlist are the same classification: this

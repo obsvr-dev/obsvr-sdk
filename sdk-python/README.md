@@ -31,12 +31,8 @@ pip install "obsvr-sdk[llamaindex]"       # LlamaIndex integration
 pip install "obsvr-sdk[fastapi]"          # FastAPI / Starlette middleware
 pip install "obsvr-sdk[bedrock]"          # AWS Bedrock (boto3) governance
 pip install "obsvr-sdk[vertex]"           # Google Vertex AI governance
-pip install "obsvr-sdk[adk]"              # Google ADK callbacks
 pip install "obsvr-sdk[pydantic-ai]"      # PydanticAI toolset governance
 pip install "obsvr-sdk[haystack]"         # Haystack 2.x governance component
-pip install "obsvr-sdk[smolagents]"       # smolagents tool governance
-pip install "obsvr-sdk[agent-framework]"  # Microsoft Agent Framework middleware
-pip install "obsvr-sdk[semantic-kernel]"  # Semantic Kernel filter
 ```
 
 Ed25519 verification of signed remote policy needs one of two backends —
@@ -153,12 +149,8 @@ does not merely log.
 | MCP | `integrations.mcp` | `ClientSession.call_tool` / `list_tools` | request + response + discovery governance |
 | **AWS Bedrock** | `integrations.bedrock` | boto3 `converse` / `invoke_model` (+ streams) | pre-call block/redact, post-call output governance |
 | **Vertex AI** | `integrations.vertex` | `GenerativeModel.generate_content` | pre-call block/redact, post-call output governance |
-| **Google ADK** | `integrations.adk` | `before_tool_callback` / `before_model_callback` | tool + request block (skips execution) |
 | **PydanticAI** | `integrations.pydantic_ai` | `WrapperToolset.call_tool` | tool block before delegation |
 | **Haystack 2.x** | `integrations.haystack` | `@component` pipeline node | block aborts the pipeline before the generator |
-| **smolagents** | `integrations.smolagents` | tool `__call__` / `forward` | tool block before execution |
-| **Microsoft Agent Framework** | `integrations.agent_framework` | agent middleware | block terminates the run (no `next`) |
-| **Semantic Kernel** | `integrations.semantic_kernel` | function-invocation filter | block prevents function execution |
 
 Callback-style (LangChain / LlamaIndex / OpenAI Agents / CrewAI):
 
@@ -195,27 +187,9 @@ Agent frameworks — register the governance hook; a blocked tool/agent/function
 never executes:
 
 ```python
-# Google ADK
-from google.adk.agents import Agent
-from obsvr.integrations.adk import make_before_tool_callback, make_before_model_callback
-agent = Agent(..., before_tool_callback=make_before_tool_callback(),
-              before_model_callback=make_before_model_callback())
-
 # PydanticAI
 from obsvr.integrations.pydantic_ai import ObsvrToolset
 agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(my_toolset)])
-
-# smolagents
-from obsvr.integrations.smolagents import govern_agent
-govern_agent(agent)   # wraps every tool in place
-
-# Microsoft Agent Framework
-from obsvr.integrations.agent_framework import obsvr_agent_middleware
-agent = ChatAgent(chat_client=..., middleware=[obsvr_agent_middleware])
-
-# Semantic Kernel
-from obsvr.integrations.semantic_kernel import obsvr_function_invocation_filter
-kernel.add_filter("function_invocation", obsvr_function_invocation_filter)
 
 # Haystack 2.x
 from obsvr.integrations.haystack import ObsvrGuard

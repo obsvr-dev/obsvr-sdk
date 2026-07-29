@@ -20,6 +20,28 @@ cut, when it is renamed to that version.
 
 ### Removed
 
+- **Four framework integrations withdrawn before first publish.** The modules
+  (`obsvr/integrations/{agent_framework,semantic_kernel,adk,smolagents}.py`),
+  their extras (`agent-framework`, `semantic-kernel`, `adk`, `smolagents`),
+  their tests, and every reference to them in this repository are gone in one
+  change — a documented integration whose module does not exist is worse than
+  either state alone.
+  **Not marked BREAKING:** none of these shipped in a release, so nothing
+  depended on them.
+
+  **The basis is breadth versus evidence, not brokenness.** Each was verified
+  only far enough to prove it binds and blocks, and the supported surface is
+  being narrowed to what is backed by live evidence rather than widened to what
+  compiles. Worth stating plainly, though: three of the four also had floors
+  that no ordinary install could reach — every `agent-framework` release below
+  1.11.0 fails dependency resolution outright, every `google-adk` release below
+  1.2.0 installs but cannot import, and `semantic-kernel` has no candidate at
+  all below 1.14.0 on CPython 3.13.
+
+  The code is preserved on a local branch and can return with the evidence
+  behind it.
+
+
 - **BREAKING: the manual-tracking client is gone.** `ObsvrClient`,
   `trackCompletion`, `trackBatch`, the deprecated `LLMAuditClient` alias, their
   parameter types, and the `@obsvr/sdk/client` subpath export are removed. That

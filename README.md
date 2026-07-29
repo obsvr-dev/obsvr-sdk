@@ -423,10 +423,6 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 | AutoGen                   |     —      |   ✅   |
 | Haystack                  |     —      |   ✅   |
 | Pydantic-AI               |     —      |   ✅   |
-| Semantic Kernel           |     —      |   ✅   |
-| Microsoft Agent Framework |     —      |   ✅   |
-| Google ADK                |     —      |   ✅   |
-| smolagents                |     —      |   ✅   |
 | FastAPI / ASGI middleware |     —      |   ✅   |
 | MCP                       |     ✅     |   ✅   |
 
