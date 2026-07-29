@@ -399,13 +399,7 @@ TABLE = [
 # comes off in the commit that fixes it — `strict` guarantees that, because a
 # row that starts passing while still marked fails the suite. So the exemption
 # cannot outlive the defect it documents.
-_KNOWN_FAILING = {
-    "openai_agents": (
-        "the gate runs in on_span_end, after the tool returned, and still "
-        "stamps action_taken=blocked — a record asserting a refusal that did "
-        "not happen"
-    ),
-}
+_KNOWN_FAILING = {}
 
 
 def _row(name, driver, policy_key, grade):

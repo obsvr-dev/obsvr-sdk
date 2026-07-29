@@ -131,6 +131,7 @@ def apply_loop_detection(
     agent_run_id: str,
     source: str,
     operation: str,
+    can_halt: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """Record an iteration and emit an audit event when the loop fires.
 
@@ -138,6 +139,14 @@ def apply_loop_detection(
     None while within limits. The event records the FINDING either way: the
     classification is LOOP_DETECTED whether the threshold escalates or blocks,
     and the caller is what actually stops the run.
+
+    ``can_halt`` is the caller's answer to "if I raise, does the run stop?".
+    Callers sitting on a boundary that can refuse leave it True. A caller whose
+    exception the framework swallows must pass False, because the detection is
+    still real evidence but the halt never happens — and a record claiming
+    ``blocked`` about a run that continued is the failure this argument exists
+    to prevent. The finding keeps its ``loop_detected`` event type and
+    LOOP_DETECTED code either way; only the claim to have acted changes.
     """
     result = detector.record_iteration()
     if result is None:
@@ -147,9 +156,20 @@ def apply_loop_detection(
     compliance["event_type"] = "loop_detected"
     compliance["reason_code"] = ReasonCode.LOOP_DETECTED.value
     if result["action"] == "block":
-        compliance["action_taken"] = "blocked"
-        compliance["action_reason"] = "policy_violation"
-        compliance["action_source"] = "policy_rules"
+        if can_halt:
+            compliance["action_taken"] = "blocked"
+            compliance["action_reason"] = "policy_violation"
+            compliance["action_source"] = "policy_rules"
+        else:
+            compliance["action_taken"] = "not_evaluated"
+            compliance["policy_not_evaluated"] = {
+                "surface": operation,
+                "gate": "loop_detection",
+                "reason": (
+                    "the threshold was reached but this surface cannot halt the "
+                    "run; the iteration limit is observed, not enforced"
+                ),
+            }
 
     emit_event(
         config,

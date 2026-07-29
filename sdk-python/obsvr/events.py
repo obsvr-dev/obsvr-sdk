@@ -403,6 +403,18 @@ def build_audit_event(
         _tel["quota_unmetered"] = _quota_unmetered
         _md["obsvr_telemetry"] = _tel
         _event["metadata"] = _md
+    # Same route again, and the sharpest of the three: an event whose subject no
+    # gate evaluated still carries action_taken "allowed", which asserts a
+    # decision rather than reporting the absence of one. (TS parity:
+    # integrations/core.ts — the field had a route there and none here, so the
+    # reason a gate was skipped was dropped on this side.)
+    _policy_not_evaluated = comp.get("policy_not_evaluated")
+    if _policy_not_evaluated is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel["policy_not_evaluated"] = _policy_not_evaluated
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
     if bool(getattr(config, "policy_floor", None)):
         # Anti-tamper floor evidence: floor_version is a pure function of
         # config.policy_floor, so it is stamped HERE for EVERY event under an
@@ -478,6 +490,38 @@ def tool_denied_compliance() -> Dict[str, Any]:
         "action_source": "policy_rules",
         "redacted_types": [],
         "blocked_types": [],
+    }
+
+
+def tool_gate_not_evaluated_compliance(
+    surface: str, gate: str, reason: str
+) -> Dict[str, Any]:
+    """Verdict for a tool event NO GATE could decide.
+
+    The honest value when a control did not run. Its opposite is not "allowed" —
+    that asserts a gate looked and permitted — and it is emphatically not
+    "blocked", which asserts a refusal. A surface whose gate cannot reach the
+    invocation boundary has no verdict to report, so it reports the absence and
+    says why.
+
+    Omitting the field would not have helped: the ingest schema defaults an
+    absent action_taken, so the server would mint "allowed" one layer down.
+    Twin of the TS tool-runner path in proxy/wrapper.ts, routed through
+    metadata.obsvr_telemetry the same way.
+    """
+    return {
+        "event_type": "tool_call",
+        "policy_version": "none",
+        "action_taken": "not_evaluated",
+        "action_reason": "none",
+        "action_source": "unknown",
+        "redacted_types": [],
+        "blocked_types": [],
+        "policy_not_evaluated": {
+            "surface": surface,
+            "gate": gate,
+            "reason": reason,
+        },
     }
 
 

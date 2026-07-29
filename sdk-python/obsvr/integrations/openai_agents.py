@@ -27,6 +27,32 @@ SPAN COVERAGE. Both LLM span types are handled: ``generation`` (the Chat
 Completions path, which carries the configured model alias) and ``response``
 (the Responses path, which is the DEFAULT — ``get_use_responses_by_default()``
 returns True — and carries only the served snapshot).
+
+THIS INTEGRATION RECORDS TOOL POLICY; IT DOES NOT ENFORCE IT. Read this before
+configuring ``agent_policy`` against it.
+
+A TracingProcessor cannot refuse anything. The provider's tracing layer invokes
+every processor callback inside its own ``try/except Exception`` and only logs
+what it catches, so an exception raised from ``on_span_start`` or
+``on_span_end`` never reaches the agent run. On top of that, the tool gate here
+lives in ``on_span_end`` — a function span ENDS after its tool has returned, so
+by the time the gate sees the call there is nothing left to prevent.
+
+Both halves were measured, not inferred: a spy tool recorded that it had
+already been entered when the gate ran, and the swallowing is visible in the
+installed package's own tracing provider.
+
+So ``denied_tools``, ``allowed_tools`` and ``max_steps`` are OBSERVED on this
+surface. When one of them would have refused a call, the event says
+``action_taken: "not_evaluated"`` and carries the reason in
+``metadata.obsvr_telemetry.policy_not_evaluated``. It previously said
+``blocked``, which asserted a refusal of a call that had in fact completed and
+returned its result to the caller.
+
+For tool policy that actually refuses, gate at a boundary that can: the
+framework's own tool hooks are awaited before the tool is invoked and their
+exceptions are NOT swallowed, and the MCP integration is the reference
+implementation of a gate at the invocation boundary.
 """
 
 # Interception: openai-agents TracingProcessor interface (non-mutating).
@@ -40,7 +66,7 @@ from typing import Any, Dict, Optional, Tuple
 from .. import sender as _sender
 from ..agent_policy import apply_loop_detection, create_loop_detector, resolve_loop_detection
 from ..config import try_get_config
-from ..events import emit_event, tool_denied_compliance
+from ..events import emit_event, tool_gate_not_evaluated_compliance
 from ..token_usage import read_token_usage
 from ..dedupe import claim_emission
 
@@ -251,7 +277,7 @@ class ObsvrTracingProcessor:
                             config,
                             provider="unknown",
                             model="unknown",
-                            operation="openai_agents.agent.policy.tool_blocked",
+                            operation="openai_agents.agent.policy.tool_not_evaluated",
                             source=SOURCE,
                             prompt="",
                             response="",
@@ -262,29 +288,34 @@ class ObsvrTracingProcessor:
                                 "reason": reason,
                                 "step_index": step_index,
                             },
-                            compliance=tool_denied_compliance(),
-                        )
-                        raise RuntimeError(
-                            f"[obsvr] Tool blocked by agent policy: {tool_name}"
+                            compliance=tool_gate_not_evaluated_compliance(
+                                surface="openai_agents.tool.call",
+                                gate="tool_gate",
+                                reason=(
+                                    f"tool policy would have refused this call "
+                                    f"({reason}), but the decision is reached "
+                                    f"after the tool has already returned and "
+                                    f"cannot bind it"
+                                ),
+                            ),
                         )
 
                     step_action = _check_steps(step_index, policy)
                     state["step_count"] = step_index + 1
 
-                    # Loop detection
+                    # Loop detection. can_halt=False: see the module docstring —
+                    # raising from a trace processor cannot stop this run, so the
+                    # finding is recorded without claiming the halt happened.
                     detector = state.get("loop_detector")
                     if detector is not None:
-                        loop_result = apply_loop_detection(
+                        apply_loop_detection(
                             detector,
                             config,
                             agent_run_id=trace_id,
                             source=SOURCE,
                             operation="openai_agents.agent",
+                            can_halt=False,
                         )
-                        if loop_result and loop_result["action"] == "block":
-                            raise RuntimeError(
-                                "[obsvr] Loop detected: iteration limit exceeded"
-                            )
 
                     if step_action == "block":
                         emit_event(
@@ -301,8 +332,16 @@ class ObsvrTracingProcessor:
                                 "step_count": step_index,
                                 "step_index": step_index,
                             },
+                            compliance=tool_gate_not_evaluated_compliance(
+                                surface="openai_agents.agent.policy.step_limit",
+                                gate="step_limit",
+                                reason=(
+                                    "the step budget is exhausted but this "
+                                    "surface cannot halt the run; the limit is "
+                                    "observed, not enforced"
+                                ),
+                            ),
                         )
-                        raise RuntimeError("[obsvr] Step limit reached")
 
                     if step_action == "escalate":
                         emit_event(
@@ -406,7 +445,10 @@ class ObsvrTracingProcessor:
                     },
                 )
 
-        except RuntimeError:
-            raise  # policy errors must propagate
         except Exception:
+            # Nothing raised from here reaches the caller: the provider's
+            # tracing layer wraps every processor callback in its own
+            # try/except and logs. A `raise` used to sit above this to "let
+            # policy errors propagate", which is precisely the belief that
+            # produced a record claiming a refusal that never occurred.
             pass

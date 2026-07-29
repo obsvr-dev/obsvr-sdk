@@ -223,6 +223,25 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **An invariant binding what the audit trail claims to what actually
+  happened.** For every event where `action_taken == "blocked"`, the governed
+  operation did not execute. Nothing in the tree asserted that, and two separate
+  false-record defects reached `main` as a result — both found by hand against
+  live providers, which is to say found once. The check is a table over all six
+  Python surfaces that carry a tool gate: a spy tool records whether it was
+  entered, each driver models the framework's real invocation ordering rather
+  than a convenient one, and both halves are asserted — the tool did not run AND
+  the record says so. Every row declares its grade, so a surface that quietly
+  stops enforcing fails its row, and one that starts enforcing also fails and
+  has to be regraded on purpose. Table coverage is itself a test: a new
+  integration that ships a tool gate without a row fails the suite.
+
+  Offline and deterministic by design — no provider, no key, no network — and
+  wired into CI as its own named step. Its ability to fail is tested on every
+  run rather than demonstrated once: one test points an enforcing gate at a
+  no-op and requires the assertion to break, and two more require it to reject a
+  fabricated denial and a silent refusal. Written before the fixes it prompted,
+  and it went red on both of them first.
 - **Known limitation, stated rather than left to be discovered: blocked-call
   attribution on `ai` below 5.0.0.** Enforcement is fully correct across the
   supported range — the call is blocked, `status_code` is 403, the reason code
@@ -566,6 +585,34 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The OpenAI Agents integration recorded `blocked` for tool calls that had
+  already completed.** Its tool gate runs in `on_span_end`, and a function span
+  does not end until its tool has returned, so a denied tool executed and its
+  result reached the caller while the event asserted `action_taken: "blocked"`
+  with `TOOL_DENIED`. A post-incident reader would have concluded a capability
+  was refused that in fact ran. The event now carries
+  `action_taken: "not_evaluated"` and states why there is no verdict in
+  `metadata.obsvr_telemetry.policy_not_evaluated`. `max_steps` and loop
+  detection on that surface made the same claim and now report the same way;
+  `apply_loop_detection` takes a `can_halt` argument, and callers that sit on a
+  boundary which can refuse are unchanged.
+
+  **The gate still does not enforce, and cannot.** The framework wraps every
+  trace-processor callback in its own `try/except` and only logs, so the
+  exception raised to stop the run never reached it — moving the gate to
+  `on_span_start` would be swallowed the same way. That inert `raise` is gone.
+  Verified against a real provider in both directions: the repaired tree emits
+  no `blocked` event for a denied tool, and the same probe run over the previous
+  commit reproduces the false record, so the assertion has a demonstrated
+  failing state rather than an assumed one.
+
+  Two further defects surfaced while fixing it. The inert `raise` aborted the
+  rest of the callback, so whenever policy "blocked" a call the trail also lost
+  the `openai_agents.tool.call` record of the call that really happened — the
+  false record was suppressing the true one. And `policy_not_evaluated` had no
+  route through the Python event builder at all: TypeScript mirrors it onto
+  `metadata.obsvr_telemetry` because ingest has no top-level column for it,
+  while Python dropped the field silently. Python now carries the twin.
 - **Python MCP discovery could fail to strip a tool it had refused.** Under
   `pinning: {mode: "block"}` (or `block_poisoned_tools`), the offending tools
   are removed from the listing the model reads. Python performed that by
