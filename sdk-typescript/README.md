@@ -110,7 +110,7 @@ obsvr.init({
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy.
 
-**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode; and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
 ### Verdict reason codes
 
@@ -227,6 +227,43 @@ const client = wrapOpenAICompatible(new OpenAI({ baseURL: 'http://localhost:1143
 ```
 
 Set `source` per endpoint. **The recorded `provider` follows the endpoint, not the wrapper.** The named wrappers built on this one (`wrapTogether`, and the Azure/Cloudflare modules) pass their label as a FALLBACK, used only when the client exposes no readable base URL; when it does, the label is derived from the host, `metadata.endpoint_host` records that host, and `metadata.provider_attribution` says whether the value was checked against the endpoint (`endpoint`) or merely declared (`client_declared`). A destination the canonical provider enum cannot name records `provider: "unknown"` and keeps its identity in `metadata.provider_detail` — so a Groq or Ollama endpoint reads as what it is rather than as whichever module wrapped it. These labels used to be unconditional, which meant one wrapper pointed at two different servers reported the same destination for both.
+
+### Does a tool-policy block actually stop the tool?
+
+**Read this before putting a destructive capability behind `agentPolicy` or
+`sessionTaint.destructiveTools`.** Whether a block stops the tool depends on
+whether the framework hands obsvr a hook that runs *before* the tool does, and
+they do not all. Every grade below was driven against a real run and graded on a
+captured audit event.
+
+| Surface | Tool policy |
+| --- | --- |
+| MCP (`callTool`) | **enforces** — the gate patches the invocation itself |
+| `obsvrGovernTool` | **enforces** — wraps the tool's own execute and gates before delegating |
+| LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError` |
+| LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |
+| OpenAI Agents SDK | **records only** — see below |
+| `chat.completions.runTools`, `beta.messages.toolRunner` | **not on that boundary** |
+
+**OpenAI Agents SDK: records only.** A `TracingProcessor` cannot refuse anything
+— the framework dispatches processor callbacks fire-and-forget, so nothing raised
+there reaches the run — and a function span does not end until its tool has
+returned. So a denied tool executes and its result reaches the caller. The event
+records `action_taken: "not_evaluated"` with the reason in
+`metadata.obsvr_telemetry.policy_not_evaluated`; it must not be read as a
+refusal. To actually refuse tools under that framework, wrap them with
+`obsvrGovernTool`.
+
+**Provider tool runners are not on obsvr's boundary at all.** The runner invokes
+its own tools and holds the raw provider client, so obsvr is not in the path of
+turns 2..N. Those tool events also record `not_evaluated`.
+
+**Do not read Python's grades across, or vice versa.** The two SDKs have separate
+tool-gate implementations and they disagree: this SDK's LangChain integration
+enforces, and the Python one does not wire its gate to a callback current
+runtimes deliver. The per-integration table for Python is in
+[`../sdk-python/README.md`](../sdk-python/README.md), and the combined view is in
+the [root README](../README.md).
 
 ### Agent runs
 

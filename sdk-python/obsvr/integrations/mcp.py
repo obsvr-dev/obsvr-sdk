@@ -594,8 +594,18 @@ def _build_governed_mcp_callables(
         # apply_pre_call_policy (TS parity: mcp.ts).
         from ..canary import canary_registry_size
         from ..session_taint import session_taint_size
+        # policy_floor belongs in this list and was missing from it. The floor is
+        # the operator baseline that customer rules and hooks cannot weaken, and
+        # it is enforced INSIDE apply_pre_call_policy — so a deployment that
+        # configured a floor and nothing else got no floor at all on MCP tool
+        # calls, silently, on the one surface the documentation singles out as
+        # the strongest. Measured live: with only a floor set, a tool call
+        # carrying floor-blocked content executed and the record said `allowed`.
+        # The floor already worked here the moment any OTHER entry in this list
+        # was configured, which is what made the gap invisible.
         if (
-            cfg.pii_policy is not None
+            cfg.policy_floor
+            or cfg.pii_policy is not None
             or cfg.on_pre_call is not None
             or canary_registry_size() > 0
             or session_taint_size() > 0

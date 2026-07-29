@@ -4,7 +4,7 @@
 
 ### Secure and Prove AI agents and LLMs, in real time. Prove exactly what happened, months later.
 
-Intercept every model and tool call. Enforce deterministic policy **before** the request leaves your process. Sign each decision into a tamper-evident event that your obsvr service seals into an independently verifiable record, and reconstruct exactly what your AI did — under which model and which policy — months or years later. We call that **temporal provenance**.
+Intercept model and tool calls at the provider-call boundary. Enforce deterministic policy **before** the request leaves your process. Sign each decision into a tamper-evident event that your obsvr service seals into an independently verifiable record, and reconstruct exactly what your AI did — under which model and which policy — months or years later. We call that **temporal provenance**.
 
 ![Status](https://img.shields.io/badge/status-private%20beta-6d4aff)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
@@ -18,12 +18,12 @@ Intercept every model and tool call. Enforce deterministic policy **before** the
 ---
 
 <p align="center">
-  <img src="assets/architecture.svg" alt="obsvr runs in-process and governs every model and agent call: policy (13 rule types), PII and pattern-based injection, and agent/budget checks yield an allow / block / redact / review verdict before the request leaves your process. Each decision is signed into an HMAC chain in the SDK, then your obsvr ingest service countersigns it, folds it into a daily Merkle root, Ed25519-signs that root under a published key, and anchors it off-host — so you can verify offline with the public key alone and reconstruct the exact model and policy behind any decision months later." width="100%">
+  <img src="assets/architecture.svg" alt="obsvr runs in-process and governs the model and agent calls that reach its interception points — which calls those are is a per-integration property, documented per integration and per language: policy (13 rule types), PII and pattern-based injection, and agent/budget checks yield an allow / block / redact / review verdict before the request leaves your process. Each decision is signed into an HMAC chain in the SDK, then your obsvr ingest service countersigns it, folds it into a daily Merkle root, Ed25519-signs that root under a published key, and anchors it off-host — so you can verify offline with the public key alone and reconstruct the exact model and policy behind any decision months later." width="100%">
 </p>
 
 > ⚠️ **Private beta.** `@obsvr/sdk` and `obsvr-sdk` are not yet published to npm / PyPI. This repository is the source for beta participants; there is no public install yet. [Request access →](https://obsvr.dev)
 
-Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-for-byte compatible by shared conformance fixtures. Each runs in your process, governs every model and agent call in place, signs each decision into a tamper-evident chain, and hands that record to your obsvr ingest service for sealing.
+Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-for-byte compatible by shared conformance fixtures. Each runs in your process, governs the model and agent calls that pass through its interception points, signs each decision into a tamper-evident chain, and hands that record to your obsvr ingest service for sealing. **Which calls those are is a per-integration property, not an SDK-wide one** — see [Framework & provider support](#framework--provider-support) for the measured state of each, in both languages.
 
 | Package                    | Language                  | Version | Directory                    |
 | -------------------------- | ------------------------- | ------- | ---------------------------- |
@@ -210,7 +210,9 @@ try {
 
 **Signed policy distribution (TypeScript today).** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego via the `obsvr-export-rego` CLI for teams running policy-as-code.
 
-**Non-overridable policy floor.** Rules in `policyFloor` (same shape as `policyRules`) are the operator baseline that customer rules and hooks cannot weaken: `enabled: false` / `mode: "shadow"` are ignored, the `onPreCall` hook can never un-block or downgrade a floor match (the attempt is recorded as `floor_override_ignored` on the signed event), and a remote policy sync — which replaces only `policyRules` — cannot delete it. A floor `redact` **fails closed to a block**. Enforced block-before-send on every surface (wrapper, integrations, MCP, and the governance `evaluate()`/`explain()` endpoint). Off by default.
+**Non-overridable policy floor.** Rules in `policyFloor` (same shape as `policyRules`) are the operator baseline that customer rules and hooks cannot weaken: `enabled: false` / `mode: "shadow"` are ignored, the `onPreCall` hook can never un-block or downgrade a floor match (the attempt is recorded as `floor_override_ignored` on the signed event), and a remote policy sync — which replaces only `policyRules` — cannot delete it. A floor `redact` **fails closed to a block**. Off by default.
+
+**Where the floor is verified to reach, measured rather than asserted.** Driven live: it blocks before send on the client wrapper, on a framework integration, and on MCP tool arguments — the destination is never reached and the event records `blocked` with `floor_version` stamped, so a floor change is auditable from the event stream. A customer `onPreCall` hook returning "allow" does **not** un-block a floor match on any of the three. Two limits worth knowing rather than discovering: the `floor_override_ignored` record of a refused override attempt currently lands only on the **wrapper** path, so on integrations and MCP the block stands but the attempt to weaken it is not recorded; and the governance `evaluate()`/`explain()` endpoint is covered by unit tests in both languages but was not driven in that live pass. "Every surface" is the design intent and is now evidenced on three of the four — a claim of that shape was true of the tool gate too, right up until it was measured.
 
 ```typescript
 obsvr.init({
@@ -284,7 +286,7 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   ```typescript
   mcpToolPolicy: { pinning: { enabled: true, mode: "block" } },
   ```
-- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. **That holds only where obsvr is genuinely on the tool boundary, which is not everywhere.** Measured, per integration and per language: it holds on MCP in both SDKs, on `obsvrGovernTool` and the LangChain handler in TypeScript, and on AutoGen and PydanticAI in Python. It does NOT hold on the OpenAI Agents tracing processor in either language (that surface cannot refuse a tool at all), nor on the Python LangChain or CrewAI handlers, nor on LlamaIndex, nor on a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`), which invokes its own tools outside obsvr entirely. Put a destructive capability behind MCP or `obsvrGovernTool`. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
 
 ---
@@ -438,6 +440,50 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 | Pydantic-AI               |     —      |   ✅   |
 | FastAPI / ASGI middleware |     —      |   ✅   |
 | MCP                       |     ✅     |   ✅   |
+
+A ✅ above means the integration exists and its observability is verified. It does
+**not** mean a tool-policy block stops the tool — that is a separate property, it
+differs per integration AND per language, and it is graded below.
+
+### Does a tool-policy block actually stop the tool?
+
+**This is the table to read before you put a destructive capability behind a
+policy.** Every row was driven against a real run and graded on a captured audit
+event; none was inferred from the code being present. The two languages do not
+agree, so neither column may be read across to the other.
+
+| Surface | TypeScript | Python |
+| --- | --- | --- |
+| MCP (`callTool`) | **enforces** | **enforces** |
+| `obsvrGovernTool` | **enforces** | *no equivalent* |
+| LangChain | **enforces** | **not wired** |
+| AutoGen | *no integration* | **enforces** |
+| Pydantic-AI | *no integration* | **enforces**, not yet driven live |
+| OpenAI Agents | **records only** | **records only** |
+| CrewAI | *no integration* | **not wired** (its step limit does fire) |
+| LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
+| Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
+| provider tool runners | **not on that boundary** | **not on that boundary** |
+
+- **enforces** — the gate sits at the invocation boundary. A denied tool's own
+  callback does not run, and the event records `blocked`.
+- **records only** — a gate runs, but too late to stop anything. A denied tool
+  executes and its result reaches the caller. The event records
+  `not_evaluated` with the reason, because it cannot honestly claim a refusal.
+  On both sides this is the tracing-processor surface: the framework invokes
+  processor callbacks fire-and-forget, so nothing raised there reaches the run,
+  and a function span does not end until its tool has already returned.
+- **not wired** — the gate is implemented but hangs off a callback current
+  runtimes do not deliver. Nothing is refused and no block event is emitted.
+- **not on that boundary** — a provider tool runner invokes its own tools, so
+  obsvr is not in the path of turns 2..N at all. Those tool events record
+  `not_evaluated`.
+
+**The LangChain row is the one to notice.** TypeScript enforces and Python does
+not, and it is not a version accident: the TypeScript handler implements a
+pre-execution `handleToolStart` that the Python handler has no equivalent of, and
+sets `awaitHandlers`/`raiseError` so a refusal inside a callback aborts the tool
+instead of being logged and ignored.
 
 Per-package version ranges — declared floor and ceiling, what is verified against a captured audit event versus only bound, and which rows have no artifact at all — are in [COMPATIBILITY.md](COMPATIBILITY.md), generated from the audit artifacts rather than maintained by hand.
 

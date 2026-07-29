@@ -851,7 +851,15 @@ async function runGovernedCallTool(
     // ARGUMENTS is a CRITICAL exfil surface, and the canary scan lives inside
     // applyPreCallPolicy — without this, args are unscanned when neither
     // pii_policy nor a hook is configured.
+    // policy_floor belongs in this list and was missing from it, in both SDKs.
+    // The floor is the operator baseline that customer rules and hooks cannot
+    // weaken, and it is enforced INSIDE applyPreCallPolicy — so a deployment
+    // that configured a floor and nothing else got no floor at all on MCP tool
+    // calls, silently, on the surface the documentation singles out as the
+    // strongest. The floor already worked here the moment any OTHER entry in
+    // this list was configured, which is what made the gap invisible.
     if (
+      (currentConfig.policyFloor && currentConfig.policyFloor.length > 0) ||
       currentConfig.pii_policy ||
       currentConfig.on_pre_call ||
       canaryRegistrySize() > 0 ||

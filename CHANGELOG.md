@@ -55,6 +55,21 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **Both front doors now carry per-integration, per-language tool-policy
+  grading.** It existed in exactly one of three READMEs, and that was the
+  least-read of them: a reader arriving at the repository or at the npm package
+  saw an unqualified, SDK-wide guarantee. The root README and the TypeScript
+  README now each carry a table of which surfaces refuse a denied tool, which
+  record only, which are not wired, and which are not on obsvr's boundary at all
+  — with the two languages graded separately, because they disagree.
+
+  The `destructiveTools` "even in flag mode" claim is qualified to the surfaces
+  where it holds. It was true on MCP alone while reading as SDK-wide, which by
+  this project's severity axis is a lie rather than an omission. The
+  "intercept/govern **every** model and tool call" claims in the root README —
+  including the architecture diagram's alt text, which is the version a screen
+  reader gets — now describe the interception boundary instead of promising
+  totality that a provider tool runner defeats.
 - **The TypeScript LangChain integration enforces tool policy; the Python one
   does not.** Measured on both sides rather than assumed to match, and the two
   genuinely differ: the TypeScript handler implements a pre-execution
@@ -604,6 +619,28 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **A policy floor configured on its own did not reach MCP tool calls, in either
+  SDK.** The floor is enforced inside the shared pre-call evaluation, and the MCP
+  integration ran that evaluation only when a `pii_policy`, a pre-call hook, a
+  minted canary or a tainted session existed — `policyFloor` was not in that list.
+  So a deployment that configured the operator baseline and nothing else got no
+  floor at all on MCP tool calls, silently, on the surface `SECURITY.md` singles
+  out as the one to put a destructive capability behind. Measured live before the
+  fix: the tool executed and the record read `allowed`. The floor already worked
+  there the moment any other one of those was configured, which is what kept the
+  gap invisible.
+
+  Found by driving the "block-before-send on every surface" claim rather than
+  trusting it — that claim had **no live evidence of any kind** behind it. It is
+  now evidenced on the wrapper, on a framework integration and on MCP; the
+  governance `evaluate()`/`explain()` endpoint is covered by unit tests but was
+  not in that live pass.
+
+  **A related gap is documented rather than fixed:** the `floor_override_ignored`
+  record — the tamper-evident note that a hook tried to weaken the floor and was
+  refused — currently lands only on the wrapper path. On the integrations and MCP
+  the block stands and the hook is still refused, but the attempt is not recorded
+  on the event.
 - **The OpenAI Agents integration recorded `blocked` in TypeScript too.** The
   same defect as the Python one below, on the npm package. It emitted
   `action_taken: "blocked"` with `TOOL_DENIED` from a method whose own docstring

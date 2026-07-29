@@ -3,6 +3,7 @@ import { init, _reset, getConfig, updatePolicyRules } from '../../src/proxy/conf
 import { wrap } from '../../src/proxy/wrapper';
 import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import { applyPreCallPolicy } from '../../src/integrations/core';
+import { obsvrGovernMCP } from '../../src/integrations/mcp';
 import type { PolicyRule } from '../../src/policy/rules';
 
 /**
@@ -136,5 +137,78 @@ describe('policy floor: unsuppressible + tamper-evident', () => {
       operation: 'test',
     });
     expect(res.decision).toBe('block'); // shadow/disabled ignored for the floor
+  });
+});
+
+// ── the floor must not be gated behind an unrelated feature ──────────────────
+//
+// Twin of sdk-python/tests/test_policy_floor_wiring.py. The floor is enforced
+// inside the shared pre-call evaluation, and MCP ran that evaluation only when a
+// pii_policy, a pre-call hook, a minted canary or a tainted session existed.
+// `policyFloor` was not in that list in EITHER SDK, so a deployment that
+// configured the operator baseline and nothing else got no floor at all on MCP
+// tool calls — silently, on the surface the documentation singles out as the
+// strongest. Measured live on the Python side before the fix: the tool executed
+// and the record read `allowed`.
+
+describe('a policy floor configured alone still reaches MCP tool calls', () => {
+  const FLOOR_ONLY = [
+    {
+      id: 'floor-only',
+      name: 'floor blocks the secret',
+      // Declared in the weakened shape a floor rule must ignore, so the
+      // non-overridable property is exercised by construction.
+      enabled: false,
+      mode: 'shadow',
+      action: 'block',
+      type: 'keyword',
+      conditions: { keywords: ['launch codes'] },
+    },
+  ];
+
+  function governedSession(toolRuns: string[]) {
+    return obsvrGovernMCP(
+      {
+        callTool: async (p: any) => {
+          toolRuns.push(String(p?.name ?? 'unknown'));
+          return 'ok';
+        },
+        listTools: async () => ({ tools: [] }),
+      },
+      getConfig(),
+    ) as { callTool: (p: unknown) => Promise<unknown> };
+  }
+
+  it('blocks the tool call with no other policy feature configured', async () => {
+    init({ api_key: 'test', sample_rate: 1, policyFloor: FLOOR_ONLY } as any);
+    const toolRuns: string[] = [];
+    const client = governedSession(toolRuns);
+
+    await expect(
+      client.callTool({
+        name: 'write_note',
+        arguments: { text: 'the launch codes are 1234' },
+      }),
+    ).rejects.toThrow();
+
+    expect(toolRuns).toEqual([]);
+    await waitForEvents(1);
+    expect(sentEvents.some((e) => e.action_taken === 'blocked')).toBe(true);
+  });
+
+  it('lets clean arguments through under the same floor', async () => {
+    // The control. Without it the test above passes for a gate that blocks all.
+    init({ api_key: 'test', sample_rate: 1, policyFloor: FLOOR_ONLY } as any);
+    const toolRuns: string[] = [];
+    const client = governedSession(toolRuns);
+
+    await client.callTool({
+      name: 'write_note',
+      arguments: { text: 'an ordinary note' },
+    });
+
+    expect(toolRuns).toEqual(['write_note']);
+    await waitForEvents(1);
+    expect(sentEvents.some((e) => e.action_taken === 'blocked')).toBe(false);
   });
 });
