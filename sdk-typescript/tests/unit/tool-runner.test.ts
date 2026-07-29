@@ -186,6 +186,28 @@ describe('chat.completions.runTools', () => {
     // Rides in metadata until ingest has its own column.
     expect(JSON.stringify(tool[0])).toContain('tool_result');
 
+    // NO TOOL GATE RAN, and the event says so. This is the assertion that
+    // keeps the record from claiming a decision: `action_taken` still reads
+    // "allowed" because that enum is closed, so the marker is the only thing
+    // distinguishing "a gate permitted this" from "no gate saw it". A live
+    // probe watched a tainted session execute a tool named in
+    // `destructiveTools` while the event called it allowed.
+    const tel = (tool[0].metadata as Record<string, unknown>)
+      .obsvr_telemetry as Record<string, unknown>;
+    expect(tel?.policy_not_evaluated).toEqual({
+      surface: 'chat.completions.runTools.tool',
+      gate: 'tool_gate',
+      reason:
+        'provider tool runners invoke their tools directly; obsvr is not on that boundary',
+    });
+    // The model-call events are NOT marked: those genuinely went through the
+    // invocation's pre-call pipeline, so marking them would be the opposite
+    // error.
+    expect(
+      ((llm[0].metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>)
+        ?.policy_not_evaluated,
+    ).toBeUndefined();
+
     const finish = byOp('chat.completions.runTools.finish')[0];
     expect(finish.success).toBe(true);
     expect((finish.metadata as Record<string, unknown>).model_calls).toBe(2);

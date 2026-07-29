@@ -158,6 +158,34 @@ export interface ComplianceInfo {
    * an enforcement layer that did not run has to say so on the record.
    */
   quota_unmetered?: QuotaUnmetered;
+  /**
+   * A surface where NO policy decision was made about this event's subject.
+   *
+   * Third marker on the same channel and the third instance of the same
+   * reason, but this one guards a sharper failure than the other two. A lost
+   * detector and an uncounted quota both leave the event's verdict TRUE — the
+   * call really was allowed, one layer just did not contribute. Here there is
+   * no verdict at all: `action_taken` defaults to `"allowed"`, which does not
+   * mean "nothing blocked it", it means "a gate evaluated this and permitted
+   * it". On an ungated surface that is a claim the SDK cannot support, and it
+   * is the one a post-incident review would most reasonably rely on.
+   *
+   * Present ⟹ read `action_taken` on this event as UNSET, not as a verdict.
+   * The complete fix is an `action_taken` value meaning "not evaluated", which
+   * is a closed wire enum and a breaking change for every consumer — so it is
+   * proposed rather than taken, exactly as `detector_failure` reasoned.
+   */
+  policy_not_evaluated?: PolicyNotEvaluated;
+}
+
+/** Why a surface carries no policy verdict, in terms an operator can act on. */
+export interface PolicyNotEvaluated {
+  /** The surface that was not gated, e.g. "chat.completions.runTools.tool". */
+  surface: string;
+  /** What was not evaluated: the tool gate, the pre-call pipeline, ... */
+  gate: string;
+  /** Why the SDK is not on that boundary. */
+  reason: string;
 }
 
 /** Default compliance context (mirrors proxy wrapper defaults) */
@@ -1795,6 +1823,18 @@ export function buildIntegrationEvent(
     metadata.obsvr_telemetry = {
       ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
       quota_unmetered: compliance.quota_unmetered,
+    };
+    event.metadata = metadata;
+  }
+
+  // Same route again, and the sharpest of the three: an event whose subject no
+  // gate evaluated still carries action_taken "allowed", which asserts a
+  // decision rather than reporting the absence of one.
+  if (compliance.policy_not_evaluated) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      policy_not_evaluated: compliance.policy_not_evaluated,
     };
     event.metadata = metadata;
   }

@@ -2485,6 +2485,32 @@ function createAuditedToolRunnerMethod(
           prompt: toolArgs,
           response: result,
           contentProvenance: "tool_result",
+          // NO TOOL GATE RAN, and the event has to say so. A tool runner
+          // invokes its tools itself, so obsvr is not on that boundary: the
+          // destructive-capability set, denied-tool rules and every other
+          // tool-level control are absent here, not permissive. Without this
+          // marker the event still reads `action_taken: "allowed"`, which
+          // asserts a decision — measured live, a session obsvr had already
+          // marked tainted executed a tool named in `destructiveTools` and the
+          // record called it allowed.
+          compliance: {
+            event_type: "tool_call",
+            policy_version: derivePolicyVersion(config.policyRules ?? []),
+            // Still "allowed" on the wire, because that enum is closed and
+            // widening it breaks every consumer. The marker below is what says
+            // the value is not a verdict; see PolicyNotEvaluated.
+            action_taken: "allowed",
+            action_reason: "none",
+            action_source: "unknown",
+            redacted_types: [],
+            blocked_types: [],
+            policy_not_evaluated: {
+              surface: `${methodPath}.tool`,
+              gate: "tool_gate",
+              reason:
+                "provider tool runners invoke their tools directly; obsvr is not on that boundary",
+            },
+          },
           metadata: {
             agent_run_id: runId,
             tool_name: name,
