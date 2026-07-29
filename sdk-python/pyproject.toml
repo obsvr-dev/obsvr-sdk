@@ -87,13 +87,14 @@ fastapi = ["starlette>=0.30.0"]
 otel = ["opentelemetry-api>=1.20.0"]
 bedrock = ["boto3>=1.34.0"]
 vertex = ["google-cloud-aiplatform>=1.38.0"]
-# 0.1.0 through 1.1.0 all install but cannot import: google.adk.models raises
-# ModuleNotFoundError for 'deprecated', reached transitively through the
-# OpenTelemetry stack. Upstream packaging, not a renamed symbol — but the
-# declared floor named six releases where obsvr's LlmResponse binding fails, so
-# the floor is the first release that actually imports. Bisected by building a
-# venv per candidate and importing the symbol (0.1.0/0.2.0/0.3.0/0.4.0/0.5.0/
-# 1.0.0/1.1.0 fail, 1.2.0 binds).
+# Every release below 1.2.0 installs but cannot import: google.adk.models
+# raises ModuleNotFoundError for 'deprecated', reached transitively through the
+# OpenTelemetry stack (0.0.1 fails earlier still, on 'google' itself). Upstream
+# packaging, not a renamed symbol — but the declared floor named releases where
+# obsvr's LlmResponse binding fails, so the floor is the first release that
+# actually imports. Established by building a venv per candidate and importing
+# the symbol: ALL THIRTEEN published releases below 1.2.0 were tested, not
+# sampled, so no untested release sits under this floor.
 adk = ["google-adk>=1.2.0"]
 # pydantic_ai.toolsets.WrapperToolset — the symbol pydantic_ai.py binds — does
 # not exist until 0.4.4. Below it nothing raises: ObsvrToolset falls back to a
@@ -111,12 +112,17 @@ haystack = ["haystack-ai>=2.0.0"]
 # that is merely safe misdescribes the range as much as one that is wrong.
 smolagents = ["smolagents>=1.4.0,!=1.5.0"]
 # The 0.x line has never existed on PyPI: the earliest published release is
-# 1.0.0, preceded only by 1.0.0b* prereleases. 1.0.0 through 1.10.0 are all
-# UNINSTALLABLE under default resolution (ResolutionImpossible: the meta-package
-# pins a core version its own siblings contradict), so the floor is the first
-# release a plain `pip install` can actually produce. The middleware contract is
-# identical across the published range; 1.11.0 and later are verified to
-# register against the framework's own categorize_middleware.
+# 1.0.0, preceded only by 1.0.0b* prereleases. Every one of the sixteen releases
+# from 1.0.0 to 1.10.0 is UNINSTALLABLE under default resolution, and the cause
+# is structural rather than per-release: the meta-package pins
+# agent-framework-core==<its own version> exactly, while agent-framework-a2a —
+# reached through the core[all] extra, and published only as 1.0.0b* — requires
+# agent-framework-core>=1.11.0. No release below 1.11.0 can satisfy both, so the
+# floor is the first release a plain `pip install` can actually produce. All
+# sixteen were tested rather than sampled; nothing untested sits under this
+# floor. The middleware contract is identical across the published range, and
+# 1.11.0 and later are verified to register against the framework's own
+# categorize_middleware.
 agent-framework = ["agent-framework>=1.11.0"]
 # Interpreter-dependent, and stated rather than assumed: on CPython 3.13 pip
 # offers no candidate below 1.14.0, and 1.14.0/1.15.0 install but cannot import
