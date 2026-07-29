@@ -311,9 +311,13 @@ def build_audit_event(
         "time_to_first_token_ms": time_to_first_token_ms,
         # Success/status fields
         "success": success,
+        # ABSENT when a failure carried no HTTP status, matching the TS SDK.
+        # A client-side failure has no status code, and defaulting to 500
+        # asserted a server error the provider never sent; `success` and
+        # `error_type` already carry the failure.
         "status_code": status_code
         if status_code is not None
-        else (200 if success else 500),
+        else (200 if success else None),
         "error_type": classify_error(error) if error is not None else None,
         "error_message": error_message,
         # Metadata. with_run_metadata stamps agent_run_id when this event is

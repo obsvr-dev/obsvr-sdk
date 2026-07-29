@@ -1719,7 +1719,9 @@ export function buildIntegrationEvent(
 
     // Success/Status fields
     success,
-    status_code: params.statusCode ?? (success ? 200 : 500),
+    // Absent rather than a fabricated 500 when a failure carried no HTTP
+    // status; see the same change in the proxy wrapper.
+    status_code: params.statusCode ?? (success ? 200 : undefined),
     error_type: params.error ? classifyError(params.error) : null,
     error_message: errorMessage,
 

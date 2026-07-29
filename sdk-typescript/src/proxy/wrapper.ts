@@ -767,7 +767,13 @@ function buildAuditEvent(
 
     // Success/Status fields
     success,
-    status_code: success ? 200 : (errorStatusCode ?? 500),
+    // ABSENT when the failure carried no HTTP status. A client-side failure —
+    // a stream whose payload would not parse, a socket that died mid-response —
+    // has no status code, and defaulting to 500 asserted a server error the
+    // provider never sent. Measured: a malformed SSE chunk after a 200 response
+    // was recorded as a provider 500. `success: false` and `error_type` already
+    // carry the failure; the status field says only what the wire said.
+    status_code: success ? 200 : errorStatusCode,
     error_type: error ? classifyError(error) : null,
     error_message: (() => {
       const m =
@@ -885,6 +891,11 @@ function wrapStreamingIterator(
     const chunks: unknown[] = [];
     let streamError: unknown = null;
     let firstChunkTime: number | null = null;
+    // Whether the provider's stream ran out, as opposed to the caller walking
+    // away from it. `finally` below runs either way — including on the early
+    // `return()` a `break` triggers — so without this the two are
+    // indistinguishable and an abandoned stream is recorded as a completed one.
+    let drained = false;
     try {
       for await (const chunk of iter) {
         if (firstChunkTime === null) {
@@ -893,6 +904,7 @@ function wrapStreamingIterator(
         chunks.push(chunk);
         yield chunk;
       }
+      drained = true;
     } catch (err) {
       streamError = err;
       throw err;
@@ -1008,12 +1020,15 @@ function wrapStreamingIterator(
               ? Math.round(firstChunkTime - startTime)
               : undefined,
           success: streamError === null,
+          // Absent when the stream failed without a status. This is the site
+          // that recorded a malformed SSE chunk — a client-side parse failure
+          // after a 200 response — as a provider 500.
           status_code:
             streamError === null
               ? 200
               : ((streamError as any)?.status ??
                 (streamError as any)?.statusCode ??
-                500),
+                undefined),
           error_type: streamError ? classifyError(streamError) : null,
           error_message: (() => {
             const m =
@@ -1030,15 +1045,39 @@ function wrapStreamingIterator(
           // span envelope (trace linkage), and withTelemetryMetadata the call
           // telemetry. Previously the stream path set `auditFields.metadata`
           // bare, orphaning every streamed step from its run/trace.
-          metadata: withRunMetadata(
-            withSpanMetadata(
-              withTelemetryMetadata(
-                auditFields.metadata,
-                extractCallTelemetry(provider, request, undefined),
+          metadata: (() => {
+            const md = withRunMetadata(
+              withSpanMetadata(
+                withTelemetryMetadata(
+                  auditFields.metadata,
+                  extractCallTelemetry(provider, request, undefined),
+                ),
+                spanEnvelopeFor("llm_call", operation),
               ),
-              spanEnvelopeFor("llm_call", operation),
-            ),
-          ),
+            ) as Record<string, unknown> | undefined;
+            // An abandoned stream is not a failure — the provider answered and
+            // the caller stopped reading — so `success` stays true. But it is
+            // not a COMPLETED response either, and an event that says nothing
+            // reads as one: the captured text is whatever arrived before the
+            // caller walked away, and the token counts (which arrive last)
+            // are missing for a reason that is not "the provider omitted
+            // them". Same reserved channel and same reason as
+            // detector_failure and quota_unmetered.
+            if (streamError === null && !drained) {
+              const base = (md ?? {}) as Record<string, unknown>;
+              return {
+                ...base,
+                obsvr_telemetry: {
+                  ...((base.obsvr_telemetry as Record<string, unknown>) ?? {}),
+                  stream_incomplete: {
+                    reason: "caller stopped consuming the stream",
+                    chunks_captured: chunks.length,
+                  },
+                },
+              };
+            }
+            return md;
+          })(),
 
           // Compliance fields
           event_type: compliance.eventType,
@@ -2103,8 +2142,11 @@ function createAuditedMethod(
       } catch (error) {
         const latencyMs = Math.round(performance.now() - streamStart);
         try {
+          // No `?? 500`: an error without a status did not come from the
+          // server, and inventing one attributes a client-side failure to the
+          // provider.
           const statusCode =
-            (error as any)?.status ?? (error as any)?.statusCode ?? 500;
+            (error as any)?.status ?? (error as any)?.statusCode ?? undefined;
           const auditEvent = buildAuditEvent(
             ctx,
             cleaned_args[0],
@@ -2192,8 +2234,9 @@ function createAuditedMethod(
 
       // Attempt to audit the failed request (V2: with error info)
       try {
+        // Same reason as the streaming path above: absent, not invented.
         const statusCode =
-          (error as any)?.status ?? (error as any)?.statusCode ?? 500;
+          (error as any)?.status ?? (error as any)?.statusCode ?? undefined;
         const auditEvent = buildAuditEvent(
           ctx,
           cleaned_args[0],
@@ -2351,7 +2394,7 @@ function createAuditedRunnerMethod(
               failure
                 ? ((failure as { status?: number })?.status ??
                    (failure as { statusCode?: number })?.statusCode ??
-                   500)
+                   undefined)
                 : undefined,
               outcome.modelHint,
               outcome.compliance,
@@ -2549,7 +2592,7 @@ function createAuditedToolRunnerMethod(
           statusCode: error
             ? ((error as { status?: number })?.status ??
               (error as { statusCode?: number })?.statusCode ??
-              500)
+              undefined)
             : undefined,
           latencyMs: Math.round(performance.now() - startTime),
           metadata: {

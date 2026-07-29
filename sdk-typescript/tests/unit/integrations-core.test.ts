@@ -252,7 +252,9 @@ describe('buildIntegrationEvent', () => {
       success: false,
       error: new Error('boom'),
     });
-    expect(event.status_code).toBe(500);
+    // A bare Error carries no HTTP status, so none is recorded. A 500 here
+    // would attribute a client-side failure to the provider.
+    expect(event.status_code).toBeUndefined();
     expect(event.error_message).toBe('boom');
     expect(event.error_type).toBe('api_error');
   });

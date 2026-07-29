@@ -235,7 +235,9 @@ describe('wrap with auditable method', () => {
     expect(sentEvents.length).toBe(1);
     const ev = sentEvents[0];
     expect(ev.success).toBe(false);
-    expect(ev.status_code).toBe(500);
+    // No status: the thrown error carried none, and inventing a 500 would
+    // put a server error on the record that never happened.
+    expect(ev.status_code).toBeUndefined();
     expect(ev.error_type).toBeTruthy();
     expect(ev.response).toBe('');
     expect(ev.model).toBe('gpt-4');
