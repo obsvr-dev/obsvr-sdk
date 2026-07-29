@@ -1036,16 +1036,50 @@ function wrapStreamingIterator(
 /**
  * Create an audited version of a method
  */
-function createAuditedMethod(
-  originalMethod: Function,
+/**
+ * What the pre-call half hands to the post-call half.
+ *
+ * Only five values cross the boundary, which is why this split is a refactor
+ * rather than a redesign: everything else the governance section computes is
+ * consumed inside it.
+ */
+interface PreCallOutcome {
+  /** Args with obsvr's own audit fields removed, and PII redacted in place. */
+  cleaned_args: unknown[];
+  /** The audit fields that were filtered OUT of the caller's arguments. */
+  audit_fields: AuditFields;
+  /** Whether an ALLOWED-call event should be emitted (sampling). Enforcement
+   *  already ran regardless; this gates emission only. */
+  auditThisCall: boolean;
+  /** The compliance verdict this call was governed under. */
+  compliance: ComplianceCtx;
+  /** Google only: the model name read off the GenerativeModel instance. */
+  modelHint: string | undefined;
+}
+
+/**
+ * The pre-call half: everything from filtering the caller's arguments through
+ * to the compliance verdict, ending immediately before the provider is
+ * reached.
+ *
+ * Extracted so a caller that CANNOT await before returning — the provider
+ * `.stream()` helpers, which hand back a runner object synchronously — can run
+ * the identical governance pipeline rather than a reimplementation of it. Two
+ * pipelines that must agree are two pipelines that will eventually disagree,
+ * and this one decides whether a request is allowed to leave the process.
+ *
+ * BLOCKS BY THROWING. There is no early return in here and no "blocked" flag to
+ * check: a refusal propagates out, so a caller that forgets to inspect a result
+ * cannot accidentally proceed.
+ */
+async function governCall(
+  args: unknown[],
   target: object,
   ctx: PathContext,
   provider: "openai" | "anthropic" | "google" | "unknown",
-): Function {
+  methodPath: string,
+): Promise<PreCallOutcome> {
   const { config } = ctx;
-  const methodPath = ctx.path.join(".");
-
-  return async function auditedMethod(...args: unknown[]): Promise<unknown> {
     // Always filter audit fields from args (even if not auditing)
     // This ensures audit fields never reach the LLM provider
     const { cleaned_args, audit_fields } = filterArgs(args);
@@ -1960,6 +1994,23 @@ function createAuditedMethod(
         reason_code: resolvedReasonCode,
       });
     }
+
+  return { cleaned_args, audit_fields, auditThisCall, compliance, modelHint };
+}
+
+function createAuditedMethod(
+  originalMethod: Function,
+  target: object,
+  ctx: PathContext,
+  provider: "openai" | "anthropic" | "google" | "unknown",
+): Function {
+  const { config } = ctx;
+  const methodPath = ctx.path.join(".");
+
+  return async function auditedMethod(...args: unknown[]): Promise<unknown> {
+    const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint } =
+      await governCall(args, target, ctx, provider, methodPath);
+
 
     // Check for streaming - compliance boundary has already run above.
     const firstArg = cleaned_args[0];
