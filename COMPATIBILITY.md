@@ -6,7 +6,7 @@ artifact actually establishes; **Basis** is how strong that artifact is — `LIV
 captured audit event, `PE` a binding check only, `DECLARED ONLY` nothing at all.
 Every boundary links to a detail section naming the artifact behind it.
 
-> Evidence captured at `9cc290e`; SDK is now at `5dddf13` (43 commits since).
+> Evidence captured at `486923f` (recorded as 9cc290e, retired; repointed by tree); SDK HEAD has moved on since (8 commits).
 > Boundaries are unaffected — they are facts about upstream releases. See
 > [Evidence currency](#evidence-currency).
 
@@ -481,14 +481,23 @@ matters: an untested row invites someone to go and test it, and these cannot be
 tested until that changes. Nothing below was filled in by substituting a different
 endpoint for the one named.
 
-| Surface | Languages | Why unreachable | What that leaves standing | Artifact |
-| --- | --- | --- | --- | --- |
-| `@obsvr/sdk/bedrock` · `bedrock` extra | TS + Python | No credential for this provider exists in this environment. | TypeScript: symbols introspected, no call. Python: no artifact at all — the client library has no cell of any kind. | `results/introspect.jsonl:1`, `results/introspect.jsonl:2` |
-| `@obsvr/sdk/vertex` · `vertex` extra | TS + Python | No credential for this provider exists in this environment. | TypeScript: symbols introspected, no call. Python: no artifact at all. | `results/introspect.jsonl:3`, `results/introspect.jsonl:4` |
-| `@obsvr/sdk/azure-openai` | TS | No credential, and no `peerDependencies` entry either — the wrapper takes a client whose package it does not name, so there is no declared range to verify. | Shares the generic compat wrapper with the other vendor-labelled wrappers, so the code path has indirect evidence only. A shared code path is not evidence of a call to the service. | — none |
-| `@obsvr/sdk/cloudflare` | TS | No credential, and no `peerDependencies` entry either — the wrapper takes a client whose package it does not name, so there is no declared range to verify. | Shares the generic compat wrapper with the other vendor-labelled wrappers, so the code path has indirect evidence only. A shared code path is not evidence of a call to the service. | — none |
-| the `together-ai` service endpoint | TS + Python | No credential for it exists. The probe substitutes a different chat-completions-compatible endpoint (`api.groq.com`) at `harness/probe-together.mjs:18`. | The distribution's cells are real calls to that other endpoint. Substituting one endpoint for another was the flaw being corrected, so it was not repeated to fill this row. | `harness/probe-together.mjs:18` |
-| other chat-completions-compatible endpoints | TS + Python | No credential. | Never exercised. The endpoints that *were* exercised are `api.groq.com`, `localhost:11434` — anything else would run through the generic compat path, whose state is described below the TypeScript table. | `shape-audit-providers/results/prov-python-compat.jsonl:2`, `shape-audit-providers/results/prov-ts-compat.jsonl:1` |
+| Surface | Languages | Why unreachable | What that leaves standing |
+| --- | --- | --- | --- |
+| `@obsvr/sdk/bedrock` · `bedrock` extra | TS + Python | No credential for this provider exists in this environment. | TypeScript: symbols introspected, no call. Python: no artifact at all — the client library has no cell of any kind. |
+| `@obsvr/sdk/vertex` · `vertex` extra | TS + Python | No credential for this provider exists in this environment. | TypeScript: symbols introspected, no call. Python: no artifact at all. |
+| `@obsvr/sdk/azure-openai` | TS | No credential, and no `peerDependencies` entry either — the wrapper takes a client whose package it does not name, so there is no declared range to verify. | Shares the generic compat wrapper with the other vendor-labelled wrappers, so the code path has indirect evidence only. A shared code path is not evidence of a call to the service. |
+| `@obsvr/sdk/cloudflare` | TS | No credential, and no `peerDependencies` entry either — the wrapper takes a client whose package it does not name, so there is no declared range to verify. | Shares the generic compat wrapper with the other vendor-labelled wrappers, so the code path has indirect evidence only. A shared code path is not evidence of a call to the service. |
+| the `together-ai` service endpoint | TS + Python | No credential for it exists. The probe substitutes a different chat-completions-compatible endpoint (`api.groq.com`) at `harness/probe-together.mjs:18`. | The distribution's cells are real calls to that other endpoint. Substituting one endpoint for another was the flaw being corrected, so it was not repeated to fill this row. |
+| other chat-completions-compatible endpoints | TS + Python | No credential. | Never exercised. The endpoints that *were* exercised are `api.groq.com`, `localhost:11434` — anything else would run through the generic compat path, whose state is described below the TypeScript table. |
+
+Artifacts, by row:
+
+- **`@obsvr/sdk/bedrock` · `bedrock` extra** · `results/introspect.jsonl:1`, `results/introspect.jsonl:2`
+- **`@obsvr/sdk/vertex` · `vertex` extra** · `results/introspect.jsonl:3`, `results/introspect.jsonl:4`
+- **the `together-ai` service endpoint** · `harness/probe-together.mjs:18`
+- **other chat-completions-compatible endpoints** · `shape-audit-providers/results/prov-python-compat.jsonl:2`, `shape-audit-providers/results/prov-ts-compat.jsonl:1`
+
+No artifact: `@obsvr/sdk/azure-openai`, `@obsvr/sdk/cloudflare`.
 
 ## Exclusions
 
@@ -500,11 +509,17 @@ precautionary bound cannot quietly present as a measured one.
 | --- | --- | --- | --- | --- |
 | `ag2` | Python | `>=0.3.2,<1.0` | VERIFIED — adjacent tested pair | The major above the bound removes the agent class this integration binds and renames the import package, so both bound symbols are gone. Measured: `0.14.0` PASS inside the range, `1.0.0` NO_CONVERSABLE_AGENT, `1.0.1` NO_CONVERSABLE_AGENT outside it. |
 | `mcp` | Python | `>=1.0.0,<2.0.0` | VERIFIED — outside this corpus | The major above the bound moves the protocol types to a snake_case base model, renaming all three descriptor fields this integration reads through `getattr` (`inputSchema`, `nextCursor`, `destructiveHint`). Each would read as absent rather than raise, which silently switches off the schema-surface poisoning scan, drops the schema out of the descriptor pin hash, and empties the destructive-capability gate. The renames were confirmed against the upstream types and the finding is recorded in the manifest; **no cell in this corpus tests a release outside the range**, so this file cannot re-derive it. |
-| `@google/generative-ai` | TypeScript | `>=0.1.0 <1.0.0` | VERIFIED — nothing above the bound is published | The bound is exact rather than defensive. The npm release list recorded at `shape-audit-providers/results/floor-candidate-lists.jsonl:9` (40 releases, queried 2026-07-29T09:17:29+00:00) tops out at `0.24.1`, below the bound. |
-| `@modelcontextprotocol/sdk` | TypeScript | `>=1.0.0 <1.25.0 || >=1.30.0` | DECLARED ONLY | The carve-out excludes a window in the middle of the range as well as capping it. The reason for that window is not established here. No cell in this corpus falls outside the declared range, so the bound is unverified here in either direction — it may guard a real break or a release line that was never published, and this evidence cannot tell those apart. |
+| `@google/generative-ai` | TypeScript | `>=0.1.0 <1.0.0` | VERIFIED — nothing above the bound is published | The bound is exact rather than defensive. The recorded npm release list (40 releases, queried 2026-07-29T09:17:29+00:00) tops out at `0.24.1`, below the bound. |
+| `@modelcontextprotocol/sdk` | TypeScript | `>=1.0.0 <1.25.0 \|\| >=1.30.0` | DECLARED ONLY | The carve-out excludes a window in the middle of the range as well as capping it. The reason for that window is not established here. No cell in this corpus falls outside the declared range, so the bound is unverified here in either direction — it may guard a real break or a release line that was never published, and this evidence cannot tell those apart. |
 | `@openai/agents` | TypeScript | `>=0.13.0 <1.0.0` | DECLARED ONLY | No cell in this corpus falls outside the declared range, so the bound is unverified here in either direction — it may guard a real break or a release line that was never published, and this evidence cannot tell those apart. |
 | `openai` | TypeScript | `>=6.0.0 <8.0.0` | DECLARED ONLY | No cell in this corpus falls outside the declared range, so the bound is unverified here in either direction — it may guard a real break or a release line that was never published, and this evidence cannot tell those apart. |
 | `together-ai` | TypeScript | `>=0.6.0 <1.0.0` | DECLARED ONLY | No cell in this corpus falls outside the declared range, so the bound is unverified here in either direction — it may guard a real break or a release line that was never published, and this evidence cannot tell those apart. |
+
+Artifacts, by row:
+
+- **`@google/generative-ai`** · `shape-audit-providers/results/floor-candidate-lists.jsonl:9`
+
+No artifact: `ag2`, `mcp`, `@modelcontextprotocol/sdk`, `@openai/agents`, `openai`, `together-ai`.
 
 ## DECLARED ONLY — what this matrix cannot back
 
@@ -573,46 +588,33 @@ Five rules govern what a cell is allowed to say:
 
 ## Evidence currency
 
-The artifacts record the SDK revision they ran against: `9cc290e` (649 records), `eeb4d4b` (4 records).
+The artifacts record the SDK revision they ran against. Each is resolved against
+the SDK's current history before it is written here — this branch has been
+rewritten more than once, and a rewrite retires a hash while leaving the prose
+around it correct, so an unchecked hash is a link that reads fine and 404s:
 
-The SDK is now at `5dddf13`. 43 commits have landed since,
-34 of them touching the manifests this document reproduces or
+| Recorded | Records | Resolution |
+| --- | --: | --- |
+| 9cc290e | 649 | `486923f` — recorded hash retired by a history rewrite; this is the ancestor carrying an identical tree |
+| eeb4d4b | 4 | an ancestor of HEAD — verified as recorded, nothing to repoint |
+
+Repointing matches on **tree**, never on subject: the rewrite replayed messages
+and reworded some commits, so a subject match would miss exactly the cases this
+is for. Where no ancestor carries the tree, or more than one does, no hash is
+written at all rather than a plausible one.
+
+Independently of any hash, the artifacts name the SDK build itself: **node 0.10.0 · python 0.10.0**.
+A version is not retired by a history rewrite, so it is the durable half of this
+provenance and the fallback when a hash cannot be resolved.
+
+Measured from `486923f` (recorded as 9cc290e, retired; repointed by tree) to the SDK's current HEAD, 8 commits have landed since,
+4 of them touching the manifests this document reproduces or
 the integration sources its findings describe:
 
 - `5dddf13 Stamp each audited path with the release it first appears at`
 - `807e519 Publish the compatible-endpoint wrapper the docs already sold`
 - `b1187ec Name the one surface the capability gate actually holds on`
 - `a349638 Anchor the two client ranges where auditing actually begins`
-- `486923f Trim redundant product names from three module docstrings`
-- `487bcd8 Call the stream helpers unbuilt, not unreachable`
-- `d232e0f Read the model off a config object, not only off a dict`
-- `3f4eb1c Repoint the autogen extra at the distribution the code binds`
-- `4625405 Hand back an already-governed client instead of wrapping it twice`
-- `fc016eb Give an unevaluated call a verdict value that means that`
-- `a02ad60 Withdraw four integrations, and every claim that they exist`
-- `3a1019c Report a client-side stream failure as one, not as a provider 500`
-- `c746fd4 Record what an agent run returned, not what it was asked`
-- `aa469d5 Stop an ungated tool event from reading as an approved one`
-- `b082c00 Emit a tool run as a sequence rather than as one opaque call`
-- `41cfa20 Walk the two floor ranges that had only ever been sampled`
-- `2766cf0 Govern the stream helpers, keeping their synchronous return`
-- `58815ed Split the audited method at the provider call`
-- `a0b8ab3 Add a stand-in for the synchronous stream helpers`
-- `0bdfbc1 Lift the llamaindex floor to the lowest release proven live`
-- `5bb34ac Let framework events be metered, by explicit opt-in`
-- `b5ab6c8 Declare the blocked-call attribution limit below 5.0.0`
-- `488fd5c Repair the MCP client specifiers, which both resolved to nothing`
-- `fbea5ad Stop the mirrored span claiming tokens nobody counted`
-- `dc0f1bf Floor the agent framework extra at its first installable release`
-- `5456136 Keep the reason an optional integration failed to bind`
-- `73d9402 Make the agent-framework middleware able to register at all`
-- `752d196 Record a call once when obsvr is registered twice`
-- `c77daea Attribute LlamaIndex calls to a provider, and record their cost`
-- `5342720 Raise seven floors to versions the code can bind`
-- `5ca0776 Cover the model-bearing agent span, and stop the double emit`
-- `6ffeb92 Give Python the same token reader, and close two shapes`
-- `51c41a4 Stop inventing token counts nobody measured`
-- `5c34059 Audit the beta namespaces the method allow-list skipped`
 
 **This does not affect any boundary.** A floor or ceiling is a fact about which
 upstream release exposes what, and no commit to this SDK can change one. What can
