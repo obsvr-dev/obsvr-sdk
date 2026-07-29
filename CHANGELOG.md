@@ -265,6 +265,18 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **`docs/REMEDIATION.md` and `docs/RELEASE-GATE.md`.** An external reader could
+  verify a handful of itemised defects in `SECURITY.md` while the inventory behind
+  them — and the reasoning about which defects block a release at all — were not
+  visible anywhere. Both are now checked-in artifacts.
+
+  `REMEDIATION.md` records what an internal audit found, what was repaired, and
+  what is still open with the reason each item is not repaired yet. `RELEASE-GATE.md`
+  is the gate as a checklist with the commands that check it, and it states the
+  severity axis the whole thing rests on: a record asserting an enforcement that
+  did not happen blocks a release, while a control that does not fire and emits
+  nothing gets documented and ships. A documented non-enforcing gate is honest; a
+  fabricated denial is not.
 - **The enforcement-reporting invariant now covers TypeScript as well.** A table
   over the TypeScript tool gates, written against those implementations rather
   than translated from the Python results — which matters, because the two SDKs

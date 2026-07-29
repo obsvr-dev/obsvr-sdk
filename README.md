@@ -528,6 +528,15 @@ The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixtu
 
 Documented plainly, from the code. For the full threat model — what the signature chain does and does not prove — and how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
+Two further documents exist so the limits are checkable rather than merely
+asserted. [docs/REMEDIATION.md](docs/REMEDIATION.md) is the inventory an internal
+audit produced: what was found, what was repaired, and what is still open with the
+reason it is not repaired yet. [docs/RELEASE-GATE.md](docs/RELEASE-GATE.md) is the
+gate a version has to pass, as a checklist with the commands that check it —
+including the distinction that decides which defects block a release at all: a
+record that claims an enforcement which did not happen blocks; a control that does
+not fire and emits nothing gets documented and ships.
+
 - **Streaming.** With `stream: true`, PII scanning and policy hooks run **before** the LLM is contacted, so a blocked call never opens the stream. But **post-call** response scanning on streamed output is audit-time, not enforcement-time: tokens reach the caller as they arrive.
 - **Signing model.** The client chain is symmetric (API-key-derived): it proves capture order and detects modification, but a key-holder could construct validly-signed events. The service's countersignature and Ed25519 root are what give external, public verifiability. Integrity, not non-repudiation against a key-holder.
 - **Enforcement vs. sampling.** `sampleRate` gates audit-event _emission_ only — enforcement (PII, rules, hooks) runs on **every** call regardless of the sample rate.
