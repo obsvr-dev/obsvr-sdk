@@ -31,6 +31,27 @@ def _resolve() -> Optional[Any]:
     return _otel
 
 
+def _token_attributes(event: Dict[str, Any]) -> Dict[str, int]:
+    """The GenAI usage attributes, present only when the count is actually known.
+
+    ``or 0`` was doubly wrong here: it fabricated a count for an unread value AND
+    rewrote a genuine zero as the same fabrication, so the two were
+    indistinguishable in the exported span even when the event itself had them
+    right.
+    """
+    attrs: Dict[str, int] = {}
+    for field, key in (
+        ("input_tokens", "gen_ai.usage.input_tokens"),
+        ("output_tokens", "gen_ai.usage.output_tokens"),
+    ):
+        value = event.get(field)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            attrs[key] = value
+    return attrs
+
+
 def mirror_to_otel(config: Any, event: Dict[str, Any]) -> None:
     """Mirror one audit event as a retroactive span. Fire-and-forget."""
     otel_cfg = getattr(config, "otel", None)
@@ -51,8 +72,14 @@ def mirror_to_otel(config: Any, event: Dict[str, Any]) -> None:
             attributes={
                 "gen_ai.system": event.get("provider") or "unknown",
                 "gen_ai.request.model": event.get("model") or "unknown",
-                "gen_ai.usage.input_tokens": event.get("input_tokens") or 0,
-                "gen_ai.usage.output_tokens": event.get("output_tokens") or 0,
+                # The two token attributes are OMITTED when the count is
+                # unknown, and that is the whole point: a span reporting 0 for a
+                # measurement that never happened is the same lie the extractors
+                # were fixed to stop telling, in a different sink. An absent
+                # attribute is how the GenAI semantic conventions say "not
+                # recorded"; a zero is a claim. Twin:
+                # sdk-typescript/src/proxy/otel-mirror.ts.
+                **_token_attributes(event),
                 "obsvr.event_type": event.get("event_type") or "llm_call",
                 "obsvr.action_taken": event.get("action_taken") or "allowed",
                 "obsvr.action_reason": event.get("action_reason") or "none",

@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 460dfd5692ea0dbcb7d28f9c13209cfee3e83000e10997d824cba840c5d61147
+# corpus_sha256 = 9afde6243914017e806cc475755651e1df9fb2f40dd0de3bef542563b5c38b58
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -35,7 +35,7 @@ dc544592f9b458c5dae55adb1733efaf51a10a4ae2438c948f7dd0c23ffec1be  fixtures/fail_
 1296944641045722e0cc134fd181575ffa871c77bd5cd509101e5a7c9d103ac7  fixtures/injection_reason.json
 78e79783f6f7888e742faf6d4704c7fc4c67d9e618b9b1a05dba1817360c9d7c  fixtures/instance_guard.json
 c2db0e5974412fe5d52329475c77de6dfbc3a014353c6649c2d12d2dc755e2e9  fixtures/normalization.json
-a9d3ca1dd915cea57745e2f9c1c03c4158536d37c9921478b89ac8287acbbbde  fixtures/otel_attributes.json
+490d354986ad59015e651c589bdebfb3d8d06640142c3c51e17dea589f748006  fixtures/otel_attributes.json
 d66f66837586e7289ff4be348858fe2b4151224aab8765ef6020bac4457cd1e1  fixtures/pii_scan.json
 ec2505549c68066f4f15b1cc20a60a82bc5c34191607a2335fd51437197c9078  fixtures/policy_floor.json
 d95e7d3f27cd37d917e45cbc9e52840433733ed11996c548830513ff7e633975  fixtures/policy_signature.json
