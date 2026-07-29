@@ -44,11 +44,43 @@ Issues = "https://github.com/obsvr-dev/obsvr-sdk/issues"
 # Direct provider clients. obsvr.register patches openai/anthropic client
 # classes and obsvr.auto wires the OpenAI Agents tracing processor, so these
 # are imported by the package even though no framework integration names them.
-# Each floor is the earliest release carrying the symbol the code reads:
-# openai 1.0.0 introduced AsyncOpenAI, anthropic 0.3.0 introduced
-# AsyncAnthropic, openai-agents 0.0.2 introduced add_trace_processor.
-openai = ["openai>=1.0.0"]
-anthropic = ["anthropic>=0.3.0"]
+#
+# The two provider floors below are the earliest release carrying an entry in
+# AUDITABLE_METHODS, NOT the earliest release that imports. A client the
+# package can construct but has no auditable path on is governed by nothing and
+# stays silent while that happens, which is exactly what the previous floors
+# advertised. Both were re-established by an exhaustive walk — one throwaway
+# environment per published release, no bisect — so every boundary named here
+# is an adjacent tested pair, and the boundaries were then re-run live and
+# graded on the captured event.
+#
+# 1.0.0 through 1.65.5 carry exactly ONE of the seven declared paths,
+# chat.completions.create. responses.create and responses.parse both arrive at
+# 1.66.0 and that is this floor. The range deliberately does not promise the
+# rest, and the honest reading is per path rather than per range:
+# beta.chat.completions.parse arrives at 1.40.0, chat.completions.parse and
+# beta.chat.completions.create at 1.92.0, and beta.responses.create only at
+# 2.45.0 — six releases out of 326. The floor is NOT raised to cover that last
+# one, because a range standing for six releases would misdescribe the 141 on
+# which the responses paths do work. One hole is upstream and left unexcluded:
+# 1.99.0 ships a broken openai.types.responses, so both responses paths read
+# absent there and are present again in 1.99.1 the next day.
+openai = ["openai>=1.66.0"]
+# 0.3.0 governed NOTHING, which is worse than thin. The 0.3.x client exposes
+# only completions.create — the superseded text-completion path, absent from
+# AUDITABLE_METHODS — so an operator who resolved the declared floor built a
+# client, wired obsvr, sent traffic and got zero audit events with nothing
+# raising. Confirmed live rather than read off a shape: 0.7.8 grades NO_AUDIT
+# because no auditable path exists on the client at all. The first auditable
+# path is beta.messages.create at 0.8.0; messages.create, the path the support
+# table is actually about, arrives at 0.16.0 and that is this floor.
+# messages.parse arrives at 0.77.0 and is not promised by this range. Raise to
+# 0.36.0 if the beta namespace must be covered too — beta.messages is absent
+# from 0.16.0 through 0.35.0, which is upstream history (the beta namespace was
+# removed when that API graduated, and beta.messages returned at 0.36.0), not
+# an obsvr regression.
+anthropic = ["anthropic>=0.16.0"]
+# add_trace_processor, the symbol obsvr.auto binds, arrives in 0.0.2.
 openai-agents = ["openai-agents>=0.0.2"]
 # Bounded below 2.0 on evidence, not caution. mcp 2.0.0 moved the protocol
 # types to a snake_case base model (alias_generator=to_camel), so the three

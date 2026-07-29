@@ -266,6 +266,44 @@ cut, when it is renamed to that version.
   signal you have had.
   ([`cca8158`](https://github.com/obsvr-dev/obsvr-sdk/commit/cca8158))
 
+- **The two direct-provider floors now name releases that carry an auditable
+  method.** The floors above were corrected for failing to *bind*; these two
+  bound perfectly well and governed nothing, which is the quieter failure and
+  the harder one to notice from outside. Both were re-established by an
+  exhaustive walk — one throwaway environment per published release, 326 for
+  `openai` and 197 for `anthropic`, no bisect anywhere — so every boundary
+  named is an adjacent tested pair rather than an interpolation, and each
+  boundary was then re-run live and graded on the captured event.
+
+  | Package | Was | Now | Why the old floor was false |
+  | --- | --- | --- | --- |
+  | `anthropic` | `>=0.3.0` | `>=0.16.0` | the declared floor governs **nothing**. 0.3.x exposes only `completions.create`, which is not an auditable method, so an operator who resolved that floor built a client, wired obsvr, sent traffic and got **zero audit events with nothing raising**. Confirmed live rather than read off a shape: 0.7.8 grades `NO_AUDIT` because no auditable path exists on the client at all. `beta.messages.create` arrives at 0.8.0, and `messages.create` — the path the support table is about — at 0.16.0 |
+  | `openai` | `>=1.0.0` | `>=1.66.0` | honest for exactly **one of the seven** declared auditable paths. 1.0.0 through 1.65.5 carry `chat.completions.create` and nothing else; `responses.create` and `responses.parse` both arrive at 1.66.0 |
+
+  **`>=1.66.0` still does not promise every path, and the manifest now states
+  the reality per path rather than per range.**
+  `beta.chat.completions.parse` arrives at 1.40.0, `chat.completions.parse` and
+  `beta.chat.completions.create` at 1.92.0, and `beta.responses.create` only at
+  2.45.0 — six releases out of the 326 walked. The floor was deliberately not
+  raised to 2.45.0 to cover that last path, because a range standing for six
+  releases would misdescribe the 141 on which the `responses` paths do work.
+  For `anthropic`, `messages.parse` arrives at 0.77.0 and is likewise not
+  promised by the range.
+
+  Two non-monotonic rows in the walks are upstream history, not obsvr
+  regressions, and are recorded that way: `openai` 1.99.0 ships a broken
+  `openai.types.responses`, so both `responses` paths read absent for a single
+  day until 1.99.1; and `anthropic`'s `beta.messages` is absent from 0.16.0
+  through 0.35.0 because the beta namespace was removed outright when that API
+  graduated, returning at 0.36.0. **Raise the floor to `>=0.36.0` if the beta
+  namespace has to be covered too.**
+
+  **Not marked BREAKING, and the reason is that nothing has been published
+  from this repository yet** — no installed consumer can be depending on the
+  old floors. **Migration:** none, unless you pinned a version inside a removed
+  range, in which case the extra was advertising governance you were not
+  receiving.
+
 - **`content_provenance` on audit events: where inside the payload the content
   came from.** `source` names the integration that emitted an event ("mcp",
   "langchain"); this names the position the text occupied within the call —
