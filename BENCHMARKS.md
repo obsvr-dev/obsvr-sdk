@@ -4,7 +4,9 @@ Honest, reproducible measurements of what the obsvr SDKs cost per call and how t
 under sustained load. Every number below was produced by a script shipped in
 [`bench/`](bench/) — re-run them and check us.
 
-- **Date:** 2026-07-17 (UTC) · **SDK:** `@obsvr/sdk` 0.9.0 / `obsvr-sdk` (Python) 0.9.0, git `d3917c1`
+- **Date:** 2026-07-17 (UTC) · **SDK:** `@obsvr/sdk` 0.9.0 / `obsvr-sdk` (Python) 0.9.0 (the
+  commit these ran at is not recoverable from this repository's history, so the version pair
+  is the provenance; re-run against a current checkout to get numbers you can pin to a commit)
 - **Machine:** Apple M3 Pro (11 cores), 18 GB RAM, macOS 26.5.1
 - **Runtimes:** Node v22.23.1 · Python 3.13.2 (CPython)
 - **Method:** mock in-process provider (canned response), transport stubbed in-process —

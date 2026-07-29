@@ -282,11 +282,22 @@ jobs:
     name: Version consistency
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 is load-bearing for the commit-link check below, which
+      # tests ancestry and has no ancestors to find in the default depth-1
+      # checkout. The script refuses to run shallow rather than passing.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       # catch a self-contradictory version early (package.json vs
       # constants.ts vs _version.py vs server.json). Node is preinstalled.
       - name: Check versions agree
         run: node scripts/check-version-consistency.mjs
+
+      # A commit hash named in a tracked doc must still be reachable. History
+      # rewrites retire hashes while leaving the prose around them correct, so
+      # nothing else in CI would notice the link had gone dead.
+      - name: Doc commit links resolve
+        run: node scripts/check-doc-commit-links.mjs
 
   ci-complete:
     name: CI complete

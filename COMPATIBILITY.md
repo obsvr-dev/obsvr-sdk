@@ -13,10 +13,10 @@ is authored. Re-run it after a probe pass and the new evidence lands for free.
 - Declared ranges read from `sdk-python/pyproject.toml` and `sdk-typescript/package.json`
 - Evidence: **900 observations** over **25 package/language cells**, from **65 artifact files**
 - Generated 2026-07-29
-- Evidence captured against SDK `9cc290e`; SDK is now at `807e519`
+- Evidence captured against SDK `486923f`; SDK is now at `807e519`
 
 > **The evidence is older than the SDK it describes.** Every cell below was
-> measured against `9cc290e`; 40 commits have landed since,
+> measured against `486923f`; 40 commits have landed since,
 > 33 of them touching the manifests this document reproduces
 > or the integration sources its findings describe. Most recent first:
 >

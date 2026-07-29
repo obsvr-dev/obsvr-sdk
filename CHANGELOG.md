@@ -109,7 +109,7 @@ cut, when it is renamed to that version.
   (`label`, `confidence`, `quoted`); existing readers of `pii_detected` and
   `detected_types` are unaffected. Pinned by
   `conformance/fixtures/pii_scan.json`.
-  ([`119ed71`](https://github.com/obsvr-dev/obsvr-sdk/commit/119ed71))
+  ([`9f164a2`](https://github.com/obsvr-dev/obsvr-sdk/commit/9f164a2))
 - **Approval grants are bound to the action they were granted for, and
   re-checked before the call goes out.** A grant may now carry an
   `action_hash` — a canonical digest of the rule, the rule's definition hash,
@@ -254,8 +254,8 @@ cut, when it is renamed to that version.
   | `pydantic-ai-slim` | `>=0.0.14` | `>=0.4.4` | `pydantic_ai.toolsets.WrapperToolset` does not exist below 0.4.4; below it `govern_toolset()` still returns an object, so denied-tool policy, per-tool auditing and step limits are silently inert |
   | `google-adk` | `>=0.1.0` | `>=1.2.0` | all thirteen releases below 1.2.0 install but cannot import (`google.adk.models` raises `ModuleNotFoundError: deprecated`, reached through the OpenTelemetry stack) |
   | `semantic-kernel` | `>=1.0.0` | `>=1.16.0` | 1.14.0 and 1.15.0 install but cannot import against any modern pydantic; below 1.14.0 CPython 3.13 has no candidate at all |
-  | `llama-index-core` | `>=0.10.0` | `>=0.11.23` | the declared floor emits no audit event at all; **this floor is the lowest release VERIFIED working live rather than the first known-good one** — the 0.10.x line could not be measured, so versions below are excluded for being unverifiable, not for being proven broken ([`f178045`](https://github.com/obsvr-dev/obsvr-sdk/commit/f178045)) |
-  | `agent-framework` | `>=1.0.0` | `>=1.11.0` | all sixteen releases below 1.11.0 fail dependency resolution outright — the meta-package pins `agent-framework-core` to its own version exactly, while a sibling reached through that package's `all` extra requires `>=1.11.0` — so the extra named sixteen releases a plain install cannot produce ([`11c9d61`](https://github.com/obsvr-dev/obsvr-sdk/commit/11c9d61)) |
+  | `llama-index-core` | `>=0.10.0` | `>=0.11.23` | the declared floor emits no audit event at all; **this floor is the lowest release VERIFIED working live rather than the first known-good one** — the 0.10.x line could not be measured, so versions below are excluded for being unverifiable, not for being proven broken ([`0bdfbc1`](https://github.com/obsvr-dev/obsvr-sdk/commit/0bdfbc1)) |
+  | `agent-framework` | `>=1.0.0` | `>=1.11.0` | all sixteen releases below 1.11.0 fail dependency resolution outright — the meta-package pins `agent-framework-core` to its own version exactly, while a sibling reached through that package's `all` extra requires `>=1.11.0` — so the extra named sixteen releases a plain install cannot produce ([`dc0f1bf`](https://github.com/obsvr-dev/obsvr-sdk/commit/dc0f1bf)) |
   | `smolagents` | `>=1.0.0` | `>=1.4.0,!=1.5.0` | below 1.4.0 the import fails against a current `transformers`; 1.5.0 does not pull `transformers` in at all, and 1.5.1 restored it. The hole is excluded rather than rounded up, because 1.4.x genuinely works |
 
   Most of these are upstream packaging problems rather than obsvr renames, but
@@ -264,7 +264,7 @@ cut, when it is renamed to that version.
   version inside one of the removed ranges — in which case the integration was
   not working there, silently, and the resolver error is the first honest
   signal you have had.
-  ([`cca8158`](https://github.com/obsvr-dev/obsvr-sdk/commit/cca8158))
+  ([`5342720`](https://github.com/obsvr-dev/obsvr-sdk/commit/5342720))
 
 - **The two direct-provider floors now name releases that carry an auditable
   method.** The floors above were corrected for failing to *bind*; these two
