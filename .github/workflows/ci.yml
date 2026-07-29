@@ -157,6 +157,17 @@ jobs:
         run: python -m pytest tests/test_signing.py tests/test_verify_chain.py tests/test_conformance.py tests/test_reason_codes.py tests/test_pii_scan_conformance.py tests/test_fail_mode.py tests/test_policy_error.py tests/test_instance_guard.py tests/test_policy_verify.py tests/test_cli_verify.py tests/test_canonical_json_conformance.py tests/test_agent_controls_conformance.py tests/test_tool_content_hash_conformance.py -q
         working-directory: sdk-python
 
+      # A `blocked` record must mean the operation did not happen. Two false
+      # records reached main because nothing asserted that, and both were found
+      # by hand against live providers — which is to say, found once. This is
+      # the same property as a table over every gated surface, offline and
+      # deterministic: no provider, no key, no network. Named as its own step
+      # because it is a release gate, and a reviewer should be able to point at
+      # the check rather than trust that the suite covers it.
+      - name: Enforcement-reporting invariant (blocked implies not executed)
+        run: python -m pytest tests/test_enforcement_reporting_invariant.py -q
+        working-directory: sdk-python
+
       # Both obsvr-verify CLIs, driven over ONE export built from the shared
       # signing vectors. Each language's own suite can agree with itself
       # forever while disagreeing with the other; only this catches that.
