@@ -151,9 +151,11 @@ class TestEverySurfaceUsesTheChokePoint:
         which is how two sites come to classify the same block differently.
         Only errors.py may construct one.
 
-        This looks for error CONSTRUCTION, not for the message text: the ADK
-        integration blocks by returning a refusal response rather than raising,
-        and legitimately carries the phrase in that response.
+        This looks for error CONSTRUCTION, not for the message text: the MCP,
+        Haystack and pydantic-ai integrations raise their own typed errors
+        carrying the same phrase, and a blocked event's policy_reason can hold
+        it too. Neither is an error built at the call site, so neither is what
+        this guards against.
         """
         import re
 

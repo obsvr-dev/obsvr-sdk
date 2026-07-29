@@ -47,10 +47,10 @@ def test_a_second_wrap_does_not_nest_a_proxy_inside_a_proxy():
     """The mechanism behind the duplicate events, asserted directly.
 
     Two events per call came from two proxy layers each auditing the same
-    call. The event COUNT is pinned by the live probe
-    (`shape-audit/results/anthropic-py.jsonl`) rather than here, because the
-    `sent` fixture does not intercept this particular send path — asserting on
-    an empty list would have been a test that passes for the wrong reason.
+    call. The event COUNT is pinned by a live probe against a real client
+    rather than here, because the `sent` fixture does not intercept this
+    particular send path — asserting on an empty list would have been a test
+    that passes for the wrong reason.
     """
     _init()
     once = obsvr.wrap(FakeAnthropic())
