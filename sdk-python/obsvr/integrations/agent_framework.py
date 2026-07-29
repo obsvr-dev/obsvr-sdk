@@ -1,31 +1,43 @@
 """Microsoft Agent Framework (MAF) integration — governing agent middleware.
 
 MAF runs each agent invocation through a middleware chain: a middleware receives
-an ``AgentRunContext`` and a ``next`` callable, and either calls ``await
-next(context)`` to proceed or short-circuits. The real termination mechanism is
-``context.terminate = True`` combined with NOT calling ``next`` — obsvr uses
-exactly that.
+an ``AgentContext`` and a ZERO-ARGUMENT ``call_next`` callable, and either awaits
+``call_next()`` to proceed or short-circuits by not calling it. Short-circuiting
+is the real block — the agent never runs — and the caller is handed whatever the
+middleware left on ``context.result``.
 
 ``obsvr_agent_middleware`` (function middleware) and ``ObsvrAgentMiddleware``
 (class middleware) both run the obsvr pre-call pipeline (built-in PII scan,
 structured rules, the pre-call hook / HITL) on the run input BEFORE the agent
-executes. On a BLOCK the middleware sets ``context.terminate = True``, sets a
-blocked result, and returns without calling ``next`` — the agent never runs.
+executes. On a BLOCK the middleware sets ``context.result`` to a blocked
+``AgentResponse`` and returns without calling ``call_next``.
+
+WHY THE PARAMETER ANNOTATIONS ARE LOAD-BEARING. MAF decides whether a callable
+is agent middleware or function middleware by inspecting its FIRST PARAMETER'S
+ANNOTATION NAME — ``categorize_middleware`` accepts a bare callable only if a
+decorator left a ``_middleware_type`` marker or if
+``first_param.annotation.__name__ == "AgentContext"``. Annotating the parameter
+``Any`` matches neither, and categorization runs at AGENT CONSTRUCTION, so
+``Agent(client=..., middleware=[...])`` raised before any call was made. The
+annotations below are therefore part of the registration contract, not
+documentation; do not relax them to ``Any``.
 
 Usage::
 
-    from agent_framework import ChatAgent
+    from agent_framework import Agent
     from obsvr.integrations.agent_framework import obsvr_agent_middleware
     import obsvr
 
     obsvr.init(api_key="...", ingest_url="https://...",
                pii_policy={"rules": {"ssn": "block"}})
-    agent = ChatAgent(chat_client=..., middleware=[obsvr_agent_middleware])
+    agent = Agent(client=..., middleware=[obsvr_agent_middleware])
 """
 
 # Interception: MAF agent middleware (non-mutating). Registered through MAF's
-# official middleware chain; a block terminates the run via context.terminate
-# without invoking next(), so the agent never executes.
+# official middleware chain; a block short-circuits the chain by not invoking
+# call_next() and leaving a blocked result on the context, so the agent never
+# executes. Nothing MAF owns is patched — the class middleware subclasses MAF's
+# own published AgentMiddleware base.
 
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -33,17 +45,67 @@ from ..config import try_get_config
 from ..events import emit_event
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage, blocked_user_input_for_storage
 
-try:  # real result type when MAF is installed; a marker is used otherwise
-    from agent_framework import AgentRunResponse as _AgentRunResponse  # type: ignore
-    from agent_framework import ChatMessage as _ChatMessage  # type: ignore
-    from agent_framework import Role as _Role  # type: ignore
+# Each symbol is bound in its OWN try block. They used to share one, so a single
+# upstream rename nulled all of them together — the framework renamed two names
+# at its 1.0 GA and the third, which still exists, was lost as collateral. A
+# per-symbol bind makes the next such rename partial instead of total.
+#
+# The GA names are tried first and the pre-GA (1.0.0b*) spellings second, so a
+# caller still on a prerelease keeps working without the GA path paying for it.
 
-    _HAS_MAF = True
+try:  # renamed from AgentRunResponse at the 1.0 GA
+    from agent_framework import AgentResponse as _AgentResponse  # type: ignore
+except Exception:  # pragma: no cover - MAF absent or pre-GA
+    try:
+        from agent_framework import AgentRunResponse as _AgentResponse  # type: ignore
+    except Exception:
+        _AgentResponse = None  # type: ignore
+
+try:  # renamed from ChatMessage at the 1.0 GA
+    from agent_framework import Message as _Message  # type: ignore
+except Exception:  # pragma: no cover - MAF absent or pre-GA
+    try:
+        from agent_framework import ChatMessage as _Message  # type: ignore
+    except Exception:
+        _Message = None  # type: ignore
+
+try:
+    from agent_framework import AgentContext as _MafAgentContext  # type: ignore
 except Exception:  # pragma: no cover - MAF not installed
-    _AgentRunResponse = None  # type: ignore
-    _ChatMessage = None  # type: ignore
-    _Role = None  # type: ignore
-    _HAS_MAF = False
+    _MafAgentContext = None  # type: ignore
+
+try:
+    from agent_framework import AgentMiddleware as _MafAgentMiddleware  # type: ignore
+except Exception:  # pragma: no cover - MAF not installed
+    _MafAgentMiddleware = None  # type: ignore
+
+#: Why each optional bind failed, for diagnostics. A bare False flag cannot tell
+#: an absent package from a renamed symbol from a broken transitive dependency,
+#: and those need different fixes.
+_HAS_MAF = _AgentResponse is not None and _Message is not None
+
+# `Role` is deliberately NOT imported. It is a NewType over str rather than an
+# enum, so `Role.ASSISTANT` does not exist and a message role is just the string
+# "assistant".
+
+
+class _AgentContextPlaceholder:
+    """Stand-in used only for the parameter annotation when MAF is absent.
+
+    MAF's classifier compares the annotation's ``__name__`` STRING, not class
+    identity, so a class of this name satisfies it. That keeps the annotations
+    honest with zero import-time dependency on MAF: with the package installed
+    the real type is used, and without it the module still imports.
+    """
+
+
+AgentContext = _MafAgentContext if _MafAgentContext is not None else _AgentContextPlaceholder
+if _MafAgentContext is None:
+    _AgentContextPlaceholder.__name__ = "AgentContext"
+
+#: MAF's own next-handler type: zero arguments. Passing the context to it raises
+#: TypeError, which used to fire on every ALLOWED run.
+NextHandler = Callable[[], Awaitable[None]]
 
 SOURCE = "microsoft_agent_framework"
 PROVIDER = "agent_framework"
@@ -59,7 +121,7 @@ def _message_text(m: Any) -> str:
 
 
 def _input_text(context: Any) -> tuple:
-    """Return (full_prompt, last_user_text) from an AgentRunContext."""
+    """Return (full_prompt, last_user_text) from an AgentContext."""
     msgs = getattr(context, "messages", None)
     if msgs is None:
         msgs = getattr(context, "input_messages", None)
@@ -77,9 +139,16 @@ def _input_text(context: Any) -> tuple:
 
 
 def _blocked_response(message: str) -> Any:
-    if _AgentRunResponse is not None and _ChatMessage is not None and _Role is not None:
+    """A blocked result in the shape MAF's contract promises the caller.
+
+    ``Message`` takes (role, contents) positionally; it has no ``text=``
+    constructor keyword — ``text`` is a read-only property computed from
+    ``contents``. Passing it raised TypeError, so even with the class names
+    corrected the block path would have failed here.
+    """
+    if _AgentResponse is not None and _Message is not None:
         try:
-            return _AgentRunResponse(messages=[_ChatMessage(role=_Role.ASSISTANT, text=message)])
+            return _AgentResponse(messages=[_Message("assistant", [message])])
         except Exception:  # pragma: no cover - defensive across MAF versions
             pass
     return {"obsvr_blocked": True, "text": message}
@@ -96,7 +165,7 @@ def _identity_meta(options: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 async def _govern(context: Any, options: Dict[str, Any]) -> bool:
     """Run the pre-call pipeline. Returns True if BLOCKED (caller must not
-    proceed); False to proceed. Sets context.terminate / context.result on block."""
+    proceed); False to proceed. Sets context.result on block."""
     cfg = try_get_config()
     if cfg is None:
         return False
@@ -119,11 +188,10 @@ async def _govern(context: Any, options: Dict[str, Any]) -> bool:
             success=False,
             status_code=403, compliance=compliance, options=opts,
         )
-        # MiddlewareTermination: stop the chain and hand back a blocked result.
-        try:
-            context.terminate = True
-        except Exception:
-            pass
+        # The block IS "return without awaiting call_next" — the chain stops and
+        # the agent never runs. There is no `terminate` flag on AgentContext;
+        # writing one silently created an attribute MAF never reads, which made
+        # the block look deliberate when it was working by accident.
         try:
             context.result = _blocked_response("[obsvr] Agent run blocked by policy")
         except Exception:
@@ -138,40 +206,46 @@ async def _govern(context: Any, options: Dict[str, Any]) -> bool:
     return False
 
 
-async def obsvr_agent_middleware(
-    context: Any, next: Callable[[Any], Awaitable[None]]
-) -> None:
+async def obsvr_agent_middleware(context: AgentContext, call_next: NextHandler) -> None:
     """Function-style MAF agent middleware. Governs the run pre-execution."""
     blocked = await _govern(context, {})
     if blocked:
-        return  # terminate: do NOT call next -> the agent never runs
-    await next(context)
+        return  # do NOT call call_next -> the agent never runs
+    await call_next()
 
 
-def make_agent_middleware(**options: Any) -> Callable[[Any, Callable[[Any], Awaitable[None]]], Awaitable[None]]:
+def make_agent_middleware(**options: Any) -> Callable[..., Awaitable[None]]:
     """Build a function middleware bound to caller-identity ``options``."""
 
-    async def middleware(context: Any, next: Callable[[Any], Awaitable[None]]) -> None:
+    async def middleware(context: AgentContext, call_next: NextHandler) -> None:
         blocked = await _govern(context, options)
         if blocked:
             return
-        await next(context)
+        await call_next()
 
     return middleware
 
 
-class ObsvrAgentMiddleware:
-    """Class-style MAF agent middleware (``async def process(context, next)``)."""
+# Subclassing MAF's published base is what routes this through
+# categorize_middleware's isinstance branch, which never inspects __name__.
+# Without a real base the classifier fell through to the bare-callable path and
+# raised AttributeError on an instance that has no __name__.
+_MiddlewareBase: Any = _MafAgentMiddleware if _MafAgentMiddleware is not None else object
+
+
+class ObsvrAgentMiddleware(_MiddlewareBase):
+    """Class-style MAF agent middleware (``async def process(context, call_next)``).
+
+    No ``__call__`` passthrough: defining one makes the INSTANCE callable, which
+    sent it down the bare-callable classification path and produced an
+    AttributeError about a missing ``__name__`` instead of registering.
+    """
 
     def __init__(self, **options: Any) -> None:
         self._options = options
 
-    async def process(self, context: Any, next: Callable[[Any], Awaitable[None]]) -> None:
+    async def process(self, context: AgentContext, call_next: NextHandler) -> None:
         blocked = await _govern(context, self._options)
         if blocked:
             return
-        await next(context)
-
-    # Some MAF versions invoke middleware objects directly.
-    async def __call__(self, context: Any, next: Callable[[Any], Awaitable[None]]) -> None:
-        await self.process(context, next)
+        await call_next()
