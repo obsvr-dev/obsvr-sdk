@@ -226,7 +226,7 @@ const client = wrapOpenAICompatible(new OpenAI({ baseURL: 'http://localhost:1143
 });
 ```
 
-Set `source` per endpoint. The named wrappers built on this one (`wrapTogether`, and the Azure/Cloudflare modules) hardcode their own labels, so a client pointed somewhere else still records the name of the module that wrapped it.
+Set `source` per endpoint. **The recorded `provider` follows the endpoint, not the wrapper.** The named wrappers built on this one (`wrapTogether`, and the Azure/Cloudflare modules) pass their label as a FALLBACK, used only when the client exposes no readable base URL; when it does, the label is derived from the host, `metadata.endpoint_host` records that host, and `metadata.provider_attribution` says whether the value was checked against the endpoint (`endpoint`) or merely declared (`client_declared`). A destination the canonical provider enum cannot name records `provider: "unknown"` and keeps its identity in `metadata.provider_detail` — so a Groq or Ollama endpoint reads as what it is rather than as whichever module wrapped it. These labels used to be unconditional, which meant one wrapper pointed at two different servers reported the same destination for both.
 
 ### Agent runs
 

@@ -585,6 +585,35 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The recorded `provider` described the wrapper, not the destination.**
+  `wrapTogether` set `provider: "together"` unconditionally, so one wrapper
+  pointed at two different servers reported the same destination for both:
+  against Groq's API it recorded "together", and against a localhost server it
+  recorded "together" as well — filing a local model as served by a US cloud
+  vendor, in the field a compliance reviewer reads for data residency. No event
+  field anywhere derived from the real endpoint.
+
+  `provider` is now taken from the client's base URL. The wrapper's label is a
+  fallback used only when no base URL can be read, and three metadata keys carry
+  the destination: `endpoint_host` (host and port only — never credentials, path
+  or query), `provider_detail`, and `provider_attribution`, which says whether the
+  label was checked against the endpoint or merely declared, borrowing the trust
+  vocabulary `provenance_source` already uses for `model_resolved`. Where the host
+  is visible but unrecognised, `unknown` is recorded: vague is a lesser fault
+  than wrong.
+
+  **The provider union was deliberately NOT widened** to add the OpenAI-compatible
+  vendors it lacks. That type mirrors the ingest canonical enum, so emitting a new
+  member would move the problem one layer down. A destination the enum cannot name
+  records `unknown` and keeps its identity in `provider_detail` — the carriage
+  `mcp` already uses — and a test pins that every resolved value stays inside the
+  canonical set.
+
+  Verified live through one wrapper against two real endpoints, each now
+  recording its own destination. Note this is the TypeScript half only: the Python
+  provider detector still reports `"openai"` for any client exposing
+  `chat.completions`, so a cloud endpoint and a local server remain
+  indistinguishable there.
 - **An unrecognised `step_limit_action` silently disabled the step limit.** The
   decision helper returned the configured value verbatim, and each caller then
   tested it against the two dispositions it implements — so a typo, or a

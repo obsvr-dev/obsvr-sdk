@@ -53,23 +53,181 @@ const OPERATION = "chat.completions.create";
 const WRAPPED_MARKER = Symbol("obsvr-integration-wrapped");
 
 export interface OpenAICompatConfig extends IntegrationOptions {
+  /**
+   * Fallback label, used ONLY when the client exposes no readable base URL.
+   * The recorded provider is derived from the endpoint the call actually goes
+   * to whenever that can be read — see `resolveDestination`.
+   */
   provider: IntegrationProvider;
   source: string;
 }
 
+/** Internal: `OpenAICompatConfig` plus the attribution decided at wrap time. */
+interface ResolvedCompatConfig extends OpenAICompatConfig {
+  /** Reserved metadata describing WHERE the call goes and how sure we are. */
+  attribution: Record<string, unknown>;
+}
+
+/**
+ * Hosts whose identity we can state, and what to call them.
+ *
+ * `provider` is constrained to the ingest canonical enum. A destination the
+ * enum cannot express records `provider: "unknown"` and keeps its real identity
+ * in `provider_detail` — the same carriage MCP already uses, rather than
+ * widening a union the backend would reject.
+ */
+const KNOWN_ENDPOINTS: Array<{
+  pattern: RegExp;
+  provider: IntegrationProvider;
+  detail: string;
+}> = [
+  { pattern: /(^|\.)together\.(xyz|ai)$/i, provider: "together", detail: "together" },
+  { pattern: /(^|\.)openai\.azure\.com$/i, provider: "azure_openai", detail: "azure_openai" },
+  { pattern: /(^|\.)openai\.com$/i, provider: "openai", detail: "openai" },
+  { pattern: /(^|\.)anthropic\.com$/i, provider: "anthropic", detail: "anthropic" },
+  { pattern: /(^|\.)googleapis\.com$/i, provider: "google", detail: "google" },
+  { pattern: /(^|\.)cloudflare\.com$/i, provider: "cloudflare", detail: "cloudflare" },
+  // Real destinations the canonical enum has no member for.
+  { pattern: /(^|\.)groq\.com$/i, provider: "unknown", detail: "groq" },
+  { pattern: /(^|\.)mistral\.ai$/i, provider: "unknown", detail: "mistral" },
+  { pattern: /(^|\.)fireworks\.ai$/i, provider: "unknown", detail: "fireworks" },
+  { pattern: /(^|\.)perplexity\.ai$/i, provider: "unknown", detail: "perplexity" },
+  { pattern: /(^|\.)deepseek\.com$/i, provider: "unknown", detail: "deepseek" },
+];
+
+/** A local server is a destination too, and a materially different one. */
+const LOCAL_HOSTS = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|host\.docker\.internal)$/i;
+
+/**
+ * The client's configured base URL, if it will tell us.
+ *
+ * Read defensively: this runs against any OpenAI-shaped client, a getter may
+ * throw, and a wrapper that crashed while working out what to call something
+ * would be a worse failure than a vague label.
+ */
+function readBaseUrl(client: unknown): string | undefined {
+  for (const key of ["baseURL", "baseUrl", "base_url"]) {
+    try {
+      const value = (client as Record<string, unknown>)?.[key];
+      if (typeof value === "string" && value.length > 0) return value;
+    } catch {
+      /* a throwing getter is a non-answer, not a failure */
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Host and port only — never credentials, path or query.
+ *
+ * A base URL is a place users put secrets (`https://user:token@host/v1`), and
+ * this value goes into an audit record that gets shipped and stored. Only the
+ * destination is wanted here, and only the destination is taken.
+ */
+function safeHost(baseUrl: string): { host?: string; hostname?: string } {
+  try {
+    const url = new URL(baseUrl);
+    return { host: url.host, hostname: url.hostname };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Decide what to record about where this call is going.
+ *
+ * THE DEFECT THIS REPLACES. `wrapTogether` stamped `provider: "together"` on
+ * every call regardless of endpoint. Demonstrated with one wrapper: pointed at
+ * Groq's API it recorded "together", and pointed at a localhost server it also
+ * recorded "together" — a local model logged as served by a US cloud vendor.
+ * That is a lie about a destination, in the field a compliance reviewer reads
+ * for data residency, and no event field anywhere derived from the real host.
+ *
+ * So the provider is now taken from the endpoint whenever the endpoint can be
+ * read, and the caller's label is a fallback rather than an assertion. Where we
+ * can see the host but cannot name it, `unknown` is recorded: vague is a
+ * lesser fault than wrong.
+ *
+ * `provider_attribution` states which of those happened, borrowing the trust
+ * vocabulary `provenance_source` already uses for `model_resolved`, so a reader
+ * can tell a checked value from a declared one.
+ */
+function resolveDestination(
+  client: unknown,
+  declared: IntegrationProvider,
+): { provider: IntegrationProvider; attribution: Record<string, unknown> } {
+  const baseUrl = readBaseUrl(client);
+  if (!baseUrl) {
+    // Nothing to check against. The declared label is all there is, and the
+    // record says so rather than presenting it as verified.
+    return {
+      provider: declared,
+      attribution: { provider_attribution: "client_declared" },
+    };
+  }
+
+  const { host, hostname } = safeHost(baseUrl);
+  if (!hostname) {
+    return {
+      provider: declared,
+      attribution: { provider_attribution: "client_declared" },
+    };
+  }
+
+  if (LOCAL_HOSTS.test(hostname)) {
+    return {
+      provider: "unknown",
+      attribution: {
+        provider_attribution: "endpoint",
+        provider_detail: "local",
+        endpoint_host: host,
+      },
+    };
+  }
+
+  const match = KNOWN_ENDPOINTS.find((entry) => entry.pattern.test(hostname));
+  if (match) {
+    return {
+      provider: match.provider,
+      attribution: {
+        provider_attribution: "endpoint",
+        provider_detail: match.detail,
+        endpoint_host: host,
+      },
+    };
+  }
+
+  // A host we have no name for — a private gateway, a proxy, a new vendor.
+  // Recording the caller's guess here is what produced the original defect.
+  return {
+    provider: "unknown",
+    attribution: {
+      provider_attribution: "endpoint",
+      provider_detail: "unrecognized_endpoint",
+      endpoint_host: host,
+    },
+  };
+}
+
 /**
  * Merge per-request audit fields over per-wrap options.
+ *
+ * Attribution is applied LAST and deliberately wins. It describes where the
+ * call went, which is not a caller-supplied opinion; letting per-request
+ * metadata shadow it would drop the destination evidence exactly when a caller
+ * attaches metadata of their own.
  */
 function mergeOptions(
-  opts: OpenAICompatConfig,
+  opts: ResolvedCompatConfig,
   auditFields: AuditFields,
 ): IntegrationOptions {
+  const caller = auditFields.metadata ?? opts.metadata;
   return {
     source: auditFields.source || opts.source,
     region: auditFields.region || opts.region,
     service_name: auditFields.service_name || opts.service_name,
     user_id: auditFields.user_id || opts.user_id,
-    metadata: auditFields.metadata ?? opts.metadata,
+    metadata: { ...(caller ?? {}), ...opts.attribution },
   };
 }
 
@@ -85,14 +243,18 @@ export function wrapOpenAICompatible<T extends object>(
   if (config.disabled) return client;
   if ((client as Record<symbol, unknown>)[WRAPPED_MARKER]) return client;
   setupExitHandlers(config);
-  return proxyPath(client, [], config, opts);
+  // Resolved ONCE, at wrap time: the base URL is fixed when the client is
+  // constructed, so re-deriving it per call would buy nothing and cost a URL
+  // parse on the hot path.
+  const { provider, attribution } = resolveDestination(client, opts.provider);
+  return proxyPath(client, [], config, { ...opts, provider, attribution });
 }
 
 function proxyPath<T extends object>(
   target: T,
   path: string[],
   config: ResolvedConfig,
-  opts: OpenAICompatConfig,
+  opts: ResolvedCompatConfig,
 ): T {
   return new Proxy(target, {
     get(obj, prop: string | symbol) {
@@ -130,7 +292,7 @@ function createAuditedCreate(
   originalMethod: Function,
   target: object,
   config: ResolvedConfig,
-  opts: OpenAICompatConfig,
+  opts: ResolvedCompatConfig,
 ): Function {
   return async function auditedCreate(...args: unknown[]): Promise<unknown> {
     // Always strip audit fields, even when not sampling
@@ -302,7 +464,7 @@ function wrapOpenAICompatStream(
   iter: AsyncIterable<unknown>,
   request: unknown,
   config: ResolvedConfig,
-  opts: OpenAICompatConfig,
+  opts: ResolvedCompatConfig,
   options: IntegrationOptions,
   auditFields: AuditFields,
   startTime: number,
