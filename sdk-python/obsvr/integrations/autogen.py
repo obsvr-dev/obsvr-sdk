@@ -109,17 +109,47 @@ def _extract_function_name(message: Any) -> Any:
     return None
 
 
+def _cfg_get(cfg: Any, key: str) -> Any:
+    """Read `key` off a mapping OR an object, without caring which it is.
+
+    llm_config used to be a plain dict and is an LLMConfig object on every
+    modern release. Duck-typed rather than isinstance-checked against the
+    framework's class: importing it to type-check would turn a soft dependency
+    into a hard one, and the attribute is what this code actually needs.
+    """
+    if cfg is None:
+        return None
+    if isinstance(cfg, dict):
+        return cfg.get(key)
+    try:
+        return getattr(cfg, key, None)
+    except Exception:  # pragma: no cover - exotic __getattr__
+        return None
+
+
 def _model_of(agent: Any) -> str:
+    """The configured model name, or "unknown".
+
+    WAS DICT-ONLY, AND SILENTLY WRONG. This read llm_config only when it was a
+    dict, so once the framework introduced the LLMConfig object the test was
+    False and every event on every modern release recorded model "unknown" — on
+    an agent whose own config names the model. Governance was unaffected; the
+    evidence was degraded exactly where the supported range is newest, which is
+    the failure shape that looks like nothing at all.
+    """
     llm_config = getattr(agent, "llm_config", None)
-    if isinstance(llm_config, dict):
-        model = llm_config.get("model")
-        if isinstance(model, str) and model:
-            return model
-        config_list = llm_config.get("config_list")
-        if isinstance(config_list, list) and config_list:
-            first = config_list[0]
-            if isinstance(first, dict) and isinstance(first.get("model"), str):
-                return first["model"]
+    if llm_config is None:
+        return "unknown"
+
+    model = _cfg_get(llm_config, "model")
+    if isinstance(model, str) and model:
+        return model
+
+    config_list = _cfg_get(llm_config, "config_list")
+    if isinstance(config_list, (list, tuple)) and config_list:
+        first_model = _cfg_get(config_list[0], "model")
+        if isinstance(first_model, str) and first_model:
+            return first_model
     return "unknown"
 
 
