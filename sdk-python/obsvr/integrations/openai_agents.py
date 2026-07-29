@@ -9,8 +9,8 @@ REGISTRATION. ``obsvr.init()`` already registers this processor whenever
     import obsvr
     obsvr.init(api_key="...")
 
-Registering it yourself as well is harmless (the duplicate is inert, see
-_claim_governing_processor) but unnecessary — the pairing used to emit every
+Registering it yourself as well is harmless (the call is recorded once, see
+obsvr/dedupe.py) but unnecessary — the pairing used to emit every
 event twice. If you opted out with ``obsvr.init(auto=False)``, register it
 manually::
 
@@ -42,41 +42,9 @@ from ..agent_policy import apply_loop_detection, create_loop_detector, resolve_l
 from ..config import try_get_config
 from ..events import emit_event, tool_denied_compliance
 from ..token_usage import read_token_usage
+from ..dedupe import claim_emission
 
 SOURCE = "openai_agents_py"
-
-#: The processor that governs this process. See _claim_governing_processor.
-_GOVERNING: Any = None
-
-
-def _claim_governing_processor(processor: Any) -> bool:
-    """Whether ``processor`` is the one that emits, or an inert duplicate.
-
-    obsvr.init() auto-registers a processor whenever ``agents`` is importable,
-    and this module's own docstring tells the reader to register one too — so
-    following the documented setup put TWO processors on the SDK's append-only
-    list and emitted every event twice. Duplicate evidence for one governed
-    call is a defect in a governance product: it inflates any count taken over
-    the trail, and once tokens are captured it would double every cost and
-    quota figure derived from it.
-
-    The SDK's processor list is append-only and obsvr never mutates what it
-    registers into, so the duplicate cannot be removed from the outside. The
-    stance is the same one instance_guard.py takes for a duplicated module:
-    the incumbent keeps the slot and later arrivals are inert, so exactly one
-    record is produced no matter how many times obsvr was registered or in
-    what order.
-    """
-    global _GOVERNING
-    if _GOVERNING is None:
-        _GOVERNING = processor
-    return _GOVERNING is processor
-
-
-def _reset_governing_processor() -> None:
-    """Test seam: forget the incumbent so each test starts clean."""
-    global _GOVERNING
-    _GOVERNING = None
 
 
 def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
@@ -177,7 +145,6 @@ class ObsvrTracingProcessor:
     def __init__(self) -> None:
         # trace_id -> {step_count: int, start_time: float}
         self._run_context: Dict[str, Dict[str, Any]] = {}
-        self._governs = _claim_governing_processor(self)
 
     # ------------------------------------------------------------------
     # Trace-level callbacks
@@ -185,13 +152,16 @@ class ObsvrTracingProcessor:
 
     def on_trace_start(self, trace: Any) -> None:
         """Emit openai_agents.agent.run.start when a trace begins."""
-        if not self._governs:
-            return
         try:
             config = try_get_config()
             if config is None:
                 return
             trace_id: str = str(getattr(trace, "trace_id", None) or uuid.uuid4())
+            # init() auto-registers a processor and a caller may register one
+            # too; the SDK's list is append-only, so both see every callback.
+            # Claiming records the run once.
+            if not claim_emission(f"agents.run.start:{trace_id}"):
+                return
             self._run_context[trace_id] = {
                 "step_count": 0,
                 "start_time": time.monotonic(),
@@ -214,13 +184,13 @@ class ObsvrTracingProcessor:
 
     def on_trace_end(self, trace: Any) -> None:
         """Emit openai_agents.agent.run.finish when a trace ends."""
-        if not self._governs:
-            return
         try:
             config = try_get_config()
             if config is None:
                 return
             trace_id: str = str(getattr(trace, "trace_id", None) or "")
+            if not claim_emission(f"agents.run.finish:{trace_id}"):
+                return
             state = self._run_context.pop(trace_id, {})
             latency_ms: Optional[int] = None
             if "start_time" in state:
@@ -248,8 +218,6 @@ class ObsvrTracingProcessor:
 
     def on_span_end(self, span: Any) -> None:
         """Emit tool-call or LLM-call events when a span completes."""
-        if not self._governs:
-            return
         try:
             config = try_get_config()
             if config is None:
@@ -260,6 +228,12 @@ class ObsvrTracingProcessor:
             span_data = getattr(span, "span_data", span)
             stype = _span_type(span)
             trace_id: str = str(getattr(span, "trace_id", None) or "")
+            span_id = getattr(span, "span_id", None)
+            # Claim the span once, keyed on the SDK's own id. With no id to key
+            # on, emitting is the right default: a duplicate record is a lesser
+            # fault than a dropped one.
+            if span_id and not claim_emission(f"agents.span:{trace_id}:{span_id}"):
+                return
             state = self._run_context.get(trace_id, {})
 
             if stype == "function":

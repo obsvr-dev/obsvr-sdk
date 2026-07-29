@@ -217,6 +217,11 @@ class TestRegistryGate:
         # tool_content_hash.py.
         "cost.py",
         "decision_record.py",
+        # Remembers which calls have already been recorded so that registering
+        # obsvr with a framework twice still yields one evidence record.
+        # Decides nothing about a call: it answers "has this been emitted",
+        # never "should this be allowed". Same exemption reason as cost.py.
+        "dedupe.py",
         "errors.py",
         "escrow.py",
         "events.py",

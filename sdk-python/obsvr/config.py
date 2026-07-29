@@ -397,6 +397,12 @@ def init(
         from .remote import start_policy_polling
         start_policy_polling(cfg, cfg.policy_refresh_interval_s)
 
+    # A fresh governed session has recorded nothing yet. Without this, an
+    # event id the previous session already claimed would be read as
+    # already-recorded and the call dropped.
+    from .dedupe import _reset_dedupe as _clear_emission_memory
+    _clear_emission_memory()
+
     # Auto-instrumentation: wire frameworks with clean global registration
     # (providers, openai-agents, llamaindex). On by default; opt out with
     # init(auto=False). Best-effort and non-throwing — never blocks init.
@@ -500,15 +506,13 @@ def _reset() -> None:
     _reset_session_taint()
     _reset_policy_verify()
     _reset_detector_errors()
-    # The framework handlers keep a process-level incumbent so that registering
-    # obsvr twice (auto-instrumentation plus the documented manual call) still
-    # yields one evidence record per call. That incumbent outlives config, so a
-    # test that resets config has to release it too or every later handler it
-    # builds is inert.
-    from .integrations.llamaindex import _reset_governing_handler
-    from .integrations.openai_agents import _reset_governing_processor
-    _reset_governing_handler()
-    _reset_governing_processor()
+    # Framework handlers remember which calls they have already recorded, so
+    # that registering obsvr twice (auto-instrumentation plus a manual call)
+    # still yields one evidence record per call. That memory outlives config,
+    # so a test that resets config has to clear it or a replayed id is read as
+    # already-recorded.
+    from .dedupe import _reset_dedupe
+    _reset_dedupe()
     _state["initialized"] = False
     _state["config"] = None
     _tenant_registry.clear()
