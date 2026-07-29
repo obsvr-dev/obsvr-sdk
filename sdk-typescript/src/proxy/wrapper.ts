@@ -111,6 +111,7 @@ import {
 } from "./extractors/google.js";
 import type { GeminiRequest, GeminiResponse } from "./extractors/google.js";
 import { readTokenUsage } from "./extractors/token-usage.js";
+import { createDeferredRunner, type RunnerLike } from "./runner-wrapper.js";
 import {
   sendAuditAsync,
   shouldSample,
@@ -233,13 +234,34 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
 ]);
 
 /**
+ * The provider `.stream()` helpers, which return a runner object SYNCHRONOUSLY.
+ *
+ * Chat-shaped and text-bearing, but they could not go in AUDITABLE_METHODS:
+ * createAuditedMethod is async, so listing them there would hand the caller a
+ * Promise where the provider's contract promises a stream object, breaking
+ * `.on('text', …)` chaining at every call site. They are governed through the
+ * deferred runner instead, which satisfies the synchronous contract while still
+ * running the full pre-call pipeline BEFORE the provider is reached.
+ *
+ * `final` names the accessor that yields the completed response once the run
+ * ends. It is the same payload the non-streaming extractor for that dialect
+ * already reads, so no new extraction is involved.
+ */
+const STREAM_RUNNER_METHODS = new Map<string, { shape: ApiShape; final: string }>([
+  ["messages.stream", { shape: "anthropic-messages", final: "finalMessage" }],
+  ["beta.messages.stream", { shape: "anthropic-messages", final: "finalMessage" }],
+  ["chat.completions.stream", { shape: "openai-chat", final: "finalChatCompletion" }],
+  ["responses.stream", { shape: "openai-responses", final: "finalResponse" }],
+]);
+
+/**
  * The payload shape for a traversed method path, or undefined when the path is
  * not audited. Callers that need "is this the Responses dialect" must ask this
  * rather than comparing the path string, so beta and structured-output aliases
  * reach the same extractor as the surface they alias.
  */
 function apiShapeFor(operation: string): ApiShape | undefined {
-  return AUDITABLE_METHODS.get(operation);
+  return AUDITABLE_METHODS.get(operation) ?? STREAM_RUNNER_METHODS.get(operation)?.shape;
 }
 
 /**
@@ -1070,7 +1092,16 @@ interface PreCallOutcome {
  *
  * BLOCKS BY THROWING. There is no early return in here and no "blocked" flag to
  * check: a refusal propagates out, so a caller that forgets to inspect a result
- * cannot accidentally proceed.
+ * cannot accidentally proceed. (There is ONE throw at this function's own
+ * nesting level, not two — an earlier commit message said two.)
+ *
+ * TWO ENTRY POINTS, DIFFERENT TIMING. This is called from
+ * createAuditedMethod, which awaits it and then calls the provider, and from
+ * createAuditedRunnerMethod, which returns a stand-in to the caller FIRST and
+ * awaits this afterwards. The governance decision is identical on both; what
+ * differs is only when the caller regains control. A change in here therefore
+ * lands on both paths — including the one where the caller is already holding
+ * an object by the time this resolves.
  */
 async function governCall(
   args: unknown[],
@@ -2213,6 +2244,96 @@ function createAuditedMethod(
   };
 }
 
+
+/**
+ * Govern a provider `.stream()` helper without breaking its synchronous return.
+ *
+ * The caller gets a stand-in immediately — so `.on('text', …)` chains exactly as
+ * it did — while the real runner is not constructed until governCall resolves.
+ * That ordering is the point: enforcement is asynchronous (the optional NLP
+ * scan and the human-in-the-loop hook both await), so calling the provider first
+ * and governing afterwards would mean a "block" aborts a stream the model has
+ * already answered. That is an apology, not a gate.
+ *
+ * One event fires when the run finishes, built from the runner's own completed
+ * response through the same extractor the non-streaming path uses.
+ */
+function createAuditedRunnerMethod(
+  originalMethod: Function,
+  target: object,
+  ctx: PathContext,
+  provider: "openai" | "anthropic" | "google" | "unknown",
+  finalAccessor: string,
+): Function {
+  const { config } = ctx;
+  const methodPath = ctx.path.join(".");
+
+  return function auditedRunnerMethod(...args: unknown[]): unknown {
+    const startTime = performance.now();
+    let outcome: PreCallOutcome | undefined;
+
+    return createDeferredRunner({
+      govern: async () => {
+        outcome = await governCall(args, target, ctx, provider, methodPath);
+        return outcome.cleaned_args;
+      },
+      start: (cleanedArgs) =>
+        originalMethod.apply(target, cleanedArgs) as RunnerLike,
+      finish: ({ runner, error }) => {
+        void (async () => {
+          try {
+            // A refusal before the provider was reached is already recorded by
+            // governCall's own blocked-call event; emitting again here would
+            // double-count the same decision.
+            if (!outcome) return;
+            let response: unknown;
+            let failure = error;
+            if (runner && !failure) {
+              try {
+                const accessor = (runner as Record<string, unknown>)[finalAccessor];
+                if (typeof accessor === "function") {
+                  response = await (accessor as () => Promise<unknown>).call(runner);
+                }
+              } catch (e) {
+                failure = e;
+              }
+            }
+            const auditEvent = buildAuditEvent(
+              ctx,
+              outcome.cleaned_args[0],
+              failure ? null : response,
+              outcome.audit_fields,
+              Math.round(performance.now() - startTime),
+              provider,
+              !failure,
+              failure ?? undefined,
+              failure
+                ? ((failure as { status?: number })?.status ??
+                   (failure as { statusCode?: number })?.statusCode ??
+                   500)
+                : undefined,
+              outcome.modelHint,
+              outcome.compliance,
+            );
+            // Sampling gates emission of ALLOWED events only; a failed run is
+            // enforcement evidence and is always recorded.
+            if (!outcome.auditThisCall && !failure) return;
+            await applyPostCallGovernance(auditEvent, config);
+            sendAuditAsync(config, auditEvent);
+          } catch (e) {
+            debugLog(
+              config,
+              "error",
+              "Failed to build streaming-runner audit event:",
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+        })();
+      },
+    });
+  };
+}
+
 /**
  * Check if a method path should be audited
  */
@@ -2251,6 +2372,24 @@ function createRecursiveProxy<T extends object>(
 
       // If it's a function
       if (typeof value === "function") {
+        // Provider `.stream()` helpers: governed, but through the deferred
+        // runner so the synchronous return contract survives.
+        const runnerSpec = STREAM_RUNNER_METHODS.get(newPath.join("."));
+        if (runnerSpec) {
+          debugLog(
+            ctx.config,
+            "info",
+            `Wrapping streaming-runner method: ${newPath.join(".")}`,
+          );
+          return createAuditedRunnerMethod(
+            value,
+            obj,
+            { ...ctx, path: newPath },
+            ctx.provider,
+            runnerSpec.final,
+          );
+        }
+
         // Check if this is an auditable method
         if (isAuditablePath(newPath)) {
           debugLog(

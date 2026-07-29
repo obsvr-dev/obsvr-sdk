@@ -249,6 +249,54 @@ describe('the coverage boundary holds in both directions', () => {
     expect(sentEvents).toHaveLength(0);
   });
 
+  it('the .stream() helpers are governed, and return synchronously', async () => {
+    // They cannot go through the probe below: that awaits the call result, and
+    // these return a runner object rather than a promise — which is the entire
+    // reason they needed a different wrapper.
+    init({ api_key: 'test', sample_rate: 1 });
+    const seen: string[] = [];
+    const client = wrap({
+      messages: {
+        create: async () => ANTHROPIC_RESPONSE,
+        stream: (_body: unknown) => {
+          seen.push('messages.stream');
+          return {
+            on() {
+              return this;
+            },
+            async done() {},
+            async finalMessage() {
+              return ANTHROPIC_RESPONSE;
+            },
+          };
+        },
+      },
+    } as any);
+
+    const runner = client.messages.stream({
+      model: 'claude-sonnet-4-5',
+      messages: [{ role: 'user', content: 'what is 2+2' }],
+    });
+
+    // Synchronous return, and chaining still works.
+    expect(typeof runner.on).toBe('function');
+    expect(runner.on('text', () => undefined)).toBeDefined();
+    // Not a promise — awaiting one would hang if this regressed.
+    expect((runner as Record<string, unknown>).then).toBeUndefined();
+
+    await runner.done();
+    await new Promise((r) => setTimeout(r, 10));
+    await flushQueue(getConfig());
+
+    // The provider was reached exactly once, and one event was recorded.
+    expect(seen).toEqual(['messages.stream']);
+    const ev = sentEvents.find((e) => e.operation === 'messages.stream');
+    expect(ev).toBeDefined();
+    expect(ev!.provider).toBe('anthropic');
+    expect(ev!.response).toBe('four');
+    expect(ev!.input_tokens).toBe(11);
+  });
+
   it('pins the audited set exactly, so widening it is never silent', async () => {
     // Every path below is asserted by wrapping a client that exposes it and
     // checking whether an event appears. That tests the real gate rather than
@@ -266,13 +314,14 @@ describe('the coverage boundary holds in both directions', () => {
       ['beta', 'chat', 'completions', 'create'],
       ['beta', 'chat', 'completions', 'parse'],
     ];
+    // The `.stream()` helpers ARE governed now, but through the deferred
+    // runner rather than the async method wrapper — they return their runner
+    // synchronously, so they are asserted separately below rather than by the
+    // await-the-result probe this list uses.
     const NOT_AUDITED = [
-      ['messages', 'stream'],
       ['messages', 'countTokens'],
       ['messages', 'batches', 'create'],
-      ['chat', 'completions', 'stream'],
       ['chat', 'completions', 'runTools'],
-      ['responses', 'stream'],
       ['generateContentStream'],
       ['startChat'],
       ['embeddings', 'create'],

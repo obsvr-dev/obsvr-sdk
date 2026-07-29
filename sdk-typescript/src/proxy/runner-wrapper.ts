@@ -162,6 +162,13 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
     get(target, prop, receiver) {
       if (prop in target) return Reflect.get(target, prop, receiver);
       if (typeof prop === "symbol") return Reflect.get(target, prop, receiver);
+      // NEVER synthesize a thenable. The catch-all below returns a function for
+      // any unknown property, and `await x` probes `x.then` — so without this
+      // the stand-in would look like a promise, `await` would adopt it, and the
+      // forwarded `then` would wait on a real runner that has no such method.
+      // A caller who wrote `await client.messages.stream(...)` would hang
+      // forever. Provider runners are not thenables; neither is this.
+      if (prop === "then" || prop === "catch" || prop === "finally") return undefined;
       return (...args: unknown[]) =>
         ready.then((runner) => {
           const fn = (runner as Record<string, unknown>)[prop as string];

@@ -220,6 +220,26 @@ describe('the synchronous runner contract is preserved', () => {
   });
 });
 
+describe('the stand-in is not a promise', () => {
+  it('does not look thenable, so `await` cannot adopt and hang on it', async () => {
+    // The catch-all forwarder returns a function for any unknown property, so
+    // without an explicit guard `await runner` would see a `then`, adopt the
+    // stand-in as a thenable, and wait on a `then` the real runner does not
+    // have. A caller writing `await client.messages.stream(...)` would hang.
+    const runner = createDeferredRunner({
+      govern: async () => [],
+      start: () => fakeRunner(),
+      finish: () => undefined,
+    });
+    expect((runner as Record<string, unknown>).then).toBeUndefined();
+    expect((runner as Record<string, unknown>).catch).toBeUndefined();
+
+    // And awaiting it resolves to the runner itself rather than hanging.
+    const awaited = await (runner as unknown as Promise<unknown>);
+    expect(awaited).toBe(runner);
+  });
+});
+
 describe('completion is reported exactly once', () => {
   it('finish fires with the runner on success', async () => {
     const calls: { runner?: unknown; error?: unknown }[] = [];
