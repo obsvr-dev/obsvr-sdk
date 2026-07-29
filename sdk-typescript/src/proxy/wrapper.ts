@@ -87,7 +87,11 @@ import type {
   OpenAIResponsesResponse,
 } from "./extractors/openai-responses.js";
 import { extractCallTelemetry, withTelemetryMetadata } from "./extractors/telemetry.js";
-import { applyPostCallPolicy, mergePostCallOutcome } from "../integrations/core.js";
+import {
+  applyPostCallPolicy,
+  mergePostCallOutcome,
+  emitIntegrationEvent,
+} from "../integrations/core.js";
 import { spanEnvelopeFor, withSpanMetadata } from "./span.js";
 import { withRunMetadata } from "./agent-run.js";
 import {
@@ -112,6 +116,11 @@ import {
 import type { GeminiRequest, GeminiResponse } from "./extractors/google.js";
 import { readTokenUsage } from "./extractors/token-usage.js";
 import { createDeferredRunner, type RunnerLike } from "./runner-wrapper.js";
+import {
+  observeOpenAIToolRun,
+  driveAnthropicToolRun,
+  type ToolRunSink,
+} from "./tool-runner-wrapper.js";
 import {
   sendAuditAsync,
   shouldSample,
@@ -193,14 +202,6 @@ type ApiShape =
  * 2. TEXT-BEARING BUT NOT COVERED — chat-shaped, and out of reach of a method
  *    path table rather than out of policy. Recorded here so the gap is a known
  *    one rather than an assumed absence:
- *      - the `.stream()` helpers (messages.stream, chat.completions.stream,
- *        responses.stream) and the tool runners (chat.completions.runTools,
- *        beta.messages.toolRunner). Each returns a runner object
- *        SYNCHRONOUSLY, and createAuditedMethod is async, so listing them here
- *        would hand the caller a Promise and break `.on(...)` chaining. They
- *        need a non-async wrapper of their own. Callers who need governed
- *        streaming today should pass `stream: true` to create(), which IS
- *        covered.
  *      - the batch surfaces (messages.batches.create and its beta twin), which
  *        carry N independent prompts per call against an event schema with one
  *        prompt field.
@@ -212,6 +213,14 @@ type ApiShape =
  *        module-level generateContent rather than a property on the model —
  *        so no property read on the proxy ever happens and NO path table can
  *        reach it.
+ *
+ * 3. COVERED, BUT NOT FROM THIS TABLE. The `.stream()` helpers and the tool
+ *    runners return a runner object SYNCHRONOUSLY, and createAuditedMethod is
+ *    async, so listing them above would hand the caller a Promise and break
+ *    `.on(...)` chaining. They are governed through the deferred runner
+ *    instead — see STREAM_RUNNER_METHODS and TOOL_RUNNER_METHODS below. A
+ *    reader checking whether a surface is covered must consult all three
+ *    tables, not this one alone.
  */
 const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["chat.completions.create", "openai-chat"], // OpenAI / Azure OpenAI
@@ -255,13 +264,45 @@ const STREAM_RUNNER_METHODS = new Map<string, { shape: ApiShape; final: string }
 ]);
 
 /**
+ * The provider TOOL RUNNERS, which return their runner object synchronously
+ * like the `.stream()` helpers above but drive a LOOP rather than one call.
+ *
+ * They are listed separately because one event cannot describe them honestly: a
+ * single invocation makes N model calls and M tool executions, so a
+ * start-to-finish event would record the first prompt and the last answer while
+ * hiding every intermediate decision — including which tools ran and what they
+ * returned. Each therefore emits one event per model call, one per tool call,
+ * and a run-level start/finish pair sharing an `agent_run_id`, following the
+ * agent-run precedent the `@openai/agents` integration already established.
+ *
+ * `thenable` records whether the REAL runner is awaitable, because the stand-in
+ * must mirror it and is wrong in a different direction either way — see
+ * `DeferredRunnerHooks.thenable`. Anthropic's tool runner documents `await
+ * runner` as equivalent to `runUntilDone()`; OpenAI's runner is not a thenable.
+ */
+const TOOL_RUNNER_METHODS = new Map<
+  string,
+  { shape: ApiShape; dialect: "openai-chat" | "anthropic-messages"; thenable: boolean }
+>([
+  ["chat.completions.runTools", { shape: "openai-chat", dialect: "openai-chat", thenable: false }],
+  [
+    "beta.messages.toolRunner",
+    { shape: "anthropic-messages", dialect: "anthropic-messages", thenable: true },
+  ],
+]);
+
+/**
  * The payload shape for a traversed method path, or undefined when the path is
  * not audited. Callers that need "is this the Responses dialect" must ask this
  * rather than comparing the path string, so beta and structured-output aliases
  * reach the same extractor as the surface they alias.
  */
 function apiShapeFor(operation: string): ApiShape | undefined {
-  return AUDITABLE_METHODS.get(operation) ?? STREAM_RUNNER_METHODS.get(operation)?.shape;
+  return (
+    AUDITABLE_METHODS.get(operation) ??
+    STREAM_RUNNER_METHODS.get(operation)?.shape ??
+    TOOL_RUNNER_METHODS.get(operation)?.shape
+  );
 }
 
 /**
@@ -2335,6 +2376,168 @@ function createAuditedRunnerMethod(
 }
 
 /**
+ * Govern a provider TOOL RUNNER, emitting the run as a sequence rather than as
+ * a single call.
+ *
+ * The synchronous-return problem is the same one the `.stream()` helpers posed
+ * and is solved the same way, by the deferred runner: the caller gets a stand-in
+ * immediately and the real runner is not constructed until `governCall`
+ * resolves, so a refused run never reaches the provider. What differs is what
+ * happens after that — the loop is observed turn by turn and emits one event per
+ * model call, one per tool call, and a run-level start/finish pair carrying a
+ * shared `agent_run_id`.
+ *
+ * The intermediate events go through the integration-event path rather than
+ * `buildAuditEvent` because their content is not a chat payload for an extractor
+ * to read: a tool event's prompt is the arguments the model chose and its
+ * response is what the tool returned. Routing those through a chat extractor
+ * would mean synthesising a fake `messages`/`choices` wrapper around them, and a
+ * fabricated shape in a governance record is exactly the failure this work keeps
+ * finding. The integration path takes both as text, which is what they are.
+ */
+function createAuditedToolRunnerMethod(
+  originalMethod: Function,
+  target: object,
+  ctx: PathContext,
+  provider: "openai" | "anthropic" | "google" | "unknown",
+  spec: { dialect: "openai-chat" | "anthropic-messages"; thenable: boolean },
+): Function {
+  const { config, options } = ctx;
+  const methodPath = ctx.path.join(".");
+
+  return function auditedToolRunnerMethod(...args: unknown[]): unknown {
+    const startTime = performance.now();
+    const runId = generateUUID();
+    let outcome: PreCallOutcome | undefined;
+    let modelCalls = 0;
+    let toolCalls = 0;
+
+    const source = options.source || config.default_source || "proxy_wrapper";
+    const anthropic = spec.dialect === "anthropic-messages";
+
+    /** The model as the caller asked for it, read once off the invocation. */
+    const requestedModel = (() => {
+      try {
+        const body = args[0] as { model?: unknown } | undefined;
+        return typeof body?.model === "string" ? body.model : "unknown";
+      } catch {
+        return "unknown";
+      }
+    })();
+
+    const emit = (
+      suffix: string,
+      fields: Partial<Parameters<typeof emitIntegrationEvent>[0]>,
+    ): void => {
+      try {
+        emitIntegrationEvent({
+          config,
+          provider: provider as "openai" | "anthropic",
+          model: requestedModel,
+          operation: `${methodPath}.${suffix}`,
+          source,
+          prompt: "",
+          metadata: { agent_run_id: runId },
+          options: options as never,
+          ...fields,
+        });
+      } catch (e) {
+        debugLog(
+          config,
+          "error",
+          `Failed to emit tool-runner ${suffix} event:`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    };
+
+    const sink: ToolRunSink = {
+      modelCall({ request, response }) {
+        modelCalls += 1;
+        const prompt = anthropic
+          ? extractAnthropicPrompt(request as AnthropicMessagesRequest)
+          : extractOpenAIPrompt(request as OpenAIChatRequest);
+        const text = anthropic
+          ? extractAnthropicResponse(response as AnthropicMessagesResponse)
+          : extractOpenAIResponse(response as never);
+        const usage = anthropic
+          ? extractAnthropicTokenUsage(response as AnthropicMessagesResponse)
+          : extractOpenAITokenUsage(response as never);
+        const resolved = (response as { model?: unknown } | undefined)?.model;
+        emit("llm", {
+          prompt,
+          response: text,
+          inputTokens: usage?.input_tokens,
+          outputTokens: usage?.output_tokens,
+          totalTokens: usage?.total_tokens,
+          model_resolved: typeof resolved === "string" ? resolved : undefined,
+          provenance_source: typeof resolved === "string" ? "provider_response" : undefined,
+          metadata: { agent_run_id: runId, turn: modelCalls },
+        });
+      },
+      toolCall({ name, args: toolArgs, result, toolCallId }) {
+        toolCalls += 1;
+        // The result is text a tool produced, not text the model or the user
+        // wrote. Saying so is the whole point of the field: it is the marker a
+        // downstream injection review keys on, and this path is one of the few
+        // that genuinely knows.
+        emit("tool", {
+          prompt: toolArgs,
+          response: result,
+          contentProvenance: "tool_result",
+          metadata: {
+            agent_run_id: runId,
+            tool_name: name,
+            tool_call_id: toolCallId,
+            tool_index: toolCalls,
+          },
+        });
+      },
+    };
+
+    return createDeferredRunner({
+      thenable: spec.thenable,
+      govern: async () => {
+        outcome = await governCall(args, target, ctx, provider, methodPath);
+        // Emitted only once the run is actually going to happen. A refused run
+        // has its own blocked-call event from governCall and must not also
+        // appear to have started.
+        emit("start", { metadata: { agent_run_id: runId }, compliance: undefined });
+        return outcome.cleaned_args;
+      },
+      start: (cleanedArgs) => {
+        const runner = originalMethod.apply(target, cleanedArgs) as RunnerLike;
+        if (!anthropic) observeOpenAIToolRun(runner, sink);
+        return runner;
+      },
+      // Anthropic's runner has no event emitter and advances only while it is
+      // consumed, so observation and completion are the same act.
+      complete: anthropic
+        ? (runner) => driveAnthropicToolRun(runner as never, sink)
+        : undefined,
+      finish: ({ error }) => {
+        if (!outcome) return; // refused before the provider was reached
+        emit("finish", {
+          success: !error,
+          error: error ?? undefined,
+          statusCode: error
+            ? ((error as { status?: number })?.status ??
+              (error as { statusCode?: number })?.statusCode ??
+              500)
+            : undefined,
+          latencyMs: Math.round(performance.now() - startTime),
+          metadata: {
+            agent_run_id: runId,
+            model_calls: modelCalls,
+            tool_calls: toolCalls,
+          },
+        });
+      },
+    });
+  };
+}
+
+/**
  * Check if a method path should be audited
  */
 function isAuditablePath(path: string[]): boolean {
@@ -2372,6 +2575,25 @@ function createRecursiveProxy<T extends object>(
 
       // If it's a function
       if (typeof value === "function") {
+        // Provider tool runners: same synchronous-return mechanism as the
+        // stream helpers, but the run is emitted as a sequence of events
+        // rather than one.
+        const toolRunnerSpec = TOOL_RUNNER_METHODS.get(newPath.join("."));
+        if (toolRunnerSpec) {
+          debugLog(
+            ctx.config,
+            "info",
+            `Wrapping tool-runner method: ${newPath.join(".")}`,
+          );
+          return createAuditedToolRunnerMethod(
+            value,
+            obj,
+            { ...ctx, path: newPath },
+            ctx.provider,
+            toolRunnerSpec,
+          );
+        }
+
         // Provider `.stream()` helpers: governed, but through the deferred
         // runner so the synchronous return contract survives.
         const runnerSpec = STREAM_RUNNER_METHODS.get(newPath.join("."));

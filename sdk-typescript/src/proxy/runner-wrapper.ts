@@ -55,6 +55,32 @@ export interface DeferredRunnerHooks {
   start: (args: unknown[]) => RunnerLike;
   /** Called once, after the run finishes or fails. */
   finish: (result: { runner?: RunnerLike; error?: unknown }) => void;
+  /**
+   * How to run the runner to completion, and what its completion value is.
+   * Defaults to awaiting `runner.done()`.
+   *
+   * Supply this for a runner that only ADVANCES while something consumes it:
+   * the Anthropic tool runner's `done()` waits on an iteration that never
+   * starts by itself, so the default would wait forever. A `complete` that
+   * drives the iteration is also the only place the intermediate turns can be
+   * observed, since that runner exposes no event emitter.
+   */
+  complete?: (runner: RunnerLike) => Promise<unknown>;
+  /**
+   * Whether the REAL runner is itself awaitable.
+   *
+   * DEFAULT FALSE, AND THE DEFAULT IS LOAD-BEARING. The stand-in must mirror
+   * the real object here, and it is wrong in a different way in each
+   * direction. The `.stream()` runners are NOT thenable, so synthesising a
+   * `then` for them made `await client.messages.stream(...)` adopt the
+   * stand-in as a promise and wait on a method the real runner does not have
+   * — it hung forever. The Anthropic tool runner IS thenable by design
+   * (`await runner` is documented as equivalent to `runUntilDone()`), so
+   * REFUSING a `then` there is just as wrong and fails more quietly: `await`
+   * would hand back the stand-in itself instead of the final message, and
+   * nothing would throw. One flag, because only the real object knows.
+   */
+  thenable?: boolean;
 }
 
 /**
@@ -71,7 +97,14 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
   let failed: unknown;
   let aborted = false;
 
-  const ready: Promise<RunnerLike> = (async () => {
+  // BOXED, and the box is not optional. A runner may itself be a thenable —
+  // Anthropic's tool runner documents `await runner` as running the loop — and
+  // returning a thenable from an async function makes the promise machinery
+  // ADOPT it. An unboxed `return runner` would therefore resolve to whatever
+  // the RUN eventually produced instead of to the runner, and would start that
+  // run the moment governance passed rather than when the caller asked. One
+  // object wrapper keeps the runner opaque to promise resolution.
+  const readyBox: Promise<{ runner: RunnerLike }> = (async () => {
     const args = await hooks.govern();
     if (aborted) {
       // The caller abandoned the run while governance was still deciding.
@@ -88,23 +121,39 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
       if (typeof fn === "function") (fn as (...a: unknown[]) => unknown).apply(runner, callArgs);
     }
     pending.length = 0;
-    return runner;
+    return { runner };
   })();
 
-  // The rejection is observed by every path that awaits `ready`; attaching a
+  // The rejection is observed by every path that awaits `readyBox`; attaching a
   // no-op keeps a governance block from surfacing as an unhandled rejection in
   // the host process when the caller only uses `.on('error', …)`.
-  ready.catch(() => undefined);
+  readyBox.catch(() => undefined);
+
+  // Resolves with the run's completion VALUE (what `await runner` yields when
+  // the real runner is thenable). Kept separate from the finish() notification
+  // below so a thenable stand-in has something to hand its caller.
+  const completed: Promise<unknown> = (async () => {
+    const { runner } = await readyBox;
+    if (hooks.complete) return hooks.complete(runner);
+    if (typeof runner.done === "function") return runner.done();
+    return undefined;
+  })();
+  completed.catch(() => undefined);
 
   const settle = (async () => {
     try {
-      const runner = await ready;
-      if (typeof runner.done === "function") await runner.done();
-      else if (typeof runner[Symbol.asyncIterator] === "function") {
-        // No done() to await: the run is complete once the caller has drained
-        // it, and finish() is driven from the iterator instead.
+      const { runner } = await readyBox;
+      if (
+        !hooks.complete &&
+        typeof runner.done !== "function" &&
+        typeof runner[Symbol.asyncIterator] === "function"
+      ) {
+        // No done() to await and no explicit driver: the run is complete once
+        // the caller has drained it, and finish() is driven from the iterator
+        // instead.
         return;
       }
+      await completed;
       hooks.finish({ runner });
     } catch (err) {
       failed = failed ?? err;
@@ -130,7 +179,12 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
       else pending.push({ method: "abort", args: [] });
     },
     async done() {
-      const runner = await ready;
+      // Delegate to the single shared completion rather than calling the
+      // runner again: a runner whose progress comes from being consumed can
+      // only be consumed once, so a second drive would throw rather than
+      // return the same answer.
+      if (hooks.complete) return completed;
+      const { runner } = await readyBox;
       return typeof runner.done === "function" ? runner.done() : undefined;
     },
     [Symbol.asyncIterator]() {
@@ -138,7 +192,7 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
       return {
         async next(): Promise<IteratorResult<unknown>> {
           if (!inner) {
-            const runner = await ready;
+            const { runner } = await readyBox;
             const it = runner[Symbol.asyncIterator];
             if (typeof it !== "function") return { done: true, value: undefined };
             inner = it.call(runner);
@@ -153,6 +207,15 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
     },
   };
 
+  if (hooks.thenable) {
+    // Mirror an awaitable runner. `then` resolves with the run's completion
+    // value, so `await standIn` yields what `await realRunner` would.
+    stand.then = (
+      onFulfilled?: ((v: unknown) => unknown) | null,
+      onRejected?: ((e: unknown) => unknown) | null,
+    ) => completed.then(onFulfilled, onRejected);
+  }
+
   // Anything else the runner exposes (finalMessage, finalChatCompletion,
   // toReadableStream, ...) is forwarded once the real runner exists. Forwarding
   // through a Proxy rather than enumerating keeps this wrapper from having to
@@ -162,15 +225,17 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
     get(target, prop, receiver) {
       if (prop in target) return Reflect.get(target, prop, receiver);
       if (typeof prop === "symbol") return Reflect.get(target, prop, receiver);
-      // NEVER synthesize a thenable. The catch-all below returns a function for
+      // Never SYNTHESIZE a thenable. The catch-all below returns a function for
       // any unknown property, and `await x` probes `x.then` — so without this
       // the stand-in would look like a promise, `await` would adopt it, and the
       // forwarded `then` would wait on a real runner that has no such method.
       // A caller who wrote `await client.messages.stream(...)` would hang
-      // forever. Provider runners are not thenables; neither is this.
+      // forever. A runner that IS awaitable gets a real `then` assigned above,
+      // which `prop in target` returns before reaching here — so this refuses
+      // only the accidental kind.
       if (prop === "then" || prop === "catch" || prop === "finally") return undefined;
       return (...args: unknown[]) =>
-        ready.then((runner) => {
+        readyBox.then(({ runner }) => {
           const fn = (runner as Record<string, unknown>)[prop as string];
           if (typeof fn !== "function") return fn;
           return (fn as (...a: unknown[]) => unknown).apply(runner, args);

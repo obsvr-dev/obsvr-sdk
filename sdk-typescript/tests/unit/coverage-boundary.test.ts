@@ -314,20 +314,18 @@ describe('the coverage boundary holds in both directions', () => {
       ['beta', 'chat', 'completions', 'create'],
       ['beta', 'chat', 'completions', 'parse'],
     ];
-    // The `.stream()` helpers ARE governed now, but through the deferred
-    // runner rather than the async method wrapper — they return their runner
-    // synchronously, so they are asserted separately below rather than by the
-    // await-the-result probe this list uses.
+    // The `.stream()` helpers and the tool runners ARE governed now, but
+    // through the deferred runner rather than the async method wrapper — they
+    // return their runner synchronously, so they are asserted separately
+    // rather than by the await-the-result probe this list uses.
     const NOT_AUDITED = [
       ['messages', 'countTokens'],
       ['messages', 'batches', 'create'],
-      ['chat', 'completions', 'runTools'],
       ['generateContentStream'],
       ['startChat'],
       ['embeddings', 'create'],
       ['images', 'generate'],
       ['beta', 'messages', 'countTokens'],
-      ['beta', 'messages', 'toolRunner'],
       ['beta', 'threads', 'runs', 'create'],
     ];
 
