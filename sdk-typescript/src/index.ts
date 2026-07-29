@@ -140,6 +140,15 @@ export { patchMCP, obsvrGovernMCP } from "./integrations/mcp.js";
 export { obsvrGovernTool, obsvrGovernTools } from "./integrations/tools.js";
 export type { GovernToolOptions } from "./integrations/tools.js";
 
+// The generic OpenAI-compatible wrapper (also available as
+// `@obsvr/sdk/openai-compat`). Exported from the root because it is the entry
+// point for endpoints that have no named integration of their own; the named
+// wrappers built on it (together, azure-openai, cloudflare) stay subpath-only.
+// Unlike those, this one takes `provider` and `source` from the caller, so the
+// label on the audit event names the endpoint the caller actually reached.
+export { wrapOpenAICompatible } from "./integrations/openai-compat.js";
+export type { OpenAICompatConfig } from "./integrations/openai-compat.js";
+
 // Canary-leak detection: mint a honeytoken, plant it where only the model
 // should see it; if it later surfaces in output/tool-args/tool-results it is
 // a CRITICAL leak. Only the token HASH is ever stored or audited.

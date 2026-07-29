@@ -411,7 +411,10 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 ## Framework & provider support
 
 **Providers (auto-governed):** OpenAI · Anthropic · Google Gemini
-**Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together · Cloudflare Workers AI · any OpenAI-compatible API (Groq, Mistral, Ollama)
+**Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together¹ · Cloudflare Workers AI
+**Any other OpenAI-compatible endpoint — TypeScript only:** `wrapOpenAICompatible` from `@obsvr/sdk/openai-compat` (or the root export) governs anything speaking `chat.completions.create` — Groq, Mistral, a local Ollama server — and takes `provider` and `source` from you, so the audit trail names the endpoint you reached. **Python has no equivalent.** `obsvr.wrap()` will govern such a client, but its provider detection returns `openai` for anything exposing `chat.completions`, so a hosted endpoint and a localhost server are indistinguishable in the resulting events.
+
+¹ The Together module is exercised through the real client class and the real `wrapTogether` → `wrapOpenAICompatible` → `chat.completions.create` path, but against a different OpenAI-compatible endpoint — `api.together.xyz` has never been called, in either language. What is verified is that the code path is sound and that obsvr sets the label itself; Together-specific `usage` extensions and Together-only endpoints are not covered. Note that the label is set unconditionally, so a client pointed elsewhere still records `provider: "together"`.
 
 | Framework                 | TypeScript | Python |
 | ------------------------- | :--------: | :----: |

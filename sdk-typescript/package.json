@@ -49,6 +49,12 @@
         "default": "./dist/together.js"
       }
     },
+    "./openai-compat": {
+      "import": {
+        "types": "./dist/openai-compat.d.ts",
+        "default": "./dist/openai-compat.js"
+      }
+    },
     "./vertex": {
       "import": {
         "types": "./dist/vertex.d.ts",

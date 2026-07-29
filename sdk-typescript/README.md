@@ -205,6 +205,19 @@ LangChain, LlamaIndex, OpenAI Agents SDK, Vercel AI SDK, plus provider modules f
 import { ObsvrCallbackHandler } from '@obsvr/sdk/langchain';
 ```
 
+Any endpoint that speaks `chat.completions.create` and has no named module of its own goes through `wrapOpenAICompatible`, which takes the labels rather than guessing them — so the audit event names the endpoint you actually reached:
+
+```typescript
+import { wrapOpenAICompatible } from '@obsvr/sdk/openai-compat'; // also on the root export
+
+const client = wrapOpenAICompatible(new OpenAI({ baseURL: 'http://localhost:11434/v1' }), {
+  provider: 'openai',   // the wire protocol the event is classified under
+  source: 'ollama',     // the endpoint, which is what tells two of these apart
+});
+```
+
+Set `source` per endpoint. The named wrappers built on this one (`wrapTogether`, and the Azure/Cloudflare modules) hardcode their own labels, so a client pointed somewhere else still records the name of the module that wrapped it.
+
 ### Agent runs
 
 `obsvr.agentRun(name, fn)` records one agentic execution as a **run** — every governed action inside it (LLM calls, `obsvrGovernTool` tool calls, spans) is grouped under one `agent_run_id`, so it appears as a single row in the dashboard's Runs tab with its full trace. It emits a signed `<source>.agent.run.start` on entry and a terminal `<source>.agent.run.finish` on completion (success or failure).
