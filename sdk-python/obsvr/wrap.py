@@ -1022,6 +1022,18 @@ def wrap(client: Any, **options: Any) -> Any:
     """
     if not is_initialized():
         raise RuntimeError("obsvr: call init() before wrap()")
+    # ALREADY GOVERNED -> hand it straight back. register.py patches the openai
+    # and anthropic client classes so construction already returns a governed
+    # client, and both READMEs document init() and wrap() side by side — so a
+    # caller who follows the documentation was wrapping a wrapped client and
+    # getting TWO audit events for every call, plus double-counted cost and
+    # quota wherever metering is on. TypeScript has carried a WRAPPED_MARKER
+    # check for exactly this; this side had none. Same defect class as the
+    # framework double-registration already fixed: one governed call, one
+    # audit record.
+    if isinstance(client, _ObsvrProxy):
+        return client
+
     config: ResolvedConfig = get_config()
     if config.disabled:
         return client
