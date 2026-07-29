@@ -200,6 +200,37 @@ export const DEFAULT_COMPLIANCE: ComplianceInfo = {
 };
 
 /**
+ * Verdict for a tool event NO GATE could decide.
+ *
+ * The honest value when a control did not run. Its opposite is not "allowed" —
+ * that asserts a gate looked and permitted — and it is emphatically not
+ * "blocked", which asserts a refusal. A surface whose gate cannot reach the
+ * invocation boundary has no verdict to report, so it reports the absence and
+ * says why.
+ *
+ * Omitting the field would not have helped: the ingest schema defaults an
+ * absent action_taken, so the server would mint "allowed" one layer down.
+ * Twin of Python's `tool_gate_not_evaluated_compliance`; `policy_not_evaluated`
+ * rides `metadata.obsvr_telemetry` in both languages.
+ */
+export function toolGateNotEvaluatedCompliance(
+  surface: string,
+  gate: string,
+  reason: string,
+): ComplianceInfo {
+  return {
+    event_type: "tool_call",
+    policy_version: "none",
+    action_taken: "not_evaluated",
+    action_reason: "none",
+    action_source: "unknown",
+    redacted_types: [],
+    blocked_types: [],
+    policy_not_evaluated: { surface, gate, reason },
+  };
+}
+
+/**
  * How a denied capability got into the destructive set, in words an operator
  * reading the audit trail can act on. "The server told us this about itself"
  * and "I wrote this name down" are different facts and lead to different next
@@ -1954,10 +1985,21 @@ export function isAsyncIterable(obj: unknown): obj is AsyncIterable<unknown> {
  * Apply loop detection and emit an audit event if the threshold is exceeded.
  * Returns the action to take ('block' | 'escalate') or null if within limits.
  */
+/**
+ * Record an iteration and emit an audit event when the loop fires.
+ *
+ * `meta.canHalt` is the caller's answer to "if I stop here, does the run stop?".
+ * Callers sitting on a boundary that can refuse leave it unset. A caller whose
+ * throw the framework swallows must pass false, because the detection is still
+ * real evidence but the halt never happens — and a record claiming `blocked`
+ * about a run that continued is the failure this flag exists to prevent. The
+ * finding keeps its `loop_detected` event type and LOOP_DETECTED code either
+ * way; only the claim to have acted changes. (Python twin: agent_policy.py.)
+ */
 export function applyLoopDetection(
   detector: LoopDetector,
   config: ResolvedConfig,
-  meta: { agentRunId: string; source: string; operation: string },
+  meta: { agentRunId: string; source: string; operation: string; canHalt?: boolean },
 ): { action: 'block' | 'escalate'; iterationCount: number } | null {
   const result = detector.recordIteration();
   if (!result) return null;
@@ -1984,11 +2026,22 @@ export function applyLoopDetection(
       // block (this event records the finding either way).
       reason_code: ReasonCode.LOOP_DETECTED,
       ...(result.action === 'block'
-        ? {
-            action_taken: 'blocked' as const,
-            action_reason: 'policy_violation' as const,
-            action_source: 'policy_rules' as const,
-          }
+        ? meta.canHalt === false
+          ? {
+              action_taken: 'not_evaluated' as const,
+              policy_not_evaluated: {
+                surface: meta.operation,
+                gate: 'loop_detection',
+                reason:
+                  'the threshold was reached but this surface cannot halt the ' +
+                  'run; the iteration limit is observed, not enforced',
+              },
+            }
+          : {
+              action_taken: 'blocked' as const,
+              action_reason: 'policy_violation' as const,
+              action_source: 'policy_rules' as const,
+            }
         : {}),
     },
   });

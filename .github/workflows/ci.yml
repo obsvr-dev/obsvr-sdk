@@ -168,6 +168,15 @@ jobs:
         run: python -m pytest tests/test_enforcement_reporting_invariant.py -q
         working-directory: sdk-python
 
+      # The same property on the other side, and NOT a translation of the
+      # Python grades — the two SDKs disagree about LangChain, which is exactly
+      # why each language grades its own implementations.
+      - name: Enforcement-reporting invariant (TypeScript half)
+        run: npm test -- tests/unit/enforcement-reporting-invariant.test.ts
+        working-directory: sdk-typescript
+        env:
+          NODE_ENV: test
+
       # Both obsvr-verify CLIs, driven over ONE export built from the shared
       # signing vectors. Each language's own suite can agree with itself
       # forever while disagreeing with the other; only this catches that.

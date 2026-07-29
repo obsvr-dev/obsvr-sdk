@@ -55,6 +55,20 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **The TypeScript LangChain integration enforces tool policy; the Python one
+  does not.** Measured on both sides rather than assumed to match, and the two
+  genuinely differ: the TypeScript handler implements a pre-execution
+  `handleToolStart` that the Python handler has no equivalent of, and it sets
+  `awaitHandlers` with `raiseError` so a refusal inside a callback aborts the
+  tool instead of being logged and ignored. Verified live against a real
+  LangGraph agent: a denied tool's own callback never ran, and the control with
+  no policy shows the same model calling the same tool. The Python handler gates
+  on `on_agent_action`, which current runtimes do not deliver, and has no
+  `on_tool_start` at all — so it refuses nothing and emits no block event.
+
+  Stated here because the per-integration grading in the READMEs is now
+  per-integration **and per language**, and a reader who assumed the two halves
+  behaved alike would be wrong in both directions.
 - **BREAKING: `action_taken` gains `not_evaluated`.** It means **no gate ran for
   this event's subject** — the absence of a decision, not a permissive one. It
   is emitted today by the tool events a provider tool runner produces
@@ -223,6 +237,11 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **The enforcement-reporting invariant now covers TypeScript as well.** A table
+  over the TypeScript tool gates, written against those implementations rather
+  than translated from the Python results — which matters, because the two SDKs
+  do not agree. Offline and deterministic, same as the Python half, and it went
+  red on a real defect on its first run.
 - **An invariant binding what the audit trail claims to what actually
   happened.** For every event where `action_taken == "blocked"`, the governed
   operation did not execute. Nothing in the tree asserted that, and two separate
@@ -585,6 +604,20 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The OpenAI Agents integration recorded `blocked` in TypeScript too.** The
+  same defect as the Python one below, on the npm package. It emitted
+  `action_taken: "blocked"` with `TOOL_DENIED` from a method whose own docstring
+  explains that a throw there cannot block anything, because the modern
+  `TracingProcessor` hooks are dispatched fire-and-forget — and which says
+  enforcement lives in `obsvrGovernTool`. The integration knew it could not
+  refuse and recorded a refusal anyway. Those events now carry `not_evaluated`
+  with the reason, the step limit and loop detection stop claiming halts they
+  cannot perform, and `applyLoopDetection` takes the same `canHalt` argument as
+  its Python twin.
+
+  Found by measuring, not by reading across. The TypeScript tool gates had never
+  been driven, and the measurement was also the first evidence for the opposite
+  result on another surface — see the LangChain note under Changed.
 - **The recorded `provider` described the wrapper, not the destination.**
   `wrapTogether` set `provider: "together"` unconditionally, so one wrapper
   pointed at two different servers reported the same destination for both:

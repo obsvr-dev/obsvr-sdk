@@ -26,13 +26,13 @@ import {
   createDelegationTracker,
   emitIntegrationEvent,
   setupExitHandlers,
+  toolGateNotEvaluatedCompliance,
   tryGetConfig,
   type IntegrationOptions,
 } from "./core.js";
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
-import { ReasonCode } from "../governance/reason-codes.js";
 import { readTokenUsage } from "../proxy/extractors/token-usage.js";
 
 const SOURCE = "openai_agents_js";
@@ -232,7 +232,7 @@ export class ObsvrTraceProcessor {
               config,
               provider: "unknown",
               model: "unknown",
-              operation: "openai_agents.agent.policy.tool_blocked",
+              operation: "openai_agents.agent.policy.tool_not_evaluated",
               source: SOURCE,
               prompt: "",
               response: "",
@@ -243,22 +243,21 @@ export class ObsvrTraceProcessor {
                 reason,
                 step_index: stepIndex,
               },
-              // Previously emitted with no compliance at all, so the refusal
-              // was recorded as an ordinary allowed llm_call. A blocked tool
-              // is a blocked_call with the TOOL_DENIED classification.
-              compliance: {
-                event_type: "blocked_call",
-                policy_version: "none",
-                action_taken: "blocked",
-                action_reason: "policy_violation",
-                reason_code: ReasonCode.TOOL_DENIED,
-                action_source: "policy_rules",
-                redacted_types: [],
-                blocked_types: [],
-              },
+              // This surface CANNOT refuse, so it must not say it did. The
+              // hooks are dispatched fire-and-forget and a function span does
+              // not end until its tool has returned, so by the time the gate
+              // sees a call there is nothing left to prevent. It previously
+              // recorded `blocked` with TOOL_DENIED about calls that had
+              // completed and returned their result to the caller.
+              compliance: toolGateNotEvaluatedCompliance(
+                "openai_agents.tool.call",
+                "tool_gate",
+                `tool policy would have refused this call (${reason}), but the ` +
+                  `decision is reached after the tool has already returned and ` +
+                  `cannot bind it; enforce with obsvrGovernTool instead`,
+              ),
               options: this.opts,
             });
-            throw new Error(`[obsvr] Tool blocked by agent policy: ${toolName}`);
           }
 
           const stepAction = checkSteps(stepIndex, agentPolicy);
@@ -266,14 +265,14 @@ export class ObsvrTraceProcessor {
             state.stepCount += 1;
             // Loop detection
             if (state.loopDetector) {
-              const loopResult = applyLoopDetection(state.loopDetector, config, {
+              // canHalt: false — nothing thrown from here reaches the run, so
+              // the finding is recorded without claiming the halt happened.
+              applyLoopDetection(state.loopDetector, config, {
                 agentRunId: traceId,
                 source: SOURCE,
                 operation: "openai_agents.agent",
+                canHalt: false,
               });
-              if (loopResult?.action === "block") {
-                throw new Error("[obsvr] Loop detected: iteration limit exceeded");
-              }
             }
           }
 
@@ -292,9 +291,14 @@ export class ObsvrTraceProcessor {
                 step_count: stepIndex,
                 step_index: stepIndex,
               },
+              compliance: toolGateNotEvaluatedCompliance(
+                "openai_agents.agent.policy.step_limit",
+                "step_limit",
+                "the step budget is exhausted but this surface cannot halt the " +
+                  "run; the limit is observed, not enforced",
+              ),
               options: this.opts,
             });
-            throw new Error("[obsvr] Step limit reached");
           }
 
           if (stepAction === "escalate") {
