@@ -54,31 +54,43 @@ Issues = "https://github.com/obsvr-dev/obsvr-sdk/issues"
 # is an adjacent tested pair, and the boundaries were then re-run live and
 # graded on the captured event.
 #
-# 1.0.0 through 1.65.5 carry exactly ONE of the seven declared paths,
-# chat.completions.create. responses.create and responses.parse both arrive at
-# 1.66.0 and that is this floor. The range deliberately does not promise the
-# rest, and the honest reading is per path rather than per range:
-# beta.chat.completions.parse arrives at 1.40.0, chat.completions.parse and
-# beta.chat.completions.create at 1.92.0, and beta.responses.create only at
-# 2.45.0 — six releases out of 326. The floor is NOT raised to cover that last
-# one, because a range standing for six releases would misdescribe the 141 on
-# which the responses paths do work. One hole is upstream and left unexcluded:
-# 1.99.0 ships a broken openai.types.responses, so both responses paths read
-# absent there and are present again in 1.99.1 the next day.
+# 1.0.0 carries exactly ONE of the seven declared paths,
+# chat.completions.create; beta.chat.completions.parse joins it at 1.40.0.
+# responses.create and responses.parse both arrive at 1.66.0, and this floor is
+# a LOCATED EDGE rather than the lowest release anyone happened to try: the
+# adjacent pair was run live, and at 1.65.5 both paths read ABSENT ('OpenAI'
+# object has no attribute 'responses') while at 1.66.0 both are AUDITED on a
+# real call.
+#
+# The range deliberately does not promise the rest, and the honest reading is
+# per path rather than per range: chat.completions.parse and
+# beta.chat.completions.create arrive at 1.92.0, and beta.responses.create only
+# at 2.45.0 — six releases out of 326. The floor is NOT raised to cover that
+# last one, because a range standing for six releases would misdescribe the 141
+# on which the responses paths do work. One hole is upstream and left
+# unexcluded: 1.99.0 ships a broken openai.types.responses, so both responses
+# paths read absent there and are present again in 1.99.1 the next day.
 openai = ["openai>=1.66.0"]
 # 0.3.0 governed NOTHING, which is worse than thin. The 0.3.x client exposes
 # only completions.create — the superseded text-completion path, absent from
 # AUDITABLE_METHODS — so an operator who resolved the declared floor built a
 # client, wired obsvr, sent traffic and got zero audit events with nothing
 # raising. Confirmed live rather than read off a shape: 0.7.8 grades NO_AUDIT
-# because no auditable path exists on the client at all. The first auditable
-# path is beta.messages.create at 0.8.0; messages.create, the path the support
-# table is actually about, arrives at 0.16.0 and that is this floor.
+# because no auditable path exists on the client at all.
+#
+# messages.create, the path the support table is actually about, arrives at
+# 0.16.0, and this floor is a LOCATED EDGE: the adjacent pair was run live, and
+# at 0.15.1 the client carries no messages attribute at all, so messages.create
+# reads ABSENT and obsvr does not even recognise the client — detectedProvider
+# records "unknown". At 0.16.0 it is detected as anthropic and messages.create
+# is AUDITED on a real call. The only auditable path below this floor is
+# beta.messages.create, reaching back to 0.8.0.
+#
 # messages.parse arrives at 0.77.0 and is not promised by this range. Raise to
-# 0.36.0 if the beta namespace must be covered too — beta.messages is absent
-# from 0.16.0 through 0.35.0, which is upstream history (the beta namespace was
-# removed when that API graduated, and beta.messages returned at 0.36.0), not
-# an obsvr regression.
+# 0.36.0 if the beta namespace must be covered too — that same 0.16.0 cell
+# shows beta gone ('Anthropic' object has no attribute 'beta'), which is
+# upstream history (the namespace was removed when that API graduated, and
+# beta.messages returned at 0.36.0), not an obsvr regression.
 anthropic = ["anthropic>=0.16.0"]
 # add_trace_processor, the symbol obsvr.auto binds, arrives in 0.0.2.
 openai-agents = ["openai-agents>=0.0.2"]
