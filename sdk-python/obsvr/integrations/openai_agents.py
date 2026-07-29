@@ -64,7 +64,13 @@ import uuid
 from typing import Any, Dict, Optional, Tuple
 
 from .. import sender as _sender
-from ..agent_policy import apply_loop_detection, create_loop_detector, resolve_loop_detection
+from ..agent_policy import (
+    apply_loop_detection,
+    check_steps,
+    create_loop_detector,
+    resolve_loop_detection,
+    unrecognized_step_action_meta,
+)
 from ..config import try_get_config
 from ..events import emit_event, tool_gate_not_evaluated_compliance
 from ..token_usage import read_token_usage
@@ -82,14 +88,6 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     if allowed is not None and tool_name not in allowed:
         return False, "tool_not_in_allowlist"
     return True, ""
-
-
-def _check_steps(count: int, policy: Dict[str, Any]) -> str:
-    """Return 'allow', 'block', or 'escalate' based on step limit."""
-    limit = policy.get("max_steps")
-    if limit is None:
-        return "allow"
-    return "allow" if count < limit else policy.get("step_limit_action", "block")
 
 
 def _as_text(value: Any) -> str:
@@ -300,7 +298,7 @@ class ObsvrTracingProcessor:
                             ),
                         )
 
-                    step_action = _check_steps(step_index, policy)
+                    step_action, invalid_step_action = check_steps(step_index, policy)
                     state["step_count"] = step_index + 1
 
                     # Loop detection. can_halt=False: see the module docstring —
@@ -331,6 +329,7 @@ class ObsvrTracingProcessor:
                                 "agent_run_id": trace_id,
                                 "step_count": step_index,
                                 "step_index": step_index,
+                                **unrecognized_step_action_meta(invalid_step_action),
                             },
                             compliance=tool_gate_not_evaluated_compliance(
                                 surface="openai_agents.agent.policy.step_limit",

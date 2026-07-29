@@ -17,9 +17,20 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import sender as _sender
-from ..agent_policy import apply_loop_detection, create_loop_detector, resolve_loop_detection
+from ..agent_policy import (
+    apply_loop_detection,
+    check_steps,
+    create_loop_detector,
+    resolve_loop_detection,
+    unrecognized_step_action_meta,
+)
 from ..config import try_get_config
-from ..events import emit_event, infer_provider_from_string, tool_denied_compliance
+from ..events import (
+    emit_event,
+    infer_provider_from_string,
+    step_limit_compliance,
+    tool_denied_compliance,
+)
 from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
 from ..span import emit_span
@@ -81,14 +92,6 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     if allowed is not None and tool_name not in allowed:
         return False, "tool_not_in_allowlist"
     return True, ""
-
-
-def _check_steps(count: int, policy: Dict[str, Any]) -> str:
-    """Return 'allow', 'block', or 'escalate' based on step limit."""
-    limit = policy.get("max_steps")
-    if limit is None:
-        return "allow"
-    return "allow" if count < limit else policy.get("step_limit_action", "block")
 
 
 def _is_agent_chain(
@@ -325,7 +328,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
 
             # Check step limit
             count = agent_state["step_count"] if agent_state else 0
-            step_action = _check_steps(count, policy)
+            step_action, invalid_step_action = check_steps(count, policy)
 
             if agent_state:
                 agent_state["step_count"] = count + 1
@@ -356,7 +359,9 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                         "agent_run_id": agent_run_id,
                         "step_count": count,
                         "step_index": step_index,
+                        **unrecognized_step_action_meta(invalid_step_action),
                     },
+                    compliance=step_limit_compliance(),
                     options=self._options or None,
                 )
                 raise ValueError("[obsvr] Step limit reached")

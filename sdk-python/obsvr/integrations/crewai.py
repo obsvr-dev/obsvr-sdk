@@ -34,8 +34,9 @@ import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .. import sender as _sender
+from ..agent_policy import check_steps, unrecognized_step_action_meta
 from ..config import try_get_config
-from ..events import emit_event, tool_denied_compliance
+from ..events import emit_event, step_limit_compliance, tool_denied_compliance
 from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
 
@@ -69,14 +70,6 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     if allowed is not None and tool_name not in allowed:
         return False, "tool_not_in_allowlist"
     return True, ""
-
-
-def _check_steps(count: int, policy: Dict[str, Any]) -> str:
-    """Return 'allow', 'block', or 'escalate' based on step limit."""
-    limit = policy.get("max_steps")
-    if limit is None:
-        return "allow"
-    return "allow" if count < limit else policy.get("step_limit_action", "block")
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +180,7 @@ def make_step_callback(
 
             # Check step limit
             count = ctx.get("step_count", 0)
-            step_action = _check_steps(count, policy)
+            step_action, invalid_step_action = check_steps(count, policy)
 
             if step_action == "block":
                 emit_event(
@@ -203,7 +196,9 @@ def make_step_callback(
                         "agent_run_id": agent_run_id,
                         "step_count": count,
                         "step_index": count,
+                        **unrecognized_step_action_meta(invalid_step_action),
                     },
+                    compliance=step_limit_compliance(),
                 )
                 raise RuntimeError("[obsvr] Step limit reached")
 

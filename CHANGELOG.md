@@ -585,6 +585,30 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **An unrecognised `step_limit_action` silently disabled the step limit.** The
+  decision helper returned the configured value verbatim, and each caller then
+  tested it against the two dispositions it implements — so a typo, or a
+  disposition from a newer config than the installed SDK, matched neither branch
+  and the limit did nothing. Nothing was recorded either, so a run that blew
+  through its budget looked exactly like one that stayed inside it. Measured
+  live before the fix: with `max_steps: 2` and `step_limit_action: "warn"`, a
+  tool chain ran five times.
+
+  It now fails closed, and the event names both the value that was ignored and
+  the vocabulary it failed to match — blocking without saying why the
+  configuration was dropped would trade a silent failure for a mysterious one.
+  Re-probed live: the same scenario stops at two, while the no-limit control
+  still reaches five (so the halt is real) and `escalate` still reaches five (so
+  a valid action is still honoured).
+
+  **There were four identical copies of that helper, one per integration**, which
+  is how the defect survived — it was in all four, and each read like an isolated
+  local function. There is now one, and a test fails if an integration
+  reintroduces a private copy. The CrewAI and LangChain step-limit events also
+  had the missing-compliance defect described below and now report refusals as
+  refusals; CrewAI's step limit is worth noting because it runs on every step
+  callback rather than inside the tool-name branch, so unlike that integration's
+  tool gate it does fire on current runtimes.
 - **AutoGen tool policy checked only the first call in a message.** The send
   hook read `tool_calls[0]` and nothing else, so enforcement depended on
   POSITION: with `denied_tools: ["send_money"]`, a message carrying

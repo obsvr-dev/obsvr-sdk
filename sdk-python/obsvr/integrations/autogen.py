@@ -42,6 +42,7 @@ import uuid
 from typing import Any, Dict, Tuple
 
 from .. import sender as _sender
+from ..agent_policy import check_steps, unrecognized_step_action_meta
 from ..config import try_get_config
 from ..events import (
     blocked_call_error,
@@ -96,14 +97,6 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     if allowed is not None and tool_name not in allowed:
         return False, "tool_not_in_allowlist"
     return True, ""
-
-
-def _check_steps(count: int, policy: Dict[str, Any]) -> str:
-    """Return 'allow', 'block', or 'escalate' based on step limit."""
-    limit = policy.get("max_steps")
-    if limit is None:
-        return "allow"
-    return "allow" if count < limit else policy.get("step_limit_action", "block")
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +307,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # trivially evadable by the same batching that defeated the gate.
             for index, func_name in enumerate(func_names):
                 step_count = getattr(_run_local, "step_count", 0)
-                step_action = _check_steps(step_count, policy)
+                step_action, invalid_step_action = check_steps(step_count, policy)
                 _run_local.step_count = step_count + 1
 
                 if step_action == "block":
@@ -333,6 +326,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
                             "tool_name": func_name,
                             "tool_call_index": index,
                             "tool_call_count": len(func_names),
+                            **unrecognized_step_action_meta(invalid_step_action),
                         },
                         compliance=step_limit_compliance(),
                         options=options or None,
