@@ -170,6 +170,23 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **Known limitation, stated rather than left to be discovered: blocked-call
+  attribution on `ai` below 5.0.0.** Enforcement is fully correct across the
+  supported range — the call is blocked, `status_code` is 403, the reason code
+  and blocked types are right. On `ai` 3.3.28–4.x the blocked *event* carries
+  `provider: "unknown"` and `model: "unknown"`, so per-provider or per-model
+  reporting **over blocked calls** is unavailable there. Every other event is
+  unaffected, and from `ai` 5.0.0 blocked events are fully attributed.
+
+  This is upstream and not recoverable inside the SDK: at language-model spec v1
+  `transformParams` receives `{ params, type }` and no model, the middleware
+  object exposes no wrap-time hook that could supply one, and obsvr never calls
+  `wrapLanguageModel` itself — the caller does. A block is thrown from
+  `transformParams` before `wrapGenerate` runs, so a cached model would still
+  leave the first call unattributed. Fixing it would mean adding a public option
+  for the caller to declare the model, which is not worth new API surface for a
+  version range where enforcement already works.
+
 - **Declared peer floors now name releases the code can actually work with.**
   Every floor below was checked by building a throwaway environment per
   candidate version, installing that version alone, and importing the exact

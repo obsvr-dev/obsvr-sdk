@@ -9,6 +9,26 @@
  * `transformParams` provides real pre-call enforcement: PII can be redacted
  * in the params, or the call blocked entirely.
  *
+ * KNOWN LIMITATION on `ai` below 5.0.0 — blocked-call attribution only.
+ * Enforcement is fully correct across the whole supported range: the call is
+ * blocked, `status_code` is 403, and the reason code and blocked types are
+ * right. What degrades is the EVIDENCE on a blocked event, which carries
+ * `provider: "unknown"` and `model: "unknown"` there.
+ *
+ * The cause is upstream and not recoverable here. At language-model spec v1
+ * `transformParams` receives `{ params, type }` and no model; the middleware
+ * object is destructured to exactly three hooks, so there is no wrap-time
+ * callback that could supply one; and obsvr never calls `wrapLanguageModel`
+ * itself — the caller does — so the model never enters obsvr's closure either.
+ * A block is emitted and thrown from `transformParams` before `wrapGenerate`
+ * ever runs, so caching a model learned from a previous call would still leave
+ * the first one unattributed and would cross-attribute a middleware instance
+ * reused across models.
+ *
+ * From `ai` 5.0.0 the spec passes `model` to `transformParams` and blocked
+ * events are fully attributed. Per-provider or per-model reporting OVER BLOCKED
+ * CALLS is therefore unavailable on 3.3.28-4.x; every other event is unaffected.
+ *
  * @example
  * ```ts
  * import { wrapLanguageModel } from "ai";
