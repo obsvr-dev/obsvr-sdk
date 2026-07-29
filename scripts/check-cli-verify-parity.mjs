@@ -27,10 +27,14 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { resolvePython } from "./python-interpreter.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const TS_CLI = join(root, "sdk-typescript", "dist", "cli-verify.js");
 const PY_DIR = join(root, "sdk-python");
+// Same interpreter resolution as the canonicalizer parity check, so the two
+// cross-language scripts cannot disagree about which Python they are testing.
+const { python } = resolvePython(root);
 
 if (!existsSync(TS_CLI)) {
   console.error(`✗ ${TS_CLI} is missing. Build it first: npm --prefix sdk-typescript run build`);
@@ -119,7 +123,7 @@ const CASES = [
  *  installed console script or not - the entry point itself is asserted by the
  *  Python unit suite. */
 const runPy = (args) =>
-  spawnSync("python3", ["-m", "obsvr.cli_verify", ...args], { cwd: PY_DIR, encoding: "utf8" });
+  spawnSync(python, ["-m", "obsvr.cli_verify", ...args], { cwd: PY_DIR, encoding: "utf8" });
 const runTs = (args) => spawnSync("node", [TS_CLI, ...args], { cwd: root, encoding: "utf8" });
 
 let failures = 0;

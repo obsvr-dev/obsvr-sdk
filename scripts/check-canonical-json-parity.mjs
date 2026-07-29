@@ -22,6 +22,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { resolvePython, requirePythonModules } from "./python-interpreter.mjs";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -149,7 +150,11 @@ function canonicalizeTs(docs) {
   });
 }
 
-const python = process.env.PYTHON ?? "python3";
+const { python, source: pythonSource } = resolvePython(REPO);
+// hypothesis drives the generated corpus on the Python side. Checking up
+// front turns "ModuleNotFoundError" — which reads like a divergence — into a
+// message that names the dependency and the interpreter it is missing from.
+requirePythonModules(python, pythonSource, ["hypothesis"]);
 const driver = join(REPO, "scripts/canonical_json_parity.py");
 const work = mkdtempSync(join(tmpdir(), "obsvr-canon-"));
 
