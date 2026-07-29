@@ -109,7 +109,8 @@ cut, when it is renamed to that version.
   (`label`, `confidence`, `quoted`); existing readers of `pii_detected` and
   `detected_types` are unaffected. Pinned by
   `conformance/fixtures/pii_scan.json`.
-  ([`9f164a2`](https://github.com/obsvr-dev/obsvr-sdk/commit/9f164a2))
+  ([`9f164a2`](https://github.com/obsvr-dev/obsvr-sdk/commit/9f164a2),
+  [`dc86ebb`](https://github.com/obsvr-dev/obsvr-sdk/commit/dc86ebb))
 - **Approval grants are bound to the action they were granted for, and
   re-checked before the call goes out.** A grant may now carry an
   `action_hash` — a canonical digest of the rule, the rule's definition hash,
@@ -250,7 +251,7 @@ cut, when it is renamed to that version.
   | --- | --- | --- | --- |
   | `ai` | `>=3.0.0` | `>=3.3.28` | the middleware API `obsvrMiddleware()` attaches to does not exist below 3.3.28 — roughly 130 advertised releases where the integration cannot be constructed at all |
   | `llamaindex` | `>=0.5.0` | `>=0.5.9` | 0.5.0 and 0.5.8 register the handler and emit **no audit events at all**: the call succeeds, the provider returns usage, and nothing is recorded |
-  | `@aws-sdk/client-bedrock-runtime` | `>=3.422.0` | `>=3.587.0` | `ConverseCommand` / `ConverseStreamCommand` — two of the four commands the integration dispatches on — are **absent at 3.422.0 and present at 3.1096.0** by introspection, and that is the whole of the evidence. **This floor is a position taken, not a located edge:** nothing between those two points was tested, so the real boundary is unknown across the 386 published releases that sit between them. It is stated at a release that exists — the line has gaps, and a floor naming a version the registry never carried would assert a boundary nobody could have tested |
+  | `@aws-sdk/client-bedrock-runtime` | `>=3.422.0` | `>=3.587.0` | `ConverseCommand` / `ConverseStreamCommand` — two of the four commands the integration dispatches on — are **absent at 3.422.0 and present at 3.1096.0** by introspection, and that is the whole of the evidence. **This floor is a position taken, not a located edge:** nothing between those two points was tested, so the real boundary is unknown across the 386 published releases that sit between them. It is stated at a release that exists — the line has gaps, and a floor naming a version the registry never carried would assert a boundary nobody could have tested ([`bc3970c`](https://github.com/obsvr-dev/obsvr-sdk/commit/bc3970c)) |
   | `pydantic-ai-slim` | `>=0.0.14` | `>=0.4.4` | `pydantic_ai.toolsets.WrapperToolset` does not exist below 0.4.4; below it `govern_toolset()` still returns an object, so denied-tool policy, per-tool auditing and step limits are silently inert |
   | `google-adk` | `>=0.1.0` | `>=1.2.0` | all thirteen releases below 1.2.0 install but cannot import (`google.adk.models` raises `ModuleNotFoundError: deprecated`, reached through the OpenTelemetry stack) |
   | `semantic-kernel` | `>=1.0.0` | `>=1.16.0` | 1.14.0 and 1.15.0 install but cannot import against any modern pydantic; below 1.14.0 CPython 3.13 has no candidate at all |
@@ -690,17 +691,23 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   ([`4d1c423`](https://github.com/obsvr-dev/obsvr-sdk/commit/4d1c423))
 - **The conformance corpus hash changed — re-pin if you pinned it.**
   `conformance/MANIFEST.sha256` moved from `corpus_sha256 = 1120116f…` to
-  `8c48c249…`, and both `conformance.pin` files with it. What moved is
-  bookkeeping and prose only: the per-case `sdk_support` and per-fixture
-  `claimable` keys described under Added, one divergence entry's `tracking`
-  text, and one fixture's `description`. **No vector, digest, canonical form,
-  or expected value changed** — with those two keys stripped, the only
-  remaining differences anywhere in the corpus are those two prose fields, so
-  your expected values are unmoved and only the pin needs updating.
+  `9afde624…`, and both `conformance.pin` files with it. That span is no longer
+  a single change. The bookkeeping pass described under Added — the per-case
+  `sdk_support` and per-fixture `claimable` keys, one divergence entry's
+  `tracking` text, one fixture's `description` — moved no vector, digest,
+  canonical form, or expected value, and carried the hash only as far as
+  `8c48c249…`
   ([`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
   [`dd914c8`](https://github.com/obsvr-dev/obsvr-sdk/commit/dd914c8),
   [`f3947d9`](https://github.com/obsvr-dev/obsvr-sdk/commit/f3947d9),
-  [`6767aa4`](https://github.com/obsvr-dev/obsvr-sdk/commit/6767aa4))
+  [`6767aa4`](https://github.com/obsvr-dev/obsvr-sdk/commit/6767aa4)).
+  **Everything after that did change expected values**, so re-pinning is not
+  the whole of the work: the `protocol_facet`, CloudEvents, cost and
+  evaluation-context fixtures are new, `reason_codes.json` gained
+  `PROTOCOL_FACET_MATCHED`, `otel_attributes.json` moved to schema 2 with a
+  `conditional_keys` set, and the approvals, session-taint, de-obfuscation and
+  fail-mode fixtures all grew cases. Each is described in its own entry above;
+  re-read the ones whose fixtures you consume.
 - **The published GitHub Action pins its own dependency to a commit.** Its
   `setup-node` step used a mutable tag, which every consumer's CI inherited
   with no way to see or override it. It is now pinned to a commit SHA with the
