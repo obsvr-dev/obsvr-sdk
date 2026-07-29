@@ -44,6 +44,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from ..config import try_get_config
 from ..events import emit_event
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage, blocked_user_input_for_storage
+from ..binding_report import record_binding
 
 # Each symbol is bound in its OWN try block. They used to share one, so a single
 # upstream rename nulled all of them together — the framework renamed two names
@@ -55,29 +56,45 @@ from ..policy import apply_pre_call_policy, blocked_prompt_for_storage, blocked_
 
 try:  # renamed from AgentRunResponse at the 1.0 GA
     from agent_framework import AgentResponse as _AgentResponse  # type: ignore
+
+    record_binding("agent_framework", "AgentResponse")
 except Exception:  # pragma: no cover - MAF absent or pre-GA
     try:
         from agent_framework import AgentRunResponse as _AgentResponse  # type: ignore
-    except Exception:
+
+        record_binding("agent_framework", "AgentRunResponse (pre-GA)")
+    except Exception as _exc:
         _AgentResponse = None  # type: ignore
+        record_binding("agent_framework", "AgentResponse", _exc)
 
 try:  # renamed from ChatMessage at the 1.0 GA
     from agent_framework import Message as _Message  # type: ignore
+
+    record_binding("agent_framework", "Message")
 except Exception:  # pragma: no cover - MAF absent or pre-GA
     try:
         from agent_framework import ChatMessage as _Message  # type: ignore
-    except Exception:
+
+        record_binding("agent_framework", "ChatMessage (pre-GA)")
+    except Exception as _exc:
         _Message = None  # type: ignore
+        record_binding("agent_framework", "Message", _exc)
 
 try:
     from agent_framework import AgentContext as _MafAgentContext  # type: ignore
-except Exception:  # pragma: no cover - MAF not installed
+
+    record_binding("agent_framework", "AgentContext")
+except Exception as _exc:  # pragma: no cover - MAF not installed
     _MafAgentContext = None  # type: ignore
+    record_binding("agent_framework", "AgentContext", _exc)
 
 try:
     from agent_framework import AgentMiddleware as _MafAgentMiddleware  # type: ignore
-except Exception:  # pragma: no cover - MAF not installed
+
+    record_binding("agent_framework", "AgentMiddleware")
+except Exception as _exc:  # pragma: no cover - MAF not installed
     _MafAgentMiddleware = None  # type: ignore
+    record_binding("agent_framework", "AgentMiddleware", _exc)
 
 #: Why each optional bind failed, for diagnostics. A bare False flag cannot tell
 #: an absent package from a renamed symbol from a broken transitive dependency,

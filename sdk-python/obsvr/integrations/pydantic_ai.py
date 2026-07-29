@@ -36,6 +36,7 @@ import json
 from typing import Any, Dict, Optional, Tuple
 
 from ..config import try_get_config
+from ..binding_report import record_binding
 from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
 
@@ -46,8 +47,10 @@ try:  # real base when PydanticAI is installed; a shim duck-types it otherwise
     from pydantic_ai.toolsets import WrapperToolset as _WrapperToolset  # type: ignore
 
     _HAS_PYDANTIC_AI = True
-except Exception:  # pragma: no cover - PydanticAI not installed
+    record_binding("pydantic_ai", "pydantic_ai.toolsets.WrapperToolset")
+except Exception as _exc:  # pragma: no cover - PydanticAI not installed
     _HAS_PYDANTIC_AI = False
+    record_binding("pydantic_ai", "pydantic_ai.toolsets.WrapperToolset", _exc)
 
     class _WrapperToolset:  # type: ignore
         """Minimal stand-in duck-typing PydanticAI's WrapperToolset."""

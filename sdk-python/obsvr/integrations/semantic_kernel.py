@@ -38,14 +38,19 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from ..config import try_get_config
 from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
+from ..binding_report import record_binding
 
 try:  # real FunctionResult when SK is installed; a marker is used otherwise
     from semantic_kernel.functions import FunctionResult as _FunctionResult  # type: ignore
 
     _HAS_SK = True
-except Exception:  # pragma: no cover - SK not installed
+    record_binding("semantic_kernel", "semantic_kernel.functions.FunctionResult")
+except Exception as _exc:  # pragma: no cover - SK not installed
     _FunctionResult = None  # type: ignore
     _HAS_SK = False
+    # Keep WHY. Absent package, renamed symbol and broken transitive dependency
+    # all produce this same False, and only one of the three is obsvr's to fix.
+    record_binding("semantic_kernel", "semantic_kernel.functions.FunctionResult", _exc)
 
 SOURCE = "semantic_kernel"
 PROVIDER = "semantic_kernel"

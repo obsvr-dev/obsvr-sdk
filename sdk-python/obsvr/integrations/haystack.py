@@ -34,6 +34,7 @@ Usage::
 from typing import Any, Dict, Optional
 
 from ..config import try_get_config
+from ..binding_report import record_binding
 from ..events import emit_event
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
 
@@ -44,8 +45,10 @@ try:  # real Haystack component registration when installed
     from haystack import component as _component  # type: ignore
 
     _HAS_HAYSTACK = True
-except Exception:  # pragma: no cover - Haystack not installed
+    record_binding("haystack", "haystack.component")
+except Exception as _exc:  # pragma: no cover - Haystack not installed
     _HAS_HAYSTACK = False
+    record_binding("haystack", "haystack.component", _exc)
 
     class _ComponentShim:
         """Duck-types haystack.component enough to define the class + run I/O."""

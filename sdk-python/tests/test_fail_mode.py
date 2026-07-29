@@ -205,6 +205,10 @@ class TestRegistryGate:
         "approval_action.py",
         "audit_gap.py",
         "auto.py",
+        # Records why an optional integration failed to bind. Decides nothing:
+        # it observes an import that already happened and stores the reason for
+        # a human to read. Same exemption reason as cost.py.
+        "binding_report.py",
         "chain_format.py",
         # Export serializer, decides nothing: it projects an audit event onto a
         # CloudEvents envelope. Same exemption reason as tool_content_hash.py.

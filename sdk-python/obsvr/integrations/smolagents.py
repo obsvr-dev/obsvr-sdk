@@ -34,6 +34,7 @@ import json
 from typing import Any, Dict, Optional, Tuple
 
 from ..config import try_get_config
+from ..binding_report import record_binding
 from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
 
@@ -41,9 +42,13 @@ try:  # real Tool reference when smolagents is installed
     from smolagents import Tool as _SmolTool  # type: ignore  # noqa: F401
 
     _HAS_SMOLAGENTS = True
-except Exception:  # pragma: no cover - smolagents not installed
+    record_binding("smolagents", "smolagents.Tool")
+except Exception as _exc:  # pragma: no cover - smolagents not installed
     _SmolTool = None  # type: ignore
     _HAS_SMOLAGENTS = False
+    # This one needed a manual reproduction to diagnose: the package imports a
+    # since-removed name from transformers, which reads as "not installed".
+    record_binding("smolagents", "smolagents.Tool", _exc)
 
 SOURCE = "smolagents"
 PROVIDER = "smolagents"

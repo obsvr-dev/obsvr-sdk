@@ -64,12 +64,18 @@ from .cloudevents import (  # noqa: F401
 from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .wrap import wrap  # noqa: F401
+# Why an optional integration failed to bind, not merely that it did: an
+# absent package, a renamed upstream symbol and a broken transitive dependency
+# are three different problems that used to produce one identical silent flag.
+from .binding_report import integration_bindings, unbound_symbols  # noqa: F401
 
 from ._version import __version__  # noqa: F401  # single source: obsvr/_version.py
 
 __all__ = [
     "init",
     "wrap",
+    "integration_bindings",
+    "unbound_symbols",
     "explain",
     "mint_canary",
     "scan_for_canary",

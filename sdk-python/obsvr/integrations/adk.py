@@ -51,18 +51,28 @@ import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from ..config import try_get_config
+from ..binding_report import record_binding
 from ..events import emit_event, tool_denied_compliance
 from ..policy import apply_pre_call_policy, blocked_prompt_for_storage, blocked_user_input_for_storage
 
 try:  # real LlmResponse when ADK is installed; a dict short-circuits otherwise
     from google.adk.models import LlmResponse as _LlmResponse  # type: ignore
-except Exception:  # pragma: no cover - ADK not installed
+
+    record_binding("adk", "google.adk.models.LlmResponse")
+except Exception as _exc:  # pragma: no cover - ADK not installed
     _LlmResponse = None  # type: ignore
+    # Every release through 1.1.0 lands here with ModuleNotFoundError for a
+    # transitive dependency, which is indistinguishable from "not installed"
+    # unless the reason is kept.
+    record_binding("adk", "google.adk.models.LlmResponse", _exc)
 
 try:
     from google.genai import types as _genai_types  # type: ignore
-except Exception:  # pragma: no cover
+
+    record_binding("adk", "google.genai.types")
+except Exception as _exc:  # pragma: no cover
     _genai_types = None  # type: ignore
+    record_binding("adk", "google.genai.types", _exc)
 
 SOURCE = "google_adk"
 PROVIDER = "adk"
