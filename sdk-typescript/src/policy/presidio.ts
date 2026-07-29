@@ -2,7 +2,7 @@
  * Presidio Integration for the SDK
  *
  * SDK-local helpers for NLP-level PII detection and redaction via the
- * Microsoft Presidio analyzer and anonymizer services.
+ * Presidio analyzer and anonymizer services.
  *
  * All functions are fire-and-forget safe: they return [] / null on any
  * network error or timeout so the caller can fall back to regex scanning.

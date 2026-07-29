@@ -1,6 +1,6 @@
 """Presidio integration (parity with sdk-typescript/src/policy/presidio.ts).
 
-NLP-level PII detection and redaction via the Microsoft Presidio analyzer
+NLP-level PII detection and redaction via the Presidio analyzer
 and anonymizer services. Every function is failure-safe: network errors and
 timeouts return empty results / None so the caller falls back to the
 built-in regex scanner. Entity mappings and typed placeholders mirror the

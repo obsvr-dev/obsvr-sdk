@@ -3,8 +3,8 @@
  *
  * When enabled and @opentelemetry/api is installed (it is a peer, never a
  * hard dependency), every audit event is mirrored as an OTel span so teams
- * keep their existing tracing backend (Grafana, Datadog, Jaeger, ...) while
- * obsvr remains the signed compliance layer. Spans are created retroactively
+ * keep whatever tracing backend they already run while obsvr remains the
+ * signed compliance layer. Spans are created retroactively
  * from the event's own timing, attributed with GenAI semantic-convention
  * fields plus obsvr governance outcomes.
  *
