@@ -55,6 +55,36 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **BREAKING: `action_taken` gains `not_evaluated`.** It means **no gate ran for
+  this event's subject** — the absence of a decision, not a permissive one. It
+  is emitted today by the tool events a provider tool runner produces
+  (`chat.completions.runTools`, `beta.messages.toolRunner`), which invoke their
+  tools directly, so obsvr is not on that boundary and no tool-level control —
+  including `sessionTaint.destructiveTools` — is consulted. Those events
+  previously read `action_taken: "allowed"`, which asserts that a gate evaluated
+  the call and permitted it.
+
+  **Breaking because it widens a closed enum**, per this file's own rule:
+  exhaustive switches over `action_taken` will not have a branch for it. **The
+  migration is one question — does your code treat "not allowed" as "blocked"?**
+  If a consumer branches `action_taken === "allowed" ? … : blocked`, a
+  `not_evaluated` event will now fall into the blocked branch and be counted as
+  a refusal that never happened. Treat it as its own state: not permitted, not
+  refused, not evaluated.
+
+  **Omitting the field was not an alternative.** The ingest schema defaults an
+  absent `action_taken`, so a missing verdict was minted as `"allowed"` on
+  arrival — the same false claim, one layer down and harder to see. That default
+  is now `not_evaluated` too, so an event that never carried a verdict no longer
+  acquires one by transit.
+
+  Both SDKs also extend the canary-leak escalation, which fired only on
+  `"allowed"`: a leaked canary on a `not_evaluated` event now escalates to
+  `policy_flag` as it always did on an allowed one. Deliberately not widened to
+  "anything that is not blocked" — that would newly escalate `redacted` and
+  `hook_*` events, which is a separate behaviour change.
+
+
 - **Text that only quotes an injection phrase is no longer rewritten.** The
   built-in scanner and the redactor iterate the same pattern table, so a bug
   report, a test fixture or a policy document reproducing an attack string was

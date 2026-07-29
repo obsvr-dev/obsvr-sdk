@@ -125,7 +125,7 @@ export interface IntegrationOptions {
 export interface ComplianceInfo {
   event_type: "llm_call" | "blocked_call" | "policy_flag" | "tool_call" | "hard_delete" | "delegation" | "loop_detected" | "approval_required";
   policy_version: string;
-  action_taken: "allowed" | "blocked" | "redacted" | "hook_error" | "hook_timeout";
+  action_taken: "allowed" | "blocked" | "redacted" | "hook_error" | "hook_timeout" | "not_evaluated";
   action_reason:
     | "pii_detected"
     | "policy_violation"
@@ -1861,7 +1861,15 @@ export function buildIntegrationEvent(
     event.metadata = metadata;
     // A leak the event-layer scrub caught on an otherwise-clean event must not
     // read as "allowed" — surface it as a policy_flag with the canary rule id.
-    if (canaryEventTelemetry && event.action_taken === "allowed") {
+    // `not_evaluated` is included for the same reason `allowed` is: a leaked
+    // canary must surface as a policy_flag rather than sit on an event whose
+    // verdict field reads as untroubled. Deliberately NOT widened to
+    // `!== "blocked"` — that would newly escalate redacted/hook_error/
+    // hook_timeout events, which is a behaviour change this one does not need.
+    if (
+      canaryEventTelemetry &&
+      (event.action_taken === "allowed" || event.action_taken === "not_evaluated")
+    ) {
       event.event_type = "policy_flag";
       event.rule_id = event.rule_id ?? "sdk:canary_leak";
       event.policy_reason = event.policy_reason ?? "Canary token leaked in emitted content";

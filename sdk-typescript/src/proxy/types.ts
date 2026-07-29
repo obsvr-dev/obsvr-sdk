@@ -858,7 +858,12 @@ export interface AuditEvent {
    */
   event_class?: "governance" | "execution_span";
   policy_version: string;
-  action_taken: "allowed" | "blocked" | "redacted" | "hook_error" | "hook_timeout";
+  /**
+   * The policy verdict. `not_evaluated` means NO GATE RAN for this event's
+   * subject — it is the absence of a decision, not a permissive one, and it
+   * must never be read as `allowed`. See `PolicyNotEvaluated`.
+   */
+  action_taken: "allowed" | "blocked" | "redacted" | "hook_error" | "hook_timeout" | "not_evaluated";
   action_reason: "pii_detected" | "policy_violation" | "customer_override" | "none";
   /** Registry reason code (governance/reason-codes.ts) for the classification
    * this decision rests on: the deciding layer's fine-grained code (e.g. the

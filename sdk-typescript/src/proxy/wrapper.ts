@@ -2539,10 +2539,11 @@ function createAuditedToolRunnerMethod(
           compliance: {
             event_type: "tool_call",
             policy_version: derivePolicyVersion(config.policyRules ?? []),
-            // Still "allowed" on the wire, because that enum is closed and
-            // widening it breaks every consumer. The marker below is what says
-            // the value is not a verdict; see PolicyNotEvaluated.
-            action_taken: "allowed",
+            // The truthful value. No gate ran, so there is no verdict — and
+            // omitting the field would not have helped, because the ingest
+            // schema defaults an absent action_taken, so the server would have
+            // minted "allowed" for it one layer down.
+            action_taken: "not_evaluated",
             action_reason: "none",
             action_source: "unknown",
             redacted_types: [],

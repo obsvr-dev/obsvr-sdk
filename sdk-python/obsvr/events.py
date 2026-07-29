@@ -425,7 +425,13 @@ def build_audit_event(
         _md = dict(_event.get("metadata") or {})
         _md["obsvr_telemetry"] = {**(_md.get("obsvr_telemetry") or {}), **_canary_tel}
         _event["metadata"] = _md
-        if _event["action_taken"] == "allowed":
+        # "not_evaluated" is included for the same reason "allowed" is: a
+        # leaked canary must surface as a policy_flag rather than sit on an
+        # event whose verdict field reads as untroubled. Deliberately NOT
+        # widened to != "blocked" — that would newly escalate redacted and
+        # hook_* events, a behaviour change this one does not need. (TS parity:
+        # integrations/core.ts.)
+        if _event["action_taken"] in ("allowed", "not_evaluated"):
             _event["event_type"] = "policy_flag"
             if not _event.get("rule_id"):
                 _event["rule_id"] = "sdk:canary_leak"
