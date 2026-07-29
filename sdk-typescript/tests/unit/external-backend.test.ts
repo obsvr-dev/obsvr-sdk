@@ -43,6 +43,43 @@ const INPUT: BackendDecisionInput = buildBackendInput({
 
 // ── SSRF guard ───────────────────────────────────────────────────────────────
 
+describe('the DEFAULT DNS resolver is exercised, not only injected ones', () => {
+  // Every other assertion in this file supplies a fake `resolver`, which tests
+  // the POLICY and never the RESOLUTION. If `defaultResolver` stopped working —
+  // a moved import, a changed node:dns surface — those tests would all still
+  // pass while the real guard did something else entirely. So this one calls it
+  // for real, with no resolver argument.
+  //
+  // `localhost` is used deliberately: it resolves without network access and
+  // resolves to loopback, which the guard must REFUSE. That makes the assertion
+  // specific — a broken resolver throws a different error than a working one
+  // correctly refusing a private address.
+  it('resolves a real hostname and refuses it for pointing at loopback', async () => {
+    let caught: unknown;
+    try {
+      await assertBackendUrlAllowed('https://localhost/policy', {});
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeDefined();
+    const message = (caught as Error).message;
+    // The refusal must be about the ADDRESS, which means DNS actually ran and
+    // returned something. "did not resolve" would mean the resolver returned
+    // nothing, i.e. it is broken rather than doing its job.
+    expect(message).not.toContain('did not resolve');
+    expect(message.toLowerCase()).toMatch(/private|loopback|not allowed|blocked/);
+  });
+
+  it('allows the same host once private networks are permitted, proving the address was read', async () => {
+    // If DNS had failed rather than resolved-and-refused, this would still
+    // throw. It passing is what shows the resolver returned a real address the
+    // guard then evaluated.
+    await expect(
+      assertBackendUrlAllowed('https://localhost/policy', { allowPrivateNetwork: true }),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe('ssrf: address classification', () => {
   it.each([
     '10.0.0.1', '127.0.0.1', '169.254.169.254', '172.16.5.5', '192.168.1.1',

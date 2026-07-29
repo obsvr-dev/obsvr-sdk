@@ -61,6 +61,47 @@ def _has_backend() -> bool:
 HAS_BACKEND = _has_backend()
 
 
+def test_a_present_crypto_library_must_actually_resolve():
+    """A skip is not a pass, and this is the only thing that can tell them apart.
+
+    The signature vectors below are marked ``skipif not HAS_BACKEND``, which is
+    right when the optional library genuinely is not installed — the package
+    ships zero mandatory runtime dependencies and that state is declared, not
+    hidden. But it also means that if ``_resolve_backend`` ever stops reaching a
+    library that IS installed — a renamed symbol, a moved module, a broken
+    transitive dependency — those vectors turn from PASSING to SKIPPED and
+    nothing says so. A green run with the real crypto tests silently skipped
+    looks exactly like a green run with them passing.
+
+    So: if the library imports at all, obsvr must be able to resolve it. That
+    distinguishes "not installed" (fine, skip) from "installed but obsvr cannot
+    reach it" (a defect, fail).
+    """
+    try:
+        import cryptography  # noqa: F401
+
+        installed = True
+    except Exception:
+        try:
+            import nacl  # noqa: F401
+
+            installed = True
+        except Exception:
+            installed = False
+
+    if not installed:
+        # Genuinely absent. The degraded state is declared elsewhere; nothing
+        # to assert here beyond consistency.
+        assert HAS_BACKEND is False
+        return
+
+    assert HAS_BACKEND is True, (
+        "an Ed25519 library is importable but policy_verify._resolve_backend() "
+        "returned None — the signature vectors are being SKIPPED rather than "
+        "run, which reads as a green suite"
+    )
+
+
 def test_fixture_has_cases():
     assert len(CASES) >= 8, "the shared vectors must not shrink silently"
 
