@@ -19,13 +19,20 @@ const INTERCEPT_PARAM = 'obsvr-intercept';
 /**
  * Bare specifiers we intercept, mapped to obsvr provider ids.
  *
- * `@google/generative-ai` is an end-of-life line: last published 0.24.1 in
- * April 2025, upstream repo renamed to `deprecated-generative-ai-js`, and
- * Google directs users to the unified `@google/genai`. npm carries no
- * deprecation flag on any version, so neither `npm outdated` nor `npm audit`
- * says a word about it — hence this note. It stays intercepted (and declared
- * as an optional peer) because applications still run it; adding `@google/genai`
- * is a separate change, not a rename, because its response shape differs.
+ * Google ships two SDKs and this table lists one of them, which is the state
+ * the READMEs publish: `@google/generative-ai` is SUPPORTED, COMPATIBILITY
+ * ONLY — fixes, not features — and `@google/genai` is NOT YET SUPPORTED. There
+ * is no entry for the latter anywhere in this source tree, so an application
+ * on it gets no zero-code interception at all.
+ *
+ * The legacy line is end-of-life: last published 0.24.1 in April 2025,
+ * upstream repo renamed to `deprecated-generative-ai-js`, ended August 2025.
+ * It stays intercepted (and declared as an optional peer) because applications
+ * still run it, and instrumenting what people run is the job. npm carries no
+ * deprecation flag on any version of either package, so neither `npm outdated`
+ * nor `npm audit` says a word about which one a project is on — hence this
+ * note. Adding `@google/genai` is a separate change, not a rename, because its
+ * response shape differs; it is scheduled work rather than an oversight.
  */
 const PROVIDER_SPECIFIERS: Record<string, string> = {
   openai: 'openai',

@@ -94,6 +94,27 @@ openai = ["openai>=1.66.0"]
 anthropic = ["anthropic>=0.16.0"]
 # add_trace_processor, the symbol obsvr.auto binds, arrives in 0.0.2.
 openai-agents = ["openai-agents>=0.0.2"]
+# generate_content has been in AUDITABLE_METHODS and duck-typed by
+# _detect_provider all along, and the README teaches the wrap, but no extra
+# named the distribution — so `pip install "obsvr-sdk[gemini]"` failed on a
+# surface that works. This declares what already exists.
+#
+# DELIBERATELY UNBOUNDED, and that is the honest state rather than a cautious
+# one. There is exactly ONE live cell behind this row (0.8.6: a real call, a
+# captured event), and a single cell locates no edge — it shows that version
+# works and would not find a break above or below it. Every floor in this file
+# that was guessed rather than measured turned out to be wrong, so no number is
+# invented here; when a walk locates the boundary, this gets one.
+#
+# Two further limits, stated rather than left to be discovered. This client is
+# NOT picked up by obsvr.init() the way the two above are — construct
+# interception does not cover it, so it needs an explicit
+# obsvr.wrap(genai.GenerativeModel(...)), measured as zero events on the auto
+# path. And this is the LEGACY distribution — obsvr governs it because
+# applications still run it. The maintained successor is a separate
+# distribution with a different response shape, and it is NOT intercepted; the
+# READMEs carry both states.
+gemini = ["google-generativeai"]
 # Bounded below 2.0 on evidence, not caution. mcp 2.0.0 moved the protocol
 # types to a snake_case base model (alias_generator=to_camel), so the three
 # descriptor fields obsvr/integrations/mcp.py reads through getattr are renamed

@@ -73,6 +73,17 @@ client = obsvr.wrap(Anthropic())          # messages.create
 model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content
 ```
 
+**Which Gemini SDK.** Google ships two, and obsvr integrates one of them:
+
+| Distribution | Extra | State |
+| --- | --- | --- |
+| `google-generativeai` | `obsvr-sdk[gemini]` | **supported, compatibility only** — the legacy line |
+| `google-genai` | — | **not yet supported** — the current SDK; obsvr has no adapter for it |
+
+Compatibility only means fixes, not features: the legacy adapter is kept working because a large installed base still runs it, and instrumenting what people actually run is the point. `google-genai` has a different response shape, so support for it is new work rather than a rename.
+
+Two things to know about the supported one. **It needs the explicit `obsvr.wrap()` above** — unlike the OpenAI and Anthropic clients it is not picked up by `obsvr.init()` alone, and a plainly constructed model emits no events at all. And its declared range is **unbounded on purpose**: one live cell (0.8.6) stands behind it, which shows that version works and locates no boundary, so no floor is claimed rather than one being guessed.
+
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
 `messages.create` / `.parse`, `generate_content`, and the `beta.messages.create` and
 `beta.responses.create` namespaces. Everything else on the client passes through

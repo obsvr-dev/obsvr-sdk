@@ -40,8 +40,18 @@ Anthropic and Google Gemini work the same way:
 
 ```typescript
 const anthropic = obsvr.wrap(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }));
+// Gemini via @google/generative-ai — see the note below on which SDK this is
 const gemini = obsvr.wrap(genAI.getGenerativeModel({ model: 'gemini-2.5-flash' }));
 ```
+
+**Which Gemini SDK.** Google ships two, and obsvr integrates one of them:
+
+| Package | State |
+| --- | --- |
+| `@google/generative-ai` | **supported, compatibility only** — legacy line, last release 0.24.1, end-of-life August 2025 |
+| `@google/genai` | **not yet supported** — the current SDK; obsvr does not intercept it and has no adapter for it |
+
+Compatibility only means fixes, not features: the legacy adapter is kept working because a large installed base still runs it, and instrumenting what people actually run is the point. Note that npm carries **no deprecation flag on any version** of either package, so neither `npm outdated` nor `npm audit` will tell you which one you have — check your `package.json`. `@google/genai` has a different response shape, so support for it is new work rather than a rename.
 
 ### Zero-code global coverage (no monkey patching)
 
@@ -149,7 +159,7 @@ The **OPA** endpoint is POSTed `{ "input": <decision document> }` and its `resul
 | OpenAI / Azure OpenAI | `chat.completions.create`, `chat.completions.parse`, `beta.chat.completions.create`, `beta.chat.completions.parse` |
 | OpenAI Responses API | `responses.create`, `responses.parse`, `beta.responses.create` |
 | Anthropic | `messages.create`, `messages.parse`, `beta.messages.create` |
-| Google Gemini | `generateContent` |
+| Google Gemini (`@google/generative-ai` only) | `generateContent` |
 
 Beta namespaces are listed one by one rather than matched by stripping a leading `beta.`, so a provider shipping a new beta namespace never widens governance without review.
 

@@ -150,7 +150,7 @@ client.chat.completions.create(
 )
 ```
 
-Anthropic and Google Gemini wrap identically. See [`sdk-typescript/README.md`](sdk-typescript/README.md) and [`sdk-python/README.md`](sdk-python/README.md) for the full policy reference, MCP governance, and framework integrations.
+Anthropic and Google Gemini wrap identically — for Gemini, against the legacy SDK (`@google/generative-ai` / `google-generativeai`); the current one is [not yet supported](#framework--provider-support). See [`sdk-typescript/README.md`](sdk-typescript/README.md) and [`sdk-python/README.md`](sdk-python/README.md) for the full policy reference, MCP governance, and framework integrations.
 
 ---
 
@@ -410,9 +410,18 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 
 ## Framework & provider support
 
-**Auto-governed by `init()` alone** — TypeScript: OpenAI · Anthropic · Google Gemini. Python: OpenAI · Anthropic.
+**Auto-governed by `init()` alone** — TypeScript: OpenAI · Anthropic · Google Gemini². Python: OpenAI · Anthropic.
 **Gemini on Python is fully governed, but needs an explicit `obsvr.wrap(genai.GenerativeModel(...))`** — measured: after `obsvr.init()` a plainly constructed model emitted **zero** events, and the same model through `obsvr.wrap()` emitted a complete one. Everything under "also supported" needs an explicit wrap in both languages.
 **Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together¹ · Cloudflare Workers AI
+
+² **Gemini means one of Google's two SDKs, and it is worth checking which one you have.**
+
+| | TypeScript | Python | State |
+| --- | --- | --- | --- |
+| legacy | `@google/generative-ai` | `google-generativeai` | **supported, compatibility only** — last npm release 0.24.1, end-of-life August 2025 |
+| current | `@google/genai` | `google-genai` | **not yet supported** — obsvr does not intercept it and has no adapter for it |
+
+Compatibility only means fixes, not features: the legacy adapter is kept working because a large installed base still runs it, and instrumenting what people actually run is the point. The current SDK has a different response shape, so covering it is new work rather than a rename. **npm carries no deprecation flag on any version of either package**, so neither `npm outdated` nor `npm audit` will tell you which one you are on — read your manifest.
 **Any other OpenAI-compatible endpoint — TypeScript only:** `wrapOpenAICompatible` from `@obsvr/sdk/openai-compat` (or the root export) governs anything speaking `chat.completions.create` — Groq, Mistral, a local Ollama server — and takes `provider` and `source` from you, so the audit trail names the endpoint you reached. **Python has no equivalent.** `obsvr.wrap()` will govern such a client, but its provider detection returns `openai` for anything exposing `chat.completions`, so a hosted endpoint and a localhost server are indistinguishable in the resulting events.
 
 ¹ The Together module is exercised through the real client class and the real `wrapTogether` → `wrapOpenAICompatible` → `chat.completions.create` path, but against a different OpenAI-compatible endpoint — `api.together.xyz` has never been called, in either language. What is verified is that the code path is sound and that obsvr sets the label itself; Together-specific `usage` extensions and Together-only endpoints are not covered. Note that the label is set unconditionally, so a client pointed elsewhere still records `provider: "together"`.

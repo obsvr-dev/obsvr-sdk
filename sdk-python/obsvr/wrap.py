@@ -24,12 +24,18 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     beta.messages.create          anthropic 0.8.0 (see note)
     messages.create               anthropic 0.16.0  the anthropic extra's floor
     messages.parse                anthropic 0.77.0  structured outputs
-    generate_content              google-generativeai
+    generate_content              google-generativeai  (see note)
 
 Note on beta.messages.create: present from 0.8.0, then ABSENT 0.16.0 through
 0.35.0, then present again from 0.36.0. That gap is upstream — the beta
 namespace was dropped when that API graduated — not a coverage regression here.
 Raise the anthropic extra to >=0.36.0 if the beta namespace has to be covered.
+
+Note on generate_content: this is the LEGACY Google client, distribution
+google-generativeai, declared as the `gemini` extra. Google's current SDK is a
+separate distribution with a different response shape and is NOT governed here
+— there is no detection for it and no adapter. Unlike the two clients above it
+is not reached by obsvr.init() either; it needs an explicit obsvr.wrap().
 
 Sync and async client methods are both supported: if the underlying method is
 a coroutine function the wrapper is async, otherwise sync. The wrapped object
@@ -113,7 +119,7 @@ AUDITABLE_METHODS = {
     "responses.parse",           # OpenAI Responses structured outputs
     "messages.create",           # Anthropic
     "messages.parse",            # Anthropic structured outputs
-    "generate_content",          # Google Gemini
+    "generate_content",          # Google Gemini, google-generativeai only
     "beta.messages.create",      # Anthropic beta
     "beta.responses.create",     # OpenAI Responses beta
     "beta.chat.completions.create",  # OpenAI chat beta
