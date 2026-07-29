@@ -410,7 +410,8 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 
 ## Framework & provider support
 
-**Providers (auto-governed):** OpenAI · Anthropic · Google Gemini
+**Auto-governed by `init()` alone** — TypeScript: OpenAI · Anthropic · Google Gemini. Python: OpenAI · Anthropic.
+**Gemini on Python is fully governed, but needs an explicit `obsvr.wrap(genai.GenerativeModel(...))`** — measured: after `obsvr.init()` a plainly constructed model emitted **zero** events, and the same model through `obsvr.wrap()` emitted a complete one. Everything under "also supported" needs an explicit wrap in both languages.
 **Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together¹ · Cloudflare Workers AI
 **Any other OpenAI-compatible endpoint — TypeScript only:** `wrapOpenAICompatible` from `@obsvr/sdk/openai-compat` (or the root export) governs anything speaking `chat.completions.create` — Groq, Mistral, a local Ollama server — and takes `provider` and `source` from you, so the audit trail names the endpoint you reached. **Python has no equivalent.** `obsvr.wrap()` will govern such a client, but its provider detection returns `openai` for anything exposing `chat.completions`, so a hosted endpoint and a localhost server are indistinguishable in the resulting events.
 

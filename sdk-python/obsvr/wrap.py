@@ -7,16 +7,29 @@ through the full governance pipeline:
     pii scan -> policy rules -> pre-call hook (fail_mode honored)
     -> provider call -> post-call policy -> signed audit emit
 
-Auditable method paths (duck-typed, same as TS):
-    chat.completions.create   OpenAI / Azure OpenAI (openai>=1.x)
-    chat.completions.parse    OpenAI structured outputs
-    responses.create          OpenAI Responses API (openai>=1.x)
-    responses.parse           OpenAI Responses structured outputs
-    messages.create           Anthropic
-    messages.parse            Anthropic structured outputs
-    generate_content          Google Gemini (google-generativeai)
-    beta.messages.create      Anthropic beta namespace
-    beta.responses.create     OpenAI Responses beta namespace
+Auditable method paths (duck-typed, same as TS). The version beside each is the
+FIRST release of that client to expose it, established by walking every
+published release with one environment apiece rather than read off a changelog.
+They differ by path, so a client that satisfies the extra's floor still will not
+have all of them — which is why they are listed per path here instead of as one
+range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
+
+    chat.completions.create       openai 1.0.0    OpenAI / Azure OpenAI
+    beta.chat.completions.parse   openai 1.40.0   chat beta namespace
+    responses.create              openai 1.66.0   the openai extra's floor
+    responses.parse               openai 1.66.0
+    chat.completions.parse        openai 1.92.0   structured outputs
+    beta.chat.completions.create  openai 1.92.0   chat beta namespace
+    beta.responses.create         openai 2.45.0   ABOVE the declared floor
+    beta.messages.create          anthropic 0.8.0 (see note)
+    messages.create               anthropic 0.16.0  the anthropic extra's floor
+    messages.parse                anthropic 0.77.0  structured outputs
+    generate_content              google-generativeai
+
+Note on beta.messages.create: present from 0.8.0, then ABSENT 0.16.0 through
+0.35.0, then present again from 0.36.0. That gap is upstream — the beta
+namespace was dropped when that API graduated — not a coverage regression here.
+Raise the anthropic extra to >=0.36.0 if the beta namespace has to be covered.
 
 Sync and async client methods are both supported: if the underlying method is
 a coroutine function the wrapper is async, otherwise sync. The wrapped object
