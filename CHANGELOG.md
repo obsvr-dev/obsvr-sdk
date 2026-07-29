@@ -202,6 +202,7 @@ cut, when it is renamed to that version.
   | `pydantic-ai-slim` | `>=0.0.14` | `>=0.4.4` | `pydantic_ai.toolsets.WrapperToolset` does not exist below 0.4.4; below it `govern_toolset()` still returns an object, so denied-tool policy, per-tool auditing and step limits are silently inert |
   | `google-adk` | `>=0.1.0` | `>=1.2.0` | every release through 1.1.0 installs but cannot import (`google.adk.models` raises `ModuleNotFoundError: deprecated`, reached through the OpenTelemetry stack) |
   | `semantic-kernel` | `>=1.0.0` | `>=1.16.0` | 1.14.0 and 1.15.0 install but cannot import against any modern pydantic; below 1.14.0 CPython 3.13 has no candidate at all |
+  | `llama-index-core` | `>=0.10.0` | `>=0.11.23` | the declared floor emits no audit event at all; **this floor is the lowest release VERIFIED working live rather than the first known-good one** — the 0.10.x line could not be measured, so versions below are excluded for being unverifiable, not for being proven broken ([`f178045`](https://github.com/obsvr-dev/obsvr-sdk/commit/f178045)) |
   | `agent-framework` | `>=1.0.0` | `>=1.11.0` | every release below 1.11.0 fails dependency resolution outright, so the extra named ten releases a plain install cannot produce ([`11c9d61`](https://github.com/obsvr-dev/obsvr-sdk/commit/11c9d61)) |
   | `smolagents` | `>=1.0.0` | `>=1.4.0,!=1.5.0` | below 1.4.0 the import fails against a current `transformers`; 1.5.0 does not pull `transformers` in at all, and 1.5.1 restored it. The hole is excluded rather than rounded up, because 1.4.x genuinely works |
 
