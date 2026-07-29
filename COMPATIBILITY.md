@@ -29,7 +29,7 @@ Which versions of each package the obsvr SDK works with.
 | Package                           | Declared                        | Verified              |
 | --------------------------------- | ------------------------------- | --------------------- |
 | `@anthropic-ai/sdk`               | `>=0.20.0`                      | `0.20.0` – `0.115.0`  |
-| `@aws-sdk/client-bedrock-runtime` | `>=3.586.0`                     | `3.1096.0`            |
+| `@aws-sdk/client-bedrock-runtime` | `>=3.587.0`                     | `3.1096.0`            |
 | `@google-cloud/vertexai`          | `>=1.0.0`                       | `1.0.0` – `1.12.0`    |
 | `@google/genai`                   | —                               | **not supported yet** |
 | `@google/generative-ai`           | `>=0.1.0 <1.0.0`                | `0.1.0` – `0.24.1`    |
