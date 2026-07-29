@@ -41,6 +41,17 @@ export interface SessionTaintConfig {
    * Cost at the tool gate is one set-membership test. Exact names only — a
    * capability set that pattern-matched would be a detector again.
    *
+   * SCOPE, not a retraction: the reachability argument is sound, and it pays
+   * out only on a boundary the SDK is actually on. That is a per-integration
+   * property, not an SDK-wide one — the Python side was measured and the gate
+   * turned out to be reachable on some integrations and not others (see
+   * SECURITY.md, "Bypass surface"). The TypeScript gates have NOT been
+   * measured, and the Python result does not carry across: the tool gates here
+   * are separate implementations and obsvrGovernTool (integrations/tools.ts)
+   * has no Python twin. So treat "the capabilities that could do damage go
+   * dark" as the design intent, verified per integration, and not yet verified
+   * for this one.
+   *
    * This list is no longer the only source: a discovered MCP tool whose
    * descriptor declares `annotations.destructiveHint: true` joins the set on
    * its own (policy/capability-hints.ts). The two compose by union, so an
