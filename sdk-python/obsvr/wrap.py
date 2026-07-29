@@ -648,6 +648,111 @@ def _emit_stream_event(
     _emit_audit(config, event, compliance)
 
 
+class _GovernedStream:
+    """A governed stream that is still a STREAM, not a bare generator.
+
+    THE DEFECT THIS FIXES. The streaming paths are generator functions, and
+    returning one handed the caller a plain generator. A provider's stream object
+    is also a context manager, so the documented, extremely common shape::
+
+        with client.chat.completions.create(..., stream=True) as stream:
+            for chunk in stream: ...
+
+    raised ``TypeError: 'generator' object does not support the context manager
+    protocol`` the moment obsvr was in the path. Calling ``obsvr.init()`` before
+    constructing a client was therefore enough to break every caller written that
+    way, including all LangChain streaming, which uses exactly that form. Not a
+    governance defect — working code stopped working.
+
+    Iteration goes through the accumulating generator, so the audit event is
+    unaffected. Everything else delegates to the real stream: entering and
+    exiting the context manager operate on the provider's object, where they
+    close the underlying HTTP response, and ``__enter__`` hands back THIS object
+    so chunks read inside the ``with`` block are still accumulated.
+
+    Note ``close()`` also delegates. A bare generator has a ``close()`` of its
+    own, so the previous return value satisfied ``hasattr(stream, "close")``
+    while closing only the generator and leaving the provider's response open.
+    """
+
+    __slots__ = ("_obsvr_stream", "_obsvr_iter")
+
+    def __init__(self, stream: Any, iterator: Any) -> None:
+        object.__setattr__(self, "_obsvr_stream", stream)
+        object.__setattr__(self, "_obsvr_iter", iterator)
+
+    def __iter__(self) -> Any:
+        return object.__getattribute__(self, "_obsvr_iter")
+
+    def __next__(self) -> Any:
+        return next(object.__getattribute__(self, "_obsvr_iter"))
+
+    def __enter__(self) -> "_GovernedStream":
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        enter = getattr(type(stream), "__enter__", None)
+        if enter is not None:
+            enter(stream)
+        # Deliberately not the provider's return value: chunks have to keep
+        # flowing through the accumulator or the audit event loses the response.
+        return self
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        exit_ = getattr(type(stream), "__exit__", None)
+        if exit_ is not None:
+            return exit_(stream, *exc_info)
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+        return False
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for names not in __slots__, so this cannot recurse.
+        return getattr(object.__getattribute__(self, "_obsvr_stream"), name)
+
+
+class _GovernedAsyncStream:
+    """The async twin of :class:`_GovernedStream`.
+
+    ``async with`` on the async streaming path failed the same way, for the same
+    reason: an async generator is not an async context manager.
+    """
+
+    __slots__ = ("_obsvr_stream", "_obsvr_iter")
+
+    def __init__(self, stream: Any, iterator: Any) -> None:
+        object.__setattr__(self, "_obsvr_stream", stream)
+        object.__setattr__(self, "_obsvr_iter", iterator)
+
+    def __aiter__(self) -> Any:
+        return object.__getattribute__(self, "_obsvr_iter")
+
+    async def __anext__(self) -> Any:
+        return await object.__getattribute__(self, "_obsvr_iter").__anext__()
+
+    async def __aenter__(self) -> "_GovernedAsyncStream":
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        aenter = getattr(type(stream), "__aenter__", None)
+        if aenter is not None:
+            await aenter(stream)
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> Any:
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        aexit = getattr(type(stream), "__aexit__", None)
+        if aexit is not None:
+            return await aexit(stream, *exc_info)
+        close = getattr(stream, "close", None)
+        if callable(close):
+            result = close()
+            if hasattr(result, "__await__"):
+                await result
+        return False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_obsvr_stream"), name)
+
+
 def _wrap_stream_sync(
     stream: Any, config: Any, provider: str, model: str, operation: str,
     options: Dict[str, Any], compliance: Dict[str, Any], stored_prompt: str,
@@ -823,9 +928,13 @@ def _governed_call(
     # emits one audit event when the stream ends. Non-iterable results fall
     # through to the normal single-event path.
     if kwargs.get("stream") and hasattr(result, "__iter__") and not hasattr(result, "choices"):
-        return _wrap_stream_sync(
-            result, config, provider, model, operation, options,
-            compliance, stored_prompt, _last_user_message(kwargs), start, metadata,
+        return _GovernedStream(
+            result,
+            _wrap_stream_sync(
+                result, config, provider, model, operation, options,
+                compliance, stored_prompt, _last_user_message(kwargs), start,
+                metadata,
+            ),
         )
 
     latency_ms = (time.monotonic() - start) * 1000
@@ -964,9 +1073,13 @@ async def _governed_call_async(
         raise
 
     if kwargs.get("stream") and hasattr(result, "__aiter__") and not hasattr(result, "choices"):
-        return _wrap_stream_async(
-            result, config, provider, model, operation, options,
-            compliance, stored_prompt, _last_user_message(kwargs), start, metadata,
+        return _GovernedAsyncStream(
+            result,
+            _wrap_stream_async(
+                result, config, provider, model, operation, options,
+                compliance, stored_prompt, _last_user_message(kwargs), start,
+                metadata,
+            ),
         )
 
     latency_ms = (time.monotonic() - start) * 1000

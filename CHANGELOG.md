@@ -619,6 +619,39 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Python streaming broke `with` on any wrapped client.** The streaming paths are
+  generator functions and the call sites returned one directly, so callers got a
+  plain generator where the provider's contract promises a stream object. The
+  documented and extremely common form —
+
+  ```python
+  with client.chat.completions.create(..., stream=True) as stream:
+      for chunk in stream: ...
+  ```
+
+  — raised `TypeError: 'generator' object does not support the context manager
+  protocol` as soon as obsvr was in the path, so calling `obsvr.init()` before
+  constructing a client was enough to break every caller written that way,
+  LangChain streaming included, since that is the form it uses. **Pre-existing:
+  this predates the current work rather than arriving with it.**
+
+  Streaming now returns a governed stream that iterates through the accumulator
+  and delegates everything else to the real object, so entering and exiting the
+  context manager operate on the provider's stream — which is where the HTTP
+  response is closed. `__enter__` deliberately returns the governed object, not
+  the provider's: handing back the raw stream would make `with` work and quietly
+  stop accumulating, recording an empty response for a stream that produced text,
+  which is a worse failure than the exception because it looks like success.
+
+  `close()` is the subtle half. A bare generator has a `close()` of its own, so
+  the old return value satisfied `hasattr(stream, "close")` and any duck-typed
+  cleanup while closing only the generator and leaving the provider's response
+  open. It now delegates. The async path had the same defect for `async with` and
+  is fixed the same way.
+
+  Verified with a real streaming call, not only against a fake stream: the `with`
+  form completes, and the single audit event's response equals exactly what the
+  caller received.
 - **A policy floor configured on its own did not reach MCP tool calls, in either
   SDK.** The floor is enforced inside the shared pre-call evaluation, and the MCP
   integration ran that evaluation only when a `pii_policy`, a pre-call hook, a
