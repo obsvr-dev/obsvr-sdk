@@ -136,20 +136,25 @@ transform is pinned across both SDKs by
 
 Each integration hooks its framework's real call/tool path and runs the same
 enforcement pipeline (pre-call PII/rules/HITL, and where the framework exposes
-it, post-call governance) — a policy **block** stops or changes execution, it
-does not merely log.
+it, post-call governance). **Whether a tool-policy block actually stops the tool
+is a per-integration property, not a property of the SDK** — it depends on
+whether the framework hands obsvr a hook that runs *before* the tool does, and
+several do not. Each tool-policy state below was driven live against a real run
+rather than read off the code, and the one row that has not been says so; where
+a gate is present but unreachable the row reports that instead of listing the
+feature.
 
 | Integration | Module | Interception point | Enforcement |
 | --- | --- | --- | --- |
-| LangChain | `integrations.langchain` | `BaseCallbackHandler` | observe + stored-copy PII |
-| CrewAI | `integrations.crewai` | `step_callback` / kickoff callbacks | tool allow-deny, step limit, output policy |
-| AutoGen (ag2) | `integrations.autogen` | `process_message_before_send` hook | pre-send block/redact (tool + step limits run in the same hook but are **not yet exercised by a live test**) |
-| LlamaIndex | `integrations.llamaindex` | `BaseCallbackHandler` | observe + stored-copy PII |
-| OpenAI Agents | `integrations.openai_agents` | `TracingProcessor` | tool allow-deny, step limit |
-| MCP | `integrations.mcp` | `ClientSession.call_tool` / `list_tools` | request + response + discovery governance |
+| LangChain | `integrations.langchain` | `BaseCallbackHandler` | observe + stored-copy PII. **Tool policy: not wired** — the allow-deny and step-limit checks sit in `on_agent_action`, which the current runtime never fires, so no tool is refused and no block event is emitted at all |
+| CrewAI | `integrations.crewai` | `step_callback` / kickoff callbacks | observe (agent run, step, task) + post-run output policy. **Tool policy: not wired** — the gate reads `step.tool`, and the step callback now delivers only a finish record carrying no tool name, by which point the tool has already run |
+| AutoGen (ag2) | `integrations.autogen` | `process_message_before_send` hook | pre-send block/redact; tool allow-deny and step limit enforce live, **one tool call per message** — a message carrying parallel tool calls is checked on the first name only |
+| LlamaIndex | `integrations.llamaindex` | `BaseCallbackHandler` | observe + stored-copy PII. **No tool gate exists here** — this is an observe-only handler |
+| OpenAI Agents | `integrations.openai_agents` | `TracingProcessor` | **Tool policy: records only.** The gate runs on span end — after the tool has returned — and the exception it raises to stop the run is swallowed by the tracing layer, so the tool executes and its result reaches the caller while the event still records `blocked` / `TOOL_DENIED`. **Do not read that event as a refusal.** The step limit does not halt for the same reason |
+| MCP | `integrations.mcp` | `ClientSession.call_tool` / `list_tools` | request + response + discovery governance. **Tool policy: enforces** — a denied tool's callback does not run, including under the default `flag` taint action, because the patch sits on `call_tool` itself rather than on a callback near it. No step limit is implemented in this integration |
 | **AWS Bedrock** | `integrations.bedrock` | boto3 `converse` / `invoke_model` (+ streams) | pre-call block/redact, post-call output governance |
 | **Vertex AI** | `integrations.vertex` | `GenerativeModel.generate_content` | pre-call block/redact, post-call output governance |
-| **PydanticAI** | `integrations.pydantic_ai` | `WrapperToolset.call_tool` | tool block before delegation |
+| **PydanticAI** | `integrations.pydantic_ai` | `WrapperToolset.call_tool` | tool block before delegation — structurally the same pre-execution boundary MCP holds on, but **not yet driven live**; no step limit is implemented |
 | **Haystack 2.x** | `integrations.haystack` | `@component` pipeline node | block aborts the pipeline before the generator |
 
 Callback-style (LangChain / LlamaIndex / OpenAI Agents / CrewAI):
