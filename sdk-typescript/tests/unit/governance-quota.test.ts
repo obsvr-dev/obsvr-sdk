@@ -173,17 +173,30 @@ describe('quota store bound', () => {
     expect(quotaStoreSize().requests).toBeLessThanOrEqual(CAP);
   });
 
-  it('reopens an already-tracked scope in its own slot with the store full', async () => {
-    for (let i = 0; i < CAP - 1; i++) incrementQuota('user_id', `u${i}`, 5, 60_000);
-    incrementQuota('user_id', 'known', 1, 5); // fills the last slot, 5ms window
-    expect(quotaStoreSize().requests).toBe(CAP);
+  it('reopens an already-tracked scope in its own slot with the store full', () => {
+    // The clock is driven explicitly rather than slept through. The last two
+    // calls have to land in the SAME 5ms window for the limit of 1 to refuse
+    // the second, and on a loaded runner two consecutive statements can
+    // straddle a window that short — which is exactly how this failed on one
+    // CI shard while passing on the others.
+    const realNow = Date.now;
+    let clock = realNow();
+    Date.now = () => clock;
+    try {
+      for (let i = 0; i < CAP - 1; i++) incrementQuota('user_id', `u${i}`, 5, 60_000);
+      incrementQuota('user_id', 'known', 1, 5); // fills the last slot, 5ms window
+      expect(quotaStoreSize().requests).toBe(CAP);
 
-    await new Promise((r) => setTimeout(r, 15));
-    // No free slot, but 'known' is already tracked: its expired entry reuses
-    // its own slot, so it stays metered rather than falling through unmetered.
-    expect(incrementQuota('user_id', 'known', 1, 5).allowed).toBe(true);
-    expect(incrementQuota('user_id', 'known', 1, 5).allowed).toBe(false);
-    expect(quotaStoreSize().requests).toBe(CAP);
+      clock += 15; // past the 5ms window, deterministically
+
+      // No free slot, but 'known' is already tracked: its expired entry reuses
+      // its own slot, so it stays metered rather than falling through unmetered.
+      expect(incrementQuota('user_id', 'known', 1, 5).allowed).toBe(true);
+      expect(incrementQuota('user_id', 'known', 1, 5).allowed).toBe(false);
+      expect(quotaStoreSize().requests).toBe(CAP);
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   it('bounds the token meter without blocking a refused budget', () => {
