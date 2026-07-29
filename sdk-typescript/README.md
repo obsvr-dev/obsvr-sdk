@@ -165,7 +165,7 @@ MCP tool calls are governed separately (below); any framework's tools can be gov
 Govern the MCP client once; every tool call on every connected server is policy-checked and audited, and `listTools()` results are scanned for tool poisoning:
 
 ```typescript
-import { Client } from '@modelcontextprotocol/sdk-typescript/client/index.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { obsvr, obsvrGovernMCP, getConfig } from '@obsvr/sdk';
 
 obsvr.init({

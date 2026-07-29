@@ -172,7 +172,7 @@ function checkMcpToolPolicy(
  *
  * @example
  * ```ts
- * import { Client } from '@modelcontextprotocol/sdk-typescript/client/index.js';
+ * import { Client } from '@modelcontextprotocol/sdk/client/index.js';
  * import { obsvrGovernMCP } from '@obsvr/sdk/integrations/mcp';
  * obsvrGovernMCP(Client, resolvedConfig);
  * ```
@@ -243,11 +243,19 @@ export function patchMCP(
   }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    mod = require("@modelcontextprotocol/sdk-typescript/client/index.js");
+    mod = require("@modelcontextprotocol/sdk/client/index.js");
   } catch {
     try {
+      // Fallback is the `./client` SUBPATH, not the package root. The root
+      // specifier does not resolve at all: the package's exports map points
+      // "." at a dist/cjs/index.js that is not shipped, so requiring it throws
+      // MODULE_NOT_FOUND. With the deep path also mis-specified, BOTH branches
+      // threw and this whole function took the "not installed" exit on every
+      // call — MCP auto-instrumentation was not degraded to a fallback, it was
+      // off. Both specifiers here are asserted resolvable by
+      // tests/unit/optional-dependency-resolution.test.ts.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      mod = require("@modelcontextprotocol/sdk");
+      mod = require("@modelcontextprotocol/sdk/client");
     } catch {
       debugLog(config, "info", "[auto] @modelcontextprotocol/sdk not installed - skipping");
       return;
