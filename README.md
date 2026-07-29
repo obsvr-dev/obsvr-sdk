@@ -429,6 +429,8 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 | FastAPI / ASGI middleware |     —      |   ✅   |
 | MCP                       |     ✅     |   ✅   |
 
+Per-package version ranges — declared floor and ceiling, what is verified against a captured audit event versus only bound, and which rows have no artifact at all — are in [COMPATIBILITY.md](COMPATIBILITY.md), generated from the audit artifacts rather than maintained by hand.
+
 ---
 
 ## Benchmarks
