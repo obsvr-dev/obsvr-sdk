@@ -458,14 +458,6 @@ def test_blocked_implies_not_executed(name, driver, policy_key, grade, captured)
     assert_invariant(grade, driver(Spy(), captured))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "_extract_function_name reads tool_calls[0] only, so a denied tool in "
-        "any later position is delivered and executed with no event and no "
-        "exception"
-    ),
-)
 def test_autogen_gates_every_position_in_a_batched_message(captured):
     """A denied tool must be refused wherever it sits in ``tool_calls``.
 

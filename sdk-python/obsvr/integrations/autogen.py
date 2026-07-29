@@ -19,10 +19,20 @@ patch_initiate_chat(agent) wraps agent.initiate_chat to add run-level
 tracing (start/finish events) and agent_policy enforcement (tool checks,
 step limits, strict PII).
 
-NOT YET LIVE-TESTED: the tool-policy branches — denied_tools, the allowlist and
-the step limit — all hang off _extract_function_name() inside the send hook.
-The hook itself is proven to fire against a real agent, which is necessary and
-not sufficient; no tool-calling agent has been driven through it.
+TOOL POLICY ENFORCES HERE, AND IT IS THE HOOK'S TIMING THAT EARNS THAT. The
+send hook runs before the message leaves, so refusing it stops the recipient
+from ever seeing the tool call. Two conditions on that:
+
+- Register on every agent that can EMIT a tool call, not just the initiator.
+  The hook fires on the sender; tool calls come from the assistant. Registering
+  on the proxy alone leaves tool policy inert while still emitting a complete
+  audit trail. See patch_initiate_chat's docstring.
+- Every call in a `tool_calls` array is checked, and the step budget is charged
+  per call. Both used to read only `tool_calls[0]`, which made enforcement
+  depend on position: a denied tool second in a batch was delivered and run
+  with no event and no exception.
+
+A tool call whose name cannot be read is refused rather than skipped.
 """
 
 # Interception: AutoGen register_hook() API (non-mutating). Hooks are registered through the framework's official hook system; no agent attributes are mutated.
@@ -33,7 +43,12 @@ from typing import Any, Dict, Tuple
 
 from .. import sender as _sender
 from ..config import try_get_config
-from ..events import blocked_call_error, emit_event, tool_denied_compliance
+from ..events import (
+    blocked_call_error,
+    emit_event,
+    step_limit_compliance,
+    tool_denied_compliance,
+)
 from ..deobfuscate import redact_for_storage, run_configured_pii_scan
 from ..policy import (
     apply_pre_call_policy,
@@ -44,7 +59,27 @@ from ..policy import (
 SOURCE = "autogen"
 
 # Thread-local storage for per-conversation run context (thread-safe).
+#
+# SCOPE OF THE STEP BUDGET, stated because it surprised us. `patch_initiate_chat`
+# is what gives `max_steps` a per-conversation scope: it zeroes the counter when
+# a chat starts. Registered WITHOUT it, there is no conversation boundary to
+# observe, so the counter is per thread for the life of the process and a second
+# conversation inherits whatever the first spent. In a long-lived process that
+# eventually exhausts the budget permanently, at which point every tool call is
+# refused — a control that decays into a blanket denial. Use
+# `patch_initiate_chat` whenever `max_steps` is configured.
 _run_local = threading.local()
+
+
+def _reset_run_state() -> None:
+    """Test seam: forget the thread's run context.
+
+    Without this the step counter outlives config resets, so one test's spent
+    budget silently became the next one's starting point.
+    """
+    _run_local.agent_run_id = None
+    _run_local.step_count = 0
+    _run_local.strict_pii = False
 
 
 # ---------------------------------------------------------------------------
@@ -86,27 +121,49 @@ def _message_text(message: Any) -> str:
     return ""
 
 
-def _extract_function_name(message: Any) -> Any:
-    """Extract function/tool name from a message with tool-call content."""
+def _extract_function_names(message: Any) -> Tuple[list, int]:
+    """Every tool this message asks for, plus a count of unreadable requests.
+
+    READS ALL OF ``tool_calls``, NOT JUST THE FIRST. Reading only
+    ``tool_calls[0]`` made enforcement depend on position: with
+    ``denied_tools: ["send_money"]``, a message carrying
+    ``[get_weather, send_money]`` was checked as ``get_weather``, delivered, and
+    the recipient then executed ``send_money`` — no event, no exception. The
+    same defect handed ``max_steps`` a free evasion, because one message cost
+    one step no matter how many calls it carried.
+
+    The second return value is how many entries carried a capability request
+    this function could NOT resolve to a name. Those cannot be checked, and an
+    uncheckable request is refused rather than waved through — a gate that
+    silently ignores what it cannot parse is not a gate.
+    """
     if not isinstance(message, dict):
-        return None
-    # OpenAI function_call format
+        return [], 0
+
+    names = []
+    unreadable = 0
+
+    # OpenAI function_call format (single, legacy).
     fc = message.get("function_call")
     if isinstance(fc, dict):
         name = fc.get("name")
         if isinstance(name, str) and name:
-            return name
-    # OpenAI tool_calls format
+            names.append(name)
+        else:
+            unreadable += 1
+
+    # OpenAI tool_calls format (a list, and it may hold more than one).
     tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list) and tool_calls:
-        first = tool_calls[0]
-        if isinstance(first, dict):
-            fn = first.get("function")
-            if isinstance(fn, dict):
-                name = fn.get("name")
-                if isinstance(name, str) and name:
-                    return name
-    return None
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            fn = call.get("function") if isinstance(call, dict) else None
+            name = fn.get("name") if isinstance(fn, dict) else None
+            if isinstance(name, str) and name:
+                names.append(name)
+            else:
+                unreadable += 1
+
+    return names, unreadable
 
 
 def _cfg_get(cfg: Any, key: str) -> Any:
@@ -195,9 +252,35 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # Agent policy enforcement
             policy = getattr(config, "agent_policy", None) or {}
 
-            # Check tool calls
-            func_name = _extract_function_name(message)
-            if func_name is not None:
+            # Check tool calls. EVERY call in the message, in order — the
+            # message is delivered whole, so one denied name anywhere in it
+            # means the whole message must be refused.
+            func_names, unreadable = _extract_function_names(message)
+
+            if unreadable:
+                emit_event(
+                    config,
+                    provider="unknown",
+                    model=_model_of(agent),
+                    operation="autogen.agent.policy.tool_blocked",
+                    source=SOURCE,
+                    prompt="",
+                    response="",
+                    success=False,
+                    metadata={
+                        **meta,
+                        "reason": "tool_name_unreadable",
+                        "unreadable_tool_calls": unreadable,
+                    },
+                    compliance=tool_denied_compliance(),
+                    options=options or None,
+                )
+                raise RuntimeError(
+                    f"[obsvr] Tool blocked by agent policy: {unreadable} tool "
+                    f"call(s) carried no readable name and cannot be checked"
+                )
+
+            for index, func_name in enumerate(func_names):
                 ok, reason = _check_tool(func_name, policy)
                 if not ok:
                     emit_event(
@@ -209,7 +292,16 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
                         prompt="",
                         response="",
                         success=False,
-                        metadata={**meta, "tool_name": func_name, "reason": reason},
+                        metadata={
+                            **meta,
+                            "tool_name": func_name,
+                            "reason": reason,
+                            # Which call in the batch, and how many there were.
+                            # Position is what used to decide whether the gate
+                            # saw a name at all.
+                            "tool_call_index": index,
+                            "tool_call_count": len(func_names),
+                        },
                         compliance=tool_denied_compliance(),
                         options=options or None,
                     )
@@ -217,7 +309,10 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
                         f"[obsvr] Tool blocked by agent policy: {func_name}"
                     )
 
-                # Only count tool calls toward the step limit
+            # The step budget is charged PER CALL, not per message. Charging per
+            # message let a batch of N calls cost one step, which made the limit
+            # trivially evadable by the same batching that defeated the gate.
+            for index, func_name in enumerate(func_names):
                 step_count = getattr(_run_local, "step_count", 0)
                 step_action = _check_steps(step_count, policy)
                 _run_local.step_count = step_count + 1
@@ -232,7 +327,14 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
                         prompt="",
                         response="",
                         success=False,
-                        metadata={**meta, "step_count": step_count},
+                        metadata={
+                            **meta,
+                            "step_count": step_count,
+                            "tool_name": func_name,
+                            "tool_call_index": index,
+                            "tool_call_count": len(func_names),
+                        },
+                        compliance=step_limit_compliance(),
                         options=options or None,
                     )
                     raise RuntimeError("[obsvr] Step limit reached")
@@ -246,7 +348,13 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
                         source=SOURCE,
                         prompt="",
                         response="",
-                        metadata={**meta, "step_count": step_count, "escalated": True},
+                        metadata={
+                            **meta,
+                            "step_count": step_count,
+                            "escalated": True,
+                            "tool_name": func_name,
+                            "tool_call_index": index,
+                        },
                         options=options or None,
                     )
 
@@ -357,13 +465,29 @@ def patch_initiate_chat(agent: Any, **options: Any) -> None:
     events. Enforces ``allow_pii_access``, step limit, and tool restrictions via
     the shared ``_run_local`` thread-local used by ``_before_send``.
 
+    REGISTER ON EVERY AGENT THAT CAN EMIT A TOOL CALL. The send hook fires on
+    the agent doing the sending, and tool calls come from the assistant, not
+    from the proxy that starts the conversation. The example here used to
+    register on the initiator alone, which left tool policy inert while still
+    producing a full, plausible audit trail — the configuration most likely to
+    be copied was the one that governed nothing.
+
     Usage::
 
         from obsvr.integrations.autogen import register_obsvr, patch_initiate_chat
-        agent = ConversableAgent(...)
-        register_obsvr(agent)
-        patch_initiate_chat(agent)
-        agent.initiate_chat(other_agent, message="Hello")
+
+        assistant = ConversableAgent(...)   # emits the tool calls
+        proxy = ConversableAgent(...)       # starts the conversation
+
+        register_obsvr(assistant)           # REQUIRED for tool policy
+        register_obsvr(proxy)               # audits the proxy's own messages
+        patch_initiate_chat(proxy)          # run scope + per-chat step budget
+
+        proxy.initiate_chat(assistant, message="Hello")
+
+    ``patch_initiate_chat`` is what resets the step budget at each chat. Without
+    it the counter is per thread for the life of the process, so a second
+    conversation inherits whatever the first spent.
     """
     original_initiate_chat = agent.initiate_chat
 

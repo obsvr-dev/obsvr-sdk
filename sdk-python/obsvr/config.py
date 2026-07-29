@@ -534,6 +534,12 @@ def _reset() -> None:
     # already-recorded.
     from .dedupe import _reset_dedupe
     _reset_dedupe()
+    # The AutoGen send hook keeps its per-conversation step budget in a
+    # thread-local, which outlives config the same way the dedupe memory does.
+    # A test that reset config and then spent a budget was starting from the
+    # previous test's count.
+    from .integrations.autogen import _reset_run_state
+    _reset_run_state()
     _state["initialized"] = False
     _state["config"] = None
     _tenant_registry.clear()

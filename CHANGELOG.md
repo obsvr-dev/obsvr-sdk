@@ -585,6 +585,35 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **AutoGen tool policy checked only the first call in a message.** The send
+  hook read `tool_calls[0]` and nothing else, so enforcement depended on
+  POSITION: with `denied_tools: ["send_money"]`, a message carrying
+  `[get_weather, send_money]` was checked as `get_weather`, delivered, and the
+  recipient executed `send_money` — no event, no exception, nothing in the trail
+  to review. The same read let `max_steps` be evaded by batching, because a
+  message cost one step however many calls it carried. Every call is now
+  checked, the budget is charged per call, and the event records
+  `tool_call_index` / `tool_call_count` so a reviewer can see which call in a
+  batch was refused. A tool call whose name cannot be read is refused rather
+  than skipped.
+
+  Re-probed live against ag2 0.3.2 and 0.14.0. The control matters as much as
+  the fix: with no policy the model does batch both calls and both execute, so
+  the refusal is not an artefact of a probe that blocks everything.
+- **A step-limit refusal was recorded as a permitted call.** The event carried
+  no compliance, inherited the default, and landed as `event_type: "llm_call"`
+  with `reason_code: PERMITTED` — so every `blocked_call` filter stepped over a
+  refusal that had really happened. It now reports `blocked_call` /
+  `POLICY_VIOLATION`.
+
+  **Two documented conditions on AutoGen tool policy, both measured rather than
+  reasoned.** The send hook fires on the SENDING agent, so registering only on
+  the proxy that starts a conversation leaves tool policy inert while still
+  producing a complete, plausible audit trail — the docstring's own example did
+  exactly that and has been corrected. And `max_steps` is scoped to a
+  conversation only when `patch_initiate_chat` is used; without it the counter is
+  per thread for the life of the process, so a later conversation inherits what
+  an earlier one spent. Neither is repaired here, both are now stated.
 - **The OpenAI Agents integration recorded `blocked` for tool calls that had
   already completed.** Its tool gate runs in `on_span_end`, and a function span
   does not end until its tool has returned, so a denied tool executed and its

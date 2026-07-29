@@ -493,6 +493,34 @@ def tool_denied_compliance() -> Dict[str, Any]:
     }
 
 
+def step_limit_compliance() -> Dict[str, Any]:
+    """Refusal verdict for an exhausted per-run step budget.
+
+    A step-limit refusal used to carry no compliance at all, so it inherited
+    the default and landed as ``event_type: "llm_call"`` with
+    ``reason_code: PERMITTED`` — a refusal recorded as a permitted call, which
+    every ``blocked_call`` filter steps straight over. An operator reviewing
+    refusals never saw it.
+
+    No ``reason_code`` is set deliberately. The registry is closed and pinned
+    cross-language, and it has no step-limit member; leaving the code to be
+    derived yields POLICY_VIOLATION by exactly the rule ``create_policy_error``
+    uses, so the record and the raised error cannot classify this differently.
+    Minting a dedicated code would touch both enums, the shared fixture, the
+    corpus hash and the TypeScript emission path — and TypeScript's own step
+    limits are still unmeasured, so that is not a change to make blind.
+    """
+    return {
+        "event_type": "blocked_call",
+        "policy_version": "none",
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "action_source": "policy_rules",
+        "redacted_types": [],
+        "blocked_types": [],
+    }
+
+
 def tool_gate_not_evaluated_compliance(
     surface: str, gate: str, reason: str
 ) -> Dict[str, Any]:
