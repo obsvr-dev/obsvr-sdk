@@ -111,8 +111,17 @@ def _limit_events(sent, source_op):
 
 
 def test_autogen_blocks_on_an_unrecognised_action(sent):
+    """Driven INSIDE a run scope, because that is the only place it applies.
+
+    ``max_steps`` needs a conversation boundary and ``patch_initiate_chat`` is
+    what supplies one; without it the limit is reported rather than enforced.
+    That is why this test opens a scope by hand instead of calling ``send``
+    directly — see ``test_autogen_step_budget_scope.py`` for both halves of that
+    rule.
+    """
     obsvr.init(api_key="test", sample_rate=1,
                agent_policy={"max_steps": 1, "step_limit_action": "warn"})
+    from obsvr.integrations import autogen as autogen_mod
     from obsvr.integrations.autogen import register_obsvr
 
     class FakeAgent:
@@ -128,6 +137,8 @@ def test_autogen_blocks_on_an_unrecognised_action(sent):
                 fn(message=message)
 
     agent = register_obsvr(FakeAgent())
+    autogen_mod._run_local.agent_run_id = "run-1"
+    autogen_mod._run_local.step_count = 0
 
     def msg(name):
         return {

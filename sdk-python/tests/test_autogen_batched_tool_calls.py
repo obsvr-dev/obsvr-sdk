@@ -52,10 +52,23 @@ def _msg(*names):
 
 
 def _agent(**policy):
+    """A registered agent INSIDE a conversation scope.
+
+    Every case in this file models messages within one conversation, which is
+    what a real run is — and the step budget only applies inside a conversation
+    scope, since ``patch_initiate_chat`` is what supplies one. Opening the scope
+    here keeps these tests about batching rather than about scoping;
+    ``test_autogen_step_budget_scope.py`` owns the scoping rule and both halves
+    of it.
+    """
     obsvr.init(api_key="test", sample_rate=1, agent_policy=policy)
+    from obsvr.integrations import autogen as autogen_mod
     from obsvr.integrations.autogen import register_obsvr
 
-    return register_obsvr(FakeAgent())
+    agent = register_obsvr(FakeAgent())
+    autogen_mod._run_local.agent_run_id = "run-batched-tests"
+    autogen_mod._run_local.step_count = 0
+    return agent
 
 
 def _blocks(sent):

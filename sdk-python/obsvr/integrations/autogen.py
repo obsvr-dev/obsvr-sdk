@@ -33,6 +33,14 @@ from ever seeing the tool call. Two conditions on that:
   with no event and no exception.
 
 A tool call whose name cannot be read is refused rather than skipped.
+
+`max_steps` IS THE ONE CONTROL HERE WITH A SCOPE THIS FRAMEWORK DOES NOT
+SUPPLY. It needs a conversation boundary to count against, and only
+`patch_initiate_chat` provides one. Registered without it, the limit is not
+applied and each affected tool call is recorded `not_evaluated` — see
+`patch_initiate_chat`'s docstring for why that is preferred to enforcing an
+unscoped counter. The tool allow/deny gate is unaffected and needs no run
+scope.
 """
 
 # Interception: AutoGen register_hook() API (non-mutating). Hooks are registered through the framework's official hook system; no agent attributes are mutated.
@@ -49,6 +57,7 @@ from ..events import (
     emit_event,
     step_limit_compliance,
     tool_denied_compliance,
+    tool_gate_not_evaluated_compliance,
 )
 from ..deobfuscate import redact_for_storage, run_configured_pii_scan
 from ..policy import (
@@ -61,14 +70,18 @@ SOURCE = "autogen"
 
 # Thread-local storage for per-conversation run context (thread-safe).
 #
-# SCOPE OF THE STEP BUDGET, stated because it surprised us. `patch_initiate_chat`
-# is what gives `max_steps` a per-conversation scope: it zeroes the counter when
-# a chat starts. Registered WITHOUT it, there is no conversation boundary to
-# observe, so the counter is per thread for the life of the process and a second
-# conversation inherits whatever the first spent. In a long-lived process that
-# eventually exhausts the budget permanently, at which point every tool call is
-# refused — a control that decays into a blanket denial. Use
-# `patch_initiate_chat` whenever `max_steps` is configured.
+# SCOPE OF THE STEP BUDGET. `patch_initiate_chat` is what gives `max_steps` a
+# per-conversation scope: it zeroes the counter when a chat starts and holds an
+# `agent_run_id` for the duration. A live `agent_run_id` is therefore the one
+# observable fact that says a conversation scope exists — nothing else sets it.
+#
+# Registered WITHOUT that helper there is no conversation boundary for the send
+# hook to observe, so the counter would be per thread for the life of the
+# process: a later conversation inherits whatever an earlier one spent, and in a
+# long-lived process the budget exhausts permanently, after which every tool
+# call is refused. `max_steps` is therefore NOT APPLIED when it cannot be
+# scoped, and `_step_scope_not_evaluated` records the absence on each affected
+# tool call. Use `patch_initiate_chat` whenever `max_steps` is configured.
 _run_local = threading.local()
 
 
@@ -97,6 +110,70 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     if allowed is not None and tool_name not in allowed:
         return False, "tool_not_in_allowlist"
     return True, ""
+
+
+#: Why `max_steps` carries no verdict when the run-level helper is absent. One
+#: string so the event, the module docstring and the published grading cannot
+#: drift into describing the limit three different ways.
+STEP_SCOPE_UNAVAILABLE_REASON = (
+    "max_steps needs a conversation scope to count against, and only "
+    "patch_initiate_chat supplies one; without it the counter is per thread for "
+    "the life of the process, so the limit is recorded rather than applied"
+)
+
+
+def _step_scope_not_evaluated(
+    config: Any,
+    agent: Any,
+    meta: Dict[str, Any],
+    policy: Dict[str, Any],
+    func_names: list,
+    options: Dict[str, Any],
+) -> None:
+    """Record that `max_steps` was configured and could not be scoped.
+
+    THIS IS THE ABSENCE OF A CONTROL, AND IT IS ON THE RECORD ON PURPOSE. The
+    alternative to enforcing an unscoped counter is not silence: a control that
+    denies legitimate work gets switched off by whoever is on call, and then
+    there is neither the control nor any evidence that it is gone.
+    `not_evaluated` keeps the gap visible to the next reader and auditable
+    afterwards.
+
+    Deliberately NOT `allowed`, which would assert that a budget was checked and
+    had room, and not `blocked`, which would assert a refusal.
+
+    One event per tool call, carrying the same `tool_call_index` /
+    `tool_call_count` the enforcing branch carries. The enforcing branch charges
+    per call, so recording per message here would make the number of
+    `step_limit` events depend on whether the limit was scoped — and the whole
+    point of this record is that the two configurations stay comparable.
+    """
+    for index, func_name in enumerate(func_names):
+        emit_event(
+            config,
+            provider="unknown",
+            model=_model_of(agent),
+            operation="autogen.agent.policy.step_limit",
+            source=SOURCE,
+            prompt="",
+            response="",
+            metadata={
+                **meta,
+                "max_steps": policy.get("max_steps"),
+                "tool_name": func_name,
+                "tool_call_index": index,
+                "tool_call_count": len(func_names),
+                # The scope the counter actually has, named so a reader does not
+                # have to infer it from the absence of `agent_run_id`.
+                "step_limit_scope": "process_thread",
+            },
+            compliance=tool_gate_not_evaluated_compliance(
+                surface="autogen.agent.policy.step_limit",
+                gate="step_limit",
+                reason=STEP_SCOPE_UNAVAILABLE_REASON,
+            ),
+            options=options or None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +382,22 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # The step budget is charged PER CALL, not per message. Charging per
             # message let a batch of N calls cost one step, which made the limit
             # trivially evadable by the same batching that defeated the gate.
-            for index, func_name in enumerate(func_names):
+            #
+            # It is charged only inside a conversation scope. `agent_run_id` is
+            # set by `patch_initiate_chat` and by nothing else, so its absence
+            # means the counter has no boundary to reset against — see the note
+            # on `_run_local`. Enforcing it there would refuse tool calls on the
+            # strength of a budget an earlier conversation spent, which is a
+            # refusal no configured limit asked for.
+            if func_names and policy.get("max_steps") is not None and not agent_run_id:
+                _step_scope_not_evaluated(
+                    config, agent, meta, policy, func_names, options
+                )
+                func_names_for_step_budget: list = []
+            else:
+                func_names_for_step_budget = func_names
+
+            for index, func_name in enumerate(func_names_for_step_budget):
                 step_count = getattr(_run_local, "step_count", 0)
                 step_action, invalid_step_action = check_steps(step_count, policy)
                 _run_local.step_count = step_count + 1
@@ -479,9 +571,21 @@ def patch_initiate_chat(agent: Any, **options: Any) -> None:
 
         proxy.initiate_chat(assistant, message="Hello")
 
-    ``patch_initiate_chat`` is what resets the step budget at each chat. Without
-    it the counter is per thread for the life of the process, so a second
-    conversation inherits whatever the first spent.
+    ``patch_initiate_chat`` IS WHAT MAKES ``max_steps`` APPLY AT ALL. It is what
+    scopes the budget to one conversation, and the send hook has no other way to
+    see a conversation boundary. Registered without it, the limit is **not
+    enforced**: each affected tool call is recorded ``not_evaluated`` with the
+    reason, rather than charged against a counter that is per thread for the life
+    of the process.
+
+    That is a deliberate weakening of an enforcement control, and it is the
+    lesser of the two available failures. An unscoped counter is not a step
+    limit: a second conversation inherits what the first spent, so in a
+    long-lived process the budget exhausts permanently and every tool call after
+    that is refused. A control that decays into a blanket denial gets switched
+    off by whoever is on call, leaving neither the control nor a record that it
+    is gone. Reporting the absence keeps it visible and auditable instead. The
+    tool allow/deny gate is unaffected and needs no run scope.
     """
     original_initiate_chat = agent.initiate_chat
 
@@ -489,6 +593,18 @@ def patch_initiate_chat(agent: Any, **options: Any) -> None:
         config = try_get_config()
         if config is None:
             return original_initiate_chat(*args, **kwargs)
+
+        # SAVED AND RESTORED, NOT CLEARED. This used to zero the run context on
+        # the way out, so a nested `initiate_chat` on a patched agent handed the
+        # OUTER conversation a fresh budget on return — and now that an absent
+        # `agent_run_id` means "not enforced", clearing it would also have
+        # dropped the outer conversation's limit for the rest of its run. The
+        # scope a nested chat suspends is the scope it must give back.
+        outer = (
+            getattr(_run_local, "agent_run_id", None),
+            getattr(_run_local, "step_count", 0),
+            getattr(_run_local, "strict_pii", False),
+        )
 
         agent_run_id = str(uuid.uuid4())
         _run_local.agent_run_id = agent_run_id
@@ -522,10 +638,13 @@ def patch_initiate_chat(agent: Any, **options: Any) -> None:
                 metadata={"agent_run_id": agent_run_id},
                 options=options or None,
             )
-            # Clear thread-local run context
-            _run_local.agent_run_id = None
-            _run_local.step_count = 0
-            _run_local.strict_pii = False
+            # Hand the enclosing conversation its scope back. At the outermost
+            # chat `outer` is the empty state, so this still clears.
+            (
+                _run_local.agent_run_id,
+                _run_local.step_count,
+                _run_local.strict_pii,
+            ) = outer
 
         return result
 

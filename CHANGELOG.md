@@ -742,6 +742,34 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   provider detector still reports `"openai"` for any client exposing
   `chat.completions`, so a cloud endpoint and a local server remain
   indistinguishable there.
+- **BREAKING (behaviour): `max_steps` on the AutoGen integration is no longer
+  applied when it cannot be scoped to a conversation.** The budget needs a
+  conversation boundary and the send hook has none to observe unless
+  `patch_initiate_chat` is installed as well — that helper is what zeroes the
+  counter when a chat starts. Without it the counter was per thread for the life
+  of the process, so a later conversation inherited whatever an earlier one spent,
+  and a long-lived process exhausted the budget permanently and then refused every
+  tool call. Measured live on two releases of the framework before this change.
+
+  The limit is now skipped in that configuration, and each affected tool call
+  records `action_taken: "not_evaluated"` with the reason in
+  `metadata.obsvr_telemetry.policy_not_evaluated`, one record per call with the
+  same `tool_call_index` / `tool_call_count` the enforcing branch carries.
+
+  **This strictly weakens an enforcement control, and that is the point.** The
+  alternative was keeping a limit that denies legitimate work, which ends with the
+  control switched off by whoever is on call and no record that it is gone. An
+  unenforced limit that says so stays visible and auditable. **Install
+  `patch_initiate_chat` whenever `max_steps` is set** and behaviour is unchanged;
+  the allow/deny tool gate needs no run scope and is unaffected either way.
+  Verified live in both directions on two releases — the unscoped configuration
+  records and does not refuse, the scoped one still refuses.
+
+  Also fixed in the same change: the run wrapper zeroed the run context on the way
+  out, so a nested conversation returning handed the enclosing one a fresh budget.
+  It now restores the scope it suspended, which matters more than it did before —
+  clearing it would have dropped the outer conversation's limit for the rest of its
+  run.
 - **An unrecognised `step_limit_action` silently disabled the step limit.** The
   decision helper returned the configured value verbatim, and each caller then
   tested it against the two dispositions it implements — so a typo, or a
@@ -794,7 +822,8 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   exactly that and has been corrected. And `max_steps` is scoped to a
   conversation only when `patch_initiate_chat` is used; without it the counter is
   per thread for the life of the process, so a later conversation inherits what
-  an earlier one spent. Neither is repaired here, both are now stated.
+  an earlier one spent. The first is a documentation fix; the second is now
+  repaired in its own entry below.
 - **The OpenAI Agents integration recorded `blocked` for tool calls that had
   already completed.** Its tool gate runs in `on_span_end`, and a function span
   does not end until its tool has returned, so a denied tool executed and its

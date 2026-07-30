@@ -457,7 +457,7 @@ agree, so neither column may be read across to the other.
 | MCP (`callTool`) | **enforces** | **enforces** |
 | `obsvrGovernTool` | **enforces** | *no equivalent* |
 | LangChain | **enforces** | **not wired** |
-| AutoGen | *no integration* | **enforces** |
+| AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
 | Pydantic-AI | *no integration* | **enforces**, not yet driven live |
 | OpenAI Agents | **records only** | **records only** |
 | CrewAI | *no integration* | **not wired** (its step limit does fire) |
@@ -484,6 +484,15 @@ not, and it is not a version accident: the TypeScript handler implements a
 pre-execution `handleToolStart` that the Python handler has no equivalent of, and
 sets `awaitHandlers`/`raiseError` so a refusal inside a callback aborts the tool
 instead of being logged and ignored.
+
+**Two rows carry a note about the per-run step limit, which is a separate control
+from the tool gate this table grades.** On AutoGen the gate enforces on its own,
+but `max_steps` needs a conversation boundary the framework's send hook cannot
+see, so it applies only when the run-level helper (`patch_initiate_chat`) is
+installed as well; without it the limit is recorded `not_evaluated` rather than
+applied, because an unscoped counter is per process and decays into a blanket
+denial. On CrewAI the reverse holds: the tool gate is not wired, but the step
+check runs on every step callback and so does fire.
 
 Per-package version ranges — declared floor and ceiling, what is verified against a captured audit event versus only bound, and which rows have no artifact at all — are in [COMPATIBILITY.md](COMPATIBILITY.md), generated from the audit artifacts rather than maintained by hand.
 
