@@ -742,6 +742,29 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   provider detector still reports `"openai"` for any client exposing
   `chat.completions`, so a cloud endpoint and a local server remain
   indistinguishable there.
+- **The LangChain tool gate never fired on the runtime the framework now directs
+  people to.** The allow/deny list, step limit and loop detector sat in
+  `on_agent_action`, which the classic `AgentExecutor` still fires but the graph
+  runtimes never do. So on a current install no tool was refused and no block event
+  was emitted, while a complete and plausible audit trail was still produced.
+
+  The gate now also runs in `on_tool_start`. The framework dispatches that before
+  the `try` that guards tool execution and outside the error handling that would
+  otherwise turn a refusal into a tool result, and the handler already set
+  `raise_error` — so the enforcement point was available and unused rather than
+  absent. Both pre-tool callbacks reach one shared gate, so a runtime that delivers
+  both gates the tool once rather than charging it two steps.
+
+  **Python's LangChain row moves from "not wired" to "enforces"** in both READMEs
+  and `SECURITY.md`. Verified live on both runtimes with a policy-off control on
+  each, and against the preceding commit, which still lets the denied tool run. On
+  the graph runtime the refused cells show the framework's own tool-end callback
+  never arriving, which is the framework reporting that the tool body was never
+  reached.
+
+  One documentation claim was corrected rather than carried over: `on_agent_action`
+  was described as a callback "the current runtime never fires", and the classic
+  executor does still fire it. It is the graph runtimes that do not.
 - **Tools invoked by a provider tool runner ran outside every tool gate,
   including the destructive-capability gate.** `chat.completions.runTools` and
   `beta.messages.toolRunner` were governed at the invocation, but the runner holds

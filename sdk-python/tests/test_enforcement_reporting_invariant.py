@@ -319,12 +319,19 @@ def _drive_tracing_processor(spy, sent):
 def _drive_langchain_callbacks(spy, sent):
     """Deliver the callbacks current runtimes actually deliver.
 
-    ``on_agent_action`` — where this integration's tool gate lives — is not
-    delivered by current agent runtimes, so the driver does not call it. It
-    calls ``on_tool_start`` if the handler grows one, which is the shape any fix
-    would take; until then the tool simply runs and ``on_tool_end`` observes it
-    afterwards. If a gate is ever added at the start callback, this driver will
-    reach it and the INERT grade below will fail — deliberately.
+    ``on_agent_action`` is delivered by the CLASSIC executor only; the graph
+    runtimes never fire it. So the driver does not call it, and instead delivers
+    ``on_tool_start`` — the pre-execution hook the framework dispatches before
+    the ``try`` that guards tool execution, and outside the error handling that
+    would otherwise turn a refusal into a tool result.
+
+    The handler must DEFINE that method itself. Probing with ``getattr`` is not
+    enough and used to be what this did: the base class supplies a no-op
+    ``on_tool_start``, so the probe was non-None whether or not the integration
+    implemented anything, and the driver called the inherited no-op while the
+    docstring claimed it was calling a gate. It happened not to change the grade,
+    because a no-op cannot refuse — but it measured something other than what it
+    said.
     """
     from obsvr.integrations.langchain import ObsvrCallbackHandler
 
@@ -336,16 +343,16 @@ def _drive_langchain_callbacks(spy, sent):
     )
 
     raised = None
-    on_tool_start = getattr(handler, "on_tool_start", None)
-    if on_tool_start is not None:
+    if "on_tool_start" in type(handler).__dict__:
         try:
-            on_tool_start(
-                {"name": SPY_TOOL},
+            handler.on_tool_start(
+                {"name": SPY_TOOL, "description": "moves money"},
                 '{"amount": 500}',
                 run_id="tool-inv-1",
                 parent_run_id="run-inv-1",
             )
         except BaseException as exc:  # noqa: BLE001
+            # Refused before the tool: the framework never reaches the body.
             return Outcome(spy, sent, exc)
 
     spy.enter(SPY_TOOL)
@@ -391,7 +398,7 @@ TABLE = [
     ("pydantic_ai", _drive_pydantic_ai, "agent_policy", ENFORCES),
     ("autogen", _drive_autogen, "agent_policy", ENFORCES),
     ("openai_agents", _drive_tracing_processor, "agent_policy", RECORDS_ONLY),
-    ("langchain", _drive_langchain_callbacks, "agent_policy", INERT),
+    ("langchain", _drive_langchain_callbacks, "agent_policy", ENFORCES),
     ("crewai", _drive_crewai_step_callback, "agent_policy", INERT),
 ]
 
@@ -469,6 +476,57 @@ def test_autogen_gates_every_position_in_a_batched_message(captured):
     _init_with_deny("agent_policy")
     outcome = _drive_autogen(Spy(), captured, tool_names=(BENIGN_TOOL, SPY_TOOL))
     assert_invariant(ENFORCES, outcome)
+
+
+def test_langchain_lets_a_tool_the_policy_does_not_name_through(captured):
+    """The control for the row above, and the reason it means anything.
+
+    A gate that refused everything would satisfy the ENFORCES row completely.
+    This drives the same pre-execution hook with the deny list naming a different
+    tool: the spy must run, and no event may claim a refusal.
+    """
+    obsvr.init(
+        api_key="test", sample_rate=1,
+        agent_policy={"denied_tools": ["something_else"]},
+    )
+    outcome = _drive_langchain_callbacks(Spy(), captured)
+
+    assert outcome.spy.entries == [SPY_TOOL]
+    assert not any(e.get("action_taken") == "blocked" for e in outcome.events)
+
+
+def test_langchain_does_not_gate_the_same_tool_twice(captured):
+    """One gate per tool, whichever callback the runtime delivers.
+
+    Both pre-tool callbacks reach the same gate. A runtime that delivered both
+    would otherwise charge the tool two steps and audit it twice, and the step
+    budget is the control that would silently drift.
+    """
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={"max_steps": 5})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+
+    handler = ObsvrCallbackHandler()
+    handler.on_chain_start(
+        {"id": ["langchain", "agents", "agent", "AgentExecutor"]},
+        {"input": "go"},
+        run_id="run-dup-1",
+    )
+
+    class _Action:
+        tool = SPY_TOOL
+        tool_input = {"amount": 1}
+
+    handler.on_agent_action(_Action(), run_id="tool-dup-1", parent_run_id="run-dup-1")
+    handler.on_tool_start(
+        {"name": SPY_TOOL}, '{"amount": 1}',
+        run_id="tool-dup-1", parent_run_id="run-dup-1",
+    )
+
+    calls = [e for e in captured if e["operation"] == "langchain.tool.call"]
+    assert len(calls) == 1, (
+        f"the tool was gated {len(calls)} times; both pre-tool callbacks reached "
+        f"the gate for one tool invocation"
+    )
 
 
 def test_the_table_covers_every_surface_that_has_a_tool_gate():

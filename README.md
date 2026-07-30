@@ -286,7 +286,7 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   ```typescript
   mcpToolPolicy: { pinning: { enabled: true, mode: "block" } },
   ```
-- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. **That holds only where obsvr is genuinely on the tool boundary, which is not everywhere.** Measured, per integration and per language: it holds on MCP in both SDKs, on `obsvrGovernTool` and the LangChain handler in TypeScript, and on AutoGen and PydanticAI in Python. It does NOT hold on the OpenAI Agents tracing processor in either language (that surface cannot refuse a tool at all), nor on the Python LangChain or CrewAI handlers, nor on LlamaIndex. It DOES now hold inside a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`) on the TypeScript side, where obsvr gates each tool's callback before the runner is constructed — measured live in both directions, since a tainted session previously executed a tool named in `destructiveTools` there. The runner's intermediate model turns remain audited rather than gated, and a hosted tool the provider executes itself has no callback to gate. Put a destructive capability behind MCP or `obsvrGovernTool`. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. **That holds only where obsvr is genuinely on the tool boundary, which is not everywhere.** Measured, per integration and per language: it holds on MCP and the LangChain handler in both SDKs, on `obsvrGovernTool` in TypeScript, and on AutoGen and PydanticAI in Python. It does NOT hold on the OpenAI Agents tracing processor in either language (that surface cannot refuse a tool at all), nor on the Python CrewAI handler, nor on LlamaIndex. It DOES now hold inside a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`) on the TypeScript side, where obsvr gates each tool's callback before the runner is constructed — measured live in both directions, since a tainted session previously executed a tool named in `destructiveTools` there. The runner's intermediate model turns remain audited rather than gated, and a hosted tool the provider executes itself has no callback to gate. Put a destructive capability behind MCP or `obsvrGovernTool`. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
 
 ---
@@ -456,7 +456,7 @@ agree, so neither column may be read across to the other.
 | --- | --- | --- |
 | MCP (`callTool`) | **enforces** | **enforces** |
 | `obsvrGovernTool` | **enforces** | *no equivalent* |
-| LangChain | **enforces** | **not wired** |
+| LangChain | **enforces** | **enforces** |
 | AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
 | Pydantic-AI | *no integration* | **enforces**, not yet driven live |
 | OpenAI Agents | **records only** | **records only** |
@@ -485,11 +485,18 @@ agree, so neither column may be read across to the other.
   with the refusal. Both fail closed. Python ships no tool-runner integration at
   all, which is why that column reads *no integration* rather than a grade.
 
-**The LangChain row is the one to notice.** TypeScript enforces and Python does
-not, and it is not a version accident: the TypeScript handler implements a
-pre-execution `handleToolStart` that the Python handler has no equivalent of, and
-sets `awaitHandlers`/`raiseError` so a refusal inside a callback aborts the tool
-instead of being logged and ignored.
+**The LangChain row used to be the one to notice, and closing it is why it no
+longer is.** TypeScript enforced and Python did not, because only the TypeScript
+handler implemented the framework's pre-execution tool callback. Python's checks
+sat in the legacy agent-action callback, which the classic executor still fires
+but the graph runtimes never do — so on a modern install the gate observed nothing
+and refused nothing while still producing a complete audit trail, which is the
+harder failure to notice because it looks configured. Python now implements the
+same pre-execution hook. The framework dispatches it before the block that guards
+tool execution and outside the error handling that would otherwise convert a
+refusal into a tool result, and the handler already opted into having its
+exceptions re-raised — so the surface was available and unused rather than absent.
+Both rows are driven live, on both of Python's runtimes.
 
 **Two rows carry a note about the per-run step limit, which is a separate control
 from the tool gate this table grades.** On AutoGen the gate enforces on its own,

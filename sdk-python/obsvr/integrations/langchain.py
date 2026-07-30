@@ -126,6 +126,13 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         self._agent_runs: Dict[str, Dict[str, Any]] = {}
         self._retrievals: Dict[str, Dict[str, Any]] = {}
         self._options = options
+        # Whether the legacy agent-action callback has been seen on this handler.
+        # Both callbacks reach the same gate, and only one runtime delivers each:
+        # the classic executor fires `on_agent_action`, and the graph runtimes
+        # fire only `on_tool_start`. A run that somehow delivers both must be
+        # gated ONCE, or a tool would be charged two steps and audited twice.
+        # Twin of `_sawAgentAction` in the TypeScript handler.
+        self._saw_agent_action = False
 
     # -- agent chain starts / ends -----------------------------------------
 
@@ -278,6 +285,67 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
 
     # -- agent actions (tool calls) ----------------------------------------
 
+    def on_tool_start(
+        self,
+        serialized: Any,
+        input_str: Any,
+        *,
+        run_id: Any = None,
+        parent_run_id: Any = None,
+        tags: Any = None,
+        metadata: Any = None,
+        inputs: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        """THE PRE-EXECUTION TOOL GATE. Runs before the tool, per tool, fails closed.
+
+        This is the hook the tool policy always needed and did not have. The gate
+        lived only in ``on_agent_action``, which the classic executor still fires
+        but the graph runtimes never do — so on a modern install the gate observed
+        nothing and refused nothing while still producing a complete audit trail.
+
+        Three properties make this an enforcement point rather than another
+        telemetry callback, and all three are properties of the framework rather
+        than of this code:
+
+        - The tool base class dispatches ``on_tool_start`` BEFORE the ``try`` that
+          guards tool execution, so an exception raised here escapes ``run()``
+          before the tool body is reached and is not converted into a tool result
+          by the framework's own error handling.
+        - The dispatcher re-raises a handler's exception when the handler sets
+          ``raise_error``, which this one does. Without that flag the refusal
+          would be logged and ignored.
+        - The graph tool runner reaches the same dispatch through ``invoke``, and
+          although it wraps the call broadly, its default error handler re-raises
+          anything that is not its own invocation error — so a policy refusal
+          still propagates and the tool still does not run.
+
+        The tool NAME comes from ``serialized["name"]``, which the base class
+        builds from the tool instance's own name. The ``name`` keyword is the
+        run name and is normally absent, so it is a fallback and not the source.
+        (The TypeScript twin is the other way round: there the serialized id is
+        the tool CLASS and the run name is the reliable one.)
+        """
+        if self._saw_agent_action:
+            return
+        self._gate_tool(
+            tool_name=self._tool_name_from_start(serialized, kwargs),
+            tool_input=inputs if inputs is not None else input_str,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+        )
+
+    @staticmethod
+    def _tool_name_from_start(serialized: Any, kwargs: Dict[str, Any]) -> str:
+        """The tool's own name, preferring the source the framework fills in."""
+        name = _get(serialized, "name")
+        if isinstance(name, str) and name:
+            return name
+        run_name = kwargs.get("name")
+        if isinstance(run_name, str) and run_name:
+            return run_name
+        return ""
+
     def on_agent_action(
         self,
         action: Any,
@@ -286,6 +354,29 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         parent_run_id: Any = None,
         **kwargs: Any,
     ) -> None:
+        # The classic executor's pre-tool callback. Recorded so the modern hook
+        # does not gate the same tool a second time.
+        self._saw_agent_action = True
+        self._gate_tool(
+            tool_name=str(getattr(action, "tool", None) or ""),
+            tool_input=getattr(action, "tool_input", None),
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+        )
+
+    def _gate_tool(
+        self,
+        tool_name: str,
+        tool_input: Any,
+        run_id: Any = None,
+        parent_run_id: Any = None,
+    ) -> None:
+        """One gate, reached from whichever pre-tool callback the runtime delivers.
+
+        Shared rather than duplicated. Two copies of a tool gate is how the
+        step-limit fail-open survived in four places at once, and it is the thing
+        that must not happen to the control that decides whether a tool runs.
+        """
         try:
             config = try_get_config()
             if config is None:
@@ -297,7 +388,6 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             agent_run_id = agent_state["agent_run_id"] if agent_state else ""
             step_index = agent_state["step_count"] if agent_state else 0
 
-            tool_name = str(getattr(action, "tool", None) or "")
             policy = getattr(config, "agent_policy", None) or {}
 
             # Check tool policy
@@ -384,7 +474,6 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                     options=self._options or None,
                 )
 
-            tool_input = getattr(action, "tool_input", None)
             tool_input_text = str(tool_input) if tool_input is not None else ""
 
             emit_event(
