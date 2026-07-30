@@ -1201,7 +1201,25 @@ def wrap(client: Any, **options: Any) -> Any:
     if not is_governing_instance(_MODULE_INSTANCE_ID):
         return client
 
+    # The client's SHAPE, which selects the extractors downstream.
     provider = _detect_provider(client)
+
+    # WHERE the calls will go, which is what the record must name. Resolved
+    # ONCE, at wrap time: a client's base URL is fixed when it is constructed,
+    # so re-deriving it per call would buy nothing. The decision rides on the
+    # options dict because that already reaches every emit site; `provider`
+    # itself must stay the shape, or an Anthropic-shaped client on a non-vendor
+    # host would lose its extractor along with its label.
+    from .provider_attribution import (
+        ATTRIBUTION_OPTION_KEY,
+        RECORDED_PROVIDER_OPTION_KEY,
+        resolve_destination,
+    )
+
+    recorded_provider, attribution = resolve_destination(client, provider)
+    options = dict(options or {})
+    options[RECORDED_PROVIDER_OPTION_KEY] = recorded_provider
+    options[ATTRIBUTION_OPTION_KEY] = attribution
 
     # Gemini: generate_content sits directly on the model object
     if provider == "google" and hasattr(client, "generate_content"):

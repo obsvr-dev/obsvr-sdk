@@ -212,6 +212,20 @@ def _with_provider_detail(
     return out
 
 
+def _with_destination_attribution(
+    md: Optional[Dict[str, Any]], attribution: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Stamp where the call went, over anything the caller put there.
+
+    Twin of `withProviderAttribution` in sdk-typescript/src/proxy/wrapper.ts.
+    """
+    if not attribution:
+        return md
+    out = dict(md or {})
+    out.update(attribution)
+    return out
+
+
 def build_audit_event(
     config: ResolvedConfig,
     *,
@@ -241,6 +255,29 @@ def build_audit_event(
 ) -> Dict[str, Any]:
     opts = options or {}
     comp = compliance or DEFAULT_COMPLIANCE
+
+    # WHERE the call went, versus what the client looked like.
+    #
+    # `provider` as passed in is the client's API SHAPE: it selects the
+    # prompt/response extractors upstream, and it is a question about the
+    # object, not about the network. The RECORD must name the destination, and
+    # those are different questions. One variable answered both, and the second
+    # answer was wrong for every client pointed somewhere other than its shape
+    # implied - an OpenAI-shaped client against a local server recorded
+    # `provider: "openai"`.
+    #
+    # `wrap()` resolves the destination once and leaves it on the options dict,
+    # which already reaches every emit site. Absent (integration paths that do
+    # not resolve an endpoint), the shape-derived label stands exactly as before.
+    from .provider_attribution import (
+        ATTRIBUTION_OPTION_KEY,
+        RECORDED_PROVIDER_OPTION_KEY,
+    )
+
+    _recorded = opts.get(RECORDED_PROVIDER_OPTION_KEY)
+    _attribution = opts.get(ATTRIBUTION_OPTION_KEY)
+    if _recorded:
+        provider = _recorded
 
     # Final canary safety net (parity with TS buildIntegrationEvent): NO event
     # may carry a raw canary token in its content on ANY path — a model
@@ -358,10 +395,17 @@ def build_audit_event(
         # outside a run scope; a caller-set agent_run_id always wins.
         # ingest coerces provider "mcp" → "unknown"; stamp provider_detail
         # so provider-level analytics can recover the MCP identity.
-        "metadata": with_run_metadata(
-            _with_provider_detail(
-                metadata if metadata is not None else opts.get("metadata"), provider
-            )
+        # Destination attribution is merged LAST and deliberately wins: it
+        # describes where the call went, which is not a caller-supplied opinion.
+        # Letting per-request metadata shadow it would drop the destination
+        # evidence exactly when a caller attaches metadata of their own.
+        "metadata": _with_destination_attribution(
+            with_run_metadata(
+                _with_provider_detail(
+                    metadata if metadata is not None else opts.get("metadata"), provider
+                )
+            ),
+            _attribution,
         ),
         # Compliance fields
         "event_type": comp["event_type"],

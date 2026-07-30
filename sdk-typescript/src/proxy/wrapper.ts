@@ -132,6 +132,10 @@ import { debugLog } from "../utils/logger.js";
 import { createPolicyError, resolveReasonCode } from "../policy/policy-error.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 import { generateUUID } from "../utils/uuid.js";
+import {
+  resolveDestination,
+  type CanonicalProvider,
+} from "./provider-attribution.js";
 
 /**
  * Compliance context captured at the pre-LLM boundary.
@@ -318,8 +322,45 @@ type PathContext = {
   path: string[];
   options: WrapOptions;
   config: ResolvedConfig;
+  /**
+   * The client's API SHAPE, from duck-typing. Selects the prompt/response
+   * extractors and the request-building branches. This is a question about the
+   * object, not about the network.
+   */
   provider: "openai" | "anthropic" | "google" | "unknown";
+  /**
+   * The DESTINATION, for the record. Derived from the client's base URL when it
+   * can be read; falls back to the shape above when it cannot.
+   *
+   * Kept separate from `provider` on purpose. One variable was answering two
+   * different questions — which extractor to use, and which vendor to name in
+   * the audit event — and the second answer was wrong for every client pointed
+   * somewhere other than its shape implied. An OpenAI-shaped client against a
+   * local server recorded `provider: "openai"`; collapsing these back into one
+   * field would also break extraction for an Anthropic-shaped client on a
+   * non-vendor host, which is the trap that keeps them apart.
+   */
+  recordedProvider: CanonicalProvider;
+  /** Reserved metadata: where the call goes, and how sure of it we are. */
+  providerAttribution: Record<string, unknown>;
 };
+
+/**
+ * Stamp destination attribution onto event metadata.
+ *
+ * Applied LAST and deliberately winning: it describes where the call went,
+ * which is not a caller-supplied opinion. Letting per-request metadata shadow
+ * it would drop the destination evidence exactly when a caller attaches
+ * metadata of their own.
+ */
+function withProviderAttribution(
+  md: Record<string, unknown> | undefined,
+  ctx: PathContext,
+): Record<string, unknown> | undefined {
+  const attribution = ctx.providerAttribution;
+  if (!attribution || Object.keys(attribution).length === 0) return md;
+  return { ...(md ?? {}), ...attribution };
+}
 
 /**
  * Check if an object is an AsyncIterable (stream)
@@ -738,8 +779,9 @@ function buildAuditEvent(
     client_ip: auditFields.client_ip || undefined,
     user_agent: auditFields.user_agent || undefined,
 
-    // LLM Call fields
-    provider,
+    // LLM Call fields. `ctx.recordedProvider` is the destination; the local
+    // `provider` above is the client's shape and stays with the extractors.
+    provider: ctx.recordedProvider,
     model,
     model_resolved: modelResolved,
     // Read directly from the native provider response → highest-trust capture.
@@ -789,11 +831,14 @@ function buildAuditEvent(
     // Metadata (call telemetry + span envelope merged under reserved keys).
     // withRunMetadata stamps agent_run_id when this call runs inside an
     // `agentRun(...)` scope, so raw proxied provider calls join the run too.
-    metadata: withRunMetadata(
-      withSpanMetadata(
-        withTelemetryMetadata(auditFields.metadata, callTelemetry),
-        spanEnv,
-      ),
+    metadata: withProviderAttribution(
+      withRunMetadata(
+        withSpanMetadata(
+          withTelemetryMetadata(auditFields.metadata, callTelemetry),
+          spanEnv,
+        ),
+      ) as Record<string, unknown> | undefined,
+      ctx,
     ),
 
     // Compliance fields
@@ -999,7 +1044,8 @@ function wrapStreamingIterator(
           user_id: auditFields.user_id || options.user_id || undefined,
           client_ip: auditFields.client_ip || undefined,
           user_agent: auditFields.user_agent || undefined,
-          provider,
+          // The destination, not the client's shape — see PathContext.
+          provider: ctx.recordedProvider,
           model,
           model_resolved: modelResolved,
           // Native provider stream snapshot → highest-trust capture (present iff model_resolved).
@@ -1047,15 +1093,18 @@ function wrapStreamingIterator(
           // telemetry. Previously the stream path set `auditFields.metadata`
           // bare, orphaning every streamed step from its run/trace.
           metadata: (() => {
-            const md = withRunMetadata(
-              withSpanMetadata(
-                withTelemetryMetadata(
-                  auditFields.metadata,
-                  extractCallTelemetry(provider, request, undefined),
+            const md = withProviderAttribution(
+              withRunMetadata(
+                withSpanMetadata(
+                  withTelemetryMetadata(
+                    auditFields.metadata,
+                    extractCallTelemetry(provider, request, undefined),
+                  ),
+                  spanEnvelopeFor("llm_call", operation),
                 ),
-                spanEnvelopeFor("llm_call", operation),
-              ),
-            ) as Record<string, unknown> | undefined;
+              ) as Record<string, unknown> | undefined,
+              ctx,
+            );
             // An abandoned stream is not a failure — the provider answered and
             // the caller stopped reading — so `success` stays true. But it is
             // not a COMPLETED response either, and an event that says nothing
@@ -1712,7 +1761,8 @@ async function governCall(
         (hookTrigger === 'on_block' && actionTaken === 'blocked'));
     if (shouldRunHook) {
       const preEvent: Partial<AuditEvent> = {
-        provider,
+        // The hook sees the destination, the same value the record will carry.
+        provider: ctx.recordedProvider,
         operation: methodPath,
         environment: config.environment,
         // Give the hook the full provider-agnostic prompt text so it can decide
@@ -2071,7 +2121,10 @@ async function governCall(
         user_id: audit_fields.user_id || ctx.options.user_id || undefined,
         client_ip: audit_fields.client_ip || undefined,
         user_agent: audit_fields.user_agent || undefined,
-        provider,
+        // The destination, not the client's shape — see PathContext. A blocked
+        // call is enforcement evidence, so it needs the same true destination
+        // as a completed one.
+        provider: ctx.recordedProvider,
         model: blockedModel,
         operation: methodPath,
         source:
@@ -2088,7 +2141,10 @@ async function governCall(
         success: false,
         status_code: 403,
         error_type: null,
-        metadata: audit_fields.metadata,
+        metadata: withProviderAttribution(
+          audit_fields.metadata as Record<string, unknown> | undefined,
+          ctx,
+        ),
         event_type: "blocked_call",
         policy_version: policyVersion,
         action_taken: "blocked",
@@ -2499,7 +2555,10 @@ function createAuditedToolRunnerMethod(
       try {
         emitIntegrationEvent({
           config,
-          provider: provider as "openai" | "anthropic",
+          // The destination, like every other record this wrapper emits. A tool
+          // event from a run pointed at a local server must not name a vendor
+          // either — the shape decided the dialect, not where the bytes went.
+          provider: ctx.recordedProvider,
           model: requestedModel,
           operation: `${methodPath}.${suffix}`,
           source,
@@ -2819,9 +2878,20 @@ export function wrap<T extends object>(
     return client;
   }
 
-  // Detect provider for logging and V2 event data
+  // The client's SHAPE, which selects the extractors.
   const provider = detectProvider(client);
-  debugLog(config, "info", `Wrapping ${provider} client`);
+
+  // WHERE the calls will go, which is what the record must name. Resolved ONCE,
+  // at wrap time: a client's base URL is fixed when it is constructed, so
+  // re-deriving it per call would buy nothing and cost a URL parse on the hot
+  // path. Same resolver the compat integrations use — one endpoint table.
+  const { provider: recordedProvider, attribution: providerAttribution } =
+    resolveDestination(client, provider);
+  debugLog(
+    config,
+    "info",
+    `Wrapping ${provider}-shaped client; recording provider=${recordedProvider}`,
+  );
 
   // Create context with provider (V2)
   const ctx: PathContext = {
@@ -2829,6 +2899,8 @@ export function wrap<T extends object>(
     options,
     config,
     provider,
+    recordedProvider,
+    providerAttribution,
   };
 
   // Setup exit handlers (once)

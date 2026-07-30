@@ -241,6 +241,15 @@ class TestRegistryGate:
         "otel_mirror.py",
         "pii_types.py",
         "policy_log.py",
+        # Reads a client's base URL and names the destination for the record.
+        # Decides nothing: no label it returns, or declines to return, blocks
+        # anything — a provider rule does, and that is declared. It cannot fail
+        # open, because "I cannot name this host" is a value it returns
+        # (`unknown`, with the reason in `provider_attribution`) rather than an
+        # exception it raises, and a raising property on the client is caught
+        # and treated as a non-answer. Same exemption reason as token_usage.py
+        # and tool_content_hash.py.
+        "provider_attribution.py",
         "reason_codes.py",
         "register.py",
         "safe_regex.py",

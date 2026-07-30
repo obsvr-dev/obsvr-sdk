@@ -756,10 +756,29 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   canonical set.
 
   Verified live through one wrapper against two real endpoints, each now
-  recording its own destination. Note this is the TypeScript half only: the Python
-  provider detector still reports `"openai"` for any client exposing
-  `chat.completions`, so a cloud endpoint and a local server remain
-  indistinguishable there.
+  recording its own destination.
+
+  **This first pass covered the compat wrappers only, and the front door kept the
+  defect.** `obsvr.wrap()` — the documented entry point both READMEs lead with —
+  labels through its own duck-typed detector, which never read a base URL at all,
+  and it was left on the old behaviour in BOTH languages. Measured live against a
+  local server, the front door recorded `provider: "openai"` beside
+  `model: "qwen2.5-coder:14b"`, a model that endpoint does not serve. Both front
+  doors now resolve through the same endpoint table as the compat wrappers, which
+  has moved to one shared module per language rather than being copied.
+
+  The fix keeps the client's **shape** and the call's **destination** in separate
+  fields, because one variable had been answering both questions. The shape
+  selects the prompt/response extractors and stays duck-typed; only the record
+  follows the endpoint. Collapsing them back together would relabel correctly and
+  silently break extraction for an Anthropic-shaped client on a non-vendor host,
+  so both suites assert that split directly.
+
+  **Not changed, and stated rather than left implicit:** the `PolicyEvalContext`
+  a rule sees still carries the shape-derived provider, not the destination. A
+  `provider` rule therefore matches on what the client looks like. That is a
+  behaviour change to rule evaluation rather than to the record, so it is a
+  separate question from this one and is not made here.
 - **`action_taken` was a closed enum in name only, and the value that mattered most
   was pinned by nothing.** The field a post-incident reader consults to learn what
   governance did was a string-literal union declared twice in TypeScript and
