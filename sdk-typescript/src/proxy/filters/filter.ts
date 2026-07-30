@@ -23,6 +23,21 @@ const AUDIT_FIELDS = new Set<string>([
   "region", // Deployment region
   "source", // Source application identifier
   "metadata", // User-defined metadata (user_id, session_id, etc.)
+  // The four below are declared on the exported `AuditFields` type as
+  // "customer-provided" and are read onto the event by the wrapper — but they
+  // were absent from THIS set, which is the only thing that extracts them. So
+  // they were wrong in two directions at once: a caller who typed their args
+  // against the public type had the values forwarded VERBATIM to the provider
+  // (which rejects an unknown parameter, so the documented shape broke the
+  // call), while `auditFields.user_id` and friends were always undefined and
+  // the record they were meant to populate carried nothing. The Python twin's
+  // `_collect_metadata` states the reasoning this set was missing: the kwarg is
+  // "stripped before the request reaches the provider (the provider SDK would
+  // reject an unknown parameter)".
+  "user_id", // Identity the event is attributed to
+  "client_ip", // Network field; see the note on AuditFields
+  "user_agent", // Network field
+  "service_name", // Emitting service, overrides default_service_name
 ]);
 
 /**
@@ -68,6 +83,26 @@ function filterObject(
         case "metadata":
           if (isPlainObject(value)) {
             audit.metadata = value as Record<string, unknown>;
+          }
+          break;
+        case "user_id":
+          if (typeof value === "string") {
+            audit.user_id = value;
+          }
+          break;
+        case "client_ip":
+          if (typeof value === "string") {
+            audit.client_ip = value;
+          }
+          break;
+        case "user_agent":
+          if (typeof value === "string") {
+            audit.user_agent = value;
+          }
+          break;
+        case "service_name":
+          if (typeof value === "string") {
+            audit.service_name = value;
           }
           break;
       }

@@ -647,6 +647,23 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Four audit fields were forwarded to the provider and recorded nowhere.**
+  `user_id`, `client_ip`, `user_agent` and `service_name` are declared on the
+  exported `AuditFields` type as customer-provided, and the TypeScript wrapper
+  reads all four onto the event — but they were absent from the extraction set,
+  which is the only thing that moves a key from the request to the audit side.
+  So they were wrong in two directions at once: a caller who typed their
+  arguments against the public type had the values passed **verbatim to the
+  provider**, which rejects an unknown parameter, while the record they were
+  meant to populate carried nothing. Measured against a server that logs the
+  raw outbound body: pre-fix all four appear in the request the provider
+  received and none appears on the captured event; post-fix that inverts, with
+  the real provider parameter `user` reaching the provider in both phases as
+  the control. Python is unaffected and diverges by design — its per-call
+  channel is the namespaced `obsvr_metadata` kwarg, which is already stripped,
+  and it has no capture path for `client_ip` or `user_agent` at all. That is now
+  said in the event builder rather than left as two bare `None`s.
+
 - **The ingest URL ran no SSRF guard and no scheme allowlist, in either SDK.**
   It is the URL the SDK POSTs to most — every prompt, every response, and the
   `X-API-Key` header — and it was validated for exactly one thing: whether a

@@ -690,9 +690,17 @@ export interface AuditFields {
   source?: string;
   metadata?: Record<string, unknown>;
 
-  // V2 fields - customer-provided
+  // V2 fields - customer-provided. Pass them alongside the provider's own
+  // parameters; the SDK strips them from the request and puts them on the
+  // event. Non-string values are dropped rather than forwarded, as for the
+  // fields above.
   user_id?: string;
-  client_ip?: string;  // Will be masked server-side
+  /**
+   * Masking is the ingest service's job, not this SDK's: the value rides the
+   * event exactly as given. Said plainly because this line used to read "will
+   * be masked server-side" beside a field the SDK never captured at all.
+   */
+  client_ip?: string;
   user_agent?: string;
   service_name?: string;
 }

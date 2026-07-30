@@ -347,7 +347,15 @@ def build_audit_event(
         "region": opts.get("region") or config.default_region or "unknown",
         # Identity fields
         "user_id": opts.get("user_id"),
-        # Network fields
+        # Network fields. This SDK has no capture path for either, so they are
+        # always None rather than sometimes None — there is no per-call kwarg
+        # and no config default that reaches them. A DIVERGENCE from the
+        # TypeScript SDK, whose `AuditFields` type accepts both on the call and
+        # strips them before the request goes out; here the per-call channel is
+        # the namespaced `obsvr_metadata` kwarg (see wrap._collect_metadata),
+        # which carries identity keys and not these two. Stated because a reader
+        # of a hardcoded None is entitled to know whether it is a default or a
+        # dead end.
         "client_ip": None,
         "user_agent": None,
         # LLM call fields

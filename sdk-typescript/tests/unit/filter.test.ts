@@ -110,6 +110,13 @@ describe('getAuditFieldNames', () => {
     expect(names).toContain('region');
     expect(names).toContain('source');
     expect(names).toContain('metadata');
-    expect(names).toHaveLength(4);
+    // The four below are declared on the exported AuditFields type and were
+    // missing here, so they were forwarded to the provider AND never recorded.
+    // The length stays pinned so a fifth cannot be added without a decision.
+    expect(names).toContain('user_id');
+    expect(names).toContain('client_ip');
+    expect(names).toContain('user_agent');
+    expect(names).toContain('service_name');
+    expect(names).toHaveLength(8);
   });
 });
