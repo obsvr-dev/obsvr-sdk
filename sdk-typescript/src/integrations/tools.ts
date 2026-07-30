@@ -93,9 +93,28 @@ export interface GovernToolOptions extends IntegrationOptions {
 
 type AnyTool = Record<string, unknown>;
 
-/** Which property holds the tool's execute function, across frameworks. */
+/**
+ * Which property holds the tool's execute function, across frameworks.
+ *
+ * ORDER IS THE CONTRACT, AND THE LAST THREE WERE APPENDED RATHER THAN INSERTED.
+ * The first four are framework tool objects and resolve exactly as before, so no
+ * tool that is gated today is gated differently. The last three are the shapes a
+ * PROVIDER TOOL RUNNER dispatches. Until they were here this function returned
+ * null for all of them, and line 147 then returned the tool unchanged — no gate,
+ * no error, no event. So the mitigation both READMEs point a caller toward for
+ * the one surface obsvr was not on was itself a silent no-op on that surface.
+ *
+ *   run        a runner tool entry the runner invokes as `tool.run(input)`.
+ *   function   the INNER half of `{ type: "function", function: {...} }`. The
+ *              outer entry carries only `type` and that object, so there is
+ *              nothing gateable on it; the runner dispatches the inner object's
+ *              own `function` property.
+ *   $callback  a tool built by a provider schema helper. The runner normalises
+ *              it into the shape above by reading this property, so replacing it
+ *              is what reaches execution.
+ */
 function resolveExecKey(t: AnyTool): string | null {
-  for (const key of ["execute", "call", "func", "invoke"]) {
+  for (const key of ["execute", "call", "func", "invoke", "run", "function", "$callback"]) {
     if (typeof t[key] === "function") return key;
   }
   return null;

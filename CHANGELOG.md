@@ -742,6 +742,42 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   provider detector still reports `"openai"` for any client exposing
   `chat.completions`, so a cloud endpoint and a local server remain
   indistinguishable there.
+- **Tools invoked by a provider tool runner ran outside every tool gate,
+  including the destructive-capability gate.** `chat.completions.runTools` and
+  `beta.messages.toolRunner` were governed at the invocation, but the runner holds
+  the raw provider client and invokes its tools itself — so denied-tool rules,
+  allowlists and `sessionTaint.destructiveTools` never reached them. Measured with
+  the latch armed and `action: "flag"` (the default): a session already marked
+  tainted executed `send_money`.
+
+  Each of the runner's tool callbacks is now wrapped in the same gate
+  `obsvrGovernTool` applies, installed before the runner is constructed — the only
+  point either runner will accept a substitution, since both snapshot their tool
+  set when the method is applied. A refused tool's callback does not run. Verified
+  live on both runners, each against a policy-off control, and against a build of
+  the preceding commit that reproduces the bypass.
+
+  **Three limits, stated rather than left to be discovered.** The model calls the
+  loop makes on turns 2..N are audited but still not gated. A hosted tool the
+  provider executes on its own infrastructure has no local callback to gate, and is
+  named in `tool_gate_ungated_tools` on the run's start event. And the refusal shape
+  differs by provider: one runner guards its tool call, so a refusal returns to the
+  model as an error tool result and the loop continues; the other does not, so the
+  run ends with the refusal. Both fail closed. Python ships no tool-runner
+  integration, so none of this applies there.
+
+  The runner's per-tool event still records `not_evaluated` — it observes the turn
+  and is not a second verdict — but `policy_not_evaluated.gate` now separates
+  `runner_observation` (the gate ran; the decision is on that tool's own `tool.call`
+  event) from `tool_gate` (no gate reached the call), and `metadata.tool_gate`
+  carries the same answer as `callback` or `absent`.
+- **`obsvrGovernTool` silently did nothing to a provider tool runner's tools.** It
+  probes four property names for a tool's executable, and a runner's tool entry uses
+  none of them — so it returned the tool unchanged, with no gate, no error and no
+  event. That made the mitigation both READMEs point at for that surface a no-op on
+  exactly that surface. Three further shapes are now recognised, appended to the
+  probe order rather than inserted, so no tool that resolved before resolves
+  differently.
 - **BREAKING (behaviour): `max_steps` on the AutoGen integration is no longer
   applied when it cannot be scoped to a conversation.** The budget needs a
   conversation boundary and the send hook has none to observe unless

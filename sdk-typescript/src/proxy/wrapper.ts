@@ -116,6 +116,7 @@ import {
 import type { GeminiRequest, GeminiResponse } from "./extractors/google.js";
 import { readTokenUsage } from "./extractors/token-usage.js";
 import { createDeferredRunner, type RunnerLike } from "./runner-wrapper.js";
+import { governRunnerTools, type RunnerToolGateReport } from "./runner-tool-gate.js";
 import {
   observeOpenAIToolRun,
   driveAnthropicToolRun,
@@ -1157,6 +1158,14 @@ interface PreCallOutcome {
   compliance: ComplianceCtx;
   /** Google only: the model name read off the GenerativeModel instance. */
   modelHint: string | undefined;
+  /**
+   * The identity metadata the session-latch key was derived FROM — not the key.
+   * A caller that has to key the same latch from a different point (the tool
+   * runner gates tool callbacks, which is a separate egress) passes this to the
+   * one derivation function rather than reproducing the resolution. Sharing the
+   * INPUT is what makes divergence impossible; sharing the rule would not.
+   */
+  taintIdentity: Record<string, unknown>;
 }
 
 /**
@@ -1270,6 +1279,12 @@ async function governCall(
     // jumps to the catch, so every later read is unreachable, not empty.
     let taintCfg: ReturnType<typeof resolveSessionTaint>;
     let taintKey = "";
+    // The identity metadata the latch key was derived FROM, not the key. The
+    // tool-runner path needs to key the same latch from a different call site,
+    // and `deriveSessionKey`'s own contract is that SET and ENFORCE must agree
+    // or the latch silently no-ops — so what travels is the input to the one
+    // derivation rule, never a second copy of the rule.
+    let taintIdentity: Record<string, unknown> = {};
     // A redaction that could not be applied. Set by either redact branch (the
     // builtin one inside the span, the hook one below it) and stamped on the
     // event at the end, so the record says the call was blocked because
@@ -1299,11 +1314,12 @@ async function governCall(
       const resolvedTaintUser =
         rawTaintMeta.user_id ?? audit_fields.user_id ?? ctx.options.user_id ?? ambientSubject?.user_id;
       const resolvedTaintTenant = rawTaintMeta.tenant_id ?? ambientSubject?.tenant_id;
-      taintKey = deriveSessionKey({
+      taintIdentity = {
         ...rawTaintMeta,
         ...(resolvedTaintUser !== undefined ? { user_id: resolvedTaintUser } : {}),
         ...(resolvedTaintTenant !== undefined ? { tenant_id: resolvedTaintTenant } : {}),
-      });
+      };
+      taintKey = deriveSessionKey(taintIdentity);
       if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
         const verdict = evaluateSessionTaint(taintKey, taintCfg);
         if (verdict.enforcement !== "none") {
@@ -2106,7 +2122,7 @@ async function governCall(
       });
     }
 
-  return { cleaned_args, audit_fields, auditThisCall, compliance, modelHint };
+  return { cleaned_args, audit_fields, auditThisCall, compliance, modelHint, taintIdentity };
 }
 
 function createAuditedMethod(
@@ -2454,6 +2470,14 @@ function createAuditedToolRunnerMethod(
     let outcome: PreCallOutcome | undefined;
     let modelCalls = 0;
     let toolCalls = 0;
+    // Set in `govern`, read in the tool sink. Defaults to not-installed so a
+    // tool event arriving before governance could not have run reports the
+    // absence rather than inheriting a claim.
+    let toolGate: RunnerToolGateReport = {
+      installed: false,
+      gated: [],
+      ungatable: [],
+    };
 
     const source = options.source || config.default_source || "proxy_wrapper";
     const anthropic = spec.dialect === "anthropic-messages";
@@ -2520,6 +2544,10 @@ function createAuditedToolRunnerMethod(
       },
       toolCall({ name, args: toolArgs, result, toolCallId }) {
         toolCalls += 1;
+        // Whether THIS call's callback was one the gate reached. A run can mix
+        // gated tools with hosted ones the provider executes itself, so the
+        // answer is per tool and not per run.
+        const wasGated = toolGate.installed && toolGate.gated.includes(name);
         // The result is text a tool produced, not text the model or the user
         // wrote. Saying so is the whole point of the field: it is the marker a
         // downstream injection review keys on, and this path is one of the few
@@ -2528,21 +2556,28 @@ function createAuditedToolRunnerMethod(
           prompt: toolArgs,
           response: result,
           contentProvenance: "tool_result",
-          // NO TOOL GATE RAN, and the event has to say so. A tool runner
-          // invokes its tools itself, so obsvr is not on that boundary: the
-          // destructive-capability set, denied-tool rules and every other
-          // tool-level control are absent here, not permissive. Without this
-          // marker the event still reads `action_taken: "allowed"`, which
-          // asserts a decision — measured live, a session obsvr had already
-          // marked tainted executed a tool named in `destructiveTools` and the
-          // record called it allowed.
+          // THIS RECORD CARRIES NO VERDICT OF ITS OWN, and which absence it is
+          // reporting depends on whether the gate reached this tool.
+          //
+          // Gated: the tool's callback ran behind the same gate the documented
+          // wrapper applies, and that gate emitted its own `tool.call` event
+          // with the verdict. This event is the runner's OBSERVATION of the
+          // turn, so it points at the decision rather than restating it — an
+          // observation that claimed `allowed` would be asserting a second
+          // decision nobody made, and one that claimed `not_evaluated` for the
+          // tool gate would now be false.
+          //
+          // Not gated: no tool-level control reached this call, and the
+          // destructive-capability set and denied-tool rules are absent here
+          // rather than permissive. Measured before the gate existed: a session
+          // obsvr had already marked tainted executed a tool named in
+          // `destructiveTools`, and the record called it allowed.
           compliance: {
             event_type: "tool_call",
             policy_version: derivePolicyVersion(config.policyRules ?? []),
-            // The truthful value. No gate ran, so there is no verdict — and
-            // omitting the field would not have helped, because the ingest
-            // schema defaults an absent action_taken, so the server would have
-            // minted "allowed" for it one layer down.
+            // Omitting the field would not have helped either way: the ingest
+            // schema defaults an absent action_taken, so the server would mint
+            // "allowed" one layer down.
             action_taken: "not_evaluated",
             action_reason: "none",
             action_source: "unknown",
@@ -2550,9 +2585,10 @@ function createAuditedToolRunnerMethod(
             blocked_types: [],
             policy_not_evaluated: {
               surface: `${methodPath}.tool`,
-              gate: "tool_gate",
-              reason:
-                "provider tool runners invoke their tools directly; obsvr is not on that boundary",
+              gate: wasGated ? "runner_observation" : "tool_gate",
+              reason: wasGated
+                ? "the tool gate ran at this tool's callback and its verdict is on that call's own tool.call event; this record observes the runner's turn and decides nothing"
+                : "this tool's callback is invoked by the provider's runner and obsvr is not on that boundary",
             },
           },
           metadata: {
@@ -2560,6 +2596,10 @@ function createAuditedToolRunnerMethod(
             tool_name: name,
             tool_call_id: toolCallId,
             tool_index: toolCalls,
+            tool_gate: wasGated ? "callback" : "absent",
+            ...(wasGated || !toolGate.reason
+              ? {}
+              : { tool_gate_absent_reason: toolGate.reason }),
           },
         });
       },
@@ -2569,11 +2609,32 @@ function createAuditedToolRunnerMethod(
       thenable: spec.thenable,
       govern: async () => {
         outcome = await governCall(args, target, ctx, provider, methodPath);
+        // THE ONLY SEAM THERE IS. Both runners snapshot their tool set when the
+        // method is applied, so the gate has to land on the arguments before
+        // that and cannot be installed afterwards. The identity metadata the
+        // latch key was derived from travels with it, because SET and ENFORCE
+        // must key the same latch or the escalation silently no-ops.
+        const gate = governRunnerTools(outcome.cleaned_args, config, {
+          ...options,
+          metadata: outcome.taintIdentity,
+        });
+        toolGate = gate.report;
         // Emitted only once the run is actually going to happen. A refused run
         // has its own blocked-call event from governCall and must not also
         // appear to have started.
-        emit("start", { metadata: { agent_run_id: runId }, compliance: undefined });
-        return outcome.cleaned_args;
+        emit("start", {
+          metadata: {
+            agent_run_id: runId,
+            tool_gate: toolGate.installed ? "callback" : "absent",
+            ...(toolGate.installed ? { tool_gate_tools: toolGate.gated } : {}),
+            ...(toolGate.ungatable.length > 0
+              ? { tool_gate_ungated_tools: toolGate.ungatable }
+              : {}),
+            ...(toolGate.reason ? { tool_gate_absent_reason: toolGate.reason } : {}),
+          },
+          compliance: undefined,
+        });
+        return gate.args;
       },
       start: (cleanedArgs) => {
         const runner = originalMethod.apply(target, cleanedArgs) as RunnerLike;

@@ -243,7 +243,7 @@ captured audit event.
 | LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError` |
 | LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |
 | OpenAI Agents SDK | **records only** — see below |
-| `chat.completions.runTools`, `beta.messages.toolRunner` | **not on that boundary** |
+| `chat.completions.runTools`, `beta.messages.toolRunner` | **enforces on the tools, not on the turns** — see below |
 
 **OpenAI Agents SDK: records only.** A `TracingProcessor` cannot refuse anything
 — the framework dispatches processor callbacks fire-and-forget, so nothing raised
@@ -254,9 +254,39 @@ records `action_taken: "not_evaluated"` with the reason in
 refusal. To actually refuse tools under that framework, wrap them with
 `obsvrGovernTool`.
 
-**Provider tool runners are not on obsvr's boundary at all.** The runner invokes
-its own tools and holds the raw provider client, so obsvr is not in the path of
-turns 2..N. Those tool events also record `not_evaluated`.
+**Provider tool runners: the tools are gated, the intermediate turns are not.**
+A runner invokes its tools itself and holds the raw provider client, so obsvr
+used to be off that boundary entirely — measured, a session obsvr had already
+marked tainted executed a tool named in `destructiveTools`. obsvr now gates each
+tool's callback through `obsvrGovernTool` before the runner is constructed, which
+is the only point either runner will accept a substitution: both snapshot their
+tool set when the method is applied.
+
+What that reaches, and what it does not:
+
+- **Tool execution is gated.** Denied tools, allowlists and the tainted-session
+  destructive-capability set all apply, and a refused tool's callback does not
+  run. Verified live on both runners, each against a policy-off control.
+- **The refusal shape differs by provider, because the runners differ.**
+  `beta.messages.toolRunner` invokes its tools inside a `try`/`catch`, so a
+  refusal comes back to the model as an error tool result and the loop continues
+  — in a live run the model went on to explain that the capability was blocked.
+  `chat.completions.runTools` does not guard its tool call, so a refusal
+  propagates and the run ends with the refusal error. Both fail closed; only one
+  lets the run survive.
+- **The model calls on turns 2..N are still audited and not gated.** Reaching
+  those means substituting the runner's own client, and a refusal arriving on
+  turn 3 would land after earlier tools had already had real side effects. That
+  needs a stated position before it ships.
+- **A hosted tool the provider executes on its own infrastructure carries no
+  local callback**, so there is nothing to gate. Those are named individually in
+  `tool_gate_ungated_tools` on the run's start event rather than counted.
+
+The runner's own per-tool event records `not_evaluated` either way, and its
+`policy_not_evaluated.gate` says which absence it is: `runner_observation` when
+the gate ran and the verdict is on that tool's own `tool.call` event, or
+`tool_gate` when no gate reached the call. `metadata.tool_gate` carries the same
+answer as `callback` or `absent`.
 
 **Do not read Python's grades across, or vice versa.** The two SDKs have separate
 tool-gate implementations and they disagree: this SDK's LangChain integration

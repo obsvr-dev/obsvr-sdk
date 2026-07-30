@@ -286,7 +286,7 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   ```typescript
   mcpToolPolicy: { pinning: { enabled: true, mode: "block" } },
   ```
-- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. **That holds only where obsvr is genuinely on the tool boundary, which is not everywhere.** Measured, per integration and per language: it holds on MCP in both SDKs, on `obsvrGovernTool` and the LangChain handler in TypeScript, and on AutoGen and PydanticAI in Python. It does NOT hold on the OpenAI Agents tracing processor in either language (that surface cannot refuse a tool at all), nor on the Python LangChain or CrewAI handlers, nor on LlamaIndex, nor on a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`), which invokes its own tools outside obsvr entirely. Put a destructive capability behind MCP or `obsvrGovernTool`. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. **That holds only where obsvr is genuinely on the tool boundary, which is not everywhere.** Measured, per integration and per language: it holds on MCP in both SDKs, on `obsvrGovernTool` and the LangChain handler in TypeScript, and on AutoGen and PydanticAI in Python. It does NOT hold on the OpenAI Agents tracing processor in either language (that surface cannot refuse a tool at all), nor on the Python LangChain or CrewAI handlers, nor on LlamaIndex. It DOES now hold inside a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`) on the TypeScript side, where obsvr gates each tool's callback before the runner is constructed — measured live in both directions, since a tainted session previously executed a tool named in `destructiveTools` there. The runner's intermediate model turns remain audited rather than gated, and a hosted tool the provider executes itself has no callback to gate. Put a destructive capability behind MCP or `obsvrGovernTool`. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
 
 ---
@@ -463,7 +463,7 @@ agree, so neither column may be read across to the other.
 | CrewAI | *no integration* | **not wired** (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
-| provider tool runners | **not on that boundary** | **not on that boundary** |
+| provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | *no integration* |
 
 - **enforces** — the gate sits at the invocation boundary. A denied tool's own
   callback does not run, and the event records `blocked`.
@@ -475,9 +475,15 @@ agree, so neither column may be read across to the other.
   and a function span does not end until its tool has already returned.
 - **not wired** — the gate is implemented but hangs off a callback current
   runtimes do not deliver. Nothing is refused and no block event is emitted.
-- **not on that boundary** — a provider tool runner invokes its own tools, so
-  obsvr is not in the path of turns 2..N at all. Those tool events record
-  `not_evaluated`.
+- **provider tool runners** — a runner invokes its tools itself, so obsvr was
+  off that boundary entirely until it began gating each tool's callback before
+  the runner is constructed. Tool execution is now gated; the model calls the
+  loop makes on turns 2..N are audited but not gated, and a hosted tool the
+  provider runs on its own infrastructure has no local callback to gate. The
+  refusal shape differs by provider: one runner guards its tool call, so the loop
+  survives a refusal and the model is told; the other does not, so the run ends
+  with the refusal. Both fail closed. Python ships no tool-runner integration at
+  all, which is why that column reads *no integration* rather than a grade.
 
 **The LangChain row is the one to notice.** TypeScript enforces and Python does
 not, and it is not a version accident: the TypeScript handler implements a

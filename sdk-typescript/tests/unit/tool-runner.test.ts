@@ -186,10 +186,10 @@ describe('chat.completions.runTools', () => {
     // Rides in metadata until ingest has its own column.
     expect(JSON.stringify(tool[0])).toContain('tool_result');
 
-    // NO TOOL GATE RAN, and the event says so. This is the assertion that
-    // keeps the record from claiming a decision: `action_taken` still reads
-    // "allowed" because that enum is closed, so the marker is the only thing
-    // distinguishing "a gate permitted this" from "no gate saw it". A live
+    // NO TOOL GATE RAN, and the event says so. This config declares no
+    // tool-level control at all, so there is nothing for the callback gate to
+    // decide and it is not installed — which is a different absence from a gate
+    // that could not be installed, and the record distinguishes them. A live
     // probe watched a tainted session execute a tool named in
     // `destructiveTools` while the event called it allowed.
     const tel = (tool[0].metadata as Record<string, unknown>)
@@ -198,8 +198,10 @@ describe('chat.completions.runTools', () => {
       surface: 'chat.completions.runTools.tool',
       gate: 'tool_gate',
       reason:
-        'provider tool runners invoke their tools directly; obsvr is not on that boundary',
+        "this tool's callback is invoked by the provider's runner and obsvr is not on that boundary",
     });
+    expect(meta.tool_gate).toBe('absent');
+    expect(meta.tool_gate_absent_reason).toBe('no_tool_control_configured');
     // The model-call events are NOT marked: those genuinely went through the
     // invocation's pre-call pipeline, so marking them would be the opposite
     // error.
