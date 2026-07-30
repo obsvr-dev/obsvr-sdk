@@ -30,7 +30,11 @@ import {
   buildIntegrationEvent,
   DEFAULT_COMPLIANCE,
 } from "../../src/integrations/core";
-import { CHAIN_FORMAT_CURRENT, signaturePayload } from "../../src/proxy/chain-format";
+import {
+  CHAIN_FORMAT_CURRENT,
+  decisionFieldsOf,
+  signaturePayload,
+} from "../../src/proxy/chain-format";
 
 function findFixture(rel: string): string {
   let dir = process.cwd();
@@ -236,11 +240,19 @@ describe("enforcement wiring (applyPreCallPolicy → event)", () => {
   });
 });
 
-describe("chain preimage is untouched (signing_vectors stay green)", () => {
-  it("the HMAC signature is identical with and without the new fields", () => {
-    // Same derivation + payload as fire-and-forget.ts / signing-vectors.test.ts
-    // (format 2, via proxy/chain-format.ts) — the decision-record fields are
-    // NOT part of the preimage, so adding them changes no signed byte.
+describe("what the chain preimage covers, from both directions", () => {
+  it("keeps the diagnostic fields out and the verdict in", () => {
+    // `decision_input_hash` and `engine_version` are diagnostic: they describe
+    // HOW a decision was reached, they are reproducible from the inputs, and
+    // they are deliberately not signed. The VERDICT is a different thing, and
+    // since format 3 it is inside the preimage — that is the whole point of
+    // the format.
+    //
+    // Both halves are asserted because only the pair is meaningful. "Adding a
+    // field changes no signed byte" is a reassuring sentence about a
+    // diagnostic field and a catastrophic one about `action_taken`, and this
+    // test used to make only the first claim while the second was silently
+    // also true.
     const key = createHmac("sha256", "obsvr-sdk-signing-v1").update("test-api-key").digest();
     const sign = (ev: Record<string, unknown>): string => {
       const payload = signaturePayload(
@@ -251,6 +263,7 @@ describe("chain preimage is untouched (signing_vectors stay green)", () => {
         String(ev.prompt ?? ""),
         String(ev.response ?? ""),
         null,
+        decisionFieldsOf(ev),
       );
       return createHmac("sha256", key).update(payload).digest("hex");
     };
@@ -260,17 +273,32 @@ describe("chain preimage is untouched (signing_vectors stay green)", () => {
       timestamp_sdk: 1700000000000,
       prompt: "hello",
       response: "world",
+      action_taken: "blocked",
+      rule_id: "rule-1",
     };
-    const withRecord = {
-      ...base,
-      decision_input_hash: "ab".repeat(32),
-      engine_version: ENGINE_VERSION,
-    };
-    expect(sign(withRecord)).toBe(sign(base));
-    // And it still matches the frozen cross-language vector for this event.
+
+    // Diagnostic fields: outside the preimage, by design.
+    expect(
+      sign({ ...base, decision_input_hash: "ab".repeat(32), engine_version: ENGINE_VERSION }),
+    ).toBe(sign(base));
+
+    // The verdict and its attribution: INSIDE. Each of these was freely
+    // rewritable under format 2 with the chain still verifying.
+    expect(sign({ ...base, action_taken: "allowed" })).not.toBe(sign(base));
+    expect(sign({ ...base, rule_id: "some-other-rule" })).not.toBe(sign(base));
+    expect(sign({ ...base, provider: "anthropic" })).not.toBe(sign(base));
+
+    // Absent and present-but-empty are different preimages, so a signed field
+    // cannot be deleted into agreement either.
+    const withoutRule = { ...base } as Record<string, unknown>;
+    delete withoutRule.rule_id;
+    expect(sign(withoutRule)).not.toBe(sign({ ...base, rule_id: "" }));
+
+    // And the whole thing still matches the frozen cross-language vector.
     const vectors = JSON.parse(
       readFileSync(findFixture("conformance/fixtures/signing_vectors.json"), "utf-8"),
     );
-    expect(sign(withRecord)).toBe(vectors.events[0].sdk_sig);
+    const vectorEvent = { ...vectors.events[0], sdk_session_id: vectors.session_id };
+    expect(sign(vectorEvent)).toBe(vectorEvent.sdk_sig);
   });
 });

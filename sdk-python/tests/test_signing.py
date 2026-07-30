@@ -19,9 +19,12 @@ from pathlib import Path
 
 from obsvr import sender
 from obsvr.chain_format import (
+    CHAIN_FORMAT_CONTENT_ONLY,
     CHAIN_FORMAT_CURRENT,
     CHAIN_FORMAT_LEGACY,
     content_hash,
+    decision_fields_of,
+    decision_hash,
     signature_payload,
 )
 from obsvr.sender import derive_signing_key, sign_event
@@ -36,8 +39,10 @@ def _load_vectors():
         return json.load(f)
 
 
-def _sign(key, fmt, session, seq, ts, prompt, response, prev):
-    payload = signature_payload(fmt, session, seq, ts, prompt, response, prev or None)
+def _sign(key, fmt, session, seq, ts, prompt, response, prev, decision=None):
+    payload = signature_payload(
+        fmt, session, seq, ts, prompt, response, prev or None, decision
+    )
     return hmac_mod.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -90,6 +95,9 @@ class TestSigningVectors:
                 expected["prompt"],
                 expected["response"],
                 prev,
+                # Format 3 signs the decision fields, and they are carried on
+                # the vector event itself. Read them the way the SDK does.
+                decision_fields_of(expected),
             )
             assert sig == expected["sdk_sig"], f"seq {expected['seq_no']} mismatch"
             assert expected["prev_sig"] == prev
@@ -109,6 +117,9 @@ class TestSigningVectors:
                 expected["prompt"],
                 expected["response"],
                 prev,
+                # Format 3 signs the decision fields, and they are carried on
+                # the vector event itself. Read them the way the SDK does.
+                decision_fields_of(expected),
             )
             assert sig == expected["sdk_sig"], f"seq {expected['seq_no']} mismatch"
             assert expected["prev_sig"] == prev

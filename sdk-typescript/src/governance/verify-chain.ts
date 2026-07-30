@@ -8,9 +8,11 @@ import { createHmac } from 'crypto';
 import type { AuditEvent } from '../proxy/types.js';
 import { parseAuditGapPrompt } from '../proxy/audit-gap.js';
 import {
-  CHAIN_FORMAT_CURRENT,
+  CHAIN_FORMATS_SUPPORTED,
   CHAIN_FORMAT_LEGACY,
+  decisionFieldsOf,
   signaturePayload,
+  type DecisionFields,
 } from '../proxy/chain-format.js';
 
 export interface ChainVerificationResult {
@@ -52,13 +54,17 @@ function deriveSigningKey(apiKey: string): Buffer {
 
 /**
  * The event's declared signing format. Absent means 1: legacy chains were
- * signed before the field existed. Anything but 1 or 2 returns null — an
- * unrecognized format fails closed rather than being guessed at.
+ * signed before the field existed. Anything outside CHAIN_FORMATS_SUPPORTED
+ * returns null — an unrecognized format fails closed rather than being guessed
+ * at, which is also what makes a chain from a NEWER SDK report unsupported
+ * rather than silently mis-verifying under an older rule.
  */
 function declaredFormat(event: AuditEvent): number | null {
   const raw = (event as { chain_format?: unknown }).chain_format;
   if (raw === undefined || raw === null) return CHAIN_FORMAT_LEGACY;
-  if (raw === CHAIN_FORMAT_LEGACY || raw === CHAIN_FORMAT_CURRENT) return raw;
+  if (typeof raw === "number" && (CHAIN_FORMATS_SUPPORTED as readonly number[]).includes(raw)) {
+    return raw;
+  }
   return null;
 }
 
@@ -71,7 +77,8 @@ function computeSignature(
   timestampSdk: number,
   prompt: string,
   response: string,
-  prevSig: string | null
+  prevSig: string | null,
+  decision: DecisionFields
 ): string {
   const sigPayload = signaturePayload(
     format,
@@ -80,7 +87,8 @@ function computeSignature(
     timestampSdk,
     prompt,
     response,
-    prevSig
+    prevSig,
+    decision
   );
   return createHmac('sha256', signingKey).update(sigPayload).digest('hex');
 }
@@ -209,7 +217,12 @@ export function verifyAuditChain(
       event.timestamp_sdk ?? 0,
       event.prompt ?? '',
       event.response ?? '',
-      event.prev_sig ?? null
+      event.prev_sig ?? null,
+      // Format 3 folds these into the preimage; formats 1 and 2 ignore the
+      // argument entirely, so one call site verifies every format. Read through
+      // the SAME reader the signer used — two readers that disagree about an
+      // absent field would make every event look tampered with.
+      decisionFieldsOf(event as unknown as Record<string, unknown>)
     );
 
     if (event.sdk_sig !== expectedSig) {

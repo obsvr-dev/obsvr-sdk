@@ -644,6 +644,44 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **BREAKING (audit chain): the client signature did not cover the verdict.
+  Chain format is now 3, and the decision fields are inside the preimage.**
+  Under formats 1 and 2 the preimage was
+  `format | session | seq | timestamp | content_hash | prev_sig` and carried no
+  decision field at all. A party who could edit a stored event before ingest
+  could rewrite `action_taken` from `blocked` to `allowed` — inverting the
+  enforcement record — and `obsvr-verify`, run **with the correct API key**,
+  still reported the chain valid. Measured against a real chain, all eight of
+  `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`,
+  `model`, `provider` and `user_id` were rewritable with the chain still
+  verifying, while the content and ordering controls broke as they should.
+
+  `SECURITY.md` always stated that the server countersignature was what sealed
+  those fields, and that was true. But `obsvr-verify` is shipped as the
+  user-facing **offline** verifier, and a compliance officer running it got a
+  clean result on a fully rewritten verdict history — a false negative that
+  reads exactly like a true one.
+
+  Format 3 adds a `decision_hash` to the preimage:
+  `3|session|seq|ts|content_hash|decision_hash|prev`. The digest is framed the
+  way the format-2 content hash is, and for the same reason — eight bare
+  concatenated fields would re-split at a different boundary — with a presence
+  byte per field so an **absent** field stays distinct from a
+  present-and-empty one.
+
+  **Migration.** Nothing to do to keep verifying old evidence: formats 1 and 2
+  stay implemented forever, chains signed under them verify as those formats,
+  and both verifiers report which format they checked. New events sign under 3.
+  What does **not** happen is retroactive strengthening — a format-2 chain still
+  cannot detect a rewritten verdict, and that is pinned as a fixture case
+  (`format2_verdict_rewrite_is_NOT_detected`) rather than left implicit. Marked
+  BREAKING because any consumer that re-derives signatures itself must
+  implement the new preimage to verify current events; a consumer that only
+  calls the shipped verifiers needs no change.
+
+  **Still outside the preimage, deliberately:** `tenant_id`, token counts and
+  cost. Those remain sealed by the server countersignature only, and the tamper
+  matrix records them as still-rewritable rather than omitting the rows.
 - **The root README claimed the client chain detects any edit to a captured
   event. It does not, and this repository's own threat model says so.** The
   sentence read *"Any edit, drop, or reorder of captured events breaks the chain

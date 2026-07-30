@@ -11,7 +11,11 @@ import { randomUUID, createHmac } from "node:crypto";
 import type { AuditEvent, QueueItem, BackoffState, ResolvedConfig } from "../types.js";
 import { debugLog } from "../../utils/logger.js";
 import { mirrorToOtel } from "../otel-mirror.js";
-import { CHAIN_FORMAT_CURRENT, signaturePayload } from "../chain-format.js";
+import {
+  CHAIN_FORMAT_CURRENT,
+  decisionFieldsOf,
+  signaturePayload,
+} from "../chain-format.js";
 import {
   AUDIT_GAP_GOVERNANCE_EVENT,
   AUDIT_GAP_METADATA_KEY,
@@ -681,7 +685,13 @@ function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
     event.timestamp_sdk,
     event.prompt ?? "",
     event.response ?? "",
-    event.prev_sig ?? null
+    event.prev_sig ?? null,
+    // Format 3: the verdict and its attribution are inside the signature. Read
+    // through the shared reader so the verifier cannot disagree about the field
+    // set. Signed LAST in the build, after every layer that can still change a
+    // verdict has run — signing an interim decision would seal a value the
+    // event does not carry.
+    decisionFieldsOf(event as unknown as Record<string, unknown>)
   );
   event.sdk_sig = createHmac("sha256", key)
     .update(sigPayload)

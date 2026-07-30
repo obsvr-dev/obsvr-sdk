@@ -41,7 +41,11 @@ from .audit_gap import (
     AUDIT_GAP_REASON_QUEUE_OVERFLOW,
     format_audit_gap_prompt,
 )
-from .chain_format import CHAIN_FORMAT_CURRENT, signature_payload
+from .chain_format import (
+    CHAIN_FORMAT_CURRENT,
+    decision_fields_of,
+    signature_payload,
+)
 from .config import ResolvedConfig
 
 MAX_QUEUE_SIZE = 1000
@@ -185,6 +189,12 @@ def _sign_event_locked(event: Dict[str, Any], api_key: str) -> None:
         event.get("prompt") or "",
         event.get("response") or "",
         event.get("prev_sig") or None,
+        # Format 3: the verdict and its attribution are inside the signature.
+        # Read through the shared reader so the verifier cannot disagree about
+        # the field set. Signed LAST in the build, after every layer that can
+        # still change a verdict has run - signing an interim decision would
+        # seal a value the event does not carry.
+        decision_fields_of(event),
     )
     event["sdk_sig"] = hmac_mod.new(
         key, sig_payload.encode("utf-8"), hashlib.sha256

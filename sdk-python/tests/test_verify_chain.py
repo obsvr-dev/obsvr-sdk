@@ -25,25 +25,27 @@ def _load_vectors():
 def _chain(source=None):
     """The shared vectors as an exported event chain.
 
-    ``source="legacy_v1"`` selects the frozen pre-format-2 vectors; those
-    events carry no ``chain_format`` field, and that absence is part of what
-    the legacy cases exercise, so the key is copied only when present.
+    ``source="legacy_v1"`` selects the frozen pre-format-2 vectors and
+    ``"legacy_v2"`` the frozen format-2 ones. Legacy-v1 events carry no
+    ``chain_format`` field, and that absence is part of what those cases
+    exercise, so nothing is added that the vector does not already have.
+
+    EVERY key on the vector event is copied. This used to enumerate a fixed
+    list, which silently dropped the format-3 decision fields and made every
+    signature irreproducible - a copier that decides what a chain contains is
+    exactly the thing a verifier test must not have.
     """
     v = _load_vectors()
-    base = v["legacy_v1_events"]["events"] if source == "legacy_v1" else v["events"]
+    if source == "legacy_v1":
+        base = v["legacy_v1_events"]["events"]
+    elif source == "legacy_v2":
+        base = v["legacy_v2_events"]["events"]
+    else:
+        base = v["events"]
     events = []
     for ev in base:
-        event = {
-            "sdk_session_id": v["session_id"],
-            "seq_no": ev["seq_no"],
-            "timestamp_sdk": ev["timestamp_sdk"],
-            "prompt": ev["prompt"],
-            "response": ev["response"],
-            "prev_sig": ev["prev_sig"],
-            "sdk_sig": ev["sdk_sig"],
-        }
-        if "chain_format" in ev:
-            event["chain_format"] = ev["chain_format"]
+        event = {"sdk_session_id": v["session_id"]}
+        event.update(ev)
         events.append(event)
     return v["api_key"], events
 
@@ -93,7 +95,7 @@ class TestValidChains:
             # verifier is too old to report loss".
             "gapMarkers": 0,
             "eventsDeclaredLost": 0,
-            "chainFormat": 2,
+            "chainFormat": 3,
         }
 
     def test_legacy_chain_verifies_and_reports_format_1(self):

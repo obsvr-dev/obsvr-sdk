@@ -3,14 +3,17 @@
   "api_key": "test-api-key",
   "session_id": "11111111-1111-1111-1111-111111111111",
   "signing_key_hex": "82063a1c5c8964553bf0ff6f9957e7b8063424a0d8aaaa09299a1ffd7ed468fd",
-  "chain_format": 2,
+  "chain_format": 3,
   "content_hash": {
     "description": "The format-2 content-hash preimage: sha256('obsvr:content/2' || 0x00 || u64be(len(prompt)) || prompt || u64be(len(response)) || response), fields as UTF-8 bytes, lengths in bytes. Format 1 was sha256(prompt + response), and a bare concatenation does not remember where the boundary was: the digest pairs below marked equal_under_legacy demonstrate the defect - two different attributions of the same bytes, one digest. The length prefixes make the preimage unambiguous by construction; the leading tag domain-separates this digest from every other sha256 in the SDK. Producers: sdk-typescript/src/proxy/chain-format.ts, sdk-python/obsvr/chain_format.py. Consumers: sdk-typescript/tests/unit/signing-vectors.test.ts, sdk-python/tests/test_signing.py.",
     "domain_tag": "obsvr:content/2",
     "cases": [
       {
         "id": "boundary_left",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "prompt": "AB",
         "response": "C",
         "digest": "9fe892df2d6b2e5c33a61519608de231214831c4de5a798a591adb9002bb02af",
@@ -18,7 +21,10 @@
       },
       {
         "id": "boundary_right",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "prompt": "A",
         "response": "BC",
         "digest": "b62c23704340d8dfdc035f3aaf95706ee7ad4be319878c3149396017266ff154",
@@ -26,7 +32,10 @@
       },
       {
         "id": "empty_prompt",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "prompt": "",
         "response": "x",
         "digest": "8e16ed4d4f5ee196951c6afdcdbf134204212ab6502270581110fd2b3641f75a",
@@ -34,7 +43,10 @@
       },
       {
         "id": "empty_response",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "prompt": "x",
         "response": "",
         "digest": "a993bafdbe32ae50b70f82d25b4643f1a6fe3a6894930176db055cfd3800c4f3",
@@ -42,7 +54,10 @@
       },
       {
         "id": "both_empty",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "prompt": "",
         "response": "",
         "digest": "2b81ff104e6dce42bc24913940fd9546c54f5a15ad5fd2b01e78d3a223cf99de",
@@ -50,7 +65,10 @@
       },
       {
         "id": "multibyte_utf8",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "note": "lengths count UTF-8 BYTES (2 each here), not code units - the one place the two runtimes could disagree",
         "prompt": "é",
         "response": "ü",
@@ -59,32 +77,58 @@
       }
     ],
     "must_differ": [
-      ["boundary_left", "boundary_right"],
-      ["empty_prompt", "empty_response"]
+      [
+        "boundary_left",
+        "boundary_right"
+      ],
+      [
+        "empty_prompt",
+        "empty_response"
+      ]
     ],
     "equal_under_legacy": [
-      ["boundary_left", "boundary_right"],
-      ["empty_prompt", "empty_response"]
+      [
+        "boundary_left",
+        "boundary_right"
+      ],
+      [
+        "empty_prompt",
+        "empty_response"
+      ]
     ]
   },
   "events": [
     {
       "seq_no": 1,
       "timestamp_sdk": 1700000000000,
-      "chain_format": 2,
+      "chain_format": 3,
       "prompt": "hello",
       "response": "world",
+      "action_taken": "allowed",
+      "action_reason": "none",
+      "policy_version": "cafebabecafebabe",
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "user_id": "user-1",
       "prev_sig": "",
-      "sdk_sig": "78df7e2da81e11acaf1d97a08bd984ff800c29e8a6429de4e501ec81c75ecc92"
+      "sdk_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9"
     },
     {
       "seq_no": 2,
       "timestamp_sdk": 1700000000001,
-      "chain_format": 2,
+      "chain_format": 3,
       "prompt": "foo",
       "response": "bar",
-      "prev_sig": "78df7e2da81e11acaf1d97a08bd984ff800c29e8a6429de4e501ec81c75ecc92",
-      "sdk_sig": "94ceed8997269f926a2e562158623d3c45cd26da1e8bec1ae130bec5fa0e5b0d"
+      "action_taken": "blocked",
+      "action_reason": "policy_violation",
+      "reason_code": "obsvr:policy_rule_matched",
+      "rule_id": "rule-1",
+      "policy_version": "cafebabecafebabe",
+      "model": "gpt-4o-mini",
+      "provider": "openai",
+      "user_id": "user-1",
+      "prev_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9",
+      "sdk_sig": "7e1cd94d667a82aa3f571010323b44982fbf2c346cdc459728281245fef8749b"
     }
   ],
   "legacy_v1_events": {
@@ -108,6 +152,29 @@
       }
     ]
   },
+  "legacy_v2_events": {
+    "description": "The same two events signed under format 2 (content and order only: no decision fields in the preimage). FROZEN FOREVER, for the same reason legacy_v1_events is: chains signed before format 3 existed are existing evidence, and both verifiers must keep verifying them - explicitly, reporting chain_format 2, never silently under the format-3 rule. These are the pre-change vectors verbatim.",
+    "events": [
+      {
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000000,
+        "chain_format": 2,
+        "prompt": "hello",
+        "response": "world",
+        "prev_sig": "",
+        "sdk_sig": "78df7e2da81e11acaf1d97a08bd984ff800c29e8a6429de4e501ec81c75ecc92"
+      },
+      {
+        "seq_no": 2,
+        "timestamp_sdk": 1700000000001,
+        "chain_format": 2,
+        "prompt": "foo",
+        "response": "bar",
+        "prev_sig": "78df7e2da81e11acaf1d97a08bd984ff800c29e8a6429de4e501ec81c75ecc92",
+        "sdk_sig": "94ceed8997269f926a2e562158623d3c45cd26da1e8bec1ae130bec5fa0e5b0d"
+      }
+    ]
+  },
   "chain_verification": {
     "description": "Chain-verification verdicts over the events above. Both verifiers (sdk-typescript/src/governance/verify-chain.ts and sdk-python/obsvr/verify_chain.py) build the chain from `events` (or `legacy_v1_events.events` when a case says `events: legacy_v1`), apply each case's mutations in order, verify, and must produce THIS verdict - identical valid/broken_at/reason/chain_format in both languages. A divergence is a release blocker: it means a customer's evidence verifies in one language and not the other.",
     "mutation_ops": {
@@ -120,43 +187,76 @@
     "cases": [
       {
         "id": "valid_chain",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "the unmodified vectors verify, and the result names the format they verified under",
         "mutations": [],
-        "expect": { "valid": true, "events_verified": 2, "chain_format": 2 }
+        "expect": {
+          "valid": true,
+          "events_verified": 2,
+          "chain_format": 3
+        }
       },
       {
         "id": "tampered_prompt",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "editing content after signing breaks that event's signature",
-        "mutations": [{ "op": "set", "index": 1, "field": "prompt", "value": "foo (edited)" }],
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "prompt",
+            "value": "foo (edited)"
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "boundary_resplit_rejected",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "moving text across the prompt/response boundary while keeping the concatenation intact ('hello'/'world' -> 'hellow'/'orld') breaks a format-2 signature. This is the attack format 2 exists to close: the length prefixes put the boundary itself under the HMAC.",
         "mutations": [
-          { "op": "set", "index": 0, "field": "prompt", "value": "hellow" },
-          { "op": "set", "index": 0, "field": "response", "value": "orld" }
+          {
+            "op": "set",
+            "index": 0,
+            "field": "prompt",
+            "value": "hellow"
+          },
+          {
+            "op": "set",
+            "index": 0,
+            "field": "response",
+            "value": "orld"
+          }
         ],
         "expect": {
           "valid": false,
           "broken_at": 0,
           "reason": "Signature mismatch at event 0",
           "events_verified": 0,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "forged_signature",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "a fabricated signature does not recompute",
         "mutations": [
           {
@@ -171,64 +271,104 @@
           "broken_at": 0,
           "reason": "Signature mismatch at event 0",
           "events_verified": 0,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "wrong_api_key",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "a genuine chain does not verify under the wrong key",
-        "mutations": [{ "op": "api_key", "value": "not-the-signing-key" }],
+        "mutations": [
+          {
+            "op": "api_key",
+            "value": "not-the-signing-key"
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 0,
           "reason": "Signature mismatch at event 0",
           "events_verified": 0,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "seq_gap",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "a jumped sequence number is a gap",
-        "mutations": [{ "op": "set", "index": 1, "field": "seq_no", "value": 9 }],
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "seq_no",
+            "value": 9
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 1,
           "reason": "seq_no gap at event 1: expected 2, got 9",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "missing_seq_no",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "an event without a sequence number cannot be placed in the chain",
-        "mutations": [{ "op": "delete", "index": 1, "field": "seq_no" }],
+        "mutations": [
+          {
+            "op": "delete",
+            "index": 1,
+            "field": "seq_no"
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 1,
           "reason": "Missing seq_no at event 1",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "invalid_initial_seq_no",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "sequence numbers are 1-based",
-        "mutations": [{ "op": "set", "index": 0, "field": "seq_no", "value": 0 }],
+        "mutations": [
+          {
+            "op": "set",
+            "index": 0,
+            "field": "seq_no",
+            "value": 0
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 0,
           "reason": "Invalid initial seq_no: 0",
           "events_verified": 0,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "broken_prev_sig",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "the chain link must point at the prior event's signature",
         "mutations": [
           {
@@ -243,12 +383,15 @@
           "broken_at": 1,
           "reason": "Chain break at event 1: prev_sig does not match prior event's sdk_sig",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "session_mismatch",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "events spliced in from another session are rejected",
         "mutations": [
           {
@@ -263,14 +406,23 @@
           "broken_at": 1,
           "reason": "Session ID mismatch at event 1: expected 11111111-1111-1111-1111-111111111111, got 22222222-2222-2222-2222-222222222222",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "missing_session_id",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "a chain with no session identity cannot be verified at all; the format is never established, so the result carries none",
-        "mutations": [{ "op": "delete", "index": 0, "field": "sdk_session_id" }],
+        "mutations": [
+          {
+            "op": "delete",
+            "index": 0,
+            "field": "sdk_session_id"
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 0,
@@ -280,64 +432,110 @@
       },
       {
         "id": "backdated_timestamp",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "timestamps never move backwards inside a session",
         "mutations": [
-          { "op": "set", "index": 1, "field": "timestamp_sdk", "value": 1699999999999 }
+          {
+            "op": "set",
+            "index": 1,
+            "field": "timestamp_sdk",
+            "value": 1699999999999
+          }
         ],
         "expect": {
           "valid": false,
           "broken_at": 1,
           "reason": "Timestamp decreased at event 1: 1699999999999 < 1700000000000",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "reordered_events",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "reordering is visible as a sequence gap",
-        "mutations": [{ "op": "reverse" }],
+        "mutations": [
+          {
+            "op": "reverse"
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 1,
           "reason": "seq_no gap at event 1: expected 3, got 1",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "mixed_format_chain_rejected",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "a chain is one session, one process, one SDK build - no legitimate producer changes format mid-chain, so a later event declaring a different format is a break, not a negotiation",
-        "mutations": [{ "op": "set", "index": 1, "field": "chain_format", "value": 1 }],
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "chain_format",
+            "value": 1
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 1,
-          "reason": "Chain format mismatch at event 1: expected 2, got 1",
+          "reason": "Chain format mismatch at event 1: expected 3, got 1",
           "events_verified": 1,
-          "chain_format": 2
+          "chain_format": 3
         }
       },
       {
         "id": "unknown_format_rejected",
-        "sdk_support": { "ts": "required", "py": "required" },
-        "desc": "a newer format is not guessed at by an older verifier - fail closed, and report no format because none was established",
-        "mutations": [{ "op": "set", "index": 0, "field": "chain_format", "value": 3 }],
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "a chain_format this build does not implement fails closed rather than being guessed at - including one from a NEWER SDK, which must report unsupported rather than verify under an older rule",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 0,
+            "field": "chain_format",
+            "value": 99
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 0,
-          "reason": "Unsupported chain_format at event 0: 3",
+          "reason": "Unsupported chain_format at event 0: 99",
           "events_verified": 0
         }
       },
       {
         "id": "downgrade_stripped_marker_rejected",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "stripping chain_format from a format-2 chain reroutes verification to the legacy rule, where a format-2 signature can never recompute: the formats share no valid signature, so a downgrade is a break, not a bypass",
         "mutations": [
-          { "op": "delete", "index": 0, "field": "chain_format" },
-          { "op": "delete", "index": 1, "field": "chain_format" }
+          {
+            "op": "delete",
+            "index": 0,
+            "field": "chain_format"
+          },
+          {
+            "op": "delete",
+            "index": 1,
+            "field": "chain_format"
+          }
         ],
         "expect": {
           "valid": false,
@@ -349,29 +547,63 @@
       },
       {
         "id": "legacy_chain_verifies_as_format_1",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "a chain signed before format 2 existed still verifies, and the result says which rule it verified under - never silently as a current chain",
         "events": "legacy_v1",
         "mutations": [],
-        "expect": { "valid": true, "events_verified": 2, "chain_format": 1 }
+        "expect": {
+          "valid": true,
+          "events_verified": 2,
+          "chain_format": 1
+        }
       },
       {
         "id": "legacy_boundary_resplit_verifies",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "DOCUMENTED LIMIT of format 1, identical in both languages: the legacy digest is sha256(prompt + response), so re-splitting 'hello'/'world' as 'hellow'/'orld' preserves the concatenation and the signature still verifies. This is the defect format 2 closes. A format-1 chain therefore proves content-in-order but NOT the prompt/response attribution boundary - which is exactly why the verifier reports chain_format, so a consumer weighing legacy evidence knows what it does and does not bind. Pinned so the limit is a stated decision, not an oversight.",
         "events": "legacy_v1",
         "mutations": [
-          { "op": "set", "index": 0, "field": "prompt", "value": "hellow" },
-          { "op": "set", "index": 0, "field": "response", "value": "orld" }
+          {
+            "op": "set",
+            "index": 0,
+            "field": "prompt",
+            "value": "hellow"
+          },
+          {
+            "op": "set",
+            "index": 0,
+            "field": "response",
+            "value": "orld"
+          }
         ],
-        "expect": { "valid": true, "events_verified": 2, "chain_format": 1 }
+        "expect": {
+          "valid": true,
+          "events_verified": 2,
+          "chain_format": 1
+        }
       },
       {
         "id": "format_claim_on_legacy_event_rejected",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "claiming format 2 on an event signed under format 1 fails: the recomputed format-2 payload never matches a format-1 signature",
         "events": "legacy_v1",
-        "mutations": [{ "op": "set", "index": 0, "field": "chain_format", "value": 2 }],
+        "mutations": [
+          {
+            "op": "set",
+            "index": 0,
+            "field": "chain_format",
+            "value": 2
+          }
+        ],
         "expect": {
           "valid": false,
           "broken_at": 0,
@@ -382,10 +614,388 @@
       },
       {
         "id": "front_truncated_is_not_detectable",
-        "sdk_support": { "ts": "required", "py": "required" },
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
         "desc": "DOCUMENTED LIMIT, identical in both languages: verification proves the events it is given are genuine, in order, and unmodified - not that they are all of them. A suffix starting at seq_no 2 is internally consistent, and nothing inside an export says the session began at 1. Detecting a dropped prefix needs the session's known start (the server-side sequence guard and the sealed ledger). Pinned so the silence is a decision, not an oversight.",
-        "mutations": [{ "op": "drop_event", "index": 0 }],
-        "expect": { "valid": true, "events_verified": 1, "chain_format": 2 }
+        "mutations": [
+          {
+            "op": "drop_event",
+            "index": 0
+          }
+        ],
+        "expect": {
+          "valid": true,
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "verdict_flipped_blocked_to_allowed",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "THE case format 3 exists for: rewriting the verdict on a blocked event breaks its signature. Under format 2 this verified clean.",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "action_taken",
+            "value": "allowed"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "action_reason_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "the reason a call was blocked is signed",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "action_reason",
+            "value": "none"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "reason_code_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "the machine-readable reason code is signed",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "reason_code",
+            "value": "obsvr:forged"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "rule_id_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "which rule fired is signed - attributing a block to a different rule breaks the chain",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "rule_id",
+            "value": "some-other-rule"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "policy_version_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "the policy state the decision ran under is signed",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "policy_version",
+            "value": "0000000000000000"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "model_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "the model is signed",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "model",
+            "value": "gpt-4o"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "provider_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "the destination is signed - data-residency attribution cannot be rewritten",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "provider",
+            "value": "anthropic"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "user_id_rewritten",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "who the call was attributed to is signed",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "user_id",
+            "value": "someone-else"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "rule_id_deleted",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "desc": "REMOVING a signed decision field breaks the chain too - the presence byte means absent and empty are different preimages",
+        "mutations": [
+          {
+            "op": "delete",
+            "index": 1,
+            "field": "rule_id"
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 1,
+          "reason": "Signature mismatch at event 1",
+          "events_verified": 1,
+          "chain_format": 3
+        }
+      },
+      {
+        "id": "format2_chain_still_verifies",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "events": "legacy_v2",
+        "desc": "a chain signed before format 3 existed still verifies, explicitly as format 2",
+        "mutations": [],
+        "expect": {
+          "valid": true,
+          "events_verified": 2,
+          "chain_format": 2
+        }
+      },
+      {
+        "id": "format2_verdict_rewrite_is_NOT_detected",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "events": "legacy_v2",
+        "desc": "THE DEFECT, pinned rather than hidden: on a format-2 chain a rewritten verdict still verifies, because format 2 does not sign it. Old evidence cannot be retroactively strengthened, and a reader of these vectors must be able to see that.",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 1,
+            "field": "action_taken",
+            "value": "allowed"
+          }
+        ],
+        "expect": {
+          "valid": true,
+          "events_verified": 2,
+          "chain_format": 2
+        }
+      },
+      {
+        "id": "format3_claim_on_format2_event_rejected",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "events": "legacy_v2",
+        "desc": "upgrading the format claim on a format-2 event does not make it a format-3 event: the payload no longer reproduces",
+        "mutations": [
+          {
+            "op": "set",
+            "index": 0,
+            "field": "chain_format",
+            "value": 3
+          }
+        ],
+        "expect": {
+          "valid": false,
+          "broken_at": 0,
+          "reason": "Signature mismatch at event 0",
+          "events_verified": 0,
+          "chain_format": 3
+        }
+      }
+    ]
+  },
+  "decision_hash": {
+    "description": "The format-3 decision preimage: sha256('obsvr:decision/3' || 0x00 || for each field in DECISION_FIELD_ORDER: presence_byte || u64be(len(value)) || value), values as UTF-8 bytes and lengths in bytes. DECISION_FIELD_ORDER is action_taken, action_reason, reason_code, rule_id, policy_version, model, provider, user_id. The presence byte (0x01 present, 0x00 absent) is what keeps an ABSENT field distinct from one present-and-empty: compare all_absent with rule_id_present_but_empty, which would collide without it. Compare blocked_full with action_taken_flipped_to_allowed - that pair is the whole reason format 3 exists. Producers: sdk-typescript/src/proxy/chain-format.ts, sdk-python/obsvr/chain_format.py.",
+    "domain_tag": "obsvr:decision/3",
+    "field_order": [
+      "action_taken",
+      "action_reason",
+      "reason_code",
+      "rule_id",
+      "policy_version",
+      "model",
+      "provider",
+      "user_id"
+    ],
+    "cases": [
+      {
+        "id": "all_absent",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "fields": {},
+        "digest": "99444e17e53739cc9ea0e879c74bbd92411194580a57d28873fc2499d0f00634"
+      },
+      {
+        "id": "rule_id_present_but_empty",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "fields": {
+          "rule_id": ""
+        },
+        "digest": "191e2adff89f62d932bae01d4474e78d5dc78e82b1cee4aef4dc4b7f0a648460"
+      },
+      {
+        "id": "blocked_full",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "fields": {
+          "action_taken": "blocked",
+          "action_reason": "policy_violation",
+          "reason_code": "obsvr:policy_rule_matched",
+          "rule_id": "rule-1",
+          "policy_version": "cafebabecafebabe",
+          "model": "gpt-4o-mini",
+          "provider": "openai",
+          "user_id": "user-1"
+        },
+        "digest": "48bed2908f3050b8317c4634239c88cebacdf8d06992c31ccc9516a03f3f3967"
+      },
+      {
+        "id": "allowed_full",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "fields": {
+          "action_taken": "allowed",
+          "action_reason": "none",
+          "policy_version": "cafebabecafebabe",
+          "model": "gpt-4o-mini",
+          "provider": "openai",
+          "user_id": "user-1"
+        },
+        "digest": "64815df44414d5131c9affcc8d69401ed376271e2aef3a020fb42fff4d211332"
+      },
+      {
+        "id": "action_taken_flipped_to_allowed",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "fields": {
+          "action_taken": "allowed",
+          "action_reason": "policy_violation",
+          "reason_code": "obsvr:policy_rule_matched",
+          "rule_id": "rule-1",
+          "policy_version": "cafebabecafebabe",
+          "model": "gpt-4o-mini",
+          "provider": "openai",
+          "user_id": "user-1"
+        },
+        "digest": "51f7805ec6444b3b8e07a62b8cc91dedb87940bc07f5795b1638b22dc459bade"
+      },
+      {
+        "id": "astral_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "fields": {
+          "user_id": "u🚀"
+        },
+        "digest": "3ced7e4802a8173cad2e27fbe6d2c2b4340a802508eb621f1c5d6dbffab95dc0"
       }
     ]
   }

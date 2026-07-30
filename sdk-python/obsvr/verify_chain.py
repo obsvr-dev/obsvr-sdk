@@ -49,8 +49,9 @@ from typing import Any, Dict, Optional, Sequence
 
 from .audit_gap import parse_audit_gap_prompt
 from .chain_format import (
-    CHAIN_FORMAT_CURRENT,
+    CHAIN_FORMATS_SUPPORTED,
     CHAIN_FORMAT_LEGACY,
+    decision_fields_of,
     signature_payload,
 )
 from .sender import derive_signing_key
@@ -109,8 +110,10 @@ def _declared_format(event: Dict[str, Any]) -> Optional[int]:
     """The event's declared signing format.
 
     Absent means 1: legacy chains were signed before the field existed.
-    Anything but 1 or 2 returns ``None`` - an unrecognized format fails
-    closed rather than being guessed at. ``bool`` is excluded explicitly
+    Anything outside ``CHAIN_FORMATS_SUPPORTED`` returns ``None`` - an
+    unrecognized format fails closed rather than being guessed at, which is
+    also what makes a chain from a NEWER SDK report unsupported rather than
+    silently mis-verifying under an older rule. ``bool`` is excluded explicitly
     because it is an ``int`` subclass and ``True`` would read as format 1.
     """
     raw = event.get("chain_format")
@@ -121,10 +124,9 @@ def _declared_format(event: Dict[str, Any]) -> Optional[int]:
     # verifiers would return different verdicts on the same export.
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    if raw == CHAIN_FORMAT_LEGACY:
-        return CHAIN_FORMAT_LEGACY
-    if raw == CHAIN_FORMAT_CURRENT:
-        return CHAIN_FORMAT_CURRENT
+    for supported in CHAIN_FORMATS_SUPPORTED:
+        if raw == supported:
+            return supported
     return None
 
 
@@ -137,9 +139,10 @@ def _compute_signature(
     prompt: str,
     response: str,
     prev_sig: Optional[str],
+    decision: Optional[Dict[str, Any]] = None,
 ) -> str:
     payload = signature_payload(
-        fmt, session_id, seq_no, timestamp_sdk, prompt, response, prev_sig
+        fmt, session_id, seq_no, timestamp_sdk, prompt, response, prev_sig, decision
     )
     return hmac_mod.new(signing_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -262,6 +265,12 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             event.get("prompt") or "",
             event.get("response") or "",
             event.get("prev_sig") or None,
+            # Format 3 folds these into the preimage; formats 1 and 2 ignore the
+            # argument entirely, so one call site verifies every format. Read
+            # through the SAME reader the signer used - two readers that
+            # disagree about an absent field would make every event look
+            # tampered with.
+            decision_fields_of(event),
         )
 
         # Constant-time compare: verification runs against attacker-supplied

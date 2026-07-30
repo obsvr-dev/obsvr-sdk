@@ -34,7 +34,8 @@ interface VerificationCase {
   id: string;
   desc: string;
   /** Which vector set the case starts from: absent = `events` (current
-   * format), "legacy_v1" = the frozen pre-format-2 chain. */
+   * format), "legacy_v1" = the frozen pre-format-2 chain, "legacy_v2" = the
+   * frozen format-2 chain. */
   events?: string;
   mutations: Mutation[];
   expect: {
@@ -53,24 +54,28 @@ const vectors = JSON.parse(
   session_id: string;
   events: Array<Record<string, unknown>>;
   legacy_v1_events: { events: Array<Record<string, unknown>> };
+  legacy_v2_events: { events: Array<Record<string, unknown>> };
   chain_verification: { cases: VerificationCase[] };
 };
 
-/** The shared vectors as an exported event chain. */
+/**
+ * The shared vectors as an exported event chain.
+ *
+ * EVERY key on the vector event is copied. This used to enumerate a fixed
+ * list, which silently dropped the format-3 decision fields and made every
+ * signature irreproducible — a copier that decides what a chain contains is
+ * exactly the thing a verifier test must not have. Legacy events carry no
+ * `chain_format` field, and that absence is part of what those cases exercise,
+ * so nothing is added that the vector does not already have.
+ */
 function chain(source?: string): Array<Record<string, unknown>> {
-  const base = source === "legacy_v1" ? vectors.legacy_v1_events.events : vectors.events;
-  return base.map((ev) => ({
-    sdk_session_id: vectors.session_id,
-    seq_no: ev.seq_no,
-    timestamp_sdk: ev.timestamp_sdk,
-    // Legacy events carry no chain_format field, and that absence is part of
-    // what the case exercises — copy it only when the vector has it.
-    ...(ev.chain_format !== undefined ? { chain_format: ev.chain_format } : {}),
-    prompt: ev.prompt,
-    response: ev.response,
-    prev_sig: ev.prev_sig,
-    sdk_sig: ev.sdk_sig,
-  }));
+  const base =
+    source === "legacy_v1"
+      ? vectors.legacy_v1_events.events
+      : source === "legacy_v2"
+        ? vectors.legacy_v2_events.events
+        : vectors.events;
+  return base.map((ev) => ({ sdk_session_id: vectors.session_id, ...ev }));
 }
 
 /** Twin of the Python applier; same op vocabulary, same semantics. */

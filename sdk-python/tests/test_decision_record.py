@@ -192,11 +192,20 @@ def test_events_without_a_decision_carry_no_record():
 # ── 4. Chain preimage untouched (signing_vectors stay green) ─────────────────
 
 
-def test_chain_signature_identical_with_and_without_the_fields():
-    # Same derivation + payload as sender.sign_event / test_signing.py
-    # (format 2, via chain_format.py) — the decision-record fields are NOT
-    # part of the preimage, so adding them changes no signed byte.
-    from obsvr.chain_format import CHAIN_FORMAT_CURRENT, signature_payload
+def test_decision_record_fields_are_outside_the_preimage_but_the_verdict_is_inside():
+    """Which fields the chain signs, asserted from both directions.
+
+    ``decision_input_hash`` and ``engine_version`` are diagnostic: they describe
+    HOW a decision was reached, they are reproducible from the inputs, and they
+    are deliberately not signed. The VERDICT is a different thing, and since
+    format 3 it is inside the preimage — that is the whole point of the format.
+
+    Both halves are asserted here because only the pair is meaningful. "Adding a
+    field changes no signed byte" is a reassuring sentence about a diagnostic
+    field and a catastrophic one about ``action_taken``, and this test used to
+    make only the first claim while the second was silently also true.
+    """
+    from obsvr.chain_format import CHAIN_FORMAT_CURRENT, decision_fields_of, signature_payload
 
     key = hmac_mod.new(
         b"obsvr-sdk-signing-v1", b"test-api-key", hashlib.sha256
@@ -211,6 +220,7 @@ def test_chain_signature_identical_with_and_without_the_fields():
             event.get("prompt") or "",
             event.get("response") or "",
             None,
+            decision_fields_of(event),
         )
         return hmac_mod.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -220,15 +230,33 @@ def test_chain_signature_identical_with_and_without_the_fields():
         "timestamp_sdk": 1700000000000,
         "prompt": "hello",
         "response": "world",
+        "action_taken": "blocked",
+        "rule_id": "rule-1",
     }
+
+    # Diagnostic fields: outside the preimage, by design.
     with_record = dict(
         base, decision_input_hash="ab" * 32, engine_version=ENGINE_VERSION
     )
     assert sign(with_record) == sign(base)
-    # And it still matches the frozen cross-language vector for this event.
+
+    # The verdict and its attribution: INSIDE the preimage. Each of these was
+    # freely rewritable under format 2 with the chain still verifying.
+    assert sign(dict(base, action_taken="allowed")) != sign(base)
+    assert sign(dict(base, rule_id="some-other-rule")) != sign(base)
+    assert sign(dict(base, provider="anthropic")) != sign(base)
+
+    # Absent and present-but-empty are different preimages, so a signed field
+    # cannot be deleted into agreement either.
+    without_rule = {k: v for k, v in base.items() if k != "rule_id"}
+    assert sign(without_rule) != sign(dict(base, rule_id=""))
+
+    # And the whole thing still matches the frozen cross-language vector.
     vectors = json.loads(
         (Path(__file__).parent / "../../conformance/fixtures/signing_vectors.json")
         .resolve()
         .read_text()
     )
-    assert sign(with_record) == vectors["events"][0]["sdk_sig"]
+    vector_event = dict(vectors["events"][0])
+    vector_event["sdk_session_id"] = vectors["session_id"]
+    assert sign(vector_event) == vector_event["sdk_sig"]

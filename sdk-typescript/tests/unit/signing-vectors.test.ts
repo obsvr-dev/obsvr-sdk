@@ -18,9 +18,12 @@ import { createHmac } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  CHAIN_FORMAT_CONTENT_ONLY,
   CHAIN_FORMAT_CURRENT,
   CHAIN_FORMAT_LEGACY,
   contentHash,
+  decisionFieldsOf,
+  decisionHash,
   signaturePayload,
 } from "../../src/proxy/chain-format";
 
@@ -62,8 +65,18 @@ function sign(
   prompt: string,
   response: string,
   prev: string,
+  decision?: Record<string, unknown>,
 ): string {
-  const payload = signaturePayload(format, session, seq, ts, prompt, response, prev || null);
+  const payload = signaturePayload(
+    format,
+    session,
+    seq,
+    ts,
+    prompt,
+    response,
+    prev || null,
+    decision,
+  );
   return createHmac("sha256", key).update(payload).digest("hex");
 }
 
@@ -101,7 +114,7 @@ describe("cross-language signing vectors", () => {
     }
   });
 
-  it("produces the same chained format-2 signatures as the shared vectors", () => {
+  it("produces the same chained format-3 signatures as the shared vectors", () => {
     const key = deriveKey(vectors.api_key);
     let prev = "";
     for (const ev of vectors.events) {
@@ -115,11 +128,57 @@ describe("cross-language signing vectors", () => {
         ev.prompt,
         ev.response,
         prev,
+        // Format 3 signs the decision fields, and they are carried on the
+        // vector event itself. Read them the way the SDK does.
+        decisionFieldsOf(ev),
       );
       expect(sig).toBe(ev.sdk_sig);
       expect(ev.prev_sig).toBe(prev);
       prev = sig;
     }
+  });
+
+  it("still reproduces the frozen format-2 signatures", () => {
+    const key = deriveKey(vectors.api_key);
+    let prev = "";
+    for (const ev of vectors.legacy_v2_events.events) {
+      expect(ev.chain_format).toBe(CHAIN_FORMAT_CONTENT_ONLY);
+      const sig = sign(
+        key,
+        CHAIN_FORMAT_CONTENT_ONLY,
+        vectors.session_id,
+        ev.seq_no,
+        ev.timestamp_sdk,
+        ev.prompt,
+        ev.response,
+        prev,
+        // Deliberately passed: format 2 must IGNORE it. If a future edit made
+        // the older format read this argument, every pre-format-3 chain in
+        // existence would stop verifying, and this line is what catches it.
+        decisionFieldsOf(ev),
+      );
+      expect(sig).toBe(ev.sdk_sig);
+      prev = sig;
+    }
+  });
+
+  it("matches every pinned decision-hash case", () => {
+    for (const c of vectors.decision_hash.cases) {
+      expect(decisionHash(c.fields)).toBe(c.digest);
+    }
+  });
+
+  it("distinguishes an absent decision field from a present-and-empty one", () => {
+    const byId = new Map<string, { digest: string }>(
+      vectors.decision_hash.cases.map((c: { id: string; digest: string }) => [c.id, c]),
+    );
+    expect(byId.get("all_absent")!.digest).not.toBe(
+      byId.get("rule_id_present_but_empty")!.digest,
+    );
+    // And the pair format 3 exists for.
+    expect(byId.get("blocked_full")!.digest).not.toBe(
+      byId.get("action_taken_flipped_to_allowed")!.digest,
+    );
   });
 
   it("still reproduces the frozen format-1 signatures", () => {
