@@ -41,6 +41,12 @@ _sync = {
     # Sorted ids of validator-rejected rules from the last poll; the
     # rejected-rule audit signal fires once per distinct set.
     "rejected_signature": "",
+    # Signed-policy distribution (parity with the TS poll's policySync).
+    # `policy_signature_valid` starts True so an unpinned deployment - which
+    # never verifies anything - is not reported as failing verification.
+    "policy_signature_valid": True,
+    "last_policy_signature_failure": "",
+    "last_applied_policy_issued_at": None,  # type: Optional[str]
 }
 _sync_lock = threading.Lock()
 _poll_thread: Optional[threading.Thread] = None
@@ -195,6 +201,53 @@ def _signal_rejected_rules(config: ResolvedConfig, rules_raw: list, valid: list)
         pass  # signal is best-effort
 
 
+def _signal_policy_signature_invalid(config: ResolvedConfig, reason: str) -> None:
+    """Signed-policy refusal signal, fired ONCE per distinct reason rather than
+    per poll. Parity with the TS poll's sdk:policy_signature_invalid.
+
+    A refused policy is not a quiet event: the deployment believes it pinned a
+    key, and what it is actually running is the last-good policy. That has to
+    be on the record, with the reason, or the operator cannot tell a pinned
+    deployment from an unpinned one by looking at the evidence."""
+    with _sync_lock:
+        if _sync.get("last_policy_signature_failure") == reason:
+            return
+        _sync["last_policy_signature_failure"] = reason
+    logging.getLogger("obsvr").warning(
+        "Policy signature verification FAILED - keeping last-good policy: %s", reason
+    )
+    try:
+        from .events import emit_event
+        from .rules import derive_policy_version
+        emit_event(
+            config,
+            provider="unknown",
+            model="none",
+            operation="policy.signature_invalid",
+            source="obsvr_sdk",
+            prompt="",
+            response="",
+            success=True,
+            latency_ms=0,
+            compliance={
+                "event_type": "policy_flag",
+                "policy_version": derive_policy_version(config.policy_rules or []),
+                "action_taken": "allowed",
+                "action_reason": "policy_violation",
+                "action_source": "builtin",
+                "redacted_types": [],
+                "blocked_types": [],
+                "rule_id": "sdk:policy_signature_invalid",
+                "policy_reason": (
+                    "Policy signature verification failed; kept last-good policy: "
+                    + reason
+                )[:256],
+            },
+        )
+    except Exception:
+        pass  # signal is best-effort
+
+
 def poll_once(config: ResolvedConfig) -> None:
     """One /policies refresh. Updates rules, grants, and sync health."""
     from .rules import derive_policy_version
@@ -282,6 +335,43 @@ def poll_once(config: ResolvedConfig) -> None:
     else:
         with _sync_lock:
             _sync["rejected_signature"] = ""
+
+    # Signed policy distribution. When a public key is pinned, verify the
+    # signature over the RAW payload the server sent BEFORE applying anything,
+    # and fail closed: a tampered, forged, unsigned or rolled-back policy is not
+    # applied and the last-good policy already in config.policy_rules stays in
+    # force. Parity with config.ts. Until this was wired, the pinned key was
+    # stored and consumed by nothing, so anyone who could answer /policies could
+    # ship `enabled: false` on every rule to a deployment that believed it had
+    # pinned one - the SDK verified nothing and applied everything.
+    if config.policy_public_key:
+        from .policy_verify import verify_policy_signature
+
+        with _sync_lock:
+            last_issued_at = _sync.get("last_applied_policy_issued_at")
+        signature = body.get("signature")
+        signed_approvals = body.get("approvals")
+        verdict = verify_policy_signature(
+            # The RAW arrays as received, pre-validation: the signature covers
+            # what the server sent, not what this SDK decided to keep.
+            rules_raw,
+            signed_approvals if isinstance(signed_approvals, list) else [],
+            signature if isinstance(signature, dict) else None,
+            config.policy_public_key,
+            last_issued_at,
+        )
+        if not verdict.ok:
+            with _sync_lock:
+                _sync["policy_signature_valid"] = False
+                _sync["failures"] += 1
+            _signal_policy_signature_invalid(config, verdict.reason or "unknown")
+            return  # do NOT apply the unverified policy
+        with _sync_lock:
+            _sync["policy_signature_valid"] = True
+            _sync["last_policy_signature_failure"] = ""
+            if isinstance(signature, dict) and signature.get("issued_at"):
+                _sync["last_applied_policy_issued_at"] = str(signature["issued_at"])
+
     config.policy_rules = [
         PolicyRule(
             id=r["id"],
@@ -514,6 +604,10 @@ def _reset_remote() -> None:
         _sync["last_success"] = None
         _sync["remote_disabled"] = False
         _sync["failures"] = 0
+        _sync["rejected_signature"] = ""
+        _sync["policy_signature_valid"] = True
+        _sync["last_policy_signature_failure"] = ""
+        _sync["last_applied_policy_issued_at"] = None
     with _grants_lock:
         _grants.clear()
     apply_escrow_response(None)  # clear any fleet-quota escrow grants

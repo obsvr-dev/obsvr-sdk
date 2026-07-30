@@ -629,11 +629,14 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   Detection-only, and off unless `deobfuscation: { enabled: true }`.
   ([`9916800`](https://github.com/obsvr-dev/obsvr-sdk/commit/9916800),
   [`ad34f66`](https://github.com/obsvr-dev/obsvr-sdk/commit/ad34f66))
-- **Python signed-policy verification.** `obsvr.init(policy_public_key=...)` pins
-  an Ed25519 key and `policy_verify.py` checks a fetched policy's signature with
-  the same checks and refusal reasons TypeScript used. The backend is optional
-  (`pip install "obsvr-sdk[crypto]"`); with a key pinned and none installed the
-  policy is refused and the events say so.
+- **Python signed-policy VERIFIER.** `policy_verify.py` implements the same
+  checks and refusal reasons TypeScript uses, against the same shared vectors.
+  The backend is optional (`pip install "obsvr-sdk[crypto]"`); with a key pinned
+  and none installed the policy is refused and the events say so.
+  **This entry originally said `obsvr.init(policy_public_key=...)` pins a key
+  and the SDK checks a fetched policy's signature. It did not: these two commits
+  added the verifier and nothing called it.** See the Fixed entry below for when
+  it was actually wired to the poll.
   ([`6783b26`](https://github.com/obsvr-dev/obsvr-sdk/commit/6783b26),
   [`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5))
 - **Failure-disposition registry.** Every governance layer declares what it does
@@ -643,6 +646,35 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
 
 ### Fixed
+
+- **Python pinned a policy key and verified nothing.**
+  `verify_policy_signature()` had **zero production call sites** — defined,
+  correct, covered by the shared vectors, and never invoked. The poll assigned
+  `config.policy_rules` straight from the response, and the pinned
+  `policy_public_key` was stored and read by nothing. So anyone able to answer
+  `/policies` could ship `enabled: false` on every rule to a deployment that
+  believed it had pinned a key, and TypeScript — which has verified at that
+  point all along — would have refused the same payload.
+
+  The verifier now runs on the Python poll, over the RAW arrays as received and
+  before anything is applied, failing closed exactly as TypeScript does: a
+  tampered, forged, unsigned, key-mismatched or rolled-back policy is refused
+  and the last-good policy stays in force, with one
+  `sdk:policy_signature_invalid` event per distinct reason so a deployment
+  running last-good rather than latest is visible on the record rather than
+  only in a log.
+
+  **Two documents disagreed about this and the CHANGELOG was the wrong one.**
+  `README.md` said "TypeScript today", which was honest; the entry above
+  announced the Python feature as shipped. Both now describe the same
+  behaviour, and the entry above says what it originally got wrong rather than
+  being quietly rewritten.
+
+  The gap survived a full verifier test suite because a unit test of a verifier
+  proves the verifier works and cannot prove anything reaches it. The new tests
+  drive the poll against a fake `/policies` and assert on the rules **in force**
+  afterwards, with an unpinned control showing the same payloads applying — so
+  the refusals are attributable to the pin rather than to the fixtures.
 
 - **`obsvr.wrap()` stored what it never scanned.** Policy decisions are made on
   the last user turn, deliberately, so a value quoted three turns ago does not
