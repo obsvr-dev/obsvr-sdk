@@ -441,6 +441,29 @@ cut, when it is renamed to that version.
   of which four fail when the change is reverted and the two that survive are
   the controls — the sync path, which never broke, and pre-call enforcement,
   which must not change.
+- **The zero-code interceptor no longer claims to govern every client in the
+  process, because it does not.** The register module said *"Every client
+  instance created anywhere in the process is then governed"*, and both READMEs
+  said the same in their own words. Three things escape, each reproduced live
+  against a real provider with a governed control in the same run:
+
+  - a `require()` entry point — `module.register()` hooks do not intercept
+    CommonJS at all, so interception never activates
+  - subpath imports — the specifier table is exact-match, so `openai/index.mjs`,
+    `openai/index`, `openai/client`, `openai/client.mjs`, `openai/client.js` and
+    `openai/azure` all reach the untouched module
+  - other client classes on a governed package — the shim overrides `default`
+    and `OpenAI`, while `AzureOpenAI` and `BedrockOpenAI` ride the `export *`
+    through
+
+  **No behaviour changed and none of these puts a false record in the trail**:
+  an escaped client emits no event rather than a wrong one, which is a coverage
+  gap rather than a lie, and `obsvr.wrap(client)` governs every one of them
+  including a CommonJS caller's. What changed is that the three are now written
+  where the feature is advertised instead of being discoverable only by
+  measuring. The CommonJS row is structural; the other two are open gaps, and
+  closing them means widening the interception path across the whole declared
+  version range of each provider package rather than editing a table.
 - **Resolved-model provenance is now catalogued as `KD-10`, and a second claimed
   divergence was measured and found already closed.** `docs/REMEDIATION.md`
   carried two adjacent capability gaps as prose rows in its still-open table.

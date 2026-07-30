@@ -74,7 +74,9 @@ Two ways in. Both evaluate policy **before the request leaves your process**.
   ```bash
   node --import @obsvr/sdk/register app.js
   ```
-  A module-customization hook loads _before_ your app. When a supported provider module is imported, the SDK swaps its exported class for a **construct-trap `Proxy`**, so every `new OpenAI()`, `new Anthropic()`, and `getGenerativeModel()` created **anywhere in the process returns a governed instance automatically** — including clients constructed deep inside third-party libraries you don't control.
+  A module-customization hook loads _before_ your app. When a supported provider module is imported **by its exact package specifier from ESM**, the SDK swaps that module's exported client class for a **construct-trap `Proxy`**, so `new OpenAI()`, `new Anthropic()` and `getGenerativeModel()` return governed instances automatically — including clients constructed deep inside third-party libraries you don't control.
+
+  **Three things escape it, each measured rather than reasoned about:** a `require()` entry point (the hook does not intercept CommonJS at all), a subpath import such as `openai/index.mjs` or `openai/client` (the specifier table is exact-match), and other client classes exported by a governed package — `AzureOpenAI` and `BedrockOpenAI` ride through ungoverned. An escaped client records nothing rather than recording something false, and `obsvr.wrap()` governs all of them. See the [TypeScript README](sdk-typescript/README.md#zero-code-global-coverage-no-monkey-patching).
 - **Python** — `obsvr.init(auto=True)` auto-instruments providers and frameworks with a clean registration point (OpenAI/Anthropic construction, the OpenAI Agents trace processor, the LlamaIndex callback manager); frameworks that need a per-call handler are detected and reported with the one line to add.
 
 ```mermaid

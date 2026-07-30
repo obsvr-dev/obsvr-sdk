@@ -91,9 +91,23 @@ node --import @obsvr/sdk/register app.js
 # or: NODE_OPTIONS="--import @obsvr/sdk/register" npm start
 ```
 
-Every `new OpenAI()`, `new Anthropic()`, and `getGenerativeModel()` in the process (including ones created inside third-party libraries) then returns a governed instance automatically. obsvr never mutates provider prototypes, classes, or module objects: the interceptor swaps the module's exported class for a construct-trap `Proxy`, and the instance underneath stays a genuine SDK client. APM, tracing, and other instrumentation layered on the same SDKs keep working. Clients constructed before `obsvr.init()` pass through untouched and pick up governance on their first call after init.
+`new OpenAI()`, `new Anthropic()` and `getGenerativeModel()` then return governed instances automatically, including ones created inside third-party libraries. obsvr never mutates provider prototypes, classes, or module objects: the interceptor swaps the module's exported class for a construct-trap `Proxy`, and the instance underneath stays a genuine SDK client. APM, tracing, and other instrumentation layered on the same SDKs keep working. Clients constructed before `obsvr.init()` pass through untouched and pick up governance on their first call after init.
 
 Use `providers: ['openai']` in `obsvr.init()` to narrow which providers the interceptor governs; omit it to govern all supported ones.
+
+#### What this does not reach
+
+This section used to say *every* client anywhere in the process. It isn't, and the gaps were measured against a real provider with a governed control in the same run, not reasoned about. What the hook governs is the **default and named client export** of a supported package, imported by its **exact specifier**, from an **ESM** entry point. Three things escape:
+
+| Escapes | Why |
+| --- | --- |
+| `require("openai")` | `module.register()` hooks do not intercept CommonJS. Interception never activates; the call reaches the provider and nothing is recorded. |
+| `openai/index.mjs`, `openai/index`, `openai/client`, `openai/client.mjs`, `openai/client.js`, `openai/azure` | The specifier table is exact-match, so a subpath resolves to the untouched module. |
+| `AzureOpenAI`, `BedrockOpenAI` | The shim overrides `default` and `OpenAI`; other client classes ride the `export *` through. |
+
+**None of these puts a false record in the audit trail** — an escaped client emits no event rather than a wrong one, which is a coverage gap and not a lie. `obsvr.wrap(client)` governs every one of them, including a CommonJS caller's client, so the fix in each case is one line at the call site.
+
+The CommonJS row is structural and cannot be closed here; the other two are open coverage gaps rather than decisions. Widening the specifier table and the class list is a change to the interception path across the whole declared version range of each provider package, which is why it is not being done as a footnote to a documentation fix.
 
 ## Policy Enforcement
 
