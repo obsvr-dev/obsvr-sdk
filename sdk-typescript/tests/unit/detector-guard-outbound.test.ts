@@ -118,11 +118,36 @@ describe('the event must never claim a redaction that did not happen', () => {
 
 describe('the proxy wrapper, end to end', () => {
   /**
-   * A request the redactor can read but cannot write: a frozen message, which
-   * is what a caller reusing an immutable request object actually hands us.
-   * The scan sees the SSN and resolves to "redact"; the redaction walk then
-   * throws on assignment, inside the guarded span rather than ahead of it.
+   * A request the redactor can read but cannot COPY. The scan sees the SSN and
+   * resolves to "redact"; the redaction walk then throws while rebuilding the
+   * message, inside the guarded span rather than ahead of it.
+   *
+   * This used to be `Object.freeze`, because the walk wrote to the caller's
+   * message and a frozen one made the assignment throw. It no longer writes —
+   * it copies — so a frozen message is now redacted successfully, which is what
+   * `a frozen caller message is redacted, not refused` below pins. Refusing a
+   * call because the caller's object was immutable meant blocking them for
+   * protecting the very object obsvr was about to corrupt.
+   *
+   * The application rule itself is unchanged and still fails CLOSED, so it
+   * still needs an end-to-end trigger: a message that cannot be copied at all.
+   * That is a genuine "the removal could not be carried out", which is what
+   * this phase means, and `fail_mode.json`'s `redaction_application_closed`
+   * qualifier continues to describe observed behaviour.
    */
+  function uncopyableMessages() {
+    return [
+      new Proxy(
+        { role: 'user', content: 'my ssn is 123-45-6789' },
+        {
+          ownKeys() {
+            throw new Error('message cannot be copied');
+          },
+        },
+      ),
+    ];
+  }
+
   function frozenMessages() {
     return [Object.freeze({ role: 'user', content: 'my ssn is 123-45-6789' })];
   }
@@ -146,7 +171,7 @@ describe('the proxy wrapper, end to end', () => {
     });
 
     await expect(
-      client().chat.completions.create({ model: 'gpt-4o', messages: frozenMessages() } as never),
+      client().chat.completions.create({ model: 'gpt-4o', messages: uncopyableMessages() } as never),
     ).rejects.toThrow(/blocked by policy/i);
     expect(getDetectorErrorCount()).toBe(1);
   });
@@ -160,7 +185,7 @@ describe('the proxy wrapper, end to end', () => {
     });
 
     await expect(
-      client().chat.completions.create({ model: 'gpt-4o', messages: frozenMessages() } as never),
+      client().chat.completions.create({ model: 'gpt-4o', messages: uncopyableMessages() } as never),
     ).rejects.toThrow();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -172,6 +197,50 @@ describe('the proxy wrapper, end to end', () => {
       .detector_failure as Record<string, unknown>;
     expect(failure.phase).toBe('enforcement_application');
     expect(failure.resolution).toBe('closed');
+  });
+
+  it('a frozen caller message is redacted, not refused, and is left unchanged', async () => {
+    // The behaviour this replaces: a frozen message used to make the redaction
+    // walk throw, which resolved closed and refused the call. That refusal
+    // punished a caller for handing over an object obsvr was about to rewrite.
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      pii_policy: { default: 'redact' },
+    });
+
+    let sentToProvider = '';
+    const wrapped = wrap({
+      chat: {
+        completions: {
+          create: async (args: unknown) => {
+            sentToProvider = JSON.stringify(args);
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        },
+      },
+    }) as { chat: { completions: { create: (a: unknown) => Promise<unknown> } } };
+
+    const messages = frozenMessages();
+    const res = await wrapped.chat.completions.create({ model: 'gpt-4o', messages });
+
+    // The call SUCCEEDS...
+    expect(res).toEqual({ choices: [{ message: { content: 'ok' } }] });
+    expect(getDetectorErrorCount()).toBe(0);
+    // ...the provider got the redacted text, so this is not "redaction was
+    // skipped to make the call work"...
+    expect(sentToProvider).not.toContain('123-45-6789');
+    expect(sentToProvider).toContain('[REDACTED_SSN]');
+    // ...and the caller's frozen object is untouched, which is the whole point.
+    expect(messages[0].content).toBe('my ssn is 123-45-6789');
+
+    // The stored copy is redacted too — the record must not carry what the
+    // provider was not allowed to see.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const event = sentEvents.find((e) => e.action_taken === 'redacted');
+    expect(event).toBeDefined();
+    expect(event.prompt).not.toContain('123-45-6789');
   });
 
   it('a healthy redaction still redacts and still sends', async () => {

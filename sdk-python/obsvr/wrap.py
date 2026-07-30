@@ -42,6 +42,7 @@ a coroutine function the wrapper is async, otherwise sync. The wrapped object
 delegates every other attribute untouched.
 """
 
+import copy as _copy
 import inspect
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -307,27 +308,64 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
     return _extract_prompt_text(provider, args, kwargs)
 
 
-def _redact_text_blocks(blocks: list, redact_fn: Callable[[str], str]) -> None:
-    """Redact {"text": ...} content blocks in place (Anthropic / Responses)."""
+def _redact_text_blocks(blocks: list, redact_fn: Callable[[str], str]) -> list:
+    """Redact {"text": ...} content blocks (Anthropic / Responses) into a NEW
+    list of NEW dicts. See _redact_messages_in_place for why nothing here is
+    written through: these blocks belong to the caller."""
+    out = []
     for block in blocks:
         if isinstance(block, dict) and isinstance(block.get("text"), str):
-            block["text"] = redact_fn(block["text"])
+            out.append({**block, "text": redact_fn(block["text"])})
+        else:
+            out.append(block)
+    return out
 
 
-def _redact_content_items(items: list, redact_fn: Callable[[str], str]) -> None:
-    """Redact a Gemini contents list in place: string items and dict items
-    with parts (string parts or {"text": ...} parts)."""
-    for i, item in enumerate(items):
+def _redact_content_items(items: list, redact_fn: Callable[[str], str]) -> list:
+    """Redact a Gemini contents list into a NEW list: string items and dict
+    items with parts (string parts or {"text": ...} parts)."""
+    out = []
+    for item in items:
         if isinstance(item, str):
-            items[i] = redact_fn(item)
-        elif isinstance(item, dict):
-            parts = item.get("parts")
-            if isinstance(parts, list):
-                for j, p in enumerate(parts):
-                    if isinstance(p, str):
-                        parts[j] = redact_fn(p)
-                    elif isinstance(p, dict) and isinstance(p.get("text"), str):
-                        p["text"] = redact_fn(p["text"])
+            out.append(redact_fn(item))
+        elif isinstance(item, dict) and isinstance(item.get("parts"), list):
+            parts = []
+            for p in item["parts"]:
+                if isinstance(p, str):
+                    parts.append(redact_fn(p))
+                elif isinstance(p, dict) and isinstance(p.get("text"), str):
+                    parts.append({**p, "text": redact_fn(p["text"])})
+                else:
+                    parts.append(p)
+            out.append({**item, "parts": parts})
+        else:
+            out.append(item)
+    return out
+
+
+def _rebuild_message(msg: Any, new_content: Any) -> Any:
+    """Return a COPY of ``msg`` carrying ``new_content`` — never ``msg`` itself.
+
+    A dict message becomes a plain dict, which is what the provider reads
+    anyway; note this deliberately does not preserve a dict SUBCLASS, because a
+    subclass that raises on ``__setitem__`` is precisely the shape a caller uses
+    to say "do not write to me".
+
+    A message OBJECT is copied with ``copy.copy`` so the provider's own type
+    survives — substituting a dict would be rejected by a client that validates
+    its argument. If the copy or the assignment fails, the ORIGINAL is returned
+    untouched and this message goes out unredacted: the stored copy is still
+    scrubbed by the event-build net, and corrupting a caller's object is not an
+    acceptable price for redacting one field.
+    """
+    if isinstance(msg, dict):
+        return {**msg, "content": new_content}
+    try:
+        clone = _copy.copy(msg)
+        setattr(clone, "content", new_content)
+        return clone
+    except Exception:
+        return msg
 
 
 def _redact_messages_in_place(kwargs: dict, redact_fn: Callable[[str], str]) -> None:
@@ -335,21 +373,43 @@ def _redact_messages_in_place(kwargs: dict, redact_fn: Callable[[str], str]) -> 
     (_extract_prompt_text), symmetrically: what gets scanned outbound gets
     redacted outbound, or the provider receives the PII the stored copy
     hides. Covers string and content-block-list message content, string
-    system, Responses API instructions/input, and Gemini contents/parts."""
+    system, Responses API instructions/input, and Gemini contents/parts.
+
+    "In place" means the KWARGS DICT, which ``**kwargs`` already made fresh at
+    the call boundary — never the caller's own containers inside it. Rebinding
+    ``kwargs["system"]`` was always safe for that reason; walking into
+    ``messages`` and assigning ``msg["content"]`` was not, because that list and
+    those dicts are the caller's. A conversation history is normally a list the
+    application keeps and appends to, so one redacted turn rewrote the
+    application's own history and every later turn sent the placeholder in place
+    of text it believed it still held. The message-OBJECT branch was worse
+    still: it called ``setattr`` on the caller's model instance, catching the
+    failure when the object was frozen — so the only cases it did not corrupt
+    were the ones that refused to be corrupted.
+
+    Every container is therefore rebuilt and rebound onto ``kwargs``. Twin of
+    the TypeScript ``redactMessagesInPlace``, which had the same defect for the
+    same reason: a shallow copy at the top level that looks like a copy.
+
+    A consequence worth stating, because it moved a documented fail mode: an
+    unwritable caller message is no longer an application failure. It used to
+    make the write raise, which resolved closed and refused the call — obsvr
+    blocking a caller for protecting the very object obsvr was about to
+    corrupt. Copying redacts it successfully instead. Application failure still
+    fails closed; what changed is what counts as one.
+    """
     messages = kwargs.get("messages")
     if isinstance(messages, list):
+        rebuilt = []
         for msg in messages:
             content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
             if isinstance(content, str):
-                if isinstance(msg, dict):
-                    msg["content"] = redact_fn(content)
-                else:
-                    try:  # message objects: best-effort (may be frozen)
-                        setattr(msg, "content", redact_fn(content))
-                    except Exception:
-                        pass
+                rebuilt.append(_rebuild_message(msg, redact_fn(content)))
             elif isinstance(content, list):
-                _redact_text_blocks(content, redact_fn)
+                rebuilt.append(_rebuild_message(msg, _redact_text_blocks(content, redact_fn)))
+            else:
+                rebuilt.append(msg)
+        kwargs["messages"] = rebuilt
     if isinstance(kwargs.get("system"), str):
         kwargs["system"] = redact_fn(kwargs["system"])
 
@@ -360,18 +420,26 @@ def _redact_messages_in_place(kwargs: dict, redact_fn: Callable[[str], str]) -> 
     if isinstance(input_val, str):
         kwargs["input"] = redact_fn(input_val)
     elif isinstance(input_val, list):
+        rebuilt_input = []
         for item in input_val:
             if isinstance(item, dict):
                 content = item.get("content")
                 if isinstance(content, str):
-                    item["content"] = redact_fn(content)
+                    rebuilt_input.append({**item, "content": redact_fn(content)})
                 elif isinstance(content, list):
-                    _redact_text_blocks(content, redact_fn)
+                    rebuilt_input.append(
+                        {**item, "content": _redact_text_blocks(content, redact_fn)}
+                    )
+                else:
+                    rebuilt_input.append(item)
+            else:
+                rebuilt_input.append(item)
+        kwargs["input"] = rebuilt_input
 
     # Gemini keyword contents
     contents = kwargs.get("contents")
     if isinstance(contents, list):
-        _redact_content_items(contents, redact_fn)
+        kwargs["contents"] = _redact_content_items(contents, redact_fn)
 
 
 def _redact_positional_inputs(args: tuple, redact_fn: Callable[[str], str]) -> tuple:

@@ -97,9 +97,20 @@ describe('policy rules: a redact verdict is applied on the wrapper path', () => 
     const wrapped = wrap({ chat: { completions: { create } } }) as {
       chat: { completions: { create: (a: unknown) => Promise<unknown> } };
     };
-    // A frozen message makes the in-place rewrite throw, which is the only
-    // realistic shape of "the removal could not be carried out".
-    const frozen = Object.freeze({ role: 'user', content: PROMPT });
+    // A message the redactor can read but cannot COPY. This was a frozen
+    // message, back when the walk wrote to the caller's object; it now copies,
+    // so a frozen message is redacted successfully and the call goes through
+    // (pinned in detector-guard-outbound.test.ts). A message that cannot be
+    // copied at all is still a genuine "the removal could not be carried out",
+    // which is what this phase means and what must still fail closed.
+    const frozen = new Proxy(
+      { role: 'user', content: PROMPT },
+      {
+        ownKeys() {
+          throw new Error('message cannot be copied');
+        },
+      },
+    );
     // The redactor logs the failure itself; keep the suite output clean.
     const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {

@@ -962,6 +962,46 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Outbound PII redaction rewrote the caller's own message objects, and a
+  frozen message was refused rather than redacted.** Both halves came from one
+  cause, in both SDKs.
+
+  The argument filter builds a fresh TOP-LEVEL request object but copies its
+  entries by reference, so the messages array and every message in it are still
+  the caller's. Redaction then walked into them and assigned. A conversation
+  history is normally an array the application keeps and appends to, so one
+  redacted turn rewrote the application's own history and every later turn sent
+  `[REDACTED_SSN]` where it believed it still held the real text. The top-level
+  scalars — `system`, `instructions`, a string `input` — land on the new object
+  and were always safe, which is why this survived: the function looked correct
+  on exactly the fields most likely to be spot-checked. The Python side was
+  worse on one shape, calling `setattr` on the caller's model instance and
+  swallowing the failure, so the only objects it did not corrupt were the ones
+  that refused to be corrupted.
+
+  Redaction now rebuilds every container it modifies instead of writing through
+  it. A message object is copied with the provider's own type preserved, because
+  substituting a plain dict would be rejected by a client that validates its
+  argument.
+
+  **BEHAVIOUR CHANGE, stated because it moves a documented fail mode.** An
+  unwritable caller message — frozen, or refusing assignment — used to make the
+  redaction walk throw. That resolved CLOSED and refused the call. It now
+  succeeds: the message is copied, redacted, and sent. The refusal was obsvr
+  punishing a caller for protecting the very object obsvr was about to corrupt,
+  and it was only ever reachable because the walk wrote to the caller in the
+  first place.
+
+  **The fail-closed rule itself is unchanged.** A redaction that genuinely
+  cannot be carried out still blocks, still regardless of `failMode`, still
+  records `blocked` with the `enforcement_application` phase and never claims a
+  redaction that did not happen. `conformance/fixtures/fail_mode.json` needed no
+  edit for the same reason — its `redaction_application_closed` qualifier
+  describes the disposition, and only what counts as a failure moved. The
+  end-to-end tests that used to reach that path through a frozen message now
+  reach it through a redactor that raises, and the frozen message has become a
+  test that the call SUCCEEDS and the caller's object is unchanged — a strictly
+  stronger assertion than the one it replaced.
 - **The evidence-verification Action failed a consumer's CI on exit `3` with no
   documented remedy — the gap-marker feature defeating its own tooling.** The
   SDK signs a gap marker at the position of any dropped events so a lossy run

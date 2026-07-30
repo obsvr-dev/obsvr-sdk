@@ -600,45 +600,75 @@ function extractLastUserMessageText(args: unknown): string {
 }
 
 /**
- * Redact PII in-place across all message/prompt content fields.
+ * Redact PII across every message/prompt content field of the OUTBOUND request.
  * Preserves message structure; replaces only PII text within content strings
  * with typed placeholders (e.g. [REDACTED_EMAIL]).
+ *
+ * **It writes only onto objects this SDK owns.** The top-level request handed in
+ * is a fresh object built by `filterArgs`, so assigning its own keys is safe —
+ * but that copy is SHALLOW, so `req.messages` is the caller's array and each
+ * element is the caller's message object. Walking into them and assigning
+ * `msg.content` rewrote the caller's data: a conversation history is normally an
+ * array the application keeps and appends to, so one redacted turn left the
+ * application holding `[REDACTED_SSN]` where it believed it still had the real
+ * text, and every later turn sent the placeholder. The shallow copy is what made
+ * this easy to miss — `system`, `instructions` and a string `input` land on the
+ * new object and were always safe, so the function looked correct on the fields
+ * most likely to be spot-checked.
+ *
+ * Every nested container it modifies is therefore rebuilt rather than written
+ * through. Identity of the outbound structures is not observable by the caller,
+ * whose own objects are precisely what must not change, and this runs only on
+ * the redact path.
+ *
+ * A consequence worth stating, because it moved a documented fail mode: a FROZEN
+ * or otherwise unwritable caller message is no longer an application failure. It
+ * used to make the in-place write throw, which resolved closed and refused the
+ * call — obsvr blocking a caller for protecting the very object obsvr was about
+ * to corrupt. Copying redacts it successfully instead. Application failure still
+ * fails closed; what changed is what counts as one.
  */
 function redactMessagesInPlace(args: unknown): void {
   if (!args || typeof args !== "object") return;
   const req = args as Record<string, unknown>;
+
+  /** Redact a `{text}` part list into a NEW array of NEW parts. */
+  const redactTextParts = (parts: unknown[]): unknown[] =>
+    parts.map((part) => {
+      if (!part || typeof part !== "object") return part;
+      const p = part as Record<string, unknown>;
+      if (typeof p.text !== "string") return part;
+      return { ...p, text: redactBuiltinPii(p.text) };
+    });
+
+  /** Redact a `.content` carrier (string or part list) into a NEW object. */
+  const redactContentCarrier = (entry: unknown): unknown => {
+    if (!entry || typeof entry !== "object") return entry;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.content === "string") {
+      return { ...e, content: redactBuiltinPii(e.content) };
+    }
+    if (Array.isArray(e.content)) {
+      return { ...e, content: redactTextParts(e.content) };
+    }
+    return entry;
+  };
 
   if (typeof req.system === "string") {
     req.system = redactBuiltinPii(req.system);
   }
 
   if (Array.isArray(req.messages)) {
-    for (const msg of req.messages as Record<string, unknown>[]) {
-      if (typeof msg.content === "string") {
-        msg.content = redactBuiltinPii(msg.content);
-      } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") {
-            p.text = redactBuiltinPii(p.text);
-          }
-        }
-      }
-    }
+    req.messages = (req.messages as unknown[]).map(redactContentCarrier);
   }
 
   if (Array.isArray(req.contents)) {
-    for (const c of req.contents as Record<string, unknown>[]) {
+    req.contents = (req.contents as unknown[]).map((c) => {
+      if (!c || typeof c !== "object") return c;
       const cObj = c as Record<string, unknown>;
-      if (Array.isArray(cObj.parts)) {
-        for (const part of cObj.parts as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") {
-            p.text = redactBuiltinPii(p.text);
-          }
-        }
-      }
-    }
+      if (!Array.isArray(cObj.parts)) return c;
+      return { ...cObj, parts: redactTextParts(cObj.parts) };
+    });
   }
 
   // OpenAI Responses API: instructions + input (string or item list)
@@ -648,18 +678,7 @@ function redactMessagesInPlace(args: unknown): void {
   if (typeof req.input === "string") {
     req.input = redactBuiltinPii(req.input);
   } else if (Array.isArray(req.input)) {
-    for (const item of req.input as Record<string, unknown>[]) {
-      if (typeof item.content === "string") {
-        item.content = redactBuiltinPii(item.content);
-      } else if (Array.isArray(item.content)) {
-        for (const part of item.content as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") {
-            p.text = redactBuiltinPii(p.text);
-          }
-        }
-      }
-    }
+    req.input = (req.input as unknown[]).map(redactContentCarrier);
   }
 }
 

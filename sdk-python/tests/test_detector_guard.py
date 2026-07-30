@@ -509,25 +509,43 @@ class TestOutboundRedactionApplication:
         assert corrected["policy_version"] == "v1"
         _reset()
 
-    def test_wrap_blocks_rather_than_forwarding_a_partial_redaction(self):
-        """End to end through wrap(): the redaction walk cannot write to the
-        message, and the call is refused instead of sending the prompt the SDK
-        was told to clean. Twin vector to the TypeScript frozen-message test.
+    def test_wrap_blocks_rather_than_forwarding_a_partial_redaction(self, monkeypatch):
+        """End to end through wrap(): the redaction cannot be carried out, and
+        the call is refused instead of sending the prompt the SDK was told to
+        clean.
+
+        The trigger used to be a read-only message — a dict subclass raising on
+        ``__setitem__`` — back when the walk wrote to the caller's message. It
+        no longer writes, it copies, so such a message is now redacted
+        successfully and the call goes through; that is pinned by
+        ``test_a_read_only_message_is_redacted_not_refused`` below.
+
+        What still fails is the redactor itself raising, which is the same
+        vector the TypeScript unit half already uses (`throw new Error(
+        'redactor bug')`) and a genuine "the removal could not be carried out".
+        The end-to-end TypeScript twin reaches it with a message that cannot be
+        copied; a dict subclass cannot be made uncopyable in Python, because
+        ``{**d}`` takes the C fast path and ignores an overridden ``keys()``.
         """
+        import sys
+
         import obsvr
+        import obsvr.wrap  # noqa: F401 - ensure the module is in sys.modules
         from obsvr.errors import ObsvrPolicyError
         from obsvr.policy import get_detector_error_count
 
-        class _ReadOnlyMessage(dict):
-            """A message a caller reuses and does not expect us to mutate:
-            readable by the scanner, unwritable by the redactor."""
-
-            def __setitem__(self, *_args):
-                raise TypeError("message is read-only")
+        # `obsvr.wrap` the ATTRIBUTE is the re-exported function, so the module
+        # has to come from sys.modules rather than from attribute access.
+        wrap_mod = sys.modules["obsvr.wrap"]
 
         _reset()
         obsvr.init(api_key="test", ingest_url="https://x.test", fail_mode="open",
                    pii_policy={"action": "redact", "types": ["ssn"]})
+
+        def _boom(_text):
+            raise RuntimeError("redactor bug")
+
+        monkeypatch.setattr(wrap_mod, "redact_builtin_pii", _boom)
 
         class _Completions:
             def create(self, **_kw):
@@ -545,11 +563,62 @@ class TestOutboundRedactionApplication:
         with pytest.raises(ObsvrPolicyError):
             client.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    _ReadOnlyMessage(role="user", content="my ssn is 123-45-6789")
-                ],
+                messages=[{"role": "user", "content": "my ssn is 123-45-6789"}],
             )
         assert get_detector_error_count() == 1
+        _reset()
+
+    def test_a_read_only_message_is_redacted_not_refused(self):
+        """A message the caller does not want written to is COPIED and
+        redacted, and the call succeeds.
+
+        The behaviour this replaces: such a message made the redaction walk
+        raise, which resolved closed and refused the call — obsvr punishing a
+        caller for handing over an object obsvr was about to rewrite. Twin of
+        the TypeScript `a frozen caller message is redacted, not refused`.
+        """
+        import obsvr
+        from obsvr.policy import get_detector_error_count
+
+        class _ReadOnlyMessage(dict):
+            """Readable by the scanner, and it refuses to be written to."""
+
+            def __setitem__(self, *_args):
+                raise TypeError("message is read-only")
+
+        _reset()
+        obsvr.init(api_key="test", ingest_url="https://x.test", fail_mode="open",
+                   pii_policy={"action": "redact", "types": ["ssn"]})
+
+        seen = {}
+
+        class _Completions:
+            def create(self, **kw):
+                seen.update(kw)
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        class _Chat:
+            def __init__(self):
+                self.completions = _Completions()
+
+        class _Client:
+            def __init__(self):
+                self.chat = _Chat()
+
+        msg = _ReadOnlyMessage(role="user", content="my ssn is 123-45-6789")
+        client = obsvr.wrap(_Client())
+        res = client.chat.completions.create(model="gpt-4o", messages=[msg])
+
+        # The call SUCCEEDS...
+        assert res == {"choices": [{"message": {"content": "ok"}}]}
+        assert get_detector_error_count() == 0
+        # ...the provider got the redacted text, so this is not "redaction was
+        # skipped to make the call work"...
+        sent = str(seen)
+        assert "123-45-6789" not in sent
+        assert "[REDACTED_SSN]" in sent
+        # ...and the caller's own object is untouched, which is the whole point.
+        assert msg["content"] == "my ssn is 123-45-6789"
         _reset()
 
 
