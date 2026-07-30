@@ -173,6 +173,8 @@ Three different things sit outside that table, and only the first is a policy de
 
 **The framework integrations are not that table either.** LangChain and LlamaIndex call `applyObservePolicy`, which is the PII scan and the stored redacted copy — not `applyPreCallPolicy`. Measured layer by layer: `policyRules`, `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch integrity gate, the response-side scan and PII **blocking** do not run there, and metering is opt-in. A `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and does not block through LangChain or LlamaIndex — the call goes out and the event records the stored copy as redacted. Treat them as observability integrations with a PII scan.
 
+**"Metering is opt-in" means the default is OFF, and that is a decision.** ``meterIntegrationEvents`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
+
 MCP tool calls are governed separately (below); any framework's tools can be governed with `obsvrGovernTool` / `obsvrGovernTools`.
 
 ## MCP Governance

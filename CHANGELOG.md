@@ -441,6 +441,16 @@ cut, when it is renamed to that version.
   of which four fail when the change is reverted and the two that survive are
   the controls — the sync path, which never broke, and pre-call enforcement,
   which must not change.
+- **The unmetered-by-default posture for integration events is now stated where
+  metering is documented.** `meterIntegrationEvents` / `meter_integration_events`
+  default to false, so framework-integration events carry no cost fragment and
+  never increment a token-unit quota. That is a **decision, not a defect**, and
+  the reasoning existed only in a TypeScript config docstring: turning it on is
+  not a neutral correction, because a token budget that has never bound on
+  framework traffic begins binding and calls that previously succeeded start
+  being refused — an outage rather than a fix for anyone already running one. It
+  now appears in the root README's cost section and in both SDK READMEs, which
+  mentioned it only inside a per-integration table or not at all.
 
 ### Added
 

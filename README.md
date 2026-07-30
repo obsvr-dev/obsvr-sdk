@@ -295,6 +295,10 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
 
 Spending is controlled at the **point of issuance**: token/request quotas and model gates enforced before the call, scoped per user, per service, or per tenant. Each SDK instance sends a stable per-process identity with its policy polls, so the ingest service can escrow a **fleet-wide** quota across instances rather than treating them as one. Note the in-process limits themselves are enforced **per instance** and token usage is recorded post-call — see [Known limitations](#known-limitations--architecture-notes).
 
+**Framework-integration events are unmetered by default, and that is a decision rather than an oversight.** `meterIntegrationEvents` / `meter_integration_events` default to **false** in both SDKs, so events from the framework integrations (LangChain, LlamaIndex, Vercel AI, the agent frameworks) carry no cost fragment and never increment a token-unit quota. The `obsvr.wrap()` client-proxy path is metered either way and the flag does not affect it.
+
+The default is off because turning it on is not a neutral correction: a `quota_unit: "tokens"` budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage, not a fix, so it has to be a deliberate choice. One flag covers both cost and quota because the two only make sense together — metering what a call cost without counting it against the budget it belongs to produces an audit record that disagrees with itself. With no `costPolicy` and no token-unit quota rule configured, enabling it changes nothing.
+
 ---
 
 ## The record: trust & cryptographic model

@@ -179,6 +179,8 @@ through `obsvr.wrap()`, Bedrock, Vertex and MCP, and through these two the call
 goes out with the SSN in it while the event honestly records that the stored
 copy was redacted. Put an enforcement decision on `obsvr.wrap()` or on MCP.
 
+**"Metering is opt-in" means the default is OFF, and that is a decision.** ``meter_integration_events`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
+
 Callback-style (LangChain / LlamaIndex / OpenAI Agents / CrewAI):
 
 ```python
