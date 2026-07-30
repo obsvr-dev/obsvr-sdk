@@ -1,6 +1,9 @@
 {
   "claimable": true,
-  "sdk_support": { "ts": "required", "py": "required" },
+  "sdk_support": {
+    "ts": "required",
+    "py": "required"
+  },
   "schema_version": 1,
   "name": "rules_hash.canonical",
   "description": "Cross-SDK canonical rules-hash fixture. Both SDKs must derive these exact hashes from these rules. The hash is the policy_version stamped on every audit event and the pin for approvals, so a divergence here is a release blocker, never a known-divergence.",
@@ -11,7 +14,13 @@
       "enabled": true,
       "action": "block",
       "type": "pii",
-      "conditions": { "pii_types": ["ssn", "credit_card"], "min_confidence": 0.8 }
+      "conditions": {
+        "pii_types": [
+          "ssn",
+          "credit_card"
+        ],
+        "min_confidence": 0.8
+      }
     },
     {
       "id": "r-quota-user",
@@ -19,7 +28,11 @@
       "enabled": true,
       "action": "block",
       "type": "quota",
-      "conditions": { "quota_limit": 100, "quota_window_ms": 60000, "quota_scope": "user_id" },
+      "conditions": {
+        "quota_limit": 100,
+        "quota_window_ms": 60000,
+        "quota_scope": "user_id"
+      },
       "applies_to": "prompt"
     },
     {
@@ -28,7 +41,11 @@
       "enabled": false,
       "action": "flag",
       "type": "keyword",
-      "conditions": { "keywords": ["test"] }
+      "conditions": {
+        "keywords": [
+          "test"
+        ]
+      }
     }
   ],
   "expected": {
@@ -40,5 +57,46 @@
     },
     "empty_set_hash": "none",
     "all_disabled_hash": "none"
+  },
+  "ordering": {
+    "note": "Rule ids are sorted before hashing, and the two languages sorted DIFFERENTLY: Python by code point, TypeScript by UTF-16 code unit. The orders agree on everything except an ASTRAL id meeting a BMP id in U+E000..U+FFFF, where JS sees the astral character's leading surrogate (U+D800..U+DBFF) and sorts it FIRST while Python sees U+10000+ and sorts it LAST. So the two SDKs stamped a different policy_version on identical policy - and policy_version is inside the chain preimage under format 3, which makes a wrong value durably wrong. This case is here because the rules above use ASCII ids only: they sort identically under both orders and could never have caught it.",
+    "rules": [
+      {
+        "id": "😀a",
+        "name": "astral id",
+        "enabled": true,
+        "action": "block",
+        "type": "keyword",
+        "conditions": {
+          "keywords": [
+            "x0"
+          ]
+        }
+      },
+      {
+        "id": "b",
+        "name": "private-use id",
+        "enabled": true,
+        "action": "block",
+        "type": "keyword",
+        "conditions": {
+          "keywords": [
+            "x1"
+          ]
+        }
+      }
+    ],
+    "expected": {
+      "utf16_order": [
+        "😀a",
+        "b"
+      ],
+      "codepoint_order_do_not_use": [
+        "b",
+        "😀a"
+      ],
+      "set_hash": "f564c404620ec8c9",
+      "floor_hash": "f564c404620ec8c9"
+    }
   }
 }

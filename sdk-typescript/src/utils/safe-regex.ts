@@ -131,6 +131,108 @@ const QUANTIFIED_ALTERNATION = /\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)\s*[+*{]/;
  * compile time in the SDK - defense in depth, since rules written before
  * this guard existed may still be stored.
  */
+/**
+ * Constructs whose SYNTAX one engine accepts and the other does not, or that
+ * both accept and read differently. A `regex` rule is authored once and run by
+ * two engines, so a construct in this set enforces in one language and is inert
+ * (or means something else) in the other — the same rule, the same input, a
+ * different verdict, with nothing on the record to say so.
+ *
+ * Measured across 30 diverging adversarial cases in 17 construct families:
+ *
+ *   Python-only syntax, invalid in JS:
+ *     (?P<x>...)  (?P=x)   named group / backref
+ *     (?i) (?s) (?m) (?x) (?a) (?u) (?L)  and the scoped form (?i:...)
+ *     a*+ a++ a?+ a{2,}+   possessive quantifiers
+ *     (?>...)              atomic group
+ *     \A \Z \z            anchors — LITERAL 'A'/'Z' or invalid in JS
+ *     a{,3}                a quantifier in Python, three literal characters in JS
+ *   JS-only syntax, invalid in Python:
+ *     (?<x>...)  \k<x>     named group / backref (Python spells these (?P<x>) )
+ *     (?<=...) with a variable-width body — Python requires fixed width
+ *     \p{...} \P{...}      Unicode property escapes
+ *     [a--[b]]             character-class set operations
+ *     \h and friends       an unknown alphabetic escape is a literal in JS and
+ *                          a hard error in Python
+ *
+ * Rejecting is the only resolution that makes the parity claim true, and it is
+ * the SAFE direction: a rejected rule is loud. It fires the existing
+ * `sdk:rule_rejected` signal and lands on the audit record naming the id, so a
+ * rule that stops enforcing is visible rather than silently one-sided. The
+ * alternative — leaving it — is a rule an operator believes is deployed fleet-
+ * wide that is enforcing on half the fleet.
+ *
+ * NOT covered here, and deliberately: `\d` `\w` `\s` `\b` and their negations
+ * are Unicode-aware in Python and ASCII-only in JS; `$` matches before a
+ * trailing newline in Python and not in JS; `.` matches U+000D and U+2028 in
+ * Python and neither in JS. Those are SEMANTIC splits with no syntactic marker,
+ * so they cannot be rejected without banning the most common constructs in the
+ * language. Aligning them means choosing which engine's meaning wins and
+ * re-verifying every deployed rule against the change — a breaking change with
+ * its own migration, not a validator entry. They are enumerated in
+ * `SECURITY.md` instead, and the parity claim is worded to exclude them.
+ */
+const CROSS_DIALECT_CONSTRUCTS: Array<{ re: RegExp; reason: string }> = [
+  { re: /\(\?P[<=]/, reason: "python_only_named_group" },
+  { re: /\(\?[a-zA-Z]+[):]/, reason: "python_only_inline_flags" },
+  { re: /\(\?>/, reason: "python_only_atomic_group" },
+  { re: /(?:[*+?]|\{\d+(?:,\d*)?\})\+/, reason: "python_only_possessive_quantifier" },
+  { re: /\{,\d+\}/, reason: "brace_quantifier_without_lower_bound" },
+  { re: /\(\?<[a-zA-Z_$]/, reason: "js_only_named_group" },
+  { re: /--\[/, reason: "js_only_class_set_operation" },
+];
+
+/** Escapes both engines read the same way. Anything else alphabetic is split. */
+const SHARED_ALPHA_ESCAPES = new Set("dDwWsSbBnrtfv0xu".split(""));
+
+/**
+ * Reject a lookbehind whose body is not fixed-width. JS accepts variable-width
+ * lookbehind; Python raises `look-behind requires fixed-width pattern`, so the
+ * whole rule is inert there.
+ */
+function hasVariableWidthLookbehind(pattern: string): boolean {
+  let i = pattern.indexOf("(?<");
+  while (i !== -1) {
+    const kind = pattern.slice(i + 3, i + 4);
+    if (kind === "=" || kind === "!") {
+      // Scan to the matching close paren, then look for a growth quantifier.
+      let depth = 0;
+      let j = i;
+      for (; j < pattern.length; j++) {
+        if (pattern[j] === "\\") { j++; continue; }
+        if (pattern[j] === "(") depth++;
+        else if (pattern[j] === ")") { depth--; if (depth === 0) break; }
+      }
+      const body = pattern.slice(i + 4, j);
+      if (/[*+?]|\{\d*,\d*\}/.test(body.replace(/\\./g, ""))) return true;
+    }
+    i = pattern.indexOf("(?<", i + 1);
+  }
+  return false;
+}
+
+/**
+ * Reject any construct that does not mean the same thing in both engines.
+ * Returns a reason, or null when the pattern is dialect-portable.
+ */
+export function crossDialectViolation(pattern: string): string | null {
+  for (const { re, reason } of CROSS_DIALECT_CONSTRUCTS) {
+    if (re.test(pattern)) return reason;
+  }
+  // Alphabetic escapes outside the shared set: a literal in JS, an error in
+  // Python (\h), or an anchor in Python and a literal in JS (\A, \Z, \z).
+  for (let i = 0; i < pattern.length - 1; i++) {
+    if (pattern[i] !== "\\") continue;
+    const c = pattern[i + 1];
+    if (/[a-zA-Z]/.test(c) && !SHARED_ALPHA_ESCAPES.has(c)) {
+      return `non_portable_escape (\\${c})`;
+    }
+    i++; // the escaped character is consumed
+  }
+  if (hasVariableWidthLookbehind(pattern)) return "variable_width_lookbehind";
+  return null;
+}
+
 export function validateRegexPattern(pattern: string): RegexValidationResult {
   if (typeof pattern !== "string" || pattern.length === 0) {
     return { ok: false, reason: "empty_pattern" };
@@ -166,6 +268,12 @@ export function validateRegexPattern(pattern: string): RegexValidationResult {
   if (quantifierCount > MAX_QUANTIFIERS) {
     return { ok: false, reason: `too_many_quantifiers (max ${MAX_QUANTIFIERS})` };
   }
+
+  // Cross-dialect portability LAST, so a pattern that is also unsafe still
+  // reports the safety reason — a ReDoS pattern is a worse finding than a
+  // non-portable one and should not be masked by it.
+  const dialect = crossDialectViolation(pattern);
+  if (dialect) return { ok: false, reason: `not_portable_across_sdks: ${dialect}` };
 
   return { ok: true };
 }

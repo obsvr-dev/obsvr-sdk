@@ -97,6 +97,91 @@ def _has_nested_repetition(pattern: str) -> bool:
     return False
 
 
+# Constructs whose SYNTAX one engine accepts and the other does not, or that
+# both accept and read differently. A ``regex`` rule is authored once and run by
+# two engines, so a construct in this set enforces in one language and is inert
+# (or means something else) in the other -- the same rule, the same input, a
+# different verdict, with nothing on the record to say so.
+#
+# Measured across 30 diverging adversarial cases in 17 construct families. See
+# the TypeScript twin (sdk-typescript/src/utils/safe-regex.ts,
+# ``crossDialectViolation``) for the full enumeration; the two lists must stay
+# identical or a rule accepted here is rejected there, which is the same defect
+# one layer down.
+#
+# Rejecting is the only resolution that makes the parity claim true, and it is
+# the SAFE direction: a rejected rule is loud. It fires the existing
+# ``sdk:rule_rejected`` signal and lands on the audit record naming the id, so a
+# rule that stops enforcing is visible rather than silently one-sided.
+#
+# NOT covered here, and deliberately: ``\d`` ``\w`` ``\s`` ``\b`` and their
+# negations are Unicode-aware here and ASCII-only in JS; ``$`` matches before a
+# trailing newline here and not in JS; ``.`` matches U+000D and U+2028 here and
+# neither in JS. Those are SEMANTIC splits with no syntactic marker, so they
+# cannot be rejected without banning the most common constructs in the language.
+# They are enumerated in SECURITY.md instead.
+_CROSS_DIALECT_CONSTRUCTS = [
+    (re.compile(r"\(\?P[<=]"), "python_only_named_group"),
+    (re.compile(r"\(\?[a-zA-Z]+[):]"), "python_only_inline_flags"),
+    (re.compile(r"\(\?>"), "python_only_atomic_group"),
+    (re.compile(r"(?:[*+?]|\{\d+(?:,\d*)?\})\+"), "python_only_possessive_quantifier"),
+    (re.compile(r"\{,\d+\}"), "brace_quantifier_without_lower_bound"),
+    (re.compile(r"\(\?<[a-zA-Z_$]"), "js_only_named_group"),
+    (re.compile(r"--\["), "js_only_class_set_operation"),
+]
+
+# Escapes both engines read the same way. Anything else alphabetic is split.
+_SHARED_ALPHA_ESCAPES = set("dDwWsSbBnrtfv0xu")
+
+
+def _has_variable_width_lookbehind(pattern: str) -> bool:
+    """JS accepts variable-width lookbehind; Python raises, so the whole rule is
+    inert here while it enforces there."""
+    i = pattern.find("(?<")
+    while i != -1:
+        if pattern[i + 3 : i + 4] in ("=", "!"):
+            depth = 0
+            j = i
+            while j < len(pattern):
+                if pattern[j] == "\\":
+                    j += 2
+                    continue
+                if pattern[j] == "(":
+                    depth += 1
+                elif pattern[j] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            body = re.sub(r"\\.", "", pattern[i + 4 : j])
+            if re.search(r"[*+?]|\{\d*,\d*\}", body):
+                return True
+        i = pattern.find("(?<", i + 1)
+    return False
+
+
+def cross_dialect_violation(pattern: str):
+    """Reason a pattern does not mean the same thing in both engines, or None.
+
+    Twin: ``crossDialectViolation`` in sdk-typescript/src/utils/safe-regex.ts.
+    """
+    for rx, reason in _CROSS_DIALECT_CONSTRUCTS:
+        if rx.search(pattern):
+            return reason
+    i = 0
+    while i < len(pattern) - 1:
+        if pattern[i] != "\\":
+            i += 1
+            continue
+        c = pattern[i + 1]
+        if c.isascii() and c.isalpha() and c not in _SHARED_ALPHA_ESCAPES:
+            return "non_portable_escape (\\%s)" % c
+        i += 2
+    if _has_variable_width_lookbehind(pattern):
+        return "variable_width_lookbehind"
+    return None
+
+
 def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
     """Statically validate a customer-supplied pattern.
 
@@ -125,6 +210,13 @@ def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
     quantifiers = _QUANTIFIER_COUNT.findall(pattern)
     if len(quantifiers) > MAX_QUANTIFIERS:
         return False, f"too_many_quantifiers (max {MAX_QUANTIFIERS})"
+
+    # Cross-dialect portability LAST, so a pattern that is also unsafe still
+    # reports the safety reason -- a ReDoS pattern is a worse finding than a
+    # non-portable one and should not be masked by it.
+    dialect = cross_dialect_violation(pattern)
+    if dialect:
+        return False, f"not_portable_across_sdks: {dialect}"
 
     return True, None
 

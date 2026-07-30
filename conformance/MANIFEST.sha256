@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = a2e27106842ed539f5b04ebf6c9336b121b40906b4dc4eab1ad9af3dcf22580f
+# corpus_sha256 = 1bd939c24b99a50734705cc7657c20daea82a2153a329dd0de0c412bbac7aa4e
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -35,7 +35,7 @@ e2eb05ebd6bb173c714338d851b85160bc4cfa5382323612def39d60eefa3508  fixtures/eval_
 dc544592f9b458c5dae55adb1733efaf51a10a4ae2438c948f7dd0c23ffec1be  fixtures/fail_mode.json
 1296944641045722e0cc134fd181575ffa871c77bd5cd509101e5a7c9d103ac7  fixtures/injection_reason.json
 78e79783f6f7888e742faf6d4704c7fc4c67d9e618b9b1a05dba1817360c9d7c  fixtures/instance_guard.json
-c2db0e5974412fe5d52329475c77de6dfbc3a014353c6649c2d12d2dc755e2e9  fixtures/normalization.json
+46cac3b1aee572e88828b103545f27e97c9a74ba7e8646799b67f98523f241ca  fixtures/normalization.json
 490d354986ad59015e651c589bdebfb3d8d06640142c3c51e17dea589f748006  fixtures/otel_attributes.json
 d66f66837586e7289ff4be348858fe2b4151224aab8765ef6020bac4457cd1e1  fixtures/pii_scan.json
 ec2505549c68066f4f15b1cc20a60a82bc5c34191607a2335fd51437197c9078  fixtures/policy_floor.json
@@ -43,7 +43,8 @@ d95e7d3f27cd37d917e45cbc9e52840433733ed11996c548830513ff7e633975  fixtures/polic
 6f8f1894901f1eba84e7bddb4d57300955ebf83f107117077f9bf3d7a0d71202  fixtures/protocol_facets.json
 86a1c4494c58a10516e6fed3e0f8fcb05174e3e1b45f0862cc1c4beb15b25c0b  fixtures/quota_escrow.json
 6e866d7970101b67643f73f72e250d3325deed09df6ddc5be5c498d8744a0f1b  fixtures/reason_codes.json
-4ec513bbb3cdd557415f1a00849cf7a2d0cdfb06e5f3aac70027c8ba7ab66b68  fixtures/rules_hash.json
+e8c3e61d76bf4dd1a13c4bebca90cc011e925c5bf7bc7798e14cb7d39750965a  fixtures/regex_dialect.json
+bfb33855bf981e0029aa2cdc766fce1d76a8cf722d2594d8607d655a1d29962e  fixtures/rules_hash.json
 58440346c8a54d19d6b36e5cc90d062983dc40b8d40f92b2f41537ac940c187d  fixtures/session_taint.json
 457832151ba4c28824da326336e9685c0304ebf7803cbcbd1116e7645eba82f9  fixtures/signing_vectors.json
 8e8dd03a54c7e497c1879d8169bd4c2bbf4334edf0d4c035c66ff29b3e809342  fixtures/tool_content_hash.json

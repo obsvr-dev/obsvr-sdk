@@ -970,7 +970,8 @@ def _canonical_json(value: Any) -> str:
 
 def derive_policy_version(rules: List[PolicyRule]) -> str:
     """Canonical rules hash of the enabled rule set: 16-hex-char SHA-256
-    prefix over the canonical projections sorted by id (codepoint order).
+    prefix over the canonical projections sorted by id in UTF-16 CODE-UNIT
+    order -- the order JS sorts in, not Python's codepoint order.
     Returns "none" when no rules are enabled. Stamped on every audit
     event as policy_version; must match the TS SDK byte for byte
     (pinned by the shared fixture).
@@ -991,7 +992,16 @@ def derive_policy_version(rules: List[PolicyRule]) -> str:
     try:
         if not rules:
             return "none"
-        enabled = sorted([r for r in rules if r.enabled], key=lambda r: r.id)
+        # _utf16_order, not the default codepoint order. The two agree on
+        # everything except an ASTRAL rule id meeting a BMP id above U+E000,
+        # where JS sees the leading surrogate and sorts it FIRST while Python
+        # sees U+10000+ and sorts it LAST. The projections are then hashed in
+        # that order, so the two SDKs stamped DIFFERENT policy_version on
+        # identical policy -- and policy_version is inside the chain preimage
+        # under format 3, which makes a wrong value durably wrong rather than
+        # merely wrong. The helper existed for exactly this and was wired only
+        # to object keys.
+        enabled = sorted([r for r in rules if r.enabled], key=lambda r: _utf16_order(r.id))
         if not enabled:
             return "none"
         data = _canonical_json([_canonical_rule(r) for r in enabled])
@@ -1074,7 +1084,9 @@ def derive_floor_version(floor_rules: Optional[List[Any]]) -> str:
             )
             for r in floor_rules
         ),
-        key=lambda d: str(d["id"]),
+        # Same UTF-16 code-unit order as derive_policy_version, for the same
+        # reason: the floor hash rides every event under an active floor.
+        key=lambda d: _utf16_order(str(d["id"])),
     )
     data = _canonical_json(coerced)
     return hashlib.sha256(data.encode("utf-8")).hexdigest()[:16]

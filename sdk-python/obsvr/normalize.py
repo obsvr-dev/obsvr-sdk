@@ -54,6 +54,26 @@ _ZERO_WIDTH_RE = re.compile("[" + "".join(chr(cp) for cp in _ZERO_WIDTH_CODEPOIN
 # only the letters common in real bypass attempts -- so the fold never mangles
 # legitimate non-Latin text more than necessary. Listed as (codepoint, ascii)
 # so the table is unambiguous and trivially matchable to the TypeScript twin.
+#
+# The last group is here for a different reason, and it is the reason this table
+# has to exist at all rather than deferring to NFKC. NFKC is NOT a stable shared
+# primitive across languages: Node folds through ICU, which tracks the current
+# Unicode release, while CPython ships a frozen ``unicodedata`` per minor
+# version. ICU is therefore always ahead, and every Unicode release leaves a
+# fresh residue of codepoints one runtime folds to ASCII and the other does not.
+# Measured across eight CPython builds against one Node: 41 such codepoints at
+# CPython 3.10 (the declared floor), 37 at 3.12/3.13, 1 at 3.14 -- narrowing but
+# never reaching zero, because the next Unicode release restocks it. All of them
+# fold on Node and none on Python, so the divergence is one-directional and its
+# effect is that a ``keyword`` or ``topic_deny`` rule blocks in TypeScript and
+# ALLOWS here.
+#
+# Listing them here rather than vendoring a whole NFKC table is deliberate: an
+# entry is IDEMPOTENT and version-independent by construction. On a host whose
+# NFKC already folds the codepoint, step 1 consumes it and this map never sees
+# it; on a host whose NFKC does not, this map folds it to the same ASCII
+# character. Both runtimes therefore agree whatever Unicode version they ship,
+# and a future CPython that gains the mapping changes nothing.
 _CONFUSABLE_PAIRS = [
     # -- Cyrillic -> Latin (lowercase) --
     (0x0430, "a"),  # а
@@ -96,6 +116,48 @@ _CONFUSABLE_PAIRS = [
     (0x03A1, "P"),  # Ρ (capital rho)
     (0x03A4, "T"),  # Τ (capital tau)
     (0x03A7, "X"),  # Χ (capital chi)
+    # -- Unicode 16/17 additions that only NEWER hosts fold (A-2) --
+    (0x1CCD6, "A"),  # OUTLINED LATIN CAPITAL LETTER A
+    (0x1CCD7, "B"),  # OUTLINED LATIN CAPITAL LETTER B
+    (0x1CCD8, "C"),  # OUTLINED LATIN CAPITAL LETTER C
+    (0x1CCD9, "D"),  # OUTLINED LATIN CAPITAL LETTER D
+    (0x1CCDA, "E"),  # OUTLINED LATIN CAPITAL LETTER E
+    (0x1CCDB, "F"),  # OUTLINED LATIN CAPITAL LETTER F
+    (0x1CCDC, "G"),  # OUTLINED LATIN CAPITAL LETTER G
+    (0x1CCDD, "H"),  # OUTLINED LATIN CAPITAL LETTER H
+    (0x1CCDE, "I"),  # OUTLINED LATIN CAPITAL LETTER I
+    (0x1CCDF, "J"),  # OUTLINED LATIN CAPITAL LETTER J
+    (0x1CCE0, "K"),  # OUTLINED LATIN CAPITAL LETTER K
+    (0x1CCE1, "L"),  # OUTLINED LATIN CAPITAL LETTER L
+    (0x1CCE2, "M"),  # OUTLINED LATIN CAPITAL LETTER M
+    (0x1CCE3, "N"),  # OUTLINED LATIN CAPITAL LETTER N
+    (0x1CCE4, "O"),  # OUTLINED LATIN CAPITAL LETTER O
+    (0x1CCE5, "P"),  # OUTLINED LATIN CAPITAL LETTER P
+    (0x1CCE6, "Q"),  # OUTLINED LATIN CAPITAL LETTER Q
+    (0x1CCE7, "R"),  # OUTLINED LATIN CAPITAL LETTER R
+    (0x1CCE8, "S"),  # OUTLINED LATIN CAPITAL LETTER S
+    (0x1CCE9, "T"),  # OUTLINED LATIN CAPITAL LETTER T
+    (0x1CCEA, "U"),  # OUTLINED LATIN CAPITAL LETTER U
+    (0x1CCEB, "V"),  # OUTLINED LATIN CAPITAL LETTER V
+    (0x1CCEC, "W"),  # OUTLINED LATIN CAPITAL LETTER W
+    (0x1CCED, "X"),  # OUTLINED LATIN CAPITAL LETTER X
+    (0x1CCEE, "Y"),  # OUTLINED LATIN CAPITAL LETTER Y
+    (0x1CCEF, "Z"),  # OUTLINED LATIN CAPITAL LETTER Z
+    (0x1CCF0, "0"),  # OUTLINED DIGIT ZERO
+    (0x1CCF1, "1"),  # OUTLINED DIGIT ONE
+    (0x1CCF2, "2"),  # OUTLINED DIGIT TWO
+    (0x1CCF3, "3"),  # OUTLINED DIGIT THREE
+    (0x1CCF4, "4"),  # OUTLINED DIGIT FOUR
+    (0x1CCF5, "5"),  # OUTLINED DIGIT FIVE
+    (0x1CCF6, "6"),  # OUTLINED DIGIT SIX
+    (0x1CCF7, "7"),  # OUTLINED DIGIT SEVEN
+    (0x1CCF8, "8"),  # OUTLINED DIGIT EIGHT
+    (0x1CCF9, "9"),  # OUTLINED DIGIT NINE
+    (0xA7F1, "S"),  # LATIN EXTENDED-D U+A7F1 (assigned in Unicode 17.0)
+    (0xA7F2, "C"),  # MODIFIER LETTER CAPITAL C
+    (0xA7F3, "F"),  # MODIFIER LETTER CAPITAL F
+    (0xA7F4, "Q"),  # MODIFIER LETTER CAPITAL Q
+    (0x107A5, "q"),  # MODIFIER LETTER SMALL Q
 ]
 
 _CONFUSABLES = {chr(cp): ascii_ch for cp, ascii_ch in _CONFUSABLE_PAIRS}

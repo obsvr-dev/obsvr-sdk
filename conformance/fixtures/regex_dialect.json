@@ -1,0 +1,173 @@
+{
+  "claimable": true,
+  "sdk_support": {
+    "ts": "required",
+    "py": "required"
+  },
+  "schema_version": 1,
+  "name": "regex_dialect.portability",
+  "description": "Cross-SDK portability of customer `regex` rule patterns. A regex rule is authored ONCE and run by TWO engines, so a construct that only one engine accepts - or that both accept and read differently - enforces in one language and is inert in the other, with nothing on the record to say so. Measured: 30 diverging verdicts across 17 construct families. Both validators must return the same ok/not-ok verdict for every pattern here; the REASON strings are deliberately not pinned, because each engine's own parser legitimately catches some of these first and reports its own reason. NOT in this fixture, and deliberately: the SEMANTIC splits with no syntactic marker - `\\d` `\\w` `\\s` `\\b` are Unicode-aware in Python and ASCII-only in JS, `$` matches before a trailing newline in Python only, and `.` matches U+000D and U+2028 in Python only. Those cannot be rejected without banning the most common constructs in the language, so they are enumerated in SECURITY.md and the parity claim is worded to exclude them. A fixture pinning them would fail today by design.",
+  "cases": [
+    {
+      "id": "python_named_group",
+      "pattern": "(?P<x>secret)",
+      "portable": false,
+      "family": "named-group",
+      "note": "Python spelling. Valid in Python, a syntax error in JS - so the rule enforced on one half of a fleet and was inert on the other."
+    },
+    {
+      "id": "js_named_group",
+      "pattern": "(?<x>secret)",
+      "portable": false,
+      "family": "named-group",
+      "note": "JS spelling. Mirror image of the case above; both directions are pinned because a one-sided fixture would look closed while half the split stayed open."
+    },
+    {
+      "id": "python_named_backref",
+      "pattern": "(?P<x>ab)(?P=x)",
+      "portable": false,
+      "family": "named-backref",
+      "note": "Python-only backreference syntax."
+    },
+    {
+      "id": "js_named_backref",
+      "pattern": "(?<x>ab)\\k<x>",
+      "portable": false,
+      "family": "named-backref",
+      "note": "JS-only backreference syntax."
+    },
+    {
+      "id": "variable_width_lookbehind",
+      "pattern": "(?<=USD\\s*)\\d+",
+      "portable": false,
+      "family": "lookbehind",
+      "note": "JS allows a variable-width lookbehind; Python requires fixed width and rejects the whole pattern."
+    },
+    {
+      "id": "possessive_quantifier",
+      "pattern": "a*+b",
+      "portable": false,
+      "family": "possessive",
+      "note": "Python 3.11+ only; never valid in JS."
+    },
+    {
+      "id": "atomic_group",
+      "pattern": "(?>a+)b",
+      "portable": false,
+      "family": "atomic-group",
+      "note": "Python 3.11+ only; never valid in JS."
+    },
+    {
+      "id": "inline_flag_ignorecase",
+      "pattern": "(?i)secret",
+      "portable": false,
+      "family": "inline-flag",
+      "note": "Inline flags are Python-only. In JS this is a syntax error."
+    },
+    {
+      "id": "inline_flag_dotall",
+      "pattern": "(?s)a.b",
+      "portable": false,
+      "family": "inline-flag",
+      "note": "Inline flags are Python-only."
+    },
+    {
+      "id": "inline_flag_multiline",
+      "pattern": "(?m)^b",
+      "portable": false,
+      "family": "inline-flag",
+      "note": "Inline flags are Python-only."
+    },
+    {
+      "id": "scoped_inline_flag",
+      "pattern": "(?i:secret)",
+      "portable": false,
+      "family": "inline-flag",
+      "note": "Scoped inline flags are Python-only."
+    },
+    {
+      "id": "anchor_backslash_A",
+      "pattern": "\\Asecret",
+      "portable": false,
+      "family": "anchor",
+      "note": "A start anchor in Python and the LITERAL character 'A' in JS - the worst shape, because both engines accept it and quietly mean different things."
+    },
+    {
+      "id": "anchor_backslash_Z",
+      "pattern": "secret\\Z",
+      "portable": false,
+      "family": "anchor",
+      "note": "An end anchor in Python and the literal 'Z' in JS."
+    },
+    {
+      "id": "anchor_backslash_z",
+      "pattern": "secret\\z",
+      "portable": false,
+      "family": "anchor",
+      "note": "An end anchor in Python and the literal 'z' in JS."
+    },
+    {
+      "id": "unknown_alpha_escape",
+      "pattern": "\\hello",
+      "portable": false,
+      "family": "escape",
+      "note": "An unknown alphabetic escape is a hard error in Python and a literal in JS."
+    },
+    {
+      "id": "unicode_property_escape",
+      "pattern": "\\p{L}+",
+      "portable": false,
+      "family": "escape",
+      "note": "A Unicode property escape under the JS `u` flag; a literal 'p{L}' without it, and an error in Python."
+    },
+    {
+      "id": "class_set_operation",
+      "pattern": "[\\w--[0-9]]",
+      "portable": false,
+      "family": "class-set-op",
+      "note": "Character-class set operations need the JS `v` flag and do not exist in Python."
+    },
+    {
+      "id": "brace_without_lower_bound",
+      "pattern": "a{,3}b",
+      "portable": false,
+      "family": "quantifier",
+      "note": "A quantifier in Python and three literal characters in JS - accepted by both, meaning different things."
+    },
+    {
+      "id": "portable_digit_class",
+      "pattern": "\\d+",
+      "portable": true,
+      "family": "control",
+      "note": "Portable syntax. The SEMANTIC split on \\d is documented, not rejected - see the note field."
+    },
+    {
+      "id": "portable_word_class",
+      "pattern": "^\\w+$",
+      "portable": true,
+      "family": "control",
+      "note": "Portable syntax; semantics documented."
+    },
+    {
+      "id": "portable_literal",
+      "pattern": "secret",
+      "portable": true,
+      "family": "control",
+      "note": "Plain literal - the control that proves the validator is not rejecting everything."
+    },
+    {
+      "id": "portable_fixed_lookbehind",
+      "pattern": "(?<=USD)\\d+",
+      "portable": true,
+      "family": "control",
+      "note": "A FIXED-width lookbehind is portable. Without this control, the variable-width rejection above could mean 'lookbehind is banned'."
+    },
+    {
+      "id": "portable_character_class",
+      "pattern": "[a-z]{2,8}",
+      "portable": true,
+      "family": "control",
+      "note": "Ordinary class and bounded quantifier."
+    }
+  ]
+}

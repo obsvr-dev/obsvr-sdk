@@ -56,6 +56,27 @@ const ZERO_WIDTH_RE = new RegExp(
  * only the letters common in real bypass attempts — so the fold never mangles
  * legitimate non-Latin text more than necessary. Listed as [codepoint, ascii]
  * so the table is unambiguous and trivially matchable to the Python twin.
+ *
+ * The last group is here for a different reason, and it is the reason this
+ * table has to exist at all rather than deferring to NFKC. NFKC is NOT a stable
+ * shared primitive across languages: Node folds through ICU, which tracks the
+ * current Unicode release, while CPython ships a frozen `unicodedata` per minor
+ * version. ICU is therefore always ahead, and every Unicode release leaves a
+ * fresh residue of codepoints one runtime folds to ASCII and the other does
+ * not. Measured across eight CPython builds against one Node: 41 such
+ * codepoints at CPython 3.10 (the declared floor), 37 at 3.12/3.13, 1 at 3.14 —
+ * narrowing but never reaching zero, because the next Unicode release restocks
+ * it. All of them fold on Node and none on Python, so the divergence is
+ * one-directional and its effect is that a `keyword` or `topic_deny` rule
+ * blocks in TypeScript and ALLOWS in Python.
+ *
+ * Listing them here rather than vendoring a whole NFKC table is deliberate: an
+ * entry is IDEMPOTENT and version-independent by construction. On a host whose
+ * NFKC already folds the codepoint, step 1 consumes it and this map never sees
+ * it; on a host whose NFKC does not, this map folds it to the same ASCII
+ * character. Both runtimes therefore agree on the result whatever Unicode
+ * version they ship, and a future CPython that gains the mapping changes
+ * nothing.
  */
 const CONFUSABLE_PAIRS: Array<[number, string]> = [
   // ── Cyrillic → Latin (lowercase) ──
@@ -99,6 +120,48 @@ const CONFUSABLE_PAIRS: Array<[number, string]> = [
   [0x03a1, "P"], // Ρ (capital rho)
   [0x03a4, "T"], // Τ (capital tau)
   [0x03a7, "X"], // Χ (capital chi)
+  // ── Unicode 16/17 additions that only NEWER hosts fold (A-2) ──
+  [0x1ccd6, "A"], // OUTLINED LATIN CAPITAL LETTER A
+  [0x1ccd7, "B"], // OUTLINED LATIN CAPITAL LETTER B
+  [0x1ccd8, "C"], // OUTLINED LATIN CAPITAL LETTER C
+  [0x1ccd9, "D"], // OUTLINED LATIN CAPITAL LETTER D
+  [0x1ccda, "E"], // OUTLINED LATIN CAPITAL LETTER E
+  [0x1ccdb, "F"], // OUTLINED LATIN CAPITAL LETTER F
+  [0x1ccdc, "G"], // OUTLINED LATIN CAPITAL LETTER G
+  [0x1ccdd, "H"], // OUTLINED LATIN CAPITAL LETTER H
+  [0x1ccde, "I"], // OUTLINED LATIN CAPITAL LETTER I
+  [0x1ccdf, "J"], // OUTLINED LATIN CAPITAL LETTER J
+  [0x1cce0, "K"], // OUTLINED LATIN CAPITAL LETTER K
+  [0x1cce1, "L"], // OUTLINED LATIN CAPITAL LETTER L
+  [0x1cce2, "M"], // OUTLINED LATIN CAPITAL LETTER M
+  [0x1cce3, "N"], // OUTLINED LATIN CAPITAL LETTER N
+  [0x1cce4, "O"], // OUTLINED LATIN CAPITAL LETTER O
+  [0x1cce5, "P"], // OUTLINED LATIN CAPITAL LETTER P
+  [0x1cce6, "Q"], // OUTLINED LATIN CAPITAL LETTER Q
+  [0x1cce7, "R"], // OUTLINED LATIN CAPITAL LETTER R
+  [0x1cce8, "S"], // OUTLINED LATIN CAPITAL LETTER S
+  [0x1cce9, "T"], // OUTLINED LATIN CAPITAL LETTER T
+  [0x1ccea, "U"], // OUTLINED LATIN CAPITAL LETTER U
+  [0x1cceb, "V"], // OUTLINED LATIN CAPITAL LETTER V
+  [0x1ccec, "W"], // OUTLINED LATIN CAPITAL LETTER W
+  [0x1cced, "X"], // OUTLINED LATIN CAPITAL LETTER X
+  [0x1ccee, "Y"], // OUTLINED LATIN CAPITAL LETTER Y
+  [0x1ccef, "Z"], // OUTLINED LATIN CAPITAL LETTER Z
+  [0x1ccf0, "0"], // OUTLINED DIGIT ZERO
+  [0x1ccf1, "1"], // OUTLINED DIGIT ONE
+  [0x1ccf2, "2"], // OUTLINED DIGIT TWO
+  [0x1ccf3, "3"], // OUTLINED DIGIT THREE
+  [0x1ccf4, "4"], // OUTLINED DIGIT FOUR
+  [0x1ccf5, "5"], // OUTLINED DIGIT FIVE
+  [0x1ccf6, "6"], // OUTLINED DIGIT SIX
+  [0x1ccf7, "7"], // OUTLINED DIGIT SEVEN
+  [0x1ccf8, "8"], // OUTLINED DIGIT EIGHT
+  [0x1ccf9, "9"], // OUTLINED DIGIT NINE
+  [0xa7f1, "S"], // LATIN EXTENDED-D U+A7F1 (assigned in Unicode 17.0)
+  [0xa7f2, "C"], // MODIFIER LETTER CAPITAL C
+  [0xa7f3, "F"], // MODIFIER LETTER CAPITAL F
+  [0xa7f4, "Q"], // MODIFIER LETTER CAPITAL Q
+  [0x107a5, "q"], // MODIFIER LETTER SMALL Q
 ];
 
 const CONFUSABLES: Map<string, string> = new Map(

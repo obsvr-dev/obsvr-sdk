@@ -57,3 +57,49 @@ def test_rule_hash_changes_on_edit():
     original = derive_rule_hash(rule)
     rule.conditions = dict(rule.conditions, min_confidence=0.9)
     assert derive_rule_hash(rule) != original
+
+
+# --- A-4: the two rule-id sort sites -----------------------------------------
+#
+# Both languages sort ids before hashing, and they sorted DIFFERENTLY -- this
+# side by code point, TypeScript by UTF-16 code unit. Every id in the fixture
+# above is ASCII, so both orders agree on all of them and the divergence
+# survived the whole corpus.
+#
+# The case that catches it needs an ASTRAL id beside a BMP id in
+# U+E000..U+FFFF. That is the only region where the orders differ, so a pair
+# chosen anywhere else would pass whatever the sort key is -- a fixture that
+# cannot fail.
+
+_ORDERING = FIXTURE["ordering"]
+
+
+def _ordering_rules():
+    return [
+        PolicyRule(
+            id=r["id"], name=r["name"], enabled=r["enabled"], action=r["action"],
+            type=r["type"], conditions=r["conditions"],
+        )
+        for r in _ORDERING["rules"]
+    ]
+
+
+def test_the_two_orders_genuinely_differ_on_this_pair():
+    """Non-vacuity: if these two orders agreed, every assertion below would
+    hold with either sort key and the fixture would prove nothing."""
+    from obsvr.rules import _utf16_order
+
+    ids = [r["id"] for r in _ORDERING["rules"]]
+    assert sorted(ids, key=_utf16_order) == _ORDERING["expected"]["utf16_order"]
+    assert sorted(ids) == _ORDERING["expected"]["codepoint_order_do_not_use"]
+    assert sorted(ids, key=_utf16_order) != sorted(ids)
+
+
+def test_derive_policy_version_stamps_the_pinned_hash():
+    assert derive_policy_version(_ordering_rules()) == _ORDERING["expected"]["set_hash"]
+
+
+def test_derive_floor_version_stamps_the_pinned_hash():
+    from obsvr.rules import derive_floor_version
+
+    assert derive_floor_version(_ORDERING["rules"]) == _ORDERING["expected"]["floor_hash"]

@@ -4,8 +4,7 @@ import {
   derivePolicyVersion,
   deriveRuleHash,
   stableStringify,
-  PolicyRule,
-} from '../../src/policy/rules';
+  PolicyRule, deriveFloorVersion } from '../../src/policy/rules';
 
 // Walk up from cwd to find the repo-root conformance fixture; works under
 // both the ESM and CJS jest configs (no __dirname / import.meta needed).
@@ -81,5 +80,52 @@ describe('stableStringify canonical form', () => {
   it('drops undefined-valued object keys and nullifies undefined in arrays', () => {
     expect(stableStringify({ a: undefined, b: 1 })).toBe('{"b":1}');
     expect(stableStringify([undefined, 1])).toBe('[null,1]');
+  });
+});
+
+/**
+ * A-4: the two rule-id sort sites. Both languages sort ids before hashing, and
+ * they sorted differently — Python by code point, TypeScript by UTF-16 code
+ * unit. Every id in the fixture above is ASCII, so both orders agree on all of
+ * them and the divergence survived the whole corpus.
+ *
+ * The case that catches it needs an ASTRAL id beside a BMP id in
+ * U+E000..U+FFFF. That is the only region where the orders differ, so a pair
+ * chosen anywhere else would pass whatever the sort key is — a fixture that
+ * cannot fail.
+ */
+describe('conformance: rule-id ordering across the two sort implementations', () => {
+  const ordering = fixture.ordering as {
+    rules: PolicyRule[];
+    expected: {
+      utf16_order: string[];
+      codepoint_order_do_not_use: string[];
+      set_hash: string;
+      floor_hash: string;
+    };
+  };
+
+  it('the two orders genuinely differ on this pair (the case is not vacuous)', () => {
+    const ids = ordering.rules.map((r) => r.id);
+    const byCodePoint = [...ids].sort((a, b) => {
+      const A = [...a].map((c) => c.codePointAt(0)!);
+      const B = [...b].map((c) => c.codePointAt(0)!);
+      for (let i = 0; i < Math.min(A.length, B.length); i++) {
+        if (A[i] !== B[i]) return A[i] - B[i];
+      }
+      return A.length - B.length;
+    });
+    const byCodeUnit = [...ids].sort();
+    expect(byCodeUnit).toEqual(ordering.expected.utf16_order);
+    expect(byCodePoint).toEqual(ordering.expected.codepoint_order_do_not_use);
+    expect(byCodeUnit).not.toEqual(byCodePoint);
+  });
+
+  it('derivePolicyVersion stamps the pinned hash', () => {
+    expect(derivePolicyVersion(ordering.rules)).toBe(ordering.expected.set_hash);
+  });
+
+  it('deriveFloorVersion stamps the pinned hash', () => {
+    expect(deriveFloorVersion(ordering.rules)).toBe(ordering.expected.floor_hash);
   });
 });

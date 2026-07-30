@@ -647,6 +647,67 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The two SDKs did not enforce the same policy, in three separate places.**
+  All three are cross-language divergence, all three moved the conformance
+  corpus, and they land together as one re-pin (35 files `a2e27106…` → 36 files
+  `1bd939c2…`, both `conformance.pin` files in step).
+
+  - **Unicode-version skew defeated the obfuscation defence in one language.**
+    NFKC is not a stable cross-language primitive. Node folds through ICU,
+    which tracks the current Unicode release; CPython ships a frozen
+    `unicodedata` per minor version. ICU is therefore always ahead, and every
+    Unicode release leaves a residue of codepoints one runtime folds to ASCII
+    and the other does not. Measured across eight CPython builds against one
+    Node: **41** such codepoints at the declared Python floor, **37** at
+    3.12/3.13, **1** at 3.14 — narrowing but never zero. All of them fold on
+    Node and none on Python, so a `keyword` rule blocking `SECRET` **blocked in
+    TypeScript and ALLOWED in Python** when the payload was written in Unicode
+    16 Outlined Latin. The residue is now in the curated confusable fold both
+    SDKs already vendored for exactly this reason. Each entry is idempotent by
+    construction — on a host whose NFKC already folds the codepoint the fold
+    never sees it — so the two agree whatever Unicode version they ship, and a
+    future CPython that gains the mapping changes nothing. Vendoring the whole
+    of NFKC was considered and rejected: it would replace a version-tracking
+    gap with a version-frozen table that drifts from both hosts.
+  - **Customer `regex` rules diverged across 17 construct families.** A regex
+    rule is authored once and run by two engines, so a construct only one
+    engine accepts — or that both accept and read differently — enforces in one
+    language and is inert in the other, with nothing on the record to say so.
+    The validator now **rejects** the syntax-level split in both languages:
+    Python-only named groups/backrefs, JS-only named groups/backrefs, inline
+    flags, possessive quantifiers, atomic groups, variable-width lookbehind,
+    `\A` `\Z` `\z` (anchors in Python, literal characters in JS), any other
+    non-shared alphabetic escape, class-set operations, and `{,n}`. Rejection
+    is the safe direction: it fires the existing `sdk:rule_rejected` signal and
+    names the rule on the audit record, so a rule that stops enforcing is
+    visible rather than silently one-sided. **The SEMANTIC splits are NOT
+    closed** — `\d` `\w` `\s` `\b` are Unicode-aware in Python and
+    ASCII-only in JS, `$` matches before a trailing newline in Python only, `.`
+    matches U+000D and U+2028 in Python only — because rejecting them means
+    banning the most common constructs in the language. They are enumerated
+    construct by construct in `SECURITY.md`, and deliberately **not** in
+    `known-divergences.json`, whose own policy forbids an entry covering an
+    enforcement-verdict difference.
+  - **An astral rule id produced two different `policy_version` values.** Rule
+    ids are sorted before hashing, and Python sorted by code point where
+    TypeScript sorted by UTF-16 code unit. The orders agree everywhere except
+    an astral id meeting a BMP id in U+E000..U+FFFF, where JS sees the leading
+    surrogate and sorts it first. `policy_version` is inside the chain preimage
+    under chain format 3, so a wrong value is durably wrong. Both sorts now use
+    the existing `_utf16_order` helper, which was present and wired only to
+    object keys.
+
+  **Why the corpus never caught any of them.** It held 44 `keyword` cases and
+  exactly one `regex` case — `(a+)+$`, which both validators reject, so it
+  asserted only that a rejected pattern never matches. Every rule id in it was
+  ASCII, so both sort orders agreed on all of them. The corpus now carries the
+  case that would have caught each: three host-version fold candidates, 23
+  regex-dialect cases in both directions, and an astral rule id beside a
+  private-use one — the only region where the two sort orders differ, so a pair
+  chosen anywhere else would pass whatever the sort key is. A fixed-repetition
+  ReDoS case belongs here too and is **not** added: it depends on the
+  `repAt` validator gap, which is still open.
+
 - **Documents credited two surfaces with governance they do not run.** Measured
   layer by layer and method by method, in both languages, driven rather than
   read off the code:
