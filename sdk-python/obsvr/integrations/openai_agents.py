@@ -72,11 +72,49 @@ from ..agent_policy import (
     unrecognized_step_action_meta,
 )
 from ..config import try_get_config
+from ..deobfuscate import redact_for_storage
 from ..events import emit_event, tool_gate_not_evaluated_compliance
+from ..policy import apply_observe_policy
 from ..token_usage import read_token_usage
 from ..dedupe import claim_emission
 
 SOURCE = "openai_agents_py"
+
+
+def _govern_stored(
+    prompt_text: str, response_text: str, config: Any
+) -> Tuple[str, str, Optional[Dict[str, Any]]]:
+    """Run the observe-only PII net over what an event is about to STORE.
+
+    This integration is a ``TracingProcessor`` and cannot refuse anything — the
+    framework wraps every processor callback in its own ``try``/``except`` and
+    only logs — so this is emphatically NOT enforcement and the returned
+    compliance says so: ``redacted``, never ``blocked``. The call has already
+    happened by the time a span ends.
+
+    What it does stop is raw PII coming to rest in a signed event. Every other
+    observe-only integration on this side has run this net for as long as it has
+    existed; this one ran no policy pipeline of any kind, so at any sample rate
+    it wrote whatever the agent said straight into the chain. The canary half
+    was already covered — that net lives in ``events.build_audit_event`` and
+    fires on every path — so the gap was the PII half alone.
+
+    Twin posture: ``langchain.py`` and ``llamaindex.py``, deliberately, because
+    a third spelling of the same decision is how two of them drift.
+    """
+    joined = "\n".join(t for t in (prompt_text, response_text) if t)
+    if not joined:
+        return prompt_text, response_text, None
+    observed = apply_observe_policy(joined, config)
+    compliance = observed.get("compliance")
+    if not observed.get("should_redact_stored"):
+        return prompt_text, response_text, compliance
+    via = observed.get("stored_redaction_via")
+    return (
+        redact_for_storage(prompt_text, via) if prompt_text else prompt_text,
+        redact_for_storage(response_text, via) if response_text else response_text,
+        compliance,
+    )
 
 
 def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
@@ -368,14 +406,16 @@ class ObsvrTracingProcessor:
 
                 raw_input = getattr(span_data, "input", None) or getattr(span, "input", None)
                 if should_audit:
+                    _p, _r, _c = _govern_stored(_as_text(raw_input), "", config)
                     emit_event(
                         config,
                         provider="unknown",
                         model="unknown",
                         operation="openai_agents.tool.call",
                         source=SOURCE,
-                        prompt=_as_text(raw_input),
-                        response="",
+                        prompt=_p,
+                        response=_r,
+                        compliance=_c,
                         metadata={
                             "agent_run_id": trace_id,
                             "tool_name": tool_name,
@@ -396,14 +436,18 @@ class ObsvrTracingProcessor:
                     getattr(span_data, "usage", None) or getattr(span, "usage", None)
                 )
                 if should_audit:
+                    _p, _r, _c = _govern_stored(
+                        _as_text(raw_input), _as_text(raw_output), config
+                    )
                     emit_event(
                         config,
                         provider="openai",
                         model=model,
                         operation="llm",
                         source=SOURCE,
-                        prompt=_as_text(raw_input),
-                        response=_as_text(raw_output),
+                        prompt=_p,
+                        response=_r,
+                        compliance=_c,
                         input_tokens=usage["input_tokens"],
                         output_tokens=usage["output_tokens"],
                         total_tokens=usage["total_tokens"],
@@ -426,6 +470,11 @@ class ObsvrTracingProcessor:
                     _field(resp, "usage") or _field(span_data, "usage")
                 )
                 if should_audit:
+                    _resp_p, _resp_r, _resp_c = _govern_stored(
+                        _responses_prompt(_field(span_data, "input")),
+                        _responses_output_text(_field(resp, "output")),
+                        config,
+                    )
                     emit_event(
                         config,
                         provider="openai",
@@ -440,8 +489,9 @@ class ObsvrTracingProcessor:
                         model=model,
                         operation="llm",
                         source=SOURCE,
-                        prompt=_responses_prompt(_field(span_data, "input")),
-                        response=_responses_output_text(_field(resp, "output")),
+                        prompt=_resp_p,
+                        response=_resp_r,
+                        compliance=_resp_c,
                         input_tokens=usage["input_tokens"],
                         output_tokens=usage["output_tokens"],
                         total_tokens=usage["total_tokens"],

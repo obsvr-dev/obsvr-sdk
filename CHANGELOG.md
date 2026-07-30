@@ -341,6 +341,23 @@ cut, when it is renamed to that version.
   logged rather than absorbed. Verified live in both languages, with a dead
   `/policies` endpoint and a fail-closed staleness budget as the control that
   the repair did not disarm fail-closed.
+- **The OpenAI Agents tracing processor now scans what its events store.** It
+  ran **no policy pipeline of any kind** — not the PII scan, not rules, not the
+  floor — so at any sample rate it wrote raw prompt and response text straight
+  into signed events, while its three observe-only siblings on the same side
+  have always stored a redacted copy. The canary half was already covered (that
+  net lives in the event builder and fires on every path), so the gap was the
+  PII half alone. It now runs the same observe-only net LangChain and LlamaIndex
+  run, over the tool-span input and both halves of an LLM span.
+
+  **This is not enforcement and the record does not pretend it is.** A
+  `TracingProcessor` cannot refuse anything, and a span ends after its call has
+  completed, so the verdict on these events is `redacted` — never `blocked`.
+  `detect_only` deliberately leaves the record readable, because that mode
+  exists to baseline what actually flows. Verified through a real agent run
+  against a real provider, both directions, with `detect_only` and no-policy as
+  the controls that make a clean record attributable to the policy rather than
+  to an SDK that always redacts.
 
 ### Added
 

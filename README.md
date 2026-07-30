@@ -502,7 +502,7 @@ agree, so neither column may be read across to the other.
 | LangChain | **enforces** | **enforces** |
 | AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
 | Pydantic-AI | *no integration* | **enforces**, not yet driven live |
-| OpenAI Agents | **records only** | **records only** |
+| OpenAI Agents | **records only**¹ | **records only**¹ |
 | CrewAI | *no integration* | **not wired** (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
@@ -518,6 +518,16 @@ agree, so neither column may be read across to the other.
   and a function span does not end until its tool has already returned.
 - **not wired** — the gate is implemented but hangs off a callback current
   runtimes do not deliver. Nothing is refused and no block event is emitted.
+
+¹ Tool policy on this surface records only, and that is the row above. Its
+  **model-call** path is a separate question with a separate answer: it is
+  observe + stored-copy PII, the same as LangChain and LlamaIndex. It ran no
+  policy pipeline at all until recently — no PII scan, no rules, no floor — so
+  raw PII went into signed events at any sample rate while its observe-only
+  siblings stored a redacted copy. The scan now runs over what the event will
+  store, and the verdict on those events is `redacted`, never `blocked`,
+  because a tracing processor cannot refuse and the call has already
+  completed.
 - **provider tool runners** — a runner invokes its tools itself, so obsvr was
   off that boundary entirely until it began gating each tool's callback before
   the runner is constructed. Tool execution is now gated; the model calls the
