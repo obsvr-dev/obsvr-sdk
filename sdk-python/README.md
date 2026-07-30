@@ -321,6 +321,51 @@ Exported bundles verify offline with the `obsvr-verify` CLI (shipped in `@obsvr/
 
 We document enforcement limits honestly.
 
+### Before you install: the five limits of the Python SDK
+
+**Scope: this list is the Python SDK only.** The two SDKs do not have the same
+limitations and neither list may be read across to the other — the TypeScript SDK
+has two of its own that do not apply here (it is ESM-only, and its named
+compatibility wrappers govern one method), and two below do not apply to it. The
+combined list for both, with the scope marked on each entry, is in the
+[repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-seven-limits-worth-knowing).
+
+1. **Most integration tests drive hand-written fakes, not the real frameworks.**
+   Only the MCP surface runs against the real upstream package in CI. A green
+   integration suite says the shape is right, not that the framework behaves the
+   way the test models it. [`tests/README.md`](tests/README.md) says which
+   surfaces are which.
+
+2. **This SDK installs no signal handlers, so a container stop drops the queue
+   tail.** It flushes from `atexit`, which a default-disposition `SIGTERM` never
+   reaches — so whatever the bounded sender queue still holds is lost, and the
+   events most likely to be lost are the ones nearest the shutdown. Call
+   `obsvr.flush()` from your own shutdown handler if the tail matters. The
+   TypeScript SDK does install them; this is a real divergence, not an omission
+   in the documentation.
+
+3. **LangChain, LlamaIndex and the OpenAI Agents tracing processor observe rather
+   than govern.** On those model-call paths the PII scan runs over what the event
+   will store, and nothing else runs — so the provider receives the raw prompt
+   while the stored copy reads redacted. A `pii_policy` of `{"ssn": "block"}`
+   blocks through `obsvr.wrap()` and does not block there.
+
+4. **Three tool gates refuse nothing.** CrewAI is not wired — its gate reads a
+   field the step object no longer carries, and the pre-execution hook that does
+   exist signals refusal by a returned sentinel rather than an exception, so
+   wiring the raise-based idiom to it would fail open. LlamaIndex has no tool gate
+   at all, and that is a decision rather than pending work. The OpenAI Agents
+   tracing surface cannot refuse structurally: the framework wraps every processor
+   callback in its own `try`/`except` and the gate runs after the tool has
+   returned. All three record `not_evaluated`, never `blocked` — silences, not
+   false refusals. `mcp`, `langchain`, `autogen` and `pydantic_ai` are the
+   surfaces where a tool-policy decision means what it says.
+   [Grading](#framework-integrations).
+
+5. **The current Google Gemini SDK is not supported.** obsvr binds
+   `google-generativeai`, the legacy line, which reached end-of-life in August
+   2025. `google-genai` has no adapter and is not intercepted.
+
 - **Transport**: `init()` raises when a non-localhost `ingest_url` uses plaintext `http` (localhost, `127.0.0.1`, and `[::1]` are exempt for local development — compared as the parsed hostname, never as a substring). Set the environment variable `OBSVR_ALLOW_HTTP=1` to explicitly allow http, e.g. behind a TLS-terminating proxy on a private network. `ingest_url` also runs the SSRF guard at `init()`: the scheme must be `http(s)`, so `file:`, `gopher:` and `ftp:` are refused, and the cloud-metadata address is refused in every spelling — including over `https`, and regardless of `OBSVR_ALLOW_HTTP`, which relaxes the TLS posture only. The guard is static, so a hostname that *resolves* to a private address is not refused; see `SECURITY.md`.
 - **Signing model**: signatures are derived from your API key inside the SDK. They prove capture order and detect after-the-fact modification, but a party holding the API key could construct validly-signed events. Server-side countersigning at ingest binds accepted events to a key that never leaves the server.
 - **Fail mode**: default is fail-open — a hook or a detector layer that fails while deciding loses that layer's enforcement for the call, which is counted and recorded on the event. Set `fail_mode="closed"` for policies that must never fail open. `fail_mode` deliberately cannot move three things: `policy_floor` and `canary` always fail **closed** (a floor that cannot run must not wave a call through), a `redact` decision whose redactor then throws **blocks** rather than forwarding the content it was told to strip, and after the provider has answered nothing is withheld from your application — a response-side failure falls closed only on the stored audit copy.

@@ -360,6 +360,47 @@ Use it for frameworks governed at the tool level (LlamaIndex, Vercel AI) so thei
 
 We document enforcement limits honestly — what the signature chain does and does not prove, streaming semantics, fail-open/closed behavior, and the inherent bypass surface of any in-process library. The key ones:
 
+### Before you install: the six limits of the TypeScript SDK
+
+**Scope: this list is the TypeScript SDK only.** The two SDKs do not have the
+same limitations and neither list may be read across to the other — the Python
+SDK has two of its own that do not apply here, and two below do not apply to it.
+The combined list for both, with the scope marked on each entry, is in the
+[repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-seven-limits-worth-knowing).
+
+1. **Most integration tests drive hand-written fakes, not the real frameworks.**
+   Only the MCP surface runs against the real upstream package in CI. A green
+   integration suite says the shape is right, not that the framework behaves the
+   way the test models it. [`tests/README.md`](tests/README.md) says which
+   surfaces are which.
+
+2. **This package is ESM-only, and the zero-code path cannot reach `require()`.**
+   A CommonJS service cannot consume it at all, and even where it loads,
+   `--import` interception never sees `require()` — so that coverage is nil
+   rather than partial. See [below](#this-package-is-esm-only).
+
+3. **The named compatibility wrappers govern one method out of twenty-seven.**
+   `wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare` and `wrapOpenAICompatible`
+   gate `chat.completions.create` and nothing else. `obsvr.wrap()` duck-types the
+   same clients and covers seventeen paths — use it when you need the coverage.
+   [Detail](#what-gets-governed).
+
+4. **LangChain, LlamaIndex and the OpenAI Agents tracing processor observe rather
+   than govern.** On those model-call paths the PII scan runs over what the event
+   will store, and nothing else runs — so the provider receives the raw prompt
+   while the stored copy reads redacted. A `piiPolicy` of `{ssn: "block"}` blocks
+   through `obsvr.wrap()` and does not block there.
+
+5. **The OpenAI Agents tracing surface cannot refuse a tool, structurally.** The
+   framework wraps every processor callback in its own `try`/`catch`, and the gate
+   runs after the tool has already returned. Those events record `not_evaluated`,
+   never `blocked` — a silence, not a false refusal. Put a destructive capability
+   behind MCP or `obsvrGovernTool`. [Grading](#framework-integrations).
+
+6. **The current Google Gemini SDK is not supported.** obsvr binds
+   `@google/generative-ai`, the legacy line, which reached end-of-life in August
+   2025. `@google/genai` has no adapter and is not intercepted.
+
 ### Streaming calls
 
 With `stream: true`, PII scanning and policy hooks run **before** the LLM is contacted; a blocked call never opens the stream. However, **post-call** policies on streamed responses are audit-time, not enforcement-time: tokens reach the caller as they arrive, and response scanning happens after completion.

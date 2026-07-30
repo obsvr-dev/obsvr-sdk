@@ -97,6 +97,9 @@ flowchart TD
 
 ## Quickstart
 
+> Read [the seven limits worth knowing](#before-you-install-the-seven-limits-worth-knowing)
+> first. Four of them are specific to one of the two SDKs.
+
 **TypeScript**
 
 ```bash
@@ -614,6 +617,64 @@ The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixtu
 ## Known limitations & architecture notes
 
 Documented plainly, from the code. For the full threat model — what the signature chain does and does not prove — and how to report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+### Before you install: the seven limits worth knowing
+
+Every one of these is documented in more detail further down this page or in the
+document linked beside it. They are collected here, once, because someone
+deciding whether to adopt this should not have to assemble them from seven
+sections. **Four of the seven apply to one SDK and not the other**, so the scope
+is marked on each.
+
+1. **Most integration tests drive hand-written fakes, not the real frameworks.**
+   *(both SDKs)* Only the MCP surface runs against the real upstream package in
+   CI. A green integration suite is evidence that the shape is right, not that
+   the framework behaves the way the test models it. Each SDK's
+   [TypeScript](sdk-typescript/tests/README.md) and
+   [Python](sdk-python/tests/README.md) test README says which surfaces are which.
+
+2. **The package is ESM-only, and the zero-code path cannot reach `require()`.**
+   *(TypeScript only)* A CommonJS service cannot consume it at all — and even
+   where it does load, `--import` interception never sees `require()`, so that
+   coverage is nil rather than partial. Also stated at
+   [installation](#quickstart); why dual-publishing is not a quick win is in the
+   [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only).
+
+3. **The named compatibility wrappers govern one method out of twenty-seven.**
+   *(TypeScript only)* `wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare` and
+   `wrapOpenAICompatible` gate `chat.completions.create` and nothing else; the
+   other twenty-six text-bearing paths bind through with no gate and no event.
+   `obsvr.wrap()` accepts the same clients and covers seventeen paths — use it
+   when you need the coverage.
+   [Detail](#one-method-not-seventeen-the-named-compatibility-wrappers).
+
+4. **LangChain, LlamaIndex and the OpenAI Agents tracing processor observe
+   rather than govern.** *(both SDKs)* On those model-call paths the PII scan
+   runs over what the event will store and nothing else runs at all — so the
+   provider receives the raw prompt while the stored copy reads redacted. A
+   `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()` and does not
+   block there. Full layer-by-layer list in [SECURITY.md](SECURITY.md).
+
+5. **Three tool gates refuse nothing.** CrewAI is not wired and LlamaIndex has no
+   tool gate at all *(both Python only)*. The OpenAI Agents tracing surface cannot
+   refuse in **either** SDK, and that one is structural rather than pending: the
+   framework wraps every processor callback in its own `try`/`except`, and the
+   gate runs after the tool has already returned. Those events record
+   `not_evaluated` — never `blocked` — so they are a silence, not a false
+   refusal. Put a destructive capability behind MCP.
+   [Per-surface grading](#framework--provider-support).
+
+6. **The Python SDK installs no signal handlers, so a container stop drops the
+   queue tail.** *(Python only)* It flushes from `atexit`, which a
+   default-disposition `SIGTERM` never reaches. Call `obsvr.flush()` from your own
+   shutdown if the tail matters. TypeScript does install them, and hands the
+   process back rather than exiting out from under you.
+
+7. **The current Google Gemini SDK is not supported.** *(both SDKs)* obsvr binds
+   the legacy line — `@google/generative-ai` / `google-generativeai` — which
+   reached end-of-life in August 2025. Its replacement, `@google/genai` /
+   `google-genai`, has no adapter and is not intercepted.
+   [Which one you have](#framework--provider-support).
 
 One distinction decides which of these limits would block a release and which
 ship documented, and it is worth stating before you read them: **a record that
