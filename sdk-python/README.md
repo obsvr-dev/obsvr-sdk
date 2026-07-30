@@ -32,7 +32,7 @@ pip install "obsvr-sdk[fastapi]"          # FastAPI / Starlette middleware
 pip install "obsvr-sdk[bedrock]"          # AWS Bedrock (boto3) governance
 pip install "obsvr-sdk[vertex]"           # Google Vertex AI governance
 pip install "obsvr-sdk[pydantic-ai]"      # PydanticAI toolset governance
-pip install "obsvr-sdk[haystack]"         # Haystack 2.x governance component
+pip install "obsvr-sdk[haystack]"         # Haystack 2.x / 3.x governance component
 ```
 
 Ed25519 verification of signed remote policy needs one of two backends —
@@ -166,7 +166,7 @@ feature.
 | **AWS Bedrock** | `integrations.bedrock` | boto3 `converse` / `invoke_model` (+ streams) | pre-call block/redact, post-call output governance |
 | **Vertex AI** | `integrations.vertex` | `GenerativeModel.generate_content` | pre-call block/redact, post-call output governance |
 | **PydanticAI** | `integrations.pydantic_ai` | `WrapperToolset.call_tool` | tool block before delegation — structurally the same pre-execution boundary MCP holds on, but **not yet driven live**; no step limit is implemented |
-| **Haystack 2.x** | `integrations.haystack` | `@component` pipeline node | block aborts the pipeline before the generator |
+| **Haystack 2.x / 3.x** | `integrations.haystack` | `@component` pipeline node | block aborts the pipeline before the generator. **Driven live** against a real `Pipeline` and a real Generator on both ends of the declared range, graded on the bytes the provider received: a blocked run reaches the provider zero times where the same pipeline allowed reaches it once, and a redacted run puts the scrubbed text on the wire where the same prompt under no policy puts the raw value there. This is a pipeline node rather than a callback, which is why it can refuse |
 
 **"observe + stored-copy PII" is the whole of it, and it is worth spelling out.**
 On LangChain and LlamaIndex the PII scan runs and the stored copy is redacted —
@@ -218,9 +218,12 @@ never executes:
 from obsvr.integrations.pydantic_ai import ObsvrToolset
 agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(my_toolset)])
 
-# Haystack 2.x
+# Haystack — the guard is the same on 2.x and 3.x; only the socket differs,
+# because 3.0 removed the text OpenAIGenerator and its `prompt` input.
 from obsvr.integrations.haystack import ObsvrGuard
-pipe.add_component("guard", ObsvrGuard()); pipe.connect("guard.prompt", "llm.prompt")
+pipe.add_component("guard", ObsvrGuard())
+pipe.connect("guard.prompt", "llm.prompt")    # haystack-ai 2.x, OpenAIGenerator
+pipe.connect("guard.prompt", "llm.messages")  # haystack-ai 3.x, OpenAIChatGenerator
 ```
 
 ### Agent runs

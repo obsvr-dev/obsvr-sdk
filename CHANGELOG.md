@@ -262,6 +262,27 @@ cut, when it is renamed to that version.
   `events` is format-2, and the old vectors are frozen under
   `legacy_v1_events`.
   ([`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
+- **The Haystack component is stated as 2.x / 3.x, and its usage example now
+  works on the version the extra installs.** The `haystack` extra declares
+  `haystack-ai>=2.0.0` with no ceiling, so an install today resolves 3.x — and
+  3.0 removed the text `OpenAIGenerator` the documented example imported, along
+  with the `prompt` socket the documented wiring connected to. Following the
+  example on a fresh install therefore raised `ImportError`. Both forms are now
+  shown, and the guard component itself needed no change: it was already
+  version-independent, which is why this was only ever a documentation defect.
+
+  Behind the restatement is the first measurement this integration has ever
+  had. It shipped credited with enforcement in both READMEs and had never been
+  driven by anything but a shim — the in-repo test constructs the node without
+  Haystack installed, so it could show that `run()` raises and could not show
+  what a real `Pipeline` does with that raise. Driven out of tree against a real
+  pipeline and a real generator at both ends of the declared range, graded on
+  the bytes the provider received: a block reaches the provider zero times where
+  the same pipeline allowed reaches it once, a redact puts scrubbed text on the
+  wire where the same prompt under no policy puts the raw value there, and each
+  case records one event whose verdict matches. The ASGI middleware was measured
+  the same way, under a real server over a real socket. **Both claims survived**
+  — the entries here are the evidence arriving, not a correction.
 
 ### Added
 

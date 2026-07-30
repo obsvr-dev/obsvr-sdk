@@ -1,9 +1,9 @@
-"""Haystack 2.x integration — a governance @component for a pipeline.
+"""Haystack 2.x / 3.x integration — a governance @component for a pipeline.
 
-``ObsvrGuard`` is a real Haystack 2.x ``@component``: drop it into a Pipeline
-ahead of your Generator and wire ``prompt -> prompt``. On every run it applies
-the obsvr pre-call pipeline (built-in PII scan, structured rules, the pre-call
-hook / HITL) to the prompt flowing through it:
+``ObsvrGuard`` is a real Haystack ``@component``: drop it into a Pipeline ahead
+of your Generator and wire its ``prompt`` output into the Generator's text
+input. On every run it applies the obsvr pre-call pipeline (built-in PII scan,
+structured rules, the pre-call hook / HITL) to the prompt flowing through it:
 
 - BLOCK  -> ``run`` raises. A raising component aborts ``pipeline.run()``, so
             the downstream Generator never executes — a real, enforceable stop.
@@ -11,10 +11,18 @@ hook / HITL) to the prompt flowing through it:
             governed text, never the raw PII).
 - ALLOW  -> the prompt passes through unchanged.
 
-Usage::
+All three were driven against a real Pipeline and a real Generator on both ends
+of the supported range, graded on the bytes the provider received rather than
+on the return value: blocked reaches the provider zero times while an allowed
+run through the same pipeline reaches it once, and a redacted run puts the
+scrubbed text on the wire while the same prompt under no policy puts the raw
+value there.
+
+The guard itself is version-independent; only the Generator you put behind it
+differs, because Haystack 3.0 removed the text ``OpenAIGenerator`` and its
+``prompt`` socket. Both forms::
 
     from haystack import Pipeline
-    from haystack.components.generators import OpenAIGenerator
     from obsvr.integrations.haystack import ObsvrGuard
     import obsvr
 
@@ -22,8 +30,18 @@ Usage::
                pii_policy={"rules": {"ssn": "block"}})
     pipe = Pipeline()
     pipe.add_component("guard", ObsvrGuard())
+
+    # haystack-ai 2.x
+    from haystack.components.generators import OpenAIGenerator
     pipe.add_component("llm", OpenAIGenerator())
     pipe.connect("guard.prompt", "llm.prompt")
+
+    # haystack-ai 3.x — no text generator ships any more; the chat generator's
+    # `messages` socket accepts a bare str, so the same wire still type-checks
+    from haystack.components.generators.chat import OpenAIChatGenerator
+    pipe.add_component("llm", OpenAIChatGenerator())
+    pipe.connect("guard.prompt", "llm.messages")
+
     pipe.run({"guard": {"prompt": "..."}})
 """
 

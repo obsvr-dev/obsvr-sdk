@@ -1,9 +1,16 @@
-"""Tests for the Haystack 2.x integration.
+"""Tests for the Haystack integration.
 
-Haystack is not installed; ObsvrGuard uses a shim @component decorator so the
-governance node is still constructable and its run() logic runs. The behavior
-tests prove a block raises out of run() (which aborts a real pipeline before the
-downstream generator runs).
+Haystack is not installed here; ObsvrGuard uses a shim @component decorator so
+the governance node is still constructable and its run() logic runs. What these
+tests establish is therefore bounded: a block raises out of run(), a redact
+returns scrubbed text, an allow passes through.
+
+They do NOT establish that a raise aborts a real Pipeline before the downstream
+Generator, because a shimmed component is not in a pipeline graph — that is a
+property of Haystack, not of this code, and asserting it from here would be the
+same shape of vacuous coverage the canary wiring test carried. It was measured
+separately, out of tree, against a real Pipeline and a real Generator on both
+ends of the supported range, graded on whether the provider received bytes.
 """
 import pytest
 
