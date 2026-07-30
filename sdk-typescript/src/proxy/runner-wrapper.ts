@@ -124,10 +124,46 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
     return { runner };
   })();
 
-  // The rejection is observed by every path that awaits `readyBox`; attaching a
-  // no-op keeps a governance block from surfacing as an unhandled rejection in
-  // the host process when the caller only uses `.on('error', …)`.
-  readyBox.catch(() => undefined);
+  /**
+   * Hand a startup failure to `.on("error", …)` callers.
+   *
+   * A policy refusal happens BEFORE the real runner exists, and the queued
+   * registrations are replayed inside the readyBox body only AFTER `start()` —
+   * which a refusal never reaches. So the gate worked, the provider was never
+   * called, the blocked event was recorded, and the application was never told:
+   * a caller using the event API observed a stream that produced nothing,
+   * forever. `for await` saw the rejection because it awaits `readyBox`; the
+   * event surface is the one that had nothing to await.
+   *
+   * Two things this must not do. It must not THROW when nobody is listening —
+   * an unhandled `error` would turn a refusal the SDK handled correctly into a
+   * crash of the host process, which is worse than the silence it replaces. And
+   * it must not let a listener's own exception escape into this promise chain,
+   * where it would resurface as an unhandled rejection attributed to obsvr.
+   */
+  let startupFailureDelivered = false;
+  const deliverStartupFailure = (err: unknown) => {
+    failed = failed ?? err;
+    if (startupFailureDelivered) return;
+    startupFailureDelivered = true;
+    const listeners = pending
+      .filter((p) => p.method === "on" && p.args[0] === "error")
+      .map((p) => p.args[1] as (...a: unknown[]) => void);
+    // Nothing queued will ever be replayed: there is no runner to replay onto.
+    pending.length = 0;
+    for (const fn of listeners) {
+      try {
+        fn(err);
+      } catch {
+        /* a listener that throws is the caller's own problem, not a governance failure */
+      }
+    }
+  };
+
+  // The rejection is observed by every path that awaits `readyBox`; handling it
+  // here also keeps a governance block from surfacing as an unhandled rejection
+  // in the host process when the caller only uses `.on('error', …)`.
+  readyBox.catch(deliverStartupFailure);
 
   // Resolves with the run's completion VALUE (what `await runner` yields when
   // the real runner is thenable). Kept separate from the finish() notification
@@ -165,7 +201,20 @@ export function createDeferredRunner(hooks: DeferredRunnerHooks): RunnerLike {
   const stand: RunnerLike & Record<string, unknown> = {
     on(event: string, listener: (...a: unknown[]) => void) {
       if (real) real.on?.(event, listener);
-      else pending.push({ method: "on", args: [event, listener] });
+      else if (startupFailureDelivered && event === "error") {
+        // Registered after the refusal was already delivered. Queueing it would
+        // put it on a runner that will never exist, which is the silence this
+        // whole path is about. Async so the handler cannot run before the
+        // caller has finished chaining.
+        const err = failed;
+        queueMicrotask(() => {
+          try {
+            listener(err);
+          } catch {
+            /* the caller's own handler */
+          }
+        });
+      } else pending.push({ method: "on", args: [event, listener] });
       return stand; // chaining, exactly as the provider's runner does
     },
     off(event: string, listener: (...a: unknown[]) => void) {

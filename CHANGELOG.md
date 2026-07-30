@@ -396,6 +396,26 @@ cut, when it is renamed to that version.
   Ids are allocated once and never reused, which `known-divergences.md` now
   says: `KD-7` and `KD-8` name divergences that were FIXED and are recorded in
   its History, so the next live entry is `KD-9`.
+- **A policy block on a stream now reaches `.on('error')` callers.** The gate
+  was never the problem: `governCall` throws before the provider is reached and
+  the blocked event is recorded. But it throws inside the ready-box, so the real
+  runner is never constructed — and the queued `.on()` registrations are
+  replayed inside that box only *after* the runner is built, which a refusal
+  never reaches. The registrations were discarded, `error` never fired, and an
+  application using the event API observed a stream that produced nothing,
+  forever.
+
+  Measured live: with `.on('error')` registered on a policy-blocked stream, the
+  callback did not fire in six seconds; it now fires in under thirty
+  milliseconds, including when it is registered *after* the refusal has already
+  happened. `for await` always saw the rejection, because that path awaits the
+  box — it is the event surface that had nothing to await, and it still rejects,
+  as the control asserts.
+
+  Two things the delivery deliberately does not do: it does not throw when
+  nobody is listening, because an unhandled `error` would turn a refusal the SDK
+  handled correctly into a crash of the host process; and one listener throwing
+  does not stop the next from being told.
 
 ### Added
 
