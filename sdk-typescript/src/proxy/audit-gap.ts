@@ -112,13 +112,23 @@ export const AUDIT_GAP_SOURCE = "obsvr_sdk";
  * `{ valid: true, gapMarkers: 1, eventsDeclaredLost: 999999 }` — a user
  * fabricating a million lost events, with a valid chain, by typing a string.
  *
- * REACHABILITY, measured rather than assumed. The `wrap()` path is immune by
- * accident: its extractor stores `"user: <content>"`, and the marker pattern is
- * anchored, so a user prompt can never match. **The LangChain integration is
- * not immune** — `handleLLMStart` stores `prompts.join("\n")`, a bare
- * user-controlled string. The first probe of this defect drove `wrap()`, read
- * zero forged markers, and would have cleared a live vulnerability if the
- * surface had not been checked.
+ * REACHABILITY, measured rather than assumed. MOST of the `wrap()` path is
+ * immune by accident: the OpenAI/Anthropic extractors store `"user: <content>"`,
+ * and the marker pattern is anchored, so a prompt through those can never
+ * match. That is NOT true of the whole front door, and saying "the wrap() path
+ * is immune" overstated it: `extractors/google.ts:115` returns a bare string
+ * unchanged for the Gemini shorthand `generateContent('text')`, and
+ * `wrapper.ts:698` routes provider `google` straight to it, so that prompt is
+ * stored unprefixed and does parse as a marker. **The LangChain integration is
+ * likewise not immune** — `handleLLMStart` stores `prompts.join("\n")`, a bare
+ * user-controlled string. The first probe of this defect drove `wrap()` through
+ * OpenAI, read zero forged markers, and would have cleared a live vulnerability
+ * if the surface had not been checked.
+ *
+ * None of these are exploitable end-to-end, because the discriminator below
+ * rejects them on `operation` — but the reachability reasoning was wrong, and a
+ * later change that weakened the discriminator would have been reviewed against
+ * a comment claiming an immunity the extractors do not provide.
  *
  * The discriminator is `operation`, which the sender stamps as `audit.gap` and
  * no user-facing call path produces.

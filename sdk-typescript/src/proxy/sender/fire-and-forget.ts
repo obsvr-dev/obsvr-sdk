@@ -700,7 +700,13 @@ function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
   // Update chain state for the next event
   lastSig = event.sdk_sig;
 
-  // Optional OTel mirror - fire-and-forget, never affects the audit path
+  // Optional OTel mirror. NOT fire-and-forget: this call is synchronous and it
+  // runs BEFORE the enqueue below, so a slow exporter delays the audit event
+  // rather than trailing it — measured at 300ms of caller-visible block with a
+  // span that takes 300ms to start. It cannot LOSE the event: resolveOtel and
+  // the span body are each try/caught, so a throwing exporter still falls
+  // through to the enqueue. Ordering is the reason it is here and not after
+  // the push: the mirror reads `event` before the queue can hand it off.
   mirrorToOtel(config, event);
 
   // Add to queue

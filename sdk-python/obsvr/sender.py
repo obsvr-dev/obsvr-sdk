@@ -2,7 +2,15 @@
 
 Bounded queue.Queue(100) + daemon worker thread, urllib.request POST to
 {ingest_url}/ingest with X-API-Key, 429 backoff (1s -> 60s, x2), and an
-atexit flush. Never blocks or breaks the caller's LLM path.
+atexit flush. The delivery path never blocks or breaks the caller's LLM path:
+the enqueue is non-blocking and the POST happens on the worker thread.
+
+The one exception, stated because the blanket claim used to hide it: when
+``otel.enabled`` is set, ``_mirror`` runs the exporter SYNCHRONOUSLY on the
+caller's thread, so a slow OTel exporter does add to the caller's latency. It
+runs after the enqueue, so it cannot delay or lose the audit event itself
+(the TypeScript twin mirrors BEFORE its push and does not have that ordering
+property).
 
 Every enqueued event is stamped with the SDK integrity chain, byte-for-byte
 compatible with the TypeScript SDK (sdk-typescript/src/proxy/sender/fire-and-forget.ts)
@@ -673,7 +681,10 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
             enqueued = False
         if enqueued:
             _bump("enqueued")
-    # Optional OTel mirror - fire-and-forget, never affects the audit path.
+    # Optional OTel mirror. NOT fire-and-forget: the exporter runs
+    # synchronously on this thread. It does run AFTER the enqueue, so it cannot
+    # delay or lose the audit event — only the caller's own latency is exposed
+    # to a slow exporter.
     # Marker first: that is its order in the chain. A marker that made it into
     # the queue is mirrored even when the event behind it did not.
     if marker is not None:

@@ -75,8 +75,15 @@ rather than the chain format.
 
 Formats 1 and 2 stay implemented here forever: chains signed before each change
 are existing evidence and must keep verifying - explicitly, as the format they
-were signed under, never silently under a newer rule. No two formats share a
-valid signature, because each leads its payload with its own format number.
+were signed under, never silently under a newer rule.
+
+No two formats share a valid signature. Formats 2 and later lead their payload
+with their own format number; format 1 does NOT, and is reproduced byte-for-byte
+as it always was, because its signatures already exist and prefixing them now
+would invalidate every legacy chain. Format 1 is instead distinguished by
+carrying neither the leading format field nor the decision hash. The earlier
+wording here said each format leads with its number, which an implementer
+following it would have applied to format 1 and broken every legacy signature.
 """
 
 import hashlib

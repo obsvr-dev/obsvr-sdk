@@ -6,8 +6,14 @@
  * neither fail-open nor fail-closed, but the absence of a decision. Every
  * guarded call site funnels here so the rule exists once instead of per path.
  *
- * The rule: every internal failure resolves by failMode, EXCEPT the floor
- * class, which is by definition the thing failMode cannot move.
+ * The rule: every internal failure resolves by failMode, except where the act
+ * itself forecloses the choice. The floor class is one such case, by definition
+ * the thing failMode cannot move. It is NOT the only one, and stating it as the
+ * sole exception was wrong: `applyOutboundRedaction` also resolves closed at
+ * failMode "open" (argued at :128-131 — a redaction that cannot be guaranteed
+ * must not be forwarded), and `recordCheckOnlyFailure` is a third. The
+ * behaviour in each case is deliberate; the absolute in this header was what
+ * did not match it.
  *
  * The response phase is different and deliberately so: once the provider has
  * answered, "closed" is not an available action. Blocking cannot undo the
