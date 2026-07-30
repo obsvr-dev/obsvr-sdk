@@ -1,6 +1,6 @@
 # obsvr-sdk
 
-Runtime governance for LLM applications in Python: deterministic policy enforcement (PII, custom rules, human-in-the-loop hooks), and a tamper-evident, HMAC-chained audit trail. Fire-and-forget delivery that never blocks your LLM path.
+Runtime governance for LLM applications in Python: deterministic policy enforcement (PII, custom rules, human-in-the-loop hooks), and a tamper-evident, HMAC-chained audit trail. Delivery that does not wait on the ingest transport, so a slow or dead backend does not slow your calls.
 
 ## Installation
 

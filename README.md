@@ -89,7 +89,7 @@ flowchart TD
 
 **No global monkey-patching.** The primary paths never mutate a shared prototype, class, or module object: TypeScript wraps with a `Proxy`, and Python uses native framework callbacks and transparent `__getattr__` wrappers (including a non-mutating `govern_mcp()` for MCP). The real client stays a **genuine SDK client**, so APM, OpenTelemetry, and other tracing on the same SDKs keep working, and clients constructed before `init()` pick up governance on their first call after. Two **opt-in** paths are the honest exceptions, documented where they live: the zero-code auto-register replaces a provider's module binding with a governed subclass (Python has no `Proxy` primitive), and the AutoGen helper decorates the single agent instance you hand it — neither touches a class shared with other code.
 
-**Overhead** is one in-process, deterministic policy pass per call plus fire-and-forget event emission that never blocks your LLM path — signing-only adds **~14µs** median in TypeScript. See [Benchmarks](#benchmarks).
+**Overhead** is one in-process, deterministic policy pass per call plus event emission that does not wait on the ingest transport — a slow or dead backend does not slow your calls (measured: a 25 ms-per-POST transport leaves the hot path unchanged). Signing-only adds **~14µs** median in TypeScript. **One exception, stated because it is the only thing on that path that can block:** with `otel` mirroring configured, the TypeScript sender calls the exporter **synchronously, before the enqueue** — a span that takes 300 ms to start blocks the caller for 300 ms. Python mirrors after the enqueue and exposes only the caller's latency. See [Benchmarks](#benchmarks).
 
 ---
 

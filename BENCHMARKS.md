@@ -66,7 +66,7 @@ Python means across passes: A0 within 1.5%, A1 within 6.2%.
 regex scanning (A1+) are O(text length) — visible in the 10 KB rows. Budget accordingly if
 you routinely ship very large prompts through scanning tiers.
 
-## Fire-and-forget proof (emission never blocks the call path)
+## Fire-and-forget proof (ingest delivery does not block the call path)
 
 A0 re-run with the stubbed transport artificially slowed to 25 ms per POST:
 
@@ -78,6 +78,15 @@ A0 re-run with the stubbed transport artificially slowed to 25 ms per POST:
 A slow backend does **not** slow governed calls. (The hot path actually gets *faster* once
 the bounded queue fills: overflowed events are dropped-and-counted before signing, so the
 sender does less work.)
+
+**This measures the ingest transport, and one other thing on that path is NOT
+fire-and-forget.** With `otel` mirroring configured, the TypeScript sender calls
+the exporter synchronously and does so BEFORE the enqueue, so a slow exporter
+delays the audit event rather than trailing it — measured at 301 ms of
+caller-visible block against 2 ms with the mirror off. It cannot lose the event
+(the resolve and the span body are each guarded), and Python mirrors AFTER the
+enqueue so only the caller's latency is exposed there. The numbers above are
+with no mirror configured, which is the default.
 
 **What a drop leaves behind.** Overflow drops happen before a sequence number is assigned,
 so they leave no hole of their own — the events that survive still form a contiguous chain.
