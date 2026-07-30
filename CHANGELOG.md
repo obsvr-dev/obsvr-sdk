@@ -962,6 +962,36 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Mixing camelCase and snake_case config keys silently dropped half a
+  configuration. `init()` now warns and names every key it ignored.**
+
+  `init()` decides the naming convention for the WHOLE object from one key —
+  whether `apiKey` is present. So `api_key` beside `piiPolicy` took the
+  snake_case path, `piiPolicy` was never read, and the PII policy did not
+  exist. No error, no warning, and an audit event that was honest, because the
+  SDK never saw a policy to enforce. The SSN went to the provider. The same held
+  for `policyRules`, the Presidio URLs, and every other key the converter maps.
+
+  The posture is **warn and continue**, in that order and for stated reasons.
+  Rejecting would turn a stray field into an outage for a caller who meant no
+  harm; accepting both spellings would hide the mistake and keep two conventions
+  alive forever. The warning names the convention that was chosen, why it was
+  chosen, every key that was dropped, and the spelling that would have been read
+  — `piiPolicy -> pii_policy`, because "unrecognised key" is not something a
+  caller can act on. A key belonging to neither convention gets its own warning,
+  so a typo surfaces instead of vanishing.
+
+  The converter and the warning now read one shared key table. Two
+  hand-maintained lists would drift, and the failure mode of that drift is a
+  silently dropped key — the very defect being fixed.
+
+  **The other SDK never had this and needed no change**, which is worth stating
+  rather than leaving as an apparent omission. Its `init()` declares explicit
+  keyword-only parameters, so a wrong-style or misspelled key raises
+  `TypeError` at the call and names the key that was meant — strictly louder
+  than a warning. That immunity is a property of the signature rather than a
+  decision anyone had written down, so it is now pinned by a test that fails if
+  `init()` ever grows a `**kwargs` catch-all.
 - **Outbound PII redaction rewrote the caller's own message objects, and a
   frozen message was refused rather than redacted.** Both halves came from one
   cause, in both SDKs.

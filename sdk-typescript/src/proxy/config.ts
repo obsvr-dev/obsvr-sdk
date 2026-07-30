@@ -54,53 +54,132 @@ const tenantRegistry = new Map<string, { policyRules?: PolicyRule[] }>();
 let policyPollIntervalId: ReturnType<typeof setInterval> | null = null;
 
 /**
+ * The public camelCase key beside the internal name it maps to.
+ *
+ * ONE table, because the converter below and the mixed-spelling warning both
+ * read it. Two hand-maintained lists would drift, and the failure mode of that
+ * drift is a key silently dropped — the exact defect the warning exists to make
+ * visible. Where a name is identical in both shapes it appears on both sides.
+ */
+const CONFIG_KEY_MAP: Record<string, string> = {
+  apiKey: "api_key",
+  ingestUrl: "ingest_url",
+  environment: "environment",
+  sampleRate: "sample_rate",
+  debug: "debug",
+  disabled: "disabled",
+  streamingMode: "streaming_mode",
+  onPreCall: "on_pre_call",
+  hookTimeoutMs: "hook_timeout_ms",
+  hookTrigger: "hook_trigger",
+  failMode: "fail_mode",
+  piiPolicy: "pii_policy",
+  policyRules: "policy_rules",
+  policyFloor: "policyFloor",
+  onPostCall: "on_post_call",
+  postCallTimeoutMs: "post_call_timeout_ms",
+  agentPolicy: "agent_policy",
+  providers: "providers",
+  policyRefreshIntervalMs: "policy_refresh_interval_ms",
+  policyStalenessBudgetMs: "policy_staleness_budget_ms",
+  policyPublicKey: "policy_public_key",
+  multiTurnInjection: "multi_turn_injection",
+  sessionTaint: "sessionTaint",
+  costPolicy: "costPolicy",
+  deobfuscation: "deobfuscation",
+  otel: "otel",
+  meterIntegrationEvents: "meterIntegrationEvents",
+  mcpToolPolicy: "mcpToolPolicy",
+  presidioAnalyzerUrl: "presidio_analyzer_url",
+  presidioAnonymizerUrl: "presidio_anonymizer_url",
+  hardDeletion: "hardDeletion",
+  environmentPolicies: "environmentPolicies",
+  externalPolicyBackend: "external_policy_backend",
+};
+
+const CAMEL_KEYS = new Set(Object.keys(CONFIG_KEY_MAP));
+const SNAKE_KEYS = new Set(Object.values(CONFIG_KEY_MAP));
+/** Internal name -> public name, for naming the spelling a caller should use. */
+const SNAKE_TO_CAMEL: Record<string, string> = Object.fromEntries(
+  Object.entries(CONFIG_KEY_MAP).map(([camel, snake]) => [snake, camel]),
+);
+
+/**
  * Convert public camelCase ObsvrConfig to internal snake_case LLMAuditInitConfig
  */
 function fromObsvrConfig(config: ObsvrConfig): LLMAuditInitConfig {
-  return {
-    api_key: config.apiKey,
-    ingest_url: config.ingestUrl,
-    environment: config.environment,
-    sample_rate: config.sampleRate,
-    debug: config.debug,
-    disabled: config.disabled,
-    streaming_mode: config.streamingMode,
-    on_pre_call: config.onPreCall,
-    hook_timeout_ms: config.hookTimeoutMs,
-    hook_trigger: config.hookTrigger,
-    fail_mode: config.failMode,
-    pii_policy: config.piiPolicy,
-    policy_rules: config.policyRules,
-    policyFloor: config.policyFloor,
-    on_post_call: config.onPostCall,
-    post_call_timeout_ms: config.postCallTimeoutMs,
-    agent_policy: config.agentPolicy,
-    providers: config.providers,
-    policy_refresh_interval_ms: config.policyRefreshIntervalMs,
-    policy_staleness_budget_ms: config.policyStalenessBudgetMs,
-    policy_public_key: config.policyPublicKey,
-    multi_turn_injection: config.multiTurnInjection,
-    sessionTaint: config.sessionTaint,
-    costPolicy: config.costPolicy,
-    deobfuscation: config.deobfuscation,
-    otel: config.otel,
-    meterIntegrationEvents: config.meterIntegrationEvents,
-    mcpToolPolicy: config.mcpToolPolicy,
-    presidio_analyzer_url: config.presidioAnalyzerUrl,
-    presidio_anonymizer_url: config.presidioAnonymizerUrl,
-    hardDeletion: config.hardDeletion,
-    environmentPolicies: config.environmentPolicies,
-    external_policy_backend: config.externalPolicyBackend,
-  };
+  const out: Record<string, unknown> = {};
+  for (const [camel, snake] of Object.entries(CONFIG_KEY_MAP)) {
+    out[snake] = (config as unknown as Record<string, unknown>)[camel];
+  }
+  // The table above IS the mapping, so the shape is correct by construction;
+  // the compiler cannot see that through a keyed build. `api_key` is required
+  // on the target and is asserted at resolveConfig, which validates it.
+  return out as unknown as LLMAuditInitConfig;
 }
 
 /**
  * Detect whether a config object is in ObsvrConfig (camelCase) form.
+ *
+ * ONE key decides the convention for the WHOLE object, which is why the warning
+ * below exists: a caller who writes `api_key` beside `piiPolicy` gets the
+ * snake_case path, and `piiPolicy` is never read. Nothing failed, nothing was
+ * logged, and the PII policy simply did not exist.
  */
 function isObsvrConfig(
   config: LLMAuditInitConfig | ObsvrConfig,
 ): config is ObsvrConfig {
   return "apiKey" in config;
+}
+
+/**
+ * Warn about keys the chosen naming convention will not read.
+ *
+ * Warn rather than reject, and warn rather than accept both spellings. Rejecting
+ * turns a typo into an outage for a caller who was passing a harmless extra
+ * field. Accepting both hides the mistake and leaves two conventions live
+ * forever. Warning is visible, non-breaking, and names the key — and for a
+ * misspelled key it names the spelling that WOULD have been read, because
+ * "unknown key" tells a caller nothing they can act on.
+ *
+ * Deliberately not silent for a value of `undefined`: a key present and
+ * explicitly undefined still signals intent, and the caller still wants to know
+ * their spelling was ignored.
+ */
+function warnOnUnreadableConfigKeys(config: Record<string, unknown>, isCamel: boolean): void {
+  const style = isCamel ? "camelCase" : "snake_case";
+  const readable = isCamel ? CAMEL_KEYS : SNAKE_KEYS;
+  const otherConvention = isCamel ? SNAKE_KEYS : CAMEL_KEYS;
+
+  const wrongStyle: string[] = [];
+  const unrecognised: string[] = [];
+  for (const key of Object.keys(config)) {
+    if (readable.has(key)) continue;
+    if (otherConvention.has(key)) wrongStyle.push(key);
+    else unrecognised.push(key);
+  }
+
+  if (wrongStyle.length > 0) {
+    const fixes = wrongStyle
+      .map((k) => `${k} -> ${isCamel ? SNAKE_TO_CAMEL[k] : CONFIG_KEY_MAP[k]}`)
+      .join(", ");
+    console.warn(
+      `[obsvr] WARNING: init() read this config as ${style}, because ` +
+        `${isCamel ? "`apiKey` is present" : "`apiKey` is absent"}. ` +
+        `One key decides the convention for the whole object, so these keys ` +
+        `were IGNORED and their settings are NOT in force: ${wrongStyle.join(", ")}. ` +
+        `Rename them to match: ${fixes}. ` +
+        `A policy passed under the unread spelling does not exist — a pii_policy ` +
+        `dropped this way means no PII scanning at all, silently.`,
+    );
+  }
+  if (unrecognised.length > 0) {
+    console.warn(
+      `[obsvr] WARNING: init() does not recognise these config keys and ignored ` +
+        `them: ${unrecognised.join(", ")}. Check for a typo — obsvr reads ` +
+        `${style} for this call.`,
+    );
+  }
 }
 
 /**
@@ -397,7 +476,9 @@ export function init(config: LLMAuditInitConfig | ObsvrConfig): void {
     );
   }
 
-  const internal = isObsvrConfig(config) ? fromObsvrConfig(config) : config;
+  const isCamel = isObsvrConfig(config);
+  warnOnUnreadableConfigKeys(config as unknown as Record<string, unknown>, isCamel);
+  const internal = isCamel ? fromObsvrConfig(config) : config;
   const resolved = resolveConfig(internal);
   state.config = resolved;
   state.initialized = true;
