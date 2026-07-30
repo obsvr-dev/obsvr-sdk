@@ -615,14 +615,15 @@ The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixtu
 
 Documented plainly, from the code. For the full threat model — what the signature chain does and does not prove — and how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
-Two further documents exist so the limits are checkable rather than merely
-asserted. [docs/REMEDIATION.md](docs/REMEDIATION.md) is the inventory an internal
-audit produced: what was found, what was repaired, and what is still open with the
-reason it is not repaired yet. [docs/RELEASE-GATE.md](docs/RELEASE-GATE.md) is the
-gate a version has to pass, as a checklist with the commands that check it —
-including the distinction that decides which defects block a release at all: a
-record that claims an enforcement which did not happen blocks; a control that does
-not fire and emits nothing gets documented and ships.
+One distinction decides which of these limits would block a release and which
+ship documented, and it is worth stating before you read them: **a record that
+claims an enforcement which did not happen blocks; a control that does not fire
+and emits nothing gets documented and ships.** For an evidence product a false
+positive in the audit trail is worse than a missing feature, because a reader
+cannot tell it from a true one. That is why an unreachable tool gate ships —
+graded, and stated in both READMEs — while an event claiming `blocked` about a
+call that completed does not. Everything on this page is on the second side of
+that line.
 
 - **Streaming.** With `stream: true`, PII scanning and policy hooks run **before** the LLM is contacted, so a blocked call never opens the stream. But **post-call** response scanning on streamed output is audit-time, not enforcement-time: tokens reach the caller as they arrive.
 - **Signing model.** The client chain is symmetric (API-key-derived): it proves capture order and detects modification, but a key-holder could construct validly-signed events. The service's countersignature and Ed25519 root are what give external, public verifiability. Integrity, not non-repudiation against a key-holder.

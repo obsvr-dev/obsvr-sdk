@@ -465,8 +465,9 @@ cut, when it is renamed to that version.
   closing them means widening the interception path across the whole declared
   version range of each provider package rather than editing a table.
 - **Resolved-model provenance is now catalogued as `KD-10`, and a second claimed
-  divergence was measured and found already closed.** `docs/REMEDIATION.md`
-  carried two adjacent capability gaps as prose rows in its still-open table.
+  divergence was measured and found already closed.** An internal remediation
+  inventory carried two adjacent capability gaps as prose rows in a still-open
+  table.
   Both were driven against one server rather than transcribed, and they split.
 
   `model_resolved` / `provenance_source` **reproduces**: with a provider
@@ -580,18 +581,13 @@ cut, when it is renamed to that version.
   surfaces are fakes, and what a green run on a faked surface does and does not
   establish. A reader who assumed the integration suites exercised the
   frameworks they name was previously left to discover otherwise.
-- **`docs/REMEDIATION.md` and `docs/RELEASE-GATE.md`.** An external reader could
-  verify a handful of itemised defects in `SECURITY.md` while the inventory behind
-  them — and the reasoning about which defects block a release at all — were not
-  visible anywhere. Both are now checked-in artifacts.
-
-  `REMEDIATION.md` records what an internal audit found, what was repaired, and
-  what is still open with the reason each item is not repaired yet. `RELEASE-GATE.md`
-  is the gate as a checklist with the commands that check it, and it states the
-  severity axis the whole thing rests on: a record asserting an enforcement that
-  did not happen blocks a release, while a control that does not fire and emits
-  nothing gets documented and ships. A documented non-enforcing gate is honest; a
-  fabricated denial is not.
+- **The severity axis is now stated where the limitations are.** A reader could
+  see a handful of itemised defects disclosed in `SECURITY.md` without the rule
+  that decides which of them would block a release at all. The README's
+  known-limitations section now leads with it: a record asserting an enforcement
+  that did not happen blocks a release, while a control that does not fire and
+  emits nothing gets documented and ships. A documented non-enforcing gate is
+  honest; a fabricated denial is not.
 - **The enforcement-reporting invariant now covers TypeScript as well.** A table
   over the TypeScript tool gates, written against those implementations rather
   than translated from the Python results — which matters, because the two SDKs

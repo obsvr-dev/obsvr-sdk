@@ -26,3 +26,11 @@ htmlcov/
 .DS_Store
 bench/results/
 .claude/
+
+# Internal remediation notes. These stay on disk and stay useful locally; they
+# are not published. They were never public — they first appeared on an unmerged
+# branch — and untracking them also closes a defect the release gate would have
+# had as a public document: it cites measurement artifacts that live outside this
+# repository, so every ticked box would have pointed an external reader at a file
+# they cannot open.
+docs/
