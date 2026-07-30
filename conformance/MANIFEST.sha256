@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 2de2241313e6781894744386538b9f7c338c7b8fa7da6054339677a92d30c64d
+# corpus_sha256 = a2e27106842ed539f5b04ebf6c9336b121b40906b4dc4eab1ad9af3dcf22580f
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -20,7 +20,7 @@
 e84f388e8e89835cf1ccd7131e5796ec032a4f7ba80bcee342b7fb02c16c59b3  fixtures/action_taken.json
 dfa5263a33002d856b7fe07b8c2b62ce14427ff55c27eab4179443d4e49e22db  fixtures/agent_controls.json
 e789a00484700552e1a41f3bca57edc5ce19ff23489621fd0acb5e7e4976496b  fixtures/approvals.json
-c1ab64a130def64d3a412a78d1ae696db8d4699fc98a945fa2495778f37a0365  fixtures/audit_gap.json
+8861c32903054dab1e62588487be4ce3d907144dd51544010443755f116257d2  fixtures/audit_gap.json
 c80c53752ee10020bf35c9ce478510157b319a39ce2e2e62b8bcd0f42c86f5c9  fixtures/canary.json
 8897a8358801783b77db8df72915a3737df6f569d7357aceeedbfb6a9774d0d2  fixtures/canonical_json.json
 1526936fb1571c219a9d7fa4251eaea727abb611c5cc80a609c46407910cb696  fixtures/cloudevents.json

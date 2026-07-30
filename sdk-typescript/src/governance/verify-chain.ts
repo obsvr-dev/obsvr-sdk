@@ -6,7 +6,7 @@
  */
 import { createHmac } from 'crypto';
 import type { AuditEvent } from '../proxy/types.js';
-import { parseAuditGapPrompt } from '../proxy/audit-gap.js';
+import { readAuditGapClaim } from '../proxy/audit-gap.js';
 import {
   CHAIN_FORMATS_SUPPORTED,
   CHAIN_FORMAT_LEGACY,
@@ -232,8 +232,10 @@ export function verifyAuditChain(
     lastSig = event.sdk_sig ?? null;
 
     // Counted only after the event's own signature verified: an unverified
-    // marker's count is an unverified claim.
-    const gap = parseAuditGapPrompt(event.prompt);
+    // marker's count is an unverified claim. And read through
+    // readAuditGapClaim, which requires the event to BE a marker — parsing the
+    // prompt of every event let a user forge a loss declaration by typing one.
+    const gap = readAuditGapClaim(event);
     if (gap) {
       gapMarkers++;
       eventsDeclaredLost += gap.dropped;

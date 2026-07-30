@@ -644,6 +644,40 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **A user prompt could forge an audit-gap marker, and both verifiers believed
+  it.** The verifiers parsed `prompt` for the gap-marker string on EVERY event
+  they checked, with no discriminator. A prompt reading exactly
+  `obsvr:audit-gap/1 dropped=999999 reason=queue_overflow` therefore produced a
+  legitimately-signed event that verification reported as
+  `{ valid: true, gapMarkers: 1, eventsDeclaredLost: 999999 }` — a user
+  fabricating a million lost events, on a chain that reports valid, by typing a
+  string. The reasoning that put the count in the signed content was right,
+  because metadata is unsigned; it placed the governance claim in the one field a
+  user fully controls and then trusted any event carrying it.
+
+  All four verification sites (both chain verifiers, both `obsvr-verify` CLIs)
+  now require the event to BE a marker — `operation` is `audit.gap`, which the
+  senders stamp and no user-facing call path produces. `parseAuditGapPrompt` /
+  `parse_audit_gap_prompt` are unchanged and still read a claim out of any
+  matching string: they are content functions the preimage fixtures depend on.
+  What moved is that a matching string is no longer proof of what the event is.
+
+  **Reachability was measured, not assumed, and the first probe was wrong.**
+  Driving `obsvr.wrap()` reads zero forged markers in both directions — its
+  extractor stores `"user: <content>"` and the pattern is anchored — so a probe
+  that stopped there would have cleared a live vulnerability. The LangChain
+  integration stores `prompts.join("\n")`: a bare, user-controlled string, which
+  is the shape that reaches it.
+
+  **Residual, stated rather than left implicit:** `operation` is not in the
+  signature preimage, so a party who can edit a STORED event can still set it to
+  `audit.gap` on an event whose prompt already parses. That now needs two
+  capabilities where one used to do. Closing it entirely means signing
+  `operation`, which is a chain-format change and is not made here.
+
+  The pinned marker event in `conformance/fixtures/audit_gap.json` gained
+  `operation` and `source`, which is what both senders actually stamp; neither
+  field is in the preimage, so no pinned signature moved.
 - **BREAKING (audit chain): the client signature did not cover the verdict.
   Chain format is now 3, and the decision fields are inside the preimage.**
   Under formats 1 and 2 the preimage was

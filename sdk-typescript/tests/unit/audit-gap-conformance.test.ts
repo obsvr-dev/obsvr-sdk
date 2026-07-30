@@ -18,6 +18,7 @@ import {
   AUDIT_GAP_REASON_QUEUE_OVERFLOW,
   formatAuditGapPrompt,
   parseAuditGapPrompt,
+  readAuditGapClaim,
 } from "../../src/proxy/audit-gap";
 import { verifyAuditChain } from "../../src/governance/verify-chain";
 import type { AuditEvent } from "../../src/proxy/types";
@@ -67,18 +68,20 @@ const fixture = JSON.parse(
   };
 };
 
-/** The fixture's chain as an exported event list. */
+/**
+ * The fixture's chain as an exported event list.
+ *
+ * EVERY key on the fixture event is copied. This used to enumerate a fixed
+ * list, which dropped the marker's `operation` and so hid the very field the
+ * verifier discriminates on — a copier that decides what a chain contains is
+ * exactly what a verifier test must not have.
+ */
 function chain(): AuditEvent[] {
   return fixture.signing.events.map(
     (ev) =>
       ({
         sdk_session_id: fixture.signing.session_id,
-        seq_no: ev.seq_no,
-        timestamp_sdk: ev.timestamp_sdk,
-        prompt: ev.prompt,
-        response: ev.response,
-        prev_sig: ev.prev_sig,
-        sdk_sig: ev.sdk_sig,
+        ...ev,
       }) as unknown as AuditEvent,
   );
 }
@@ -139,4 +142,42 @@ describe("audit gap conformance: signing and verification", () => {
       if (c.expect.reason !== undefined) expect(result.reason).toBe(c.expect.reason);
     });
   }
+});
+
+
+describe("a gap marker is an event the SDK emitted as one", () => {
+  it("a user prompt cannot forge a loss declaration", () => {
+    // The defect: the verifier parsed the prompt of EVERY event. A user who
+    // types the marker string produces a legitimately-signed event, so the
+    // signature check passes and the loss claim was counted — a fabricated
+    // declaration of 999,999 lost events on a chain that reports valid.
+    //
+    // REACHABILITY is not hypothetical: `wrap()` is immune by accident (its
+    // extractor stores "user: <content>" and the pattern is anchored), but the
+    // LangChain integration stores the bare prompt string.
+    const forged = {
+      prompt: formatAuditGapPrompt(999999),
+      response: "",
+      operation: "chat.completions.create",
+    } as unknown as Record<string, unknown>;
+
+    expect(readAuditGapClaim(forged)).toBeNull();
+
+    // CONTROL: the same content, on an event the SDK marks as a marker, IS
+    // read. Without this the fix could be "never count anything".
+    expect(readAuditGapClaim({ ...forged, operation: "audit.gap" })).toEqual({
+      dropped: 999999,
+      reason: "queue_overflow",
+    });
+  });
+
+  it("the parser is unchanged — it is the verification path that discriminates", () => {
+    // `parseAuditGapPrompt` still reads the claim out of any matching string:
+    // it is a content function and the preimage fixtures depend on it. What
+    // moved is that a matching string is no longer proof the event is a marker.
+    expect(parseAuditGapPrompt(formatAuditGapPrompt(999999))).toEqual({
+      dropped: 999999,
+      reason: "queue_overflow",
+    });
+  });
 });

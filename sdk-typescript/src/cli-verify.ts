@@ -47,7 +47,7 @@
 
 import { readFileSync } from "node:fs";
 import { verifyAuditChain } from "./governance/verify-chain.js";
-import { parseAuditGapPrompt } from "./proxy/audit-gap.js";
+import { readAuditGapClaim } from "./proxy/audit-gap.js";
 import type { AuditEvent } from "./proxy/types.js";
 
 function fail(msg: string, code = 1): never {
@@ -172,7 +172,9 @@ if (apiKey) {
   let gapMarkers = 0;
   let eventsLost = 0;
   for (const e of events) {
-    const gap = parseAuditGapPrompt(e.prompt);
+    // Must require the event to BE a marker, not merely to contain the
+    // string: parsing every prompt let a user forge a loss declaration.
+    const gap = readAuditGapClaim(e);
     if (gap) {
       gapMarkers++;
       eventsLost += gap.dropped;

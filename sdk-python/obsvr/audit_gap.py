@@ -41,6 +41,8 @@ __all__ = [
     "AUDIT_GAP_OPERATION",
     "format_audit_gap_prompt",
     "parse_audit_gap_prompt",
+    "read_audit_gap_claim",
+    "AUDIT_GAP_SOURCE",
 ]
 
 #: Preimage format version. Bumping it changes the signed bytes, so a reader can
@@ -83,6 +85,10 @@ def parse_audit_gap_prompt(prompt: Any) -> Optional[Dict[str, Any]]:
     marker. Deliberately strict: a near-miss is treated as an ordinary event
     rather than guessed at, because the alternative is inventing a loss count
     from a string that was never a marker.
+
+    CONTENT ONLY - this does not decide whether the event IS a marker. Callers
+    on the verification path must use :func:`read_audit_gap_claim`, which also
+    requires the event to be one the SDK emitted as a marker.
     """
     if not isinstance(prompt, str):
         return None
@@ -90,3 +96,42 @@ def parse_audit_gap_prompt(prompt: Any) -> Optional[Dict[str, Any]]:
     if not match:
         return None
     return {"dropped": int(match.group(1)), "reason": match.group(2)}
+
+
+#: ``source`` stamped on a marker event, alongside AUDIT_GAP_OPERATION.
+AUDIT_GAP_SOURCE = "obsvr_sdk"
+
+
+def read_audit_gap_claim(event: Any) -> Optional[Dict[str, Any]]:
+    """Is this event a gap marker, and if so what does it declare?
+
+    THE DEFECT THIS CLOSES. The verifiers used to call
+    :func:`parse_audit_gap_prompt` on the ``prompt`` of EVERY event, with no
+    discriminator. The reasoning that put the count in the signed content was
+    right - metadata is unsigned, so a count carried only there could be edited
+    from 10,000 to 1 without breaking a signature - but it placed a governance
+    claim in the one field a user fully controls, and then trusted any event
+    containing it. A prompt reading exactly::
+
+        obsvr:audit-gap/1 dropped=999999 reason=queue_overflow
+
+    produced a legitimately-signed event the verifier reported as
+    ``{"valid": True, "gapMarkers": 1, "eventsDeclaredLost": 999999}``.
+
+    REACHABILITY, measured rather than assumed. The ``wrap()`` path is immune by
+    accident: its extractor stores ``"user: <content>"`` and the pattern is
+    anchored. The LangChain integration is NOT immune - it stores the bare
+    prompt string. A first probe drove ``wrap()``, read zero forged markers, and
+    would have cleared a live vulnerability if the surface had not been checked.
+
+    WHAT THIS DOES NOT CLOSE: ``operation`` is not in the signature preimage, so
+    a party who can edit a STORED event can still set it to ``audit.gap`` on an
+    event whose prompt already parses. That needs two capabilities where one used
+    to do. Closing it entirely means signing ``operation``, a chain-format change
+    not made here.
+    """
+    if not isinstance(event, dict):
+        return None
+    if event.get("operation") != AUDIT_GAP_OPERATION:
+        return None
+    return parse_audit_gap_prompt(event.get("prompt"))

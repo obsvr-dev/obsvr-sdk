@@ -53,7 +53,7 @@ import json
 import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .audit_gap import parse_audit_gap_prompt
+from .audit_gap import read_audit_gap_claim
 from .verify_chain import verify_chain
 
 __all__ = ["main"]
@@ -224,7 +224,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         gap_markers = 0
         events_lost = 0
         for event in events:
-            gap = parse_audit_gap_prompt(event.get("prompt"))
+            # Same discriminator as verify_chain: a marker is an event the
+            # SDK emitted as one, not any event containing the string.
+            gap = read_audit_gap_claim(event)
             if gap:
                 gap_markers += 1
                 events_lost += gap["dropped"]

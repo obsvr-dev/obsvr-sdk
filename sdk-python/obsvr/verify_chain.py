@@ -47,7 +47,7 @@ import hmac as hmac_mod
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence
 
-from .audit_gap import parse_audit_gap_prompt
+from .audit_gap import read_audit_gap_claim
 from .chain_format import (
     CHAIN_FORMATS_SUPPORTED,
     CHAIN_FORMAT_LEGACY,
@@ -283,7 +283,9 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
 
         # Counted only after the event's own signature verified: an unverified
         # marker's count is an unverified claim.
-        gap = parse_audit_gap_prompt(event.get("prompt"))
+        # Must require the event to BE a marker, not merely to contain the
+        # string: parsing every prompt let a user forge a loss declaration.
+        gap = read_audit_gap_claim(event)
         if gap:
             gap_markers += 1
             events_declared_lost += gap["dropped"]

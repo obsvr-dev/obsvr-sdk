@@ -79,10 +79,60 @@ const AUDIT_GAP_PROMPT_RE = new RegExp(
  * a marker. Deliberately strict: a near-miss is treated as an ordinary event
  * rather than guessed at, because the alternative is inventing a loss count
  * from a string that was never a marker.
+ *
+ * CONTENT ONLY — this does not decide whether the event IS a marker. Callers on
+ * the verification path must use `readAuditGapClaim`, which also requires the
+ * event to be one the SDK emitted as a marker. See that function for why.
  */
 export function parseAuditGapPrompt(prompt: unknown): AuditGapClaim | null {
   if (typeof prompt !== "string") return null;
   const match = AUDIT_GAP_PROMPT_RE.exec(prompt);
   if (!match) return null;
   return { dropped: Number(match[1]), reason: match[2] };
+}
+
+/** `source` stamped on a marker event, alongside AUDIT_GAP_OPERATION. */
+export const AUDIT_GAP_SOURCE = "obsvr_sdk";
+
+/**
+ * Is this event a gap marker, and if so what does it declare?
+ *
+ * THE DEFECT THIS CLOSES. The verifier used to call `parseAuditGapPrompt` on
+ * the `prompt` of EVERY event it verified, with no discriminator at all. The
+ * reasoning that put the count in the signed content was right — metadata is
+ * unsigned, so a count carried only there could be edited from 10,000 to 1
+ * without breaking a signature — but it placed a governance claim in the one
+ * field a user fully controls, and then trusted any event that contained it.
+ *
+ * So a prompt reading exactly
+ *
+ *     obsvr:audit-gap/1 dropped=999999 reason=queue_overflow
+ *
+ * produced a legitimately-signed event that the verifier reported as
+ * `{ valid: true, gapMarkers: 1, eventsDeclaredLost: 999999 }` — a user
+ * fabricating a million lost events, with a valid chain, by typing a string.
+ *
+ * REACHABILITY, measured rather than assumed. The `wrap()` path is immune by
+ * accident: its extractor stores `"user: <content>"`, and the marker pattern is
+ * anchored, so a user prompt can never match. **The LangChain integration is
+ * not immune** — `handleLLMStart` stores `prompts.join("\n")`, a bare
+ * user-controlled string. The first probe of this defect drove `wrap()`, read
+ * zero forged markers, and would have cleared a live vulnerability if the
+ * surface had not been checked.
+ *
+ * The discriminator is `operation`, which the sender stamps as `audit.gap` and
+ * no user-facing call path produces.
+ *
+ * WHAT THIS DOES NOT CLOSE, stated because it is a real residual: `operation`
+ * is NOT in the signature preimage, so a party who can edit a STORED event can
+ * still set `operation` to `audit.gap` on an event whose prompt already parses
+ * as a marker. That needs both capabilities at once, where before it needed
+ * only the ability to type a prompt. Closing it entirely means signing
+ * `operation`, which is a chain-format change and is not made here.
+ */
+export function readAuditGapClaim(event: unknown): AuditGapClaim | null {
+  if (typeof event !== "object" || event === null) return null;
+  const e = event as { operation?: unknown; prompt?: unknown };
+  if (e.operation !== AUDIT_GAP_OPERATION) return null;
+  return parseAuditGapPrompt(e.prompt);
 }
