@@ -32,6 +32,7 @@ Usage::
 # generate_content methods run the obsvr pipeline, delegating every other
 # attribute to the real model.
 
+import inspect
 import time
 from typing import Any, Dict, List, Optional
 
@@ -356,12 +357,102 @@ class _GovernedGenerativeModel:
                 )
                 raise
 
+            if inspect.isawaitable(result):
+                # `generate_content_async` is governed but returns a COROUTINE.
+                # Handing that straight to the response extractor produced an
+                # empty response and null token counts, ran the post-call policy
+                # over "" so it never saw the answer, and emitted an event
+                # claiming success for a call that had not happened yet — while
+                # the caller awaited the coroutine and got an ungoverned answer.
+                # Pre-call enforcement always survived; it is the record that did
+                # not. This module has no other await, which is why one plain
+                # `def` covered both a sync and an async method.
+                return self._await_and_govern(
+                    cfg, result, operation, model, prompt_text, user_text,
+                    compliance, options, start, should_audit, is_stream,
+                )
+
             if is_stream:
                 return self._wrap_stream(cfg, result, operation, model, prompt_text, user_text, compliance, options, start, should_audit)
 
             return self._govern_response(cfg, result, operation, model, prompt_text, user_text, compliance, options, start, should_audit)
 
         return governed
+
+    async def _await_and_govern(self, cfg, awaitable, operation, model, prompt_text,
+                                user_text, compliance, options, start, should_audit,
+                                is_stream):
+        """Await the provider's coroutine, THEN govern what it produced.
+
+        The failure path is here rather than around the original call because a
+        coroutine raises when it is awaited, not when it is created, so the
+        synchronous try/except above never sees an async failure.
+        """
+        try:
+            resolved = await awaitable
+        except BaseException as e:  # noqa: BLE001 - audit then re-raise
+            emit_event(
+                cfg, provider=PROVIDER, model=model, operation=operation,
+                source=SOURCE, prompt=prompt_text, response="",
+                user_input=user_text,
+                latency_ms=(time.monotonic() - start) * 1000,
+                success=False, error=e, compliance=compliance, options=options,
+            )
+            raise
+        if is_stream:
+            return self._wrap_async_stream(
+                cfg, resolved, operation, model, prompt_text, user_text,
+                compliance, options, start, should_audit,
+            )
+        return self._govern_response(
+            cfg, resolved, operation, model, prompt_text, user_text,
+            compliance, options, start, should_audit,
+        )
+
+    def _wrap_async_stream(self, cfg, result, operation, model, prompt_text, user_text,
+                           compliance, options, start, should_audit=True):
+        """Async twin of ``_wrap_stream``.
+
+        The sync one drives ``for chunk in result``, which an async iterator does
+        not answer to. Same accounting, same emission rule: errors and governed
+        events always emit, a clean allowed stream only when sampled in.
+        """
+        governed = compliance.get("action_taken") != "allowed"
+
+        if not hasattr(result, "__aiter__"):
+            # Not actually an async stream. Govern it as a response rather than
+            # guessing — silently returning it ungoverned is what this fixes.
+            return self._govern_response(
+                cfg, result, operation, model, prompt_text, user_text,
+                compliance, options, start, should_audit,
+            )
+
+        async def agenerator():
+            text = ""
+            error: Optional[BaseException] = None
+            try:
+                async for chunk in result:
+                    try:
+                        text += _extract_response_text(chunk)
+                    except Exception:
+                        pass
+                    yield chunk
+            except BaseException as e:  # noqa: BLE001
+                error = e
+                raise
+            finally:
+                if error is not None or should_audit or governed:
+                    emit_event(
+                        cfg, provider=PROVIDER, model=model, operation=operation,
+                        source=SOURCE, prompt=prompt_text, response=text,
+                        user_input=user_text,
+                        latency_ms=(time.monotonic() - start) * 1000,
+                        success=error is None,
+                        status_code=200 if error is None else 500,
+                        error=error, compliance=compliance, options=options,
+                    )
+
+        return agenerator()
 
     def _govern_response(self, cfg, response, operation, model, prompt_text, user_text, compliance, options, start, should_audit=True):
         latency = (time.monotonic() - start) * 1000

@@ -416,6 +416,31 @@ cut, when it is renamed to that version.
   nobody is listening, because an unhandled `error` would turn a refusal the SDK
   handled correctly into a crash of the host process; and one listener throwing
   does not stop the next from being told.
+- **The Vertex async method is awaited before its answer is governed.**
+  `generate_content_async` is in the governed set, and the governed wrapper was
+  a plain `def` — the module contained no `await` anywhere, which is how one
+  function came to cover both a sync and an async provider method. The coroutine
+  went straight to the response extractor, so the event recorded an empty
+  response and null token counts, the response-side policy ran over `""` and
+  never saw the answer, and the event claimed **success for a call that had not
+  happened yet**; the caller then awaited the coroutine themselves and got an
+  ungoverned answer.
+
+  Pre-call enforcement always survived — a block is decided before the provider
+  is called at all — so this was a record defect rather than an enforcement one.
+  The awaited path now governs the resolved response, records the failure a
+  coroutine raises only at await time (which the synchronous `try`/`except`
+  could never see), and an async stream gets an async twin of the streaming
+  accounting rather than a `for` loop an async iterator does not answer to.
+
+  **NOT LIVE-VERIFIED, and the reason is the host rather than the fix.** Vertex
+  needs GCP service-account credentials, which were not available; a Gemini API
+  key authenticates a different product and would not exercise this path.
+  Substituting a different SDK to manufacture a live run would have produced a
+  verification that did not happen, so the evidence here is offline: six cases,
+  of which four fail when the change is reverted and the two that survive are
+  the controls — the sync path, which never broke, and pre-call enforcement,
+  which must not change.
 
 ### Added
 
