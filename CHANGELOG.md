@@ -644,6 +644,24 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The root README claimed the client chain detects any edit to a captured
+  event. It does not, and this repository's own threat model says so.** The
+  sentence read *"Any edit, drop, or reorder of captured events breaks the chain
+  detectably"* — but the signature preimage is
+  `format | session | seq | timestamp | content_hash | prev_sig`, which carries no
+  decision field. `action_taken`, `rule_id` and the rest of the attribution sit
+  outside it, so rewriting a verdict from `blocked` to `allowed` breaks nothing a
+  client-side verifier can see. `SECURITY.md` has always stated this correctly and
+  in detail, and `sdk-typescript/README.md` states it correctly too; the root
+  README was the one place that overstated it, which is the place a reader
+  arrives first.
+
+  The claim is now narrowed to what the preimage actually covers — content, and
+  order once an event is in the chain — and points at the server countersignature
+  for the decision fields. **This is a documentation correction, not a change in
+  behaviour:** nothing about what the SDK signs moved in this entry. Widening the
+  preimage to cover the decision fields is a separate change with its own chain
+  format.
 - **Python streaming broke `with` on any wrapped client.** The streaming paths are
   generator functions and the call sites returned one directly, so callers got a
   plain generator where the provider's contract promises a stream object. The

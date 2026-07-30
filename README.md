@@ -316,7 +316,7 @@ flowchart LR
 
 **What the SDK does:**
 
-1. **Client HMAC chain.** Each event carries a session id, a monotonic sequence number, and an **HMAC-SHA256 signature chained to the previous event's signature** (`prev_sig`), keyed from your API key and covering the prompt/response **content** and the event **order**. Any edit, drop, or reorder of captured events breaks the chain detectably.
+1. **Client HMAC chain.** Each event carries a session id, a monotonic sequence number, and an **HMAC-SHA256 signature chained to the previous event's signature** (`prev_sig`), keyed from your API key and covering the prompt/response **content** and the event **order**. Any edit to that content, and any drop or reorder of events once they are in the chain, breaks it detectably. The decision/attribution fields (verdict, rule, tenant) are **not** in the client preimage — the server countersignature in item 3 is what seals those, and [`SECURITY.md`](SECURITY.md) states the limit in full.
 2. **Fire-and-forget delivery.** Signed events are queued and delivered with retry/backoff off your LLM path; a backend outage degrades rule _updates_, not enforcement.
 
 **What your obsvr ingest service does** (attributed here because the SDK does not do these — it hands the signed events over):
