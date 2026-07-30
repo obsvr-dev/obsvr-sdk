@@ -101,6 +101,11 @@ flowchart TD
 npm install @obsvr/sdk    # (private beta — request access)
 ```
 
+Requires **Node.js >= 22**, and the package is **ESM-only** — a CommonJS service
+cannot `require()` it, and the zero-code `--import` path does not intercept
+`require()` even where the package loads. Dual-publishing is future work; the
+reason it is not a quick win is in the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only).
+
 ```typescript
 import { obsvr } from "@obsvr/sdk";
 import OpenAI from "openai";

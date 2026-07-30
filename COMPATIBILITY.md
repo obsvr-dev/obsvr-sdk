@@ -44,6 +44,8 @@ Which versions of each package the obsvr SDK works with.
 
 `@google/generative-ai` is the legacy line, end-of-life 2025-08. Its replacement `@google/genai` is **not supported yet**.
 
+**Module format: ESM only.** `@obsvr/sdk` declares `"type": "module"` and every export condition is `import`, so a CommonJS consumer cannot `require()` it at any version. Independently of loading, the zero-code `--import` interception path does not reach `require()` — `module.register()` hooks do not intercept it — so a CJS entrypoint is ungoverned on that path even where the packages above are dual-format. `obsvr.wrap()` and the named compatibility wrappers are unaffected. See the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only) for why dual-publishing is scoped as future work rather than a quick fix.
+
 ## Version needed per method
 
 A release can be installable and governed on one method while another does not

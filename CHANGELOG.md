@@ -441,6 +441,32 @@ cut, when it is renamed to that version.
   of which four fail when the change is reverted and the two that survive are
   the controls — the sync path, which never broke, and pre-call enforcement,
   which must not change.
+- **The TypeScript package being ESM-only is now stated where installation is
+  documented, in all three places a reader arrives.** `"type": "module"` with
+  only `import` export conditions, so `require("@obsvr/sdk")` fails and a
+  CommonJS service cannot consume the package at any version. Nothing in the
+  repository said so — not the root README, not the TypeScript README, not
+  `COMPATIBILITY.md` — so the first sign of it was a runtime failure after
+  install.
+
+  The disclosure covers the part that a CommonJS build would **not** fix: the
+  zero-code `--import` path does not intercept `require()` at all, because
+  `module.register()` hooks do not. Measured with a control — under `--import`
+  with an ESM entrypoint the policy-violating call is refused and one event is
+  written; from a `require()` entrypoint the same call reaches the provider,
+  nothing is recorded, and `interception_active` reads false. `obsvr.wrap()` and
+  the named compatibility wrappers are unaffected, and that is said too, because
+  "ESM-only" alone would over-state the loss.
+
+  **Dual-publishing is scoped as future work with the reason named**, rather
+  than left as an implied someday. A dual build invites the dual-package hazard,
+  and this SDK holds the audit chain in module-level state — session id,
+  sequence number and previous signature are all bindings in one module — so two
+  resolved copies in one process means two session ids and two sequence
+  counters writing one claimed session, which the ingest service classifies as a
+  `sequence_fork`. Shipping that would trade a documented limitation for a
+  corrupted record, so the prerequisite is moving chain state out of module
+  scope, not adding a build target.
 - **The unmetered-by-default posture for integration events is now stated where
   metering is documented.** `meterIntegrationEvents` / `meter_integration_events`
   default to false, so framework-integration events carry no cost fragment and

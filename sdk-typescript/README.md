@@ -12,6 +12,35 @@ npm install @obsvr/sdk    # private beta — not yet on npm; request access at o
 
 Requires **Node.js >= 22**.
 
+### This package is ESM-only
+
+`"type": "module"`, and every export condition is `import`. **A CommonJS service
+cannot consume it**: `require("@obsvr/sdk")` fails, and there is no `require`
+condition to fall back to. Your project needs `"type": "module"`, `.mjs`
+entrypoints, or a bundler that emits ESM.
+
+This is worth checking before you install rather than after, because the failure
+is not only at load time. **Zero-code interception is silently nil under
+`require()`**, and that half would not be fixed by shipping a CommonJS build:
+`module.register()` hooks — what `--import @obsvr/sdk/register` installs — do not
+intercept `require()` at all. Measured, with a control: under `--import` with an
+ESM entrypoint a policy-violating call is refused and one audit event is written;
+with a `require()` entrypoint the same call reaches the provider, no event is
+written, and `interception_active` reads `false`. `obsvr.wrap()` and the named
+compatibility wrappers are unaffected — they govern the client you hand them,
+whatever loaded it.
+
+**Dual-publishing is deliberate future work, not an oversight**, and the reason
+is specific to what this package is. A dual build invites the dual-package
+hazard — one process resolving both copies — and this SDK keeps the audit chain
+in module-level state: the session id, the sequence number, and the previous
+signature all live as bindings in one module. Two copies means **two session ids
+and two independent sequence counters writing one claimed session**, which the
+ingest service already classifies as a `sequence_fork`. That is the same defect
+shape as a chain forking across `os.fork()`, and shipping a convenience that
+manufactures it would trade a documented limitation for a corrupted record.
+Closing this properly means moving chain state out of module scope first.
+
 ## Quick Start
 
 Wrap your existing LLM client. No other code changes.
