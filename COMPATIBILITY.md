@@ -76,4 +76,6 @@ exist on the client yet. These are the releases each method first works at.
 | `ag2`   | Python   | `>=0.3.2,<1.0`   | 1.0 removed the agent class this integration binds, and renamed the import package.                                            |
 | `mcp`   | Python   | `>=1.0.0,<2.0.0` | 2.0 renamed the tool descriptor fields the integration reads, which silently disables the schema scan and the capability gate. |
 
-_Generated from live integration tests. Do not edit by hand._
+_The Verified columns come from an integration-test matrix run outside this
+repository; that harness is not published, so this table is updated by hand when
+the matrix is re-run._
