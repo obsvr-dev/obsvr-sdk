@@ -442,8 +442,51 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 | MCP                       |     ✅     |   ✅   |
 
 A ✅ above means the integration exists and its observability is verified. It does
-**not** mean a tool-policy block stops the tool — that is a separate property, it
-differs per integration AND per language, and it is graded below.
+**not** mean a tool-policy block stops the tool, and it does **not** mean a
+policy block stops the model call. Both are separate properties, both differ per
+integration and per language, and both are graded below.
+
+### Does a policy block actually stop the model call?
+
+The framework integrations do not run the same pipeline `obsvr.wrap()` runs.
+Measured layer by layer on LangChain and LlamaIndex in both languages, driven
+rather than read off the code:
+
+| Layer | `obsvr.wrap()` | LangChain / LlamaIndex |
+| --- | --- | --- |
+| PII **detection** and the stored redacted copy | yes | **yes** |
+| Canary token kept out of the stored event | yes | **yes** |
+| PII **block** — the call is refused, the provider never reached | yes | **no** |
+| `policyRules` (all 14 rule types) | yes | **no** |
+| `policyFloor`, the non-overridable operator baseline | yes | **no** |
+| `onPreCall` hook | yes | **no** |
+| Outbound redaction — the provider gets the scrubbed text | yes | **no** |
+| Kill switch / stale-policy integrity gate | yes | **no** |
+| Response-side scan | yes | **no** |
+| Quota and cost metering | yes | opt-in only (`meterIntegrationEvents`) |
+
+So a `pii_policy` of `{ssn: "block"}` **blocks** through `obsvr.wrap()`, Bedrock,
+Vertex, Vercel AI and MCP, and through LangChain or LlamaIndex it does not: the
+call goes out with the SSN in it and the event records the stored copy as
+redacted. That is a real difference between two things this README lists in the
+same table, and it is stated here rather than left to be discovered. These two
+are **observability integrations with a PII scan**, not policy enforcement
+points — put an enforcement decision on `obsvr.wrap()` or on MCP.
+
+### One method, not seventeen: the named compatibility wrappers
+
+`wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare` and `wrapOpenAICompatible`
+govern **`chat.completions.create` and nothing else**. Counted against real
+`AzureOpenAI` and `Together` clients: `obsvr.wrap()` governs 17 method paths on
+the same client; these wrappers govern 1. Everything else binds straight through
+with **no gate and no event** — `responses.create`, `responses.parse`,
+`responses.stream`, `chat.completions.parse`, `chat.completions.stream`,
+`chat.completions.runTools`, `completions.create`, and the whole
+`beta.threads.*` assistants surface. Twenty-six such paths on a current client.
+
+If you need those governed, wrap the client with **`obsvr.wrap()`** instead — it
+duck-types the same clients and covers the full table. The named wrappers exist
+to set a provider label and a source, not to widen coverage.
 
 ### Does a tool-policy block actually stop the tool?
 

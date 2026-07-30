@@ -647,6 +647,42 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Documents credited two surfaces with governance they do not run.** Measured
+  layer by layer and method by method, in both languages, driven rather than
+  read off the code:
+
+  - **The named compatibility wrappers govern one method.** `wrapAzureOpenAI`,
+    `wrapTogether`, `wrapCloudflare` and `wrapOpenAICompatible` consult a
+    one-entry path table. Counted against real `AzureOpenAI` and `Together`
+    clients: `obsvr.wrap()` governs 17 paths on the same client and these
+    govern 1. The other 26 text-bearing paths — `responses.*`, `.parse`,
+    `.stream`, `runTools`, `completions.create`, the assistants surface — bind
+    through with no gate and no event, however new the installed client is.
+  - **LangChain and LlamaIndex run the observe-only path.** The PII scan and
+    the stored redacted copy, and nothing else: no `policyRules`, no
+    `policyFloor`, no `onPreCall` hook, no outbound redaction, no kill-switch
+    gate, no response-side scan, no PII **blocking**, and metering only on
+    opt-in. A `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()`,
+    Bedrock, Vertex, Vercel AI and MCP and does not block through these — the
+    call goes out and the event records the stored copy as redacted.
+
+  Both are silences rather than false records: nothing claims a block that did
+  not happen. What was false was the documentation, which listed both under
+  "supported" beside surfaces that carry the whole pipeline. Every public
+  document now states the scope — root README, TypeScript README, Python
+  README, `COMPATIBILITY.md` (whose per-method table describes `obsvr.wrap()`,
+  not these wrappers) and `SECURITY.md`'s bypass surface — and in both cases the
+  repair for a reader is the same one sentence: **wrap with `obsvr.wrap()`
+  instead; it accepts the same clients.**
+
+  Pinned so the documents cannot drift back: a test drives the wrapper on the
+  governed path and on four ungoverned ones, asserting BOTH halves — the
+  provider was reached and nothing was recorded — with `obsvr.wrap()` on the
+  same client and the same payload as the control that makes it a statement
+  about the wrapper rather than about the client shape. It fails in both
+  directions, so widening coverage is a deliberate regrade with a documentation
+  change rather than a silent improvement nobody wrote down.
+
 - **Python pinned a policy key and verified nothing.**
   `verify_policy_signature()` had **zero production call sites** — defined,
   correct, covered by the shared vectors, and never invoked. The poll assigned

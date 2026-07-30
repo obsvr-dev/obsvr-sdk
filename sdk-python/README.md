@@ -168,6 +168,17 @@ feature.
 | **PydanticAI** | `integrations.pydantic_ai` | `WrapperToolset.call_tool` | tool block before delegation — structurally the same pre-execution boundary MCP holds on, but **not yet driven live**; no step limit is implemented |
 | **Haystack 2.x** | `integrations.haystack` | `@component` pipeline node | block aborts the pipeline before the generator |
 
+**"observe + stored-copy PII" is the whole of it, and it is worth spelling out.**
+On LangChain and LlamaIndex the PII scan runs and the stored copy is redacted —
+and nothing else in the pipeline does. Measured layer by layer rather than read
+off the code: `policy_rules`, the non-overridable `policy_floor`, the
+`on_pre_call` hook, outbound redaction, the kill-switch / stale-policy integrity
+gate, the response-side scan and PII **blocking** do not run there, and metering
+is opt-in. So a `pii_policy` of `{"rules": {"ssn": "block"}}` refuses the call
+through `obsvr.wrap()`, Bedrock, Vertex and MCP, and through these two the call
+goes out with the SSN in it while the event honestly records that the stored
+copy was redacted. Put an enforcement decision on `obsvr.wrap()` or on MCP.
+
 Callback-style (LangChain / LlamaIndex / OpenAI Agents / CrewAI):
 
 ```python
