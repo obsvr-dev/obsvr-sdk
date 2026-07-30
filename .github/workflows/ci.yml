@@ -328,6 +328,15 @@ jobs:
     # a threshold that is neither constantly red nor useless. Drift in the
     # numbers stays the job of the scheduled Benchmarks workflow.
     #
+    # That description was not true of the memory check until recently, and the
+    # gap made this job red. --quick runs 5,000 calls, and the leak metric is
+    # RSS(end) − RSS(25%), so on a runtime whose RSS is still climbing at the
+    # last sample the difference measures warm-up: 30.3 MB against a 30 MB
+    # threshold at 5,000 calls, 21.8 MB on the same build at 25,000. The metric
+    # is still computed and printed at every size; it only FAILS the run where
+    # the baseline sample can clear warm-up, which is what makes this job's
+    # correctness-only description accurate rather than aspirational.
+    #
     # This job exists because that scheduled workflow is weekly-and-dispatch
     # only and had never run, so nothing executed this harness at all. Its
     # verifiers had meanwhile drifted to an older signing preimage and declared

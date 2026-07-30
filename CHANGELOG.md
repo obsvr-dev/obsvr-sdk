@@ -939,6 +939,33 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The blocking benchmark-integrity CI job was red, on a memory check that was
+  measuring warm-up.** `bench/run-all.sh --quick` exited 1 and aborted at step 2
+  of 4. Nothing was corrupt: the chain verified, signatures matched, the
+  cross-check agreed, every accounting invariant held and there were no errors.
+  What failed was the leak assertion, `RSS(end) − RSS(25%)` against a 30 MB
+  threshold.
+
+  It was not a leak. `--quick` runs 5,000 calls, and on that runtime RSS is
+  still climbing at the last sample, so the 25% baseline lands inside warm-up
+  and the difference measures the climb. The same build measured **30.3 MB at
+  5,000 calls and 21.8 MB at 25,000** — five times the work producing a smaller
+  number, which is the opposite of what a leak does. Across the four tiers of a
+  single run it read 29.9, 32.0, 28.2 and 29.3, straddling the threshold at
+  random. The other SDK's harness uses the same 25% rule and reports 0.1–0.8 MB,
+  because its RSS settles almost immediately.
+
+  The number is still computed, still printed and still in the JSON at every
+  size; it now only *fails* a run where the baseline can clear warm-up, and a
+  short run prints an explicit note saying the value was reported and not
+  asserted, so a skipped assertion cannot read as a passing one. Verified in
+  both directions: with an impossible threshold the gate still fails a
+  25,000-call run, and the correctness invariants are untouched.
+
+  **Why it went unnoticed is the same shape as the drifted bench verifier.**
+  `BENCHMARKS.md` publishes the full run, which is past warm-up and unaffected.
+  `--quick` exists only for CI, so the one configuration nobody runs by hand was
+  the one that broke.
 - **The Python audit chain forked across `os.fork()`.** `_sdk_session_id` and
   `_seq_no` are module state, and `fork()` copies module state — so a
   pre-forking application server, which is the recommended deployment, gave
