@@ -229,21 +229,25 @@ export function detectorFailureRecord(
   };
 }
 
-/**
- * Resolve a RESPONSE-phase failure: never raises, never withholds the caller's
- * value, and reports that the stored copy must be withheld instead.
+/*
+ * `resolveResponsePhaseFailure` was here and is gone.
+ *
+ * It had exactly one reference in the tree — its own definition — and a dead
+ * handler on a fail-mode path raises the larger question of whether the fail
+ * mode itself ever fires. It was checked before removal, and it does:
+ * `responsePhaseFailureCompliance` below does the same job and is called from
+ * `integrations/core.ts` on two real paths, `safeStoredCopy` is wired in both
+ * that file and the wrapper, and both produce the identical
+ * `detectorFailureRecord(layer, err, "open", "response", true)`. So the
+ * response phase is live and this was the narrower of two overlapping helpers,
+ * left behind when the one returning a full compliance block superseded it.
+ *
+ * Removed rather than kept, because keeping it is the trap: it returns the
+ * stored-copy placeholder WITHOUT the compliance block its callers need, so a
+ * future contributor wiring the one that is easier to call would get a withheld
+ * stored copy and no record of why. It is not re-exported from the package
+ * root, so nothing outside this tree could reach it.
  */
-export function resolveResponsePhaseFailure(
-  layer: string,
-  err: unknown,
-  config: Pick<ResolvedConfig, "failMode"> | undefined,
-): { storedCopy: string; failure: DetectorFailure } {
-  recordDetectorFailure(layer, err, config);
-  return {
-    storedCopy: UNSCANNED_PLACEHOLDER,
-    failure: detectorFailureRecord(layer, err, "open", "response", true),
-  };
-}
 
 /** Compliance block for a failed detector layer. Structurally compatible with
  *  ComplianceInfo; typed locally so this module stays free of an import cycle
