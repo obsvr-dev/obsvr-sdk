@@ -251,8 +251,23 @@ export function getQuotaStatus(
   windowMs: number
 ): { used: number; remaining: number; resetAt: number } {
   const key = makeKey(scope, scopeValue);
-  const entry = getOrCreate(requestMeter, key, windowMs);
-  if (!entry) return { used: 0, remaining: limit, resetAt: Date.now() + windowMs };
+  const now = Date.now();
+  // A READ MUST NOT ALLOCATE. This used to call getOrCreate, which INSERTS —
+  // and `server.ts` exposes it as `GET /v2/quota/:scope/:value` with the value
+  // supplied by the caller. So sweeping distinct values filled the bounded
+  // store, and because that store deliberately REFUSES rather than evicting a
+  // live counter, every REAL scope afterwards reported `metered: false`; under
+  // the default failMode "open" those calls then proceeded with no quota
+  // enforcement at all. A read endpoint inverted the reasoning the eviction
+  // policy was designed around: refusing to evict is the right call when the
+  // things competing for slots are all real, and this made most of them not.
+  //
+  // Reporting the fresh-window answer for a scope with no live window is the
+  // same answer getOrCreate produced, minus the slot.
+  const entry = requestMeter.entries.get(key);
+  if (!entry || now - entry.windowStart >= windowMs) {
+    return { used: 0, remaining: limit, resetAt: now + windowMs };
+  }
   return {
     used: entry.count,
     remaining: Math.max(0, limit - entry.count),

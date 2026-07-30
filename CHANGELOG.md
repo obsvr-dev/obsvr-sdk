@@ -451,6 +451,26 @@ cut, when it is renamed to that version.
   being refused — an outage rather than a fix for anyone already running one. It
   now appears in the root README's cost section and in both SDK READMEs, which
   mentioned it only inside a per-integration table or not at all.
+- **`GET /v2/quota/:scope/:value` no longer allocates a counter.**
+  `getQuotaStatus` called the same `getOrCreate` the enforcement path uses,
+  which INSERTS — and the governance server exposes it as a read with the scope
+  value supplied by the caller. Measured against the real server over a real
+  socket: **12,000 GET requests took the store from 1 entry to its 10,000-scope
+  bound and saturated it**, after which a scope that metered before the sweep
+  did not meter after. Under the default `failMode: "open"` those calls then
+  proceed with no quota enforcement at all.
+
+  Worse than "new scopes stop being metered", which is how it reads from the
+  code: a scope incremented twice *during* the saturation reported `used: 0`,
+  because those increments could not get a slot either. An actively-used scope
+  reported no usage.
+
+  The store's refuse-rather-than-evict policy is right — evicting a live counter
+  hands anyone who can mint scope values a free quota — and a read endpoint that
+  allocates inverted the reasoning it was designed around. The read is now a
+  lookup: a scope with no live window gets the same fresh-window answer as
+  before, minus the slot, and the control is that a live scope's real
+  consumption is still reported exactly.
 
 ### Added
 
