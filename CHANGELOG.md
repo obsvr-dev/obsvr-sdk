@@ -55,6 +55,14 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **The conformance corpus hash changed — re-pin if you pinned it.**
+  `conformance/MANIFEST.sha256` moved from `corpus_sha256 = be5d1238…` to
+  `fdb4579d…`, and both `conformance.pin` files with it. No fixture content,
+  case, verdict or divergence entry changed: the two `known-divergences` files
+  carried a provenance sentence citing a repository path that is no longer part
+  of this repository, and that sentence now describes the source without naming a
+  file a reader cannot open. The corpus is still 36 files.
+
 - **Decided: the LlamaIndex integration is observability-only and will not get a
   tool gate.** It was previously described as having none, which reads as pending
   work; it is now stated as a decision. `agent_policy` has no effect there,
