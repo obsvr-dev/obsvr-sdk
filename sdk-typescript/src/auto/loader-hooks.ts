@@ -4,7 +4,9 @@
  * Registered by `@obsvr/sdk/register` via `module.register()`. Runs on
  * Node's loader thread, not in the application. When the app imports a
  * supported provider package, `resolve` tags the resolved URL and `load`
- * serves a tiny ESM shim in its place. The shim imports the real module
+ * serves a tiny ESM shim in its place — and only for a URL `resolve` itself
+ * tagged, so a hand-written `?obsvr-intercept` on any other specifier loads
+ * normally instead of being shimmed. The shim imports the real module
  * untouched and re-exports the provider class behind a construct-trap Proxy
  * from auto/index.js (main thread, same module instance the SDK itself uses).
  *
@@ -40,6 +42,34 @@ const PROVIDER_SPECIFIERS: Record<string, string> = {
   '@google/generative-ai': 'google',
 };
 
+/**
+ * The provider ids `buildShim` knows. `load` refuses anything else rather than
+ * falling through to a bare `export * from`, which would silently drop the
+ * module's DEFAULT export — a substitution in its own right.
+ */
+const KNOWN_PROVIDERS = new Set(Object.values(PROVIDER_SPECIFIERS));
+
+/**
+ * Resolved URLs THIS hook tagged during `resolve`.
+ *
+ * `load` used to serve a shim for any URL carrying `?obsvr-intercept`, from
+ * wherever it came. The parameter is part of a specifier, so an import written
+ * as `./app-module.js?obsvr-intercept=openai` — from application code, or from
+ * any dependency that builds a specifier out of data — was answered with a shim
+ * that re-exported the target's default binding wrapped in a construct trap and
+ * added an `OpenAI` export to it. That is module substitution over an
+ * application module, not a provider one, and it needed no privilege beyond
+ * writing an import.
+ *
+ * Membership is the fix: `resolve` records what it tagged, `load` serves a shim
+ * only for those. The set is bounded by the number of distinct provider module
+ * URLs in the process (three specifiers), and hooks registered with
+ * `module.register()` share one module instance on the loader thread, so the
+ * two halves see the same set. A worker that registers separately gets its own
+ * instance and its own `resolve`, so it is self-consistent too.
+ */
+const taggedUrls = new Set<string>();
+
 interface ResolveResult {
   url: string;
   format?: string | null;
@@ -68,6 +98,7 @@ export async function resolve(
   const url = new URL(resolved.url);
   if (url.searchParams.has(INTERCEPT_PARAM)) return resolved;
   url.searchParams.set(INTERCEPT_PARAM, provider);
+  taggedUrls.add(url.href);
   return { ...resolved, url: url.href, shortCircuit: true };
 }
 
@@ -85,6 +116,16 @@ export async function load(
 
   const provider = parsed.searchParams.get(INTERCEPT_PARAM);
   if (!provider) return nextLoad(url, context);
+
+  // The parameter is not authority — `resolve` having written it is. Checked
+  // against both spellings because the URL arriving here has been through
+  // Node's own normalisation and need not be byte-identical to what `resolve`
+  // returned. An untagged URL carrying the parameter is a crafted specifier and
+  // is loaded normally, exactly as if this hook were not installed.
+  if (!taggedUrls.has(parsed.href) && !taggedUrls.has(url)) {
+    return nextLoad(url, context);
+  }
+  if (!KNOWN_PROVIDERS.has(provider)) return nextLoad(url, context);
 
   parsed.searchParams.delete(INTERCEPT_PARAM);
   const originalUrl = parsed.href;

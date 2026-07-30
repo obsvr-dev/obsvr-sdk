@@ -103,6 +103,78 @@ describe('the register hook actually substitutes a real provider class', () => {
   });
 });
 
+describe('the load hook serves a shim only for specifiers resolve tagged', () => {
+  /**
+   * `load` used to key off `?obsvr-intercept` in ANY url. The parameter is part
+   * of a specifier, so an import written as
+   * `./app-module.mjs?obsvr-intercept=openai` — by application code, or by any
+   * dependency that builds a specifier out of data — was answered with a
+   * generated module that re-exported the target's default binding behind
+   * obsvr's construct trap and added an `OpenAI` export to it. That is module
+   * substitution over an application module, and it needed no privilege beyond
+   * writing an import.
+   *
+   * The application module has no `OpenAI` export of its own, so the appearance
+   * of one is unambiguous proof that a shim was served in its place.
+   */
+  const APP_MODULE = [
+    `export default class AppThing { static MARKER = 'ORIGINAL_APP_DEFAULT'; }`,
+    `export const helper = () => 'app-helper-ok';`,
+  ].join('\n');
+
+  function importAppModule(query: string): Record<string, unknown> {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const app = path.join(dir, 'app-module.mjs');
+    const file = path.join(dir, 'probe.mjs');
+    try {
+      writeFileSync(app, APP_MODULE, 'utf-8');
+      writeFileSync(
+        file,
+        [
+          `const mod = await import(${JSON.stringify('file://' + app)} + ${JSON.stringify(query)});`,
+          `console.log("RESULT_JSON:" + JSON.stringify({`,
+          `  substituted: "OpenAI" in mod,`,
+          `  defaultMarker: mod.default?.MARKER ?? null,`,
+          `  namedExport: typeof mod.helper === "function" ? mod.helper() : null,`,
+          `}));`,
+        ].join('\n'),
+        'utf-8',
+      );
+      const out = execFileSync(process.execPath, ['--import', REGISTER, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+      });
+      const line = out.split('\n').find((l) => l.startsWith('RESULT_JSON:'));
+      if (!line) throw new Error(`probe printed no result:\n${out}`);
+      return JSON.parse(line.slice('RESULT_JSON:'.length));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('does not shim an application module carrying a crafted intercept parameter', () => {
+    const result = importAppModule('?obsvr-intercept=openai');
+    expect(result.substituted).toBe(false);
+    // Loaded normally, not merely refused: the real bindings are intact.
+    expect(result.defaultMarker).toBe('ORIGINAL_APP_DEFAULT');
+    expect(result.namedExport).toBe('app-helper-ok');
+  });
+
+  it('loads the same module untouched with no parameter, so the check is meaningful', () => {
+    const result = importAppModule('');
+    expect(result.substituted).toBe(false);
+    expect(result.defaultMarker).toBe('ORIGINAL_APP_DEFAULT');
+  });
+
+  it('still intercepts the real provider package, so the fix did not disable the feature', () => {
+    // The failure mode a membership check invites is closing the hole by never
+    // serving a shim at all. This is the same assertion as the first describe
+    // block, restated here because it is THIS change's control.
+    expect(runWithHook(PROBE).interceptionActive).toBe(true);
+  });
+});
+
 describe('the hook registration itself resolves', () => {
   it('register.js resolves ./auto/loader-hooks.js without throwing', () => {
     // `module.register()` resolves its specifier eagerly, so a moved or

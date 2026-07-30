@@ -647,6 +647,25 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **SECURITY: the zero-code `load` hook served a shim for any specifier
+  carrying `?obsvr-intercept`.** The parameter is part of a specifier, and the
+  hook never checked that its own `resolve` had put it there — so an import
+  written as `./app-module.mjs?obsvr-intercept=openai`, by application code or
+  by any dependency that builds a specifier out of data, was answered with a
+  generated module that re-exported the target's default binding behind obsvr's
+  construct trap and added an `OpenAI` binding to it. That is module
+  substitution over an application module, reachable by anyone who can write an
+  import, and it is a security finding rather than the coverage gap it was
+  first filed as. `resolve` now records the URLs it tags and `load` serves a
+  shim only for those; anything else loads exactly as it would with the hook
+  absent. An unrecognised provider id is also refused rather than falling
+  through to a bare re-export, which would silently drop the module's default
+  export. Reproduced in a real child process under `--import`: the substitution
+  succeeds before the change and does not after, with the same module imported
+  without the parameter and the real provider package still intercepted as
+  controls in both phases — the second because the tempting way to close this
+  hole is to stop serving shims at all.
+
 - **Four audit fields were forwarded to the provider and recorded nowhere.**
   `user_id`, `client_ip`, `user_agent` and `service_name` are declared on the
   exported `AuditFields` type as customer-provided, and the TypeScript wrapper
