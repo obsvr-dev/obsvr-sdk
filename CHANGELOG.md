@@ -378,6 +378,24 @@ cut, when it is renamed to that version.
   The module has always documented that approvals **always expire** and that
   there are no permanent grants. That was true of the intent and false of the
   code, so the code moved rather than the sentence.
+- **The divergence catalog now names the two network attribution fields
+  (`KD-9`).** TypeScript accepts `client_ip` and `user_agent` on a call, strips
+  them from the provider request and writes them onto the audit event; Python
+  has no capture path for either — no per-call keyword argument, no config
+  default — and emits a hardcoded null. That was recorded only in a source
+  comment, while `known-divergences.json` is read as the complete
+  machine-readable inventory of accepted divergences, so a reader trusting it
+  was misled by its silence.
+
+  It is a **capability** divergence, not a verdict one, which is what makes it
+  eligible: the catalog's own policy invalidates an entry whose allowed
+  difference would cover an enforcement-verdict difference — the reason the
+  regex-dialect splits stay enumerated in `SECURITY.md` instead. Corpus re-pinned
+  (36 files) with both `conformance.pin` files regenerated.
+
+  Ids are allocated once and never reused, which `known-divergences.md` now
+  says: `KD-7` and `KD-8` name divergences that were FIXED and are recorded in
+  its History, so the next live entry is `KD-9`.
 
 ### Added
 

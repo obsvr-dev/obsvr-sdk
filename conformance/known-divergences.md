@@ -16,6 +16,11 @@ catalog cannot: the History below — the narrative of divergences that were
 FIXED rather than accepted, which the table never carried and which is the
 better half of the record.
 
+**Ids are allocated once and never reused.** A `KD-` number that appears in the
+History below is spent: the divergence it named was fixed, and that record is
+what the History is for. The next live entry takes the next free number, which
+is why the catalog currently holds KD-6 and KD-9 with nothing in between.
+
 History:
 - 2026-07-28: KD-5 (customer-rule eval context on the TypeScript integrations
   path) was FIXED, and the row is gone. `applyPreCallPolicy` built the

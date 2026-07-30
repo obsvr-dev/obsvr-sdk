@@ -18,6 +18,16 @@
       "parity_scope": "All shared signature vectors resolve to identical verdicts once a backend is installed (pip install \"obsvr-sdk[crypto]\", included in the dev extra so CI runs them for real); Python still fails closed without one - the fetched policy is refused, last-good stays in force, and policy_verification_unavailable is stamped into reserved metadata on every subsequent event.",
       "allowed_difference": "The unverifiable-but-declared degraded state exists only in Python, only with a pinned key and no optional crypto backend.",
       "tracking": "sdk-python/obsvr/policy_verify.py. The two vectors this reaches are marked sdk_support py:optional in fixtures/policy_signature.json - valid_signature_accepts and forged_value_reject, the only two that need real Ed25519 arithmetic rather than a structural refusal - so the corpus points here and this points back. Closes if a stdlib Ed25519 ever lands or the dependency posture changes."
+    },
+    {
+      "id": "KD-9",
+      "sdk": "py",
+      "category": "capability",
+      "status": "intended",
+      "description": "Per-call network attribution: TypeScript accepts client_ip and user_agent on the call, extracts them off the provider arguments and writes them onto the audit event (proxy/filters/filter.ts, proxy/types.ts). Python has NO capture path for either - no per-call keyword argument, no config default - so events.py emits a hardcoded None for both. Its per-call channel is a namespaced keyword argument carrying identity keys, and these two are not among them.",
+      "parity_scope": "The audit event SCHEMA is identical: both SDKs emit client_ip and user_agent fields on every event, and both strip these keys from the outbound provider request so following the published type cannot break a call. Every other attribution field - user_id, service_name, tenant, session - is captured on both sides. Nothing about a policy verdict differs; the same rules over the same input yield the same action_taken in both SDKs whether or not these two fields carry a value.",
+      "allowed_difference": "Python records null for client_ip and user_agent where TypeScript can record a caller-supplied value. A consumer correlating events by client IP or user agent gets those fields only from TypeScript-emitted events.",
+      "tracking": "sdk-python/obsvr/events.py, where the two hardcoded Nones carry a comment saying so - a reader of a hardcoded empty value is entitled to know whether it is a default or a dead end. Closes when Python grows a per-call channel for the two network fields. Catalogued here rather than left in that comment alone because this list is read as the complete machine-readable inventory of accepted divergences, and a capability gap that appears only in a source comment is invisible to anyone trusting it. This is a CAPABILITY divergence and not a verdict one, so unlike the regex-dialect splits it is eligible for this catalog at all - those stay enumerated in SECURITY.md because an entry whose allowed_difference covers an enforcement-verdict difference is invalid by this catalog's own policy."
     }
   ]
 }
