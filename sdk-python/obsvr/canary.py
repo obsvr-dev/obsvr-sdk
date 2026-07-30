@@ -17,6 +17,15 @@ is looked up in the active-canary set. So the raw secret never lives at rest,
 never rides an event, and never appears in a log -- events carry only a public
 token-id and a short hash prefix.
 
+"Never rides an event" is a claim about STORAGE, and it is not the same claim
+as "a leak is refused". The pre-call gate scans the last user turn, so a token
+planted where this module says to plant it is not something the gate ever sees;
+what keeps it off the record is the canary net in ``events.build_audit_event``,
+which runs on every emitted event on every path and every verdict. That net is
+why the absolute above is true of an ALLOWED call and not only of a blocked
+one -- and its absence on the TypeScript ``wrap()`` path is what made the same
+absolute false there while this side honoured it.
+
 Detection runs over the de-obfuscation VIEWS as well as the raw text, so a
 token exfiltrated base64/hex-encoded or split by zero-width characters is still
 caught.

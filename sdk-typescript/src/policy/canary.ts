@@ -14,8 +14,23 @@
  * regex finds candidate tokens in text, each candidate is hashed, and the
  * hash is looked up in the active-canary set. So the raw secret never lives
  * at rest, never rides an event, and never appears in a log — events carry
- * only a public token-id and a short hash prefix. A serialization test pins
- * that no minted token ever appears in an emitted event.
+ * only a public token-id and a short hash prefix.
+ *
+ * "Never rides an event" is a claim about STORAGE, and it is not the same
+ * claim as "a leak is refused". The pre-call gate scans the last user turn, so
+ * a token planted where this module says to plant it is not something the gate
+ * ever sees; what keeps it off the record is the stored-content net at
+ * event-build time (policy/stored-content.ts), on every path and every
+ * verdict. That net is why the absolute above is true of an ALLOWED call and
+ * not only of a blocked one — and its absence on the `wrap()` path is what
+ * made the absolute false there while the integration front door honoured it.
+ *
+ * The tests that pin this drive every endorsed plant site — system prompt,
+ * earlier turn, assistant turn, tool result — through BOTH front doors, and
+ * carry a shape guard that fails if a case is removed. They previously planted
+ * only in `role: "user"`, the one surface the gate already covers and the one
+ * surface the do-NOT-plant list below names, so they passed while proving
+ * nothing about the sites an app is actually told to use.
  *
  * Detection runs over the de-obfuscation VIEWS (base64/hex/percent-decoded,
  * invisible-stripped) as well as the raw text, so a token exfiltrated

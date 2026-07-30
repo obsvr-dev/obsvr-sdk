@@ -644,6 +644,52 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **`obsvr.wrap()` stored what it never scanned.** Policy decisions are made on
+  the last user turn, deliberately, so a value quoted three turns ago does not
+  block today's call. But the event stores the WHOLE concatenated prompt, and on
+  the `wrap()` path nothing vetted the difference. Two consequences, one cause:
+
+  - A honeytoken planted where `canary.ts` says to plant it — a system prompt —
+    was stored **verbatim**, against that module's own "the raw secret never
+    lives at rest, never rides an event". The integration front door redacted
+    the same token correctly, so the two entry points the README sells as
+    equivalent disagreed, and the flagship was the unsafe one.
+  - Both READMEs promised non-last-turn content is "still stored (and redacted
+    if configured)". Measured across `block` x `redact` x `flag` x four roles,
+    no configuration redacted it. The "still stored" half was true.
+
+  There is now one stored-content net, shared by both front doors and both
+  languages. The canary half is unconditional. The PII half runs only over
+  content the decision scan did not already cover, only when a detected type
+  resolves to `block` or `redact`, and only on the stored copy — a
+  `detect_only` policy still records the raw value, because baselining what
+  actually flows is the only thing that mode produces. When it fires, the event
+  carries `stored_redaction_types` and `stored_redaction_outbound_unmodified`,
+  because a scrubbed prompt beside `action_taken: "allowed"` would otherwise
+  read as an enforcement that did not happen. **Enforcement scope is
+  unchanged:** the request still reaches the provider unmodified, and both
+  READMEs now say so in those words.
+
+  Two things the fix uncovered, both fixed here. The first pass closed
+  `wrap()` and left `wrapOpenAICompatible()` open, which INVERTED the
+  disagreement instead of ending it — caught by a live call, not by the unit
+  tests, which were green at the time. And the reserved telemetry channel was
+  ASSIGNED rather than merged in both languages, on a helper whose own comment
+  said it never overwrites, so any evidence an earlier step had put there was
+  discarded.
+
+  The test that should have caught the canary half was vacuous and disguised:
+  every plant used `role: "user"` — the one surface the gate already scans and
+  the one surface the module's do-NOT-plant list names — while minting with the
+  label `'system-prompt'`. Both languages now drive every endorsed plant site
+  through both front doors, behind a shape guard that fails when a case is
+  removed rather than only when one breaks.
+
+  The redundant traversal shipped in the same change, because scanning more
+  text multiplies it: the last user turn was re-walked from the raw request
+  eight times per governed call and is now computed once, with explicit
+  invalidation at each of the three sites that rewrite the request in place.
+
 - **A user prompt could forge an audit-gap marker, and both verifiers believed
   it.** The verifiers parsed `prompt` for the gap-marker string on EVERY event
   they checked, with no discriminator. A prompt reading exactly

@@ -52,6 +52,7 @@ import {
   CANARY_REDACTION_PLACEHOLDER,
 } from "../policy/canary.js";
 import type { CanaryHit } from "../policy/canary.js";
+import { redactUnscannedForStorage } from "../policy/stored-content.js";
 import {
   resolveSessionTaint,
   deriveSessionKey,
@@ -1608,7 +1609,22 @@ export interface IntegrationEventParams {
   contentProvenance?: AuditEvent["content_provenance"];
   prompt: string;
   response?: string;
+  /**
+   * The last user turn — which on every integration that calls
+   * `applyPreCallPolicy` is also the text the DECISION ran over. That makes it
+   * the default answer to "what did the scan actually see", which the
+   * stored-content net needs in order to tell the covered part of `prompt`
+   * from the part nothing looked at.
+   */
   userInput?: string;
+  /**
+   * Explicit override for the text the decision scan evaluated, for an
+   * integration whose scanned text is not its `userInput`. Absent means
+   * `userInput`; absent AND no `userInput` means the net cannot tell what was
+   * covered and does not run — it must never guess, because guessing wide
+   * scrubs a detect_only record and guessing narrow leaves the leak open.
+   */
+  scannedText?: string;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
@@ -1687,6 +1703,26 @@ export function buildIntegrationEvent(
       if (scrubbedUserInput !== undefined) scrubbedUserInput = UNSCANNED_PLACEHOLDER;
     }
     if (hits.length > 0) canaryEventTelemetry = canaryLeakTelemetry(hits, leakSurface ?? "response");
+  }
+
+  // The PII half of the stored-content net. The canary half above is
+  // unconditional; this one runs only over content the decision scan did not
+  // already cover, only when a detected type resolves to block/redact, and
+  // only on the stored copy. Same helper as the `wrap()` path, so the two
+  // front doors cannot answer this differently again — they already did once,
+  // in both directions: `wrap()` stored a honeytoken this path redacted, and
+  // this path stored unreached-role PII that `wrap()` redacts.
+  const scannedForDecision = params.scannedText ?? params.userInput;
+  let storedRedactionTelemetry: Record<string, unknown> | undefined;
+  if (scannedForDecision !== undefined) {
+    const unscanned = redactUnscannedForStorage(
+      scrubbedPrompt,
+      scannedForDecision,
+      config,
+      (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+    );
+    scrubbedPrompt = unscanned.prompt;
+    storedRedactionTelemetry = unscanned.telemetry;
   }
 
   const errorMessage = (() => {
@@ -1880,6 +1916,14 @@ export function buildIntegrationEvent(
       ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
       ...(floorActive ? { floor_version: deriveFloorVersion(config.policyFloor) } : {}),
       ...(params.floorTelemetry ?? {}),
+    };
+    event.metadata = metadata;
+  }
+  if (storedRedactionTelemetry) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      ...storedRedactionTelemetry,
     };
     event.metadata = metadata;
   }

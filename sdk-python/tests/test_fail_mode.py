@@ -257,6 +257,20 @@ class TestRegistryGate:
         "span.py",
         "span_attributes.py",
         "ssrf.py",
+        # Builds the STORED copy of content the decision scan never reached
+        # (system prompts, earlier turns, assistant turns, tool results). It
+        # decides nothing: the verdict is already final when it runs, and no
+        # value it returns can block, allow, or change what went to the
+        # provider. Its own failure resolution is a stored-copy one and is
+        # already declared elsewhere - the scan it runs is `builtin_pii_scan`,
+        # which is what it records a failure against, and the redactor it calls
+        # is `deobfuscation_views`, whose declaration is the one that says a
+        # stored copy fails CLOSED to [UNSCANNED:detector_error] rather than
+        # persist text nothing vetted. Both of its call sites are on the emit
+        # path, so the whole body is inside one guard: nothing raises into the
+        # host. Same exemption reason as tool_content_hash.py, plus that
+        # inherited disposition.
+        "stored_content.py",
         # Evidence producer, decides nothing: it hashes what a tool call saw
         # and its callers omit the field on failure. Matches the TS twin's
         # exemption for tool-content-hash.ts.

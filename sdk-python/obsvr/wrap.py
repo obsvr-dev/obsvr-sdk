@@ -50,6 +50,7 @@ from .config import ResolvedConfig, get_config, is_initialized
 from .events import build_audit_event, blocked_call_error, classify_error
 from .span import span_envelope_for, with_span_metadata
 from .deobfuscate import redact_for_storage
+from .stored_content import redact_unscanned_for_storage
 from .policy import (
     apply_pre_call_policy,
     apply_post_call_policy,
@@ -527,11 +528,22 @@ def _merge_telemetry(
     metadata: Optional[Dict[str, Any]], telemetry: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
     """Nest telemetry under the reserved metadata key (ingest lifts it back
-    out to first-class summary fields). Never overwrites caller keys."""
+    out to first-class summary fields). Never overwrites caller keys.
+
+    It also never overwrites the RESERVED key, which it used to: assigning the
+    channel wholesale discarded whatever an earlier step had already put there.
+    Nothing lost a field to it by luck rather than design -- ``build_audit_event``
+    re-derives ``floor_version``, and the canary bundle is stamped downstream --
+    but "never overwrites" was written on a function that replaced the one
+    channel every other evidence producer writes to.
+    """
     if not telemetry:
         return metadata
     merged = dict(metadata or {})
-    merged["obsvr_telemetry"] = telemetry
+    merged["obsvr_telemetry"] = {
+        **(merged.get("obsvr_telemetry") or {}),
+        **telemetry,
+    }
     return merged
 
 
@@ -846,6 +858,18 @@ def _governed_call(
     # Store the redacted prompt ONLY when we actually redacted; allowed/detect_only
     # keep the raw prompt (parity with TS) so detect_only still surfaces content.
     stored_prompt = policy["redacted_prompt"] if policy["decision"] == "redact" else prompt_text
+    # ... and then vet what the DECISION never looked at. The scan above sees the
+    # last user turn; `prompt_text` is every role concatenated, so system
+    # instructions, earlier turns, assistant replies and tool results reached the
+    # record raw under every configuration. This is what makes "still stored (and
+    # redacted if configured)" true. It changes no verdict and no outbound bytes.
+    stored_prompt, _stored_tel = redact_unscanned_for_storage(
+        stored_prompt, _last_user_message_text(provider, args, kwargs), config
+    )
+    if _stored_tel is not None:
+        _md = dict(metadata or {})
+        _md["obsvr_telemetry"] = {**(_md.get("obsvr_telemetry") or {}), **_stored_tel}
+        metadata = _md
 
     if policy["decision"] == "block":
         from .canary import CANARY_REDACTION_PLACEHOLDER
@@ -1000,6 +1024,18 @@ async def _governed_call_async(
     # Store the redacted prompt ONLY when we actually redacted; allowed/detect_only
     # keep the raw prompt (parity with TS) so detect_only still surfaces content.
     stored_prompt = policy["redacted_prompt"] if policy["decision"] == "redact" else prompt_text
+    # ... and then vet what the DECISION never looked at. The scan above sees the
+    # last user turn; `prompt_text` is every role concatenated, so system
+    # instructions, earlier turns, assistant replies and tool results reached the
+    # record raw under every configuration. This is what makes "still stored (and
+    # redacted if configured)" true. It changes no verdict and no outbound bytes.
+    stored_prompt, _stored_tel = redact_unscanned_for_storage(
+        stored_prompt, _last_user_message_text(provider, args, kwargs), config
+    )
+    if _stored_tel is not None:
+        _md = dict(metadata or {})
+        _md["obsvr_telemetry"] = {**(_md.get("obsvr_telemetry") or {}), **_stored_tel}
+        metadata = _md
 
     if policy["decision"] == "block":
         from .canary import CANARY_REDACTION_PLACEHOLDER

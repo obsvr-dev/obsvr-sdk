@@ -201,6 +201,20 @@ describe('failure-disposition registry: the gate', () => {
     'tool-content-hash.ts', // evidence producer, decides nothing
     'failure-dispositions.ts', // this registry
     'detector-guard.ts', // the resolution point itself, not a layer that can fail
+    // Builds the STORED copy of content the decision scan never reached
+    // (system prompts, earlier turns, assistant turns, tool results). It
+    // decides nothing: the verdict is already final when it runs, and no value
+    // it returns can block, allow, or change what went to the provider. Its
+    // own failure resolution is a stored-copy one and is already declared
+    // elsewhere — the scan it runs is `builtin_pii_scan`, which is what it
+    // records a failure against, and the redactor it calls is
+    // `deobfuscation_views`, whose declaration is the one that says a stored
+    // copy fails CLOSED to [UNSCANNED:detector_error] rather than persist text
+    // nothing vetted. Every call site is on the emit path, so both exported
+    // functions hold the whole body inside one guard: nothing raises into the
+    // host. Same exemption reason as tool-content-hash.ts, plus that
+    // inherited disposition. Twin: sdk-python/obsvr/stored_content.py.
+    'stored-content.ts',
   ]);
 
   it('declares every detector module in src/policy/', () => {

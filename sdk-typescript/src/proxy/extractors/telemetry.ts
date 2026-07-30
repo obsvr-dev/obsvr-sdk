@@ -148,5 +148,14 @@ export function withTelemetryMetadata(
   telemetry: CallTelemetry,
 ): Record<string, unknown> | undefined {
   if (Object.keys(telemetry).length === 0) return metadata;
-  return { ...(metadata ?? {}), [RESERVED_TELEMETRY_KEY]: telemetry };
+  // MERGE the reserved channel rather than assigning it. Assigning discarded
+  // whatever an earlier step had already put there, on the one key every other
+  // evidence producer writes to. Twin: wrap.py `_merge_telemetry`.
+  return {
+    ...(metadata ?? {}),
+    [RESERVED_TELEMETRY_KEY]: {
+      ...((metadata?.[RESERVED_TELEMETRY_KEY] as Record<string, unknown> | undefined) ?? {}),
+      ...telemetry,
+    },
+  };
 }

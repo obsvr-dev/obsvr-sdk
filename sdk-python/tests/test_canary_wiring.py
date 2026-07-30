@@ -74,11 +74,93 @@ def _assert_no_token(captured, token):
         assert token[len(CANARY_PREFIX):] not in blob
 
 
+# The plant sites canary.py / canary.ts ENDORSE, or at least do not forbid.
+# The do-NOT-plant list is user input, model output and tool args/results — so a
+# system prompt, a retrieved document on an assistant turn, and an earlier turn
+# are all legitimate places for an app to put a token, and none is scanned by
+# the pre-call gate.
+#
+# Every case here is an ALLOWED call, not a blocked one. That is the point: the
+# guarantee under test is "the raw secret never lives at rest, never rides an
+# event", which is a claim about STORAGE and has to hold on the paths where
+# nothing refuses the call.
+#
+# This table replaces a file whose four plants were all role "user": the one
+# surface the pre-call scan already covers, and the one surface the module's own
+# do-NOT-plant list names. It passed, legitimately, while proving nothing about
+# the sites an app is told to use. Twin: the ENDORSED_PLANT_SITES table in
+# sdk-typescript/tests/unit/canary-wiring.test.ts.
+ENDORSED_PLANT_SITES = {
+    "system_prompt": lambda t: [
+        {"role": "system", "content": f"internal config: {t}"},
+        {"role": "user", "content": "hello"},
+    ],
+    "earlier_user_turn": lambda t: [
+        {"role": "user", "content": f"earlier: {t}"},
+        {"role": "assistant", "content": "noted"},
+        {"role": "user", "content": "hello"},
+    ],
+    "assistant_turn_retrieved_document": lambda t: [
+        {"role": "user", "content": "summarise the doc"},
+        {"role": "assistant", "content": f"doc says: {t}"},
+        {"role": "user", "content": "hello"},
+    ],
+    "tool_result": lambda t: [
+        {"role": "user", "content": "look it up"},
+        {"role": "tool", "content": f"lookup returned: {t}", "tool_call_id": "c1"},
+        {"role": "user", "content": "hello"},
+    ],
+}
+
+
+class TestEndorsedPlantSites:
+    def test_table_shape_no_case_plants_in_the_scanned_user_turn(self):
+        """Shape guard. Without it this table can silently narrow back to the
+        one role the pipeline already scanned — which is how the previous
+        version of this file came to prove nothing while passing. It fails on a
+        REMOVED case, not merely on a broken one."""
+        assert sorted(ENDORSED_PLANT_SITES) == [
+            "assistant_turn_retrieved_document",
+            "earlier_user_turn",
+            "system_prompt",
+            "tool_result",
+        ]
+        for build in ENDORSED_PLANT_SITES.values():
+            msgs = build("TOKEN")
+            carriers = [m for m in msgs if "TOKEN" in m["content"]]
+            assert len(carriers) == 1
+            # The carrier must NOT be the last user turn — that is the surface
+            # the pre-call scan covers, and a case planted there tests the gate,
+            # not the net.
+            last_user = max(i for i, m in enumerate(msgs) if m["role"] == "user")
+            assert msgs.index(carriers[0]) != last_user
+
+    @pytest.mark.parametrize("site", sorted(ENDORSED_PLANT_SITES))
+    def test_planted_token_is_not_stored_raw(self, monkeypatch, site):
+        _init(pii_policy={})
+        captured = _captured(monkeypatch)
+        c = mint_canary(label=site)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+        client.chat.completions.create(
+            model="gpt-4o", messages=ENDORSED_PLANT_SITES[site](c["token"])
+        )
+        # The call is ALLOWED — nothing here is a leak, so nothing refuses it.
+        assert len(raw.chat.completions.calls) == 1
+        assert captured
+        _assert_no_token(captured, c["token"])
+        assert captured[0]["prompt"] == CANARY_REDACTION_PLACEHOLDER
+
+
 class TestPreCall:
     def test_canary_echo_blocks_and_stores_placeholder(self, monkeypatch):
         _init(pii_policy={})
         captured = _captured(monkeypatch)
-        c = mint_canary(label="system-prompt")
+        # Label the plant site this case actually uses. It read "system-prompt"
+        # while planting in a user message, which made the file look like it
+        # covered the endorsed plant site when nothing here did — see
+        # TestEndorsedPlantSites below, which now does.
+        c = mint_canary(label="user-echo")
         raw = FakeOpenAI()
         client = obsvr.wrap(raw)
         with pytest.raises(RuntimeError):

@@ -40,6 +40,10 @@ import {
   CANARY_REDACTION_PLACEHOLDER,
 } from "../policy/canary.js";
 import {
+  scrubCanaryForStorage,
+  redactUnscannedForStorage,
+} from "../policy/stored-content.js";
+import {
   resolveSessionTaint,
   deriveSessionKey,
   evaluateSessionTaint,
@@ -885,7 +889,75 @@ function buildAuditEvent(
   // policy leaves existing events byte-identical).
   stampCost(config, event);
 
+  applyStoredContentNet(event, config, extractLastUserMessageText(request));
+
   return event;
+}
+
+/**
+ * The stored-content net, applied in place to a finished event.
+ *
+ * This is the seam the `wrap()` path did not have and the integration path
+ * did. It runs LAST, after truncation, so it vets exactly the bytes that will
+ * be signed and shipped — a net upstream of truncation vets text the record
+ * never carries and misses text it does.
+ *
+ * Order is load-bearing: PII first, canary second. `redactBuiltinPii` does not
+ * know the canary format, so a token surviving a PII pass must still meet the
+ * canary scrub; reversing them would let a placeholder-substituted field be
+ * re-expanded by nothing and a real token slip through on the field the PII
+ * pass rewrote.
+ */
+function applyStoredContentNet(
+  event: AuditEvent,
+  config: ResolvedConfig,
+  scannedText: string,
+): void {
+  const onScanFailure = (err: unknown): void => {
+    recordDetectorFailure("canary", err, config);
+  };
+
+  // 1. "still stored (and redacted if configured)" — make it true for the
+  //    roles the decision scan never reached.
+  const unscanned = redactUnscannedForStorage(
+    event.prompt,
+    scannedText,
+    config,
+    (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+  );
+  event.prompt = unscanned.prompt;
+
+  // 2. "the raw secret never lives at rest ... never rides an event" — the one
+  //    absolute canary.ts states about storage, on every path and every verdict.
+  const scrubbed = scrubCanaryForStorage(
+    {
+      prompt: event.prompt,
+      response: event.response,
+      ...(event.user_input !== undefined ? { userInput: event.user_input } : {}),
+    },
+    onScanFailure,
+  );
+  event.prompt = scrubbed.content.prompt;
+  event.response = scrubbed.content.response;
+  if (scrubbed.content.userInput !== undefined) {
+    event.user_input = scrubbed.content.userInput;
+  }
+
+  const telemetry = {
+    ...(unscanned.telemetry ?? {}),
+    ...(scrubbed.telemetry ?? {}),
+    ...(scrubbed.scanFailed ? { canary_storage_scan_failed: true } : {}),
+  };
+  if (Object.keys(telemetry).length === 0) return;
+
+  const md = (event.metadata as Record<string, unknown> | undefined) ?? {};
+  event.metadata = {
+    ...md,
+    obsvr_telemetry: {
+      ...((md.obsvr_telemetry as Record<string, unknown> | undefined) ?? {}),
+      ...telemetry,
+    },
+  };
 }
 
 
@@ -1167,6 +1239,15 @@ function wrapStreamingIterator(
         // — is not used on the streaming completion path).
         recordTokenUsageForRules(config, streamAuditEvent);
 
+        // Same stored-content net as buildAuditEvent. This path builds its own
+        // event literal, so it has to be named here or the whole streaming
+        // surface keeps the gap the non-streaming one just closed.
+        applyStoredContentNet(
+          streamAuditEvent,
+          config,
+          extractLastUserMessageText(request),
+        );
+
         sendAuditAsync(config, streamAuditEvent);
         debugLog(
           config,
@@ -1271,10 +1352,25 @@ async function governCall(
     // Derive policy version from active rules - stamped on every event emitted for this call.
     const policyVersion = derivePolicyVersion(config.policyRules ?? []);
 
+    // The last user turn is what every builtin gate decides on, and it was
+    // being re-walked from the raw request eight times per governed call. The
+    // walk is pure, so it is computed once and memoized — but the request is
+    // MUTATED in place by outbound redaction, so the memo is explicitly
+    // invalidated at each of those three sites rather than trusted for the
+    // life of the call. A memo without that invalidation would hand the
+    // post-redaction event builders the pre-redaction text and quietly restore
+    // the raw PII this SDK had just removed.
+    let lastUserTextMemo: string | undefined;
+    const lastUserText = (): string =>
+      (lastUserTextMemo ??= extractLastUserMessageText(cleaned_args[0]) ?? "");
+    const invalidateLastUserText = (): void => {
+      lastUserTextMemo = undefined;
+    };
+
     // Canonical decision record (ADR-2): capture the evaluated text ONCE,
     // before any redaction the pipeline may apply in place, so the sealed
     // digest commits the text as presented to the decision pipeline.
-    const decisionEvaluatedText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+    const decisionEvaluatedText = lastUserText();
 
     // Compliance boundary - runs for ALL calls, including streaming, before any LLM contact.
     // Builds one ComplianceCtx that is stamped on every audit event for this call.
@@ -1396,7 +1492,7 @@ async function governCall(
       //      provider is contacted. Scans the last user turn (never the app's
       //      planted system prompt), and only when a canary was minted.
       if (canaryRegistrySize() > 0 && actionTaken !== "blocked") {
-        const leak = scanForCanary(extractLastUserMessageText(cleaned_args[0]) ?? "");
+        const leak = scanForCanary(lastUserText());
         if (leak.leaked) {
           actionTaken = "blocked";
           actionReason = "policy_violation";
@@ -1420,7 +1516,7 @@ async function governCall(
       // 1. Built-in PII scan (runs before customer hook; skipped when the
       //    integrity gate already blocked the call)
       if (config.pii_policy && actionTaken !== "blocked") {
-        const promptText = extractLastUserMessageText(cleaned_args[0]);
+        const promptText = lastUserText();
 
         // Builtin regex scan (always runs, fast). With deobfuscation enabled
         // the scanner also sees decoded/stripped views of the text (the server-side normalizer
@@ -1497,6 +1593,8 @@ async function governCall(
                 }
               }
             });
+            // Both branches above rewrite the request in place.
+            invalidateLastUserText();
             if (notRedacted) {
               actionTaken = "blocked";
               actionReason = "policy_violation";
@@ -1525,7 +1623,7 @@ async function governCall(
         // joined history — otherwise a benign phrase in an early turn is re-counted
         // on every subsequent call and inflates the decayed score into a false trip
         // (the gate is designed to accumulate per-turn deltas).
-        const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+        const promptText = lastUserText();
         const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
         const sessionKey = String(meta.user_id ?? meta.session_id ?? meta.tenant_id ?? "global");
         // RAW scan only — deliberately NOT the deobfuscation-aware scan. The
@@ -1584,7 +1682,7 @@ async function governCall(
       floorOverrideIgnored = undefined;
       floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
       if (floorActive && actionTaken !== "blocked") {
-        const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+        const promptText = lastUserText();
         // The floor's authoritative context (environment, model, provider) is
         // pinned AFTER the caller-metadata spread, so a caller cannot set
         // metadata.model / metadata.currentEnvironment / metadata.provider to
@@ -1623,7 +1721,7 @@ async function governCall(
       ruleId = ruleIdOverride;
       policyReason = policyReasonOverride;
       if (config.policyRules?.length && actionTaken !== "blocked") {
-        const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+        const promptText = lastUserText();
         // Build PolicyEvalContext from audit_fields metadata and config environment
         const evalCtx: PolicyEvalContext = {
           currentEnvironment: config.environment,
@@ -1704,6 +1802,8 @@ async function governCall(
               redactMessagesInPlace(cleaned_args[0]);
             }
           }, "policy_rules");
+          // Both branches above rewrite the request in place.
+          invalidateLastUserText();
           if (notRedacted) {
             actionTaken = "blocked";
             actionReason = "policy_violation";
@@ -1883,6 +1983,8 @@ async function governCall(
               redactMessagesInPlace(cleaned_args[0]);
             }
           });
+          // Both branches above rewrite the request in place.
+          invalidateLastUserText();
           if (notRedacted) {
             actionTaken = "blocked";
             actionReason = "policy_violation";
@@ -2013,7 +2115,7 @@ async function governCall(
     // final, check-only, recorded on the event, never decision-affecting.
     let shadowOutcome: ComplianceCtx["shadowOutcome"] = null;
     if (config.policyRules?.some((r) => r.enabled && r.mode === "shadow")) {
-      const promptText = extractLastUserMessageText(cleaned_args[0]) ?? "";
+      const promptText = lastUserText();
       const evalCtx: PolicyEvalContext = {
         currentEnvironment: config.environment,
         model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
@@ -2136,7 +2238,7 @@ async function governCall(
         response: "",
         user_input: canaryFloor
           ? CANARY_REDACTION_PLACEHOLDER
-          : redactForStorage(extractLastUserMessageText(cleaned_args[0]), piiScanVia),
+          : redactForStorage(lastUserText(), piiScanVia),
         latency_ms: 0,
         success: false,
         status_code: 403,
@@ -2161,6 +2263,13 @@ async function governCall(
         // External policy backend provenance (ADR-4, additive)
         external_backend: compliance.externalBackend,
       };
+      // Enforcement evidence goes through the same net as everything else. The
+      // block path already redacts the full prompt for a PII block, but a
+      // keyword block stores "[BLOCKED_BY_POLICY]" without ever having looked
+      // at the roles behind it, and a class closed on four paths out of five is
+      // a class that is still open.
+      applyStoredContentNet(blockedEvent, config, lastUserText());
+
       sendAuditAsync(config, blockedEvent);
       debugLog(
         config,

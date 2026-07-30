@@ -325,7 +325,7 @@ Default is fail-open: if a hook times out or throws, or a detector layer fails w
 
 ### PII scanning scope
 
-Policy decisions scan the **last user message**. System prompts and earlier turns are stored (and redacted if applicable) but do not drive block/redact decisions. Types `name`, `address`, `person`, `location`, `medical`, `national_id` require the Presidio integration; built-in regex will never fire for them.
+Policy decisions scan the **last user message**. System prompts, earlier turns, assistant turns and tool results do not drive block/redact decisions, so a payload sitting in one of them reaches the provider unmodified. They are still stored — and the stored copy is scrubbed for any type resolving to `block` or `redact`, with `stored_redaction_outbound_unmodified` on the event so the record is not mistaken for enforcement. Types `name`, `address`, `person`, `location`, `medical`, `national_id` require the Presidio integration; built-in regex will never fire for them.
 
 ### Unicode normalization (matching-time only)
 
