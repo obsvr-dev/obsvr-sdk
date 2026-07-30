@@ -647,6 +647,22 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **Blocked events skipped payload truncation, so enforcement evidence was the
+  likeliest thing to be dropped.** The TypeScript wrapper builds three
+  `AuditEvent` literals by hand; the allowed and streaming ones truncate to
+  `max_payload_chars` and the blocked one had drifted, on two fields — `prompt`
+  whenever the block reason is `pii_detected`, and `user_input` for **every**
+  block reason. `MAX_QUEUE_SIZE` bounds the event COUNT and nothing bounds the
+  bytes, so an oversized event is refused by ingest with a 4xx, which the sender
+  classifies `permanent` and dead-letters rather than retrying. Measured through
+  the real sender against a collector with a byte ceiling: a PII-blocked call
+  carrying a 60 KB prompt produced a 121 KB batch, was refused, and was dropped;
+  the same call now produces a 5 KB batch and is delivered. The allowed call
+  with the same payload was delivered in both phases, which is what shows the
+  cap was being applied and only the blocked literal had lost it. Python is
+  unaffected: it has one `build_audit_event` that every path goes through, and
+  truncation lives there.
+
 - **SECURITY: the zero-code `load` hook served a shim for any specifier
   carrying `?obsvr-intercept`.** The parameter is part of a specifier, and the
   hook never checked that its own `resolve` had put it there — so an import

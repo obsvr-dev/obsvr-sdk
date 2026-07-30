@@ -2234,11 +2234,22 @@ async function governCall(
           ctx.options.source ||
           config.default_source ||
           "proxy_wrapper",
-        prompt: redactedPrompt,
+        // Truncated like every other event-build site — this one had drifted.
+        // MAX_QUEUE_SIZE bounds the event COUNT and nothing bounds the bytes, so
+        // an oversized event is refused by ingest with a 4xx, which the sender
+        // classifies `permanent` and dead-letters rather than retrying. That
+        // made the BLOCKED event — the enforcement evidence — the class most
+        // likely to be silently discarded, and it is the one that must survive.
+        // This file builds three of these literals by hand and the other two
+        // truncate; the Python twin has one builder and never had the gap.
+        prompt: truncate(redactedPrompt, config.max_payload_chars),
         response: "",
-        user_input: canaryFloor
-          ? CANARY_REDACTION_PLACEHOLDER
-          : redactForStorage(lastUserText(), piiScanVia),
+        user_input: truncate(
+          canaryFloor
+            ? CANARY_REDACTION_PLACEHOLDER
+            : redactForStorage(lastUserText(), piiScanVia),
+          config.max_payload_chars,
+        ),
         latency_ms: 0,
         success: false,
         status_code: 403,
