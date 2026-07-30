@@ -283,6 +283,20 @@ def main() -> None:
     path = bl.write_json(out, result["meta"], result["rows"])
     print(f"\nJSON written: {path}")
 
+    # Honesty rule 4 (bench/README.md): a failing tier or burst fails the run
+    # LOUDLY. This script printed TIER_PASS=False / BURST_PASS=False and exited
+    # 0, so a chain that failed every event still looked like a passing
+    # benchmark to any caller reading the exit code.
+    failed = [
+        r for r in result["rows"]
+        if not r.get("tier_pass", r.get("burst_pass", True))
+    ]
+    if failed:
+        names = ", ".join(str(r.get("tier") or r.get("phase") or "?") for r in failed)
+        print(f"\nWARNING: {len(failed)} phase(s) failed: {names}", file=sys.stderr)
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

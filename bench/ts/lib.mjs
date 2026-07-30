@@ -15,9 +15,16 @@
  *    SDK's own exported verifyAuditChain over the first N events and the two
  *    verdicts must agree.
  */
-import { createHmac, createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { execSync } from "node:child_process";
 import os from "node:os";
+// Signing preimage comes from the SDK under test, never a copy. See computeSig.
+import {
+  signaturePayload,
+  decisionFieldsOf,
+  CHAIN_FORMAT_LEGACY,
+  CHAIN_FORMATS_SUPPORTED,
+} from "../../sdk-typescript/dist/proxy/chain-format.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
@@ -52,16 +59,45 @@ export function deriveSigningKey(apiKey) {
   return createHmac("sha256", SIGNING_SALT).update(apiKey).digest();
 }
 
-function contentHash(prompt, response) {
-  return createHash("sha256")
-    .update((prompt ?? "") + (response ?? ""))
-    .digest("hex");
+// The preimage is NOT reimplemented here. This file used to carry its own copy
+// of the format-1 layout, which silently became wrong when the SDK moved to
+// format 3: every governed event then failed verification against a replica
+// that was simply out of date, and the bench reported the SDK as broken. The
+// SDK's own primitive is the single definition, so the two cannot drift again.
+export function computeSig(
+  signingKey,
+  sessionId,
+  seqNo,
+  tsSdk,
+  prompt,
+  response,
+  prevSig,
+  format = CHAIN_FORMAT_LEGACY,
+  decision = {},
+) {
+  const payload = signaturePayload(
+    format,
+    sessionId,
+    seqNo,
+    tsSdk,
+    prompt ?? "",
+    response ?? "",
+    prevSig ?? null,
+    decision,
+  );
+  return createHmac("sha256", signingKey).update(payload).digest("hex");
 }
 
-export function computeSig(signingKey, sessionId, seqNo, tsSdk, prompt, response, prevSig) {
-  const hash = contentHash(prompt, response);
-  const payload = [sessionId, String(seqNo), String(tsSdk), hash, prevSig ?? ""].join("|");
-  return createHmac("sha256", signingKey).update(payload).digest("hex");
+/**
+ * Which format an event declares. Mirrors the SDK verifier's own rule
+ * (governance/verify-chain.ts:62-69): absent means legacy, an unrecognised
+ * value fails closed rather than being guessed at.
+ */
+export function declaredChainFormat(event) {
+  const raw = event?.chain_format;
+  if (raw === undefined || raw === null) return CHAIN_FORMAT_LEGACY;
+  if (typeof raw === "number" && CHAIN_FORMATS_SUPPORTED.includes(raw)) return raw;
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,6 +119,11 @@ export class StreamingChainVerifier {
     this.dupes = 0;
     this.sigFailures = 0;
     this.chainBreaks = 0;
+    // Events declaring a chain_format this verifier does not know. Counted
+    // separately from sig_failures: "I cannot check this" is not "this is
+    // forged", and collapsing them is what made a format bump look like mass
+    // signature corruption.
+    this.unsupportedFormat = 0;
     this.sessionMismatches = 0;
     this.reorderObserved = false;
     this.maxReorderHeld = 0;
@@ -131,17 +172,27 @@ export class StreamingChainVerifier {
   }
 
   _process(event) {
-    // signature
-    const expectedSig = computeSig(
-      this.signingKey,
-      event.sdk_session_id,
-      event.seq_no,
-      event.timestamp_sdk ?? 0,
-      event.prompt ?? "",
-      event.response ?? "",
-      event.prev_sig ?? null,
-    );
-    if (event.sdk_sig !== expectedSig) this.sigFailures++;
+    // signature, verified under the format THIS event declares. An
+    // unrecognised format is counted rather than verified under a guessed
+    // rule, so a chain from a newer SDK reports unsupported instead of
+    // silently failing every event.
+    const format = declaredChainFormat(event);
+    if (format === null) {
+      this.unsupportedFormat++;
+    } else {
+      const expectedSig = computeSig(
+        this.signingKey,
+        event.sdk_session_id,
+        event.seq_no,
+        event.timestamp_sdk ?? 0,
+        event.prompt ?? "",
+        event.response ?? "",
+        event.prev_sig ?? null,
+        format,
+        decisionFieldsOf(event),
+      );
+      if (event.sdk_sig !== expectedSig) this.sigFailures++;
+    }
     // prev_sig linkage
     if (this.processed > 0) {
       if ((event.prev_sig ?? null) !== (this.prevSig ?? null)) this.chainBreaks++;
@@ -186,6 +237,7 @@ export class StreamingChainVerifier {
       dupes: this.dupes,
       sig_failures: this.sigFailures,
       chain_breaks: this.chainBreaks,
+      unsupported_format: this.unsupportedFormat,
       session_mismatches: this.sessionMismatches,
       reorder_observed: this.reorderObserved,
       max_reorder_held: this.maxReorderHeld,
@@ -194,6 +246,7 @@ export class StreamingChainVerifier {
         this.dupes === 0 &&
         this.sigFailures === 0 &&
         this.chainBreaks === 0 &&
+        this.unsupportedFormat === 0 &&
         this.sessionMismatches === 0,
     };
   }

@@ -238,6 +238,31 @@ def main() -> None:
     path = bl.write_json(out, meta, result["rows"])
     print(f"\nJSON written: {path}")
 
+    # Honesty rule 4 (bench/README.md): chain corruption, silent drops and
+    # errors fail the run LOUDLY. This script printed clean=False and exited 0,
+    # so a failing chain looked like a passing benchmark to any caller reading
+    # the exit code -- including run-all.sh under `set -e`, which would have
+    # marched past it. The TypeScript half already did this (ts/overhead.mjs).
+    rows = result["rows"]
+    # Only governed rows carry chain and invariant data -- the ungoverned
+    # baseline emits no events at all. Same guard the table printer uses.
+    governed = [r for r in rows if r.get("governed")]
+    any_err = any(r["errors"]["count"] > 0 for r in rows)
+    any_bad_chain = any(not r["chain"]["clean"] for r in governed)
+    any_bad_inv = any(
+        not (r["invariant_calls_eq_enqueued_plus_dropped"]
+             and r["invariant_verified_eq_enqueued"])
+        for r in governed
+    )
+    if any_err or any_bad_chain or any_bad_inv:
+        print(
+            f"\nWARNING: errors={any_err} bad_chain={any_bad_chain} "
+            f"bad_invariant={any_bad_inv}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

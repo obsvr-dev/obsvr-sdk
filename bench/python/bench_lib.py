@@ -77,6 +77,9 @@ class ChainVerifier:
         self.gaps = 0
         self.dupes = 0
         self.sig_failures = 0
+        # Events declaring a chain_format this verifier does not know. Kept
+        # apart from sig_failures on purpose: see _feed.
+        self.unsupported_format = 0
         self.link_failures = 0
         self.out_of_order = 0
         self.session_mismatches = 0
@@ -107,18 +110,49 @@ class ChainVerifier:
         elif sess != self.session_id:
             self.session_mismatches += 1
 
+        # The preimage is NOT reimplemented here. This block used to carry its
+        # own copy of the format-1 layout, which silently became wrong when the
+        # SDK moved to format 3: every governed event then failed against a
+        # replica that was merely out of date, and the bench reported the SDK as
+        # broken. The SDK's own primitive is the single definition.
+        from obsvr.chain_format import (
+            CHAIN_FORMAT_LEGACY,
+            CHAIN_FORMATS_SUPPORTED,
+            decision_fields_of,
+            signature_payload,
+        )
+
+        # Two spellings on purpose: the linkage check below compares against a
+        # "" seed, while signature_payload wants None for "no predecessor".
+        # Collapsing them makes event 1 report a spurious link failure.
         prev_sig = ev.get("prev_sig") or ""
         sdk_sig = ev.get("sdk_sig")
-        prompt = ev.get("prompt") or ""
-        response = ev.get("response") or ""
-        content_hash = hashlib.sha256((prompt + response).encode("utf-8")).hexdigest()
-        payload = "|".join(
-            [str(sess), str(ev.get("seq_no")), str(ev.get("timestamp_sdk")),
-             content_hash, prev_sig]
-        )
-        expected = hmac.new(self.key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        if expected != sdk_sig:
-            self.sig_failures += 1
+
+        # Verify under the format THIS event declares. Absent means legacy; an
+        # unrecognised value is counted separately rather than verified under a
+        # guessed rule -- "I cannot check this" is not "this is forged", and
+        # collapsing the two is what made a format bump look like mass
+        # signature corruption.
+        raw_fmt = ev.get("chain_format")
+        fmt = CHAIN_FORMAT_LEGACY if raw_fmt is None else raw_fmt
+        if fmt not in CHAIN_FORMATS_SUPPORTED:
+            self.unsupported_format += 1
+        else:
+            payload = signature_payload(
+                fmt,
+                str(sess),
+                ev.get("seq_no"),
+                ev.get("timestamp_sdk"),
+                ev.get("prompt") or "",
+                ev.get("response") or "",
+                prev_sig or None,
+                decision_fields_of(ev),
+            )
+            expected = hmac.new(
+                self.key, payload.encode("utf-8"), hashlib.sha256
+            ).hexdigest()
+            if expected != sdk_sig:
+                self.sig_failures += 1
 
         seq = ev.get("seq_no")
         if not isinstance(seq, int):
@@ -150,6 +184,7 @@ class ChainVerifier:
     def clean(self) -> bool:
         return (
             self.gaps == 0 and self.dupes == 0 and self.sig_failures == 0
+            and self.unsupported_format == 0
             and self.link_failures == 0 and self.session_mismatches == 0
             and self.feed_errors == 0
         )
@@ -161,6 +196,7 @@ class ChainVerifier:
             "gaps": self.gaps,
             "dupes": self.dupes,
             "sig_failures": self.sig_failures,
+            "unsupported_format": self.unsupported_format,
             "link_failures": self.link_failures,
             "out_of_order": self.out_of_order,
             "session_mismatches": self.session_mismatches,
@@ -412,7 +448,7 @@ def verify_signing_vectors(path: str = SIGNING_VECTORS_PATH) -> Dict[str, Any]:
         result["error"] = f"could not read fixture: {e}"
         return result
 
-    from obsvr.chain_format import signature_payload
+    from obsvr.chain_format import decision_fields_of, signature_payload
 
     key = sender.derive_signing_key(fx["api_key"])
     result["key_match"] = key.hex() == fx.get("signing_key_hex")
@@ -430,6 +466,10 @@ def verify_signing_vectors(path: str = SIGNING_VECTORS_PATH) -> Dict[str, Any]:
             ev.get("prompt") or "",
             ev.get("response") or "",
             ev.get("prev_sig") or None,
+            # Omitting this made every format-3 vector fail while the two
+            # legacy ones passed, because format 3 folds the decision hash into
+            # the preimage and the default empty dict is not the event's.
+            decision_fields_of(ev),
         )
         got = hmac.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
         result["events_checked"] += 1
