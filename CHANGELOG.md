@@ -308,6 +308,39 @@ cut, when it is renamed to that version.
   with one now completes it. Nothing in this repository documented the old
   behaviour — no document mentioned signal handling at all, which is part of why
   it shipped.
+- **A second `init()` now reaches clients wrapped before it (TypeScript).** The
+  wrapper held the config object it was handed at wrap time, so an already-
+  wrapped client stayed on the policy that was current when it was wrapped.
+  Measured live in both directions: a client wrapped under a permissive policy
+  reached the provider with the payload a later `init()` had declared blocked,
+  and a client wrapped under a strict one kept refusing on a rule a later
+  `init()` had removed — while a freshly wrapped client honoured the new policy
+  in both cases. The asymmetry underneath is worth stating, because it made the
+  pair look unrelated: `init()` REPLACES the resolved config while a
+  `/policies` poll MUTATES it in place, so a captured reference saw every poll
+  and no re-`init()`. The context now reads the config through, at every step of
+  the proxy traversal — a caller holding `client.chat.completions` across a
+  re-`init()` gets the new policy too. **Python was already correct here** and
+  is now pinned so it stays that way.
+- **A policy poll no longer deletes rules you declared in `init()`.** Both
+  languages. A `200` from `/policies` replaced the whole rule set, so a response
+  carrying `{"rules":[]}` erased locally declared `policyRules` **and** advanced
+  the last-success timestamp — meaning `failMode: "closed"` never tripped, and a
+  deployment was silently disarmed by a response its operator never sees. Wider
+  than that, as the measurement showed: **any** successful poll erased them, not
+  only an empty one.
+
+  Rule precedence is now three tiers with three lifetimes. `policyFloor`
+  survives everything, as it always has. Rules declared in `init()` survive a
+  poll and are replaced only by another `init()`. The server's own set is the
+  poll's to manage, and an empty ruleset is a valid server state that
+  legitimately clears it. Local rules being deletable-by-poll was the odd one
+  out — the floor already had its own field for exactly this reason — and a
+  server rule carrying the id of a locally declared one does not take it over,
+  because that is the same disarming edit wearing a matching id. Collisions are
+  logged rather than absorbed. Verified live in both languages, with a dead
+  `/policies` endpoint and a fail-closed staleness budget as the control that
+  the repair did not disarm fail-closed.
 
 ### Added
 

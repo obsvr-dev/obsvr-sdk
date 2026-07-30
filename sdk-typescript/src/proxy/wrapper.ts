@@ -14,7 +14,7 @@ import type {
   WrapOptions,
 } from "./types.js";
 import type { OpenAIChatRequest } from "./extractors/types.js";
-import { getConfig, isWrapped, markWrapped, isPolicyEnforcementDegraded } from "./config.js";
+import { getConfig, isInitialized, isWrapped, markWrapped, isPolicyEnforcementDegraded } from "./config.js";
 import { evaluatePolicyHook, redactBuiltinPii, resolvePiiPolicy, runBuiltinPiiScan } from "../policy/hook.js";
 import type { PolicyDecisionResult } from "../policy/hook.js";
 import {
@@ -322,6 +322,21 @@ const WRAPPED_MARKER = Symbol("obsvr-wrapped");
 /**
  * Track the current method path during proxy traversal
  */
+/**
+ * One step deeper in the property path.
+ *
+ * Prototype-linked rather than spread, and that is the whole point: `config` on
+ * the root context is a live accessor, and `{ ...ctx }` would evaluate it once
+ * and freeze the result into the child. Inheriting keeps every level of a
+ * traversal reading the config that is current when the call is made, at any
+ * depth, without this having to know which fields a context carries.
+ */
+function atPath(ctx: PathContext, path: string[]): PathContext {
+  const child = Object.create(ctx) as PathContext;
+  child.path = path;
+  return child;
+}
+
 type PathContext = {
   path: string[];
   options: WrapOptions;
@@ -2882,6 +2897,7 @@ function createRecursiveProxy<T extends object>(
 
       // Track the path
       const newPath = [...ctx.path, prop];
+      const stepCtx = () => atPath(ctx, newPath);
 
       // If it's a function
       if (typeof value === "function") {
@@ -2898,7 +2914,7 @@ function createRecursiveProxy<T extends object>(
           return createAuditedToolRunnerMethod(
             value,
             obj,
-            { ...ctx, path: newPath },
+            stepCtx(),
             ctx.provider,
             toolRunnerSpec,
           );
@@ -2916,7 +2932,7 @@ function createRecursiveProxy<T extends object>(
           return createAuditedRunnerMethod(
             value,
             obj,
-            { ...ctx, path: newPath },
+            stepCtx(),
             ctx.provider,
             runnerSpec.final,
           );
@@ -2932,7 +2948,7 @@ function createRecursiveProxy<T extends object>(
           return createAuditedMethod(
             value,
             obj,
-            { ...ctx, path: newPath },
+            stepCtx(),
             ctx.provider,
           );
         }
@@ -2943,7 +2959,7 @@ function createRecursiveProxy<T extends object>(
 
       // If it's an object, wrap recursively
       if (typeof value === "object") {
-        return createRecursiveProxy(value as object, { ...ctx, path: newPath });
+        return createRecursiveProxy(value as object, stepCtx());
       }
 
       // Primitives pass through
@@ -3017,7 +3033,25 @@ export function wrap<T extends object>(
   const ctx: PathContext = {
     path: [],
     options,
-    config,
+    /**
+     * Read through to the live config rather than holding the object that was
+     * current at wrap time.
+     *
+     * `init()` REPLACES `state.config` while a `/policies` poll MUTATES the
+     * same object in place. A captured reference therefore saw every poll and
+     * no re-`init()`, which is precisely why the two behaved differently — and
+     * it stranded every already-wrapped client on the policy it was wrapped
+     * under, in both directions: still refusing on a rule that had been
+     * removed, and reaching the provider under a rule that had been added.
+     *
+     * The fallback covers teardown only. `getConfig()` throws once the SDK is
+     * no longer initialised, where reading the captured object used to return,
+     * and turning a torn-down client's call into a throw is a different change
+     * from the one being made here.
+     */
+    get config(): ResolvedConfig {
+      return isInitialized() ? getConfig() : config;
+    },
     provider,
     recordedProvider,
     providerAttribution,

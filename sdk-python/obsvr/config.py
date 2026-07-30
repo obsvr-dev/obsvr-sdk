@@ -131,7 +131,9 @@ class ResolvedConfig:
     policy_rules: Optional[List[Any]] = None
     # Anti-tamper policy floor: rules that cannot be silently disabled/
     # downgraded (see TS ObsvrConfig.policyFloor). Its own field so a remote
-    # sync replacing policy_rules can never delete it.
+    # sync can never delete it — the strongest of the three tiers, and since
+    # apply_policy_rules the middle tier (locally declared policy_rules) also
+    # survives a poll; only the server's own set is the poll's to replace.
     policy_floor: Optional[List[Any]] = None
     default_source: Optional[str] = None
     default_region: Optional[str] = None
@@ -418,6 +420,10 @@ def init(
         external_policy_backend=external_policy_backend,
     )
     _state["initialized"] = True
+    # What the caller declared in code, kept apart from what a poll delivers.
+    # See apply_policy_rules in remote.py. Replaced only by another init().
+    _state["local_policy_rules"] = list(policy_rules or [])
+    _state["server_policy_rules"] = None
 
     # disabling governance in production is a bypass — put it on the
     # tamper-evident record (parity with the TS SDK, SECURITY.md): a prominent
@@ -561,6 +567,44 @@ def get_tenant_config(tenant_id: str) -> "ResolvedConfig":
     return dataclasses.replace(base, policy_rules=override.get("policy_rules", base.policy_rules))
 
 
+def apply_policy_rules(config: "ResolvedConfig", rules: List[Any]) -> None:
+    """Install the rules a poll delivered, keeping locally declared ones.
+
+    LOCALLY-DECLARED RULES SURVIVE A POLL. The two sources have separate
+    lifetimes: a poll owns the server set and may legitimately empty it, but it
+    never deletes a rule the caller passed to ``init(policy_rules=...)``.
+
+    Why, given that wholesale replacement looks like the simpler contract: a
+    200 carrying ``{"rules":[]}`` used to erase locally declared rules AND
+    stamp the sync as successful, so ``fail_mode="closed"`` never tripped — a
+    deployment was silently disarmed by a response nobody ever sees, with
+    nothing on the record saying its rules had gone. ``policy_floor`` already
+    survived a poll (its own field exists for exactly that reason), so local
+    rules were the one tier a network response could delete. This makes the
+    three consistent: the floor always survives, local survives a poll, the
+    server set is the poll's to manage.
+
+    A server rule carrying the id of a local one does NOT replace it — that is
+    the same disarming edit wearing a matching id, and letting it through would
+    reopen the hole for any deployment that has not pinned a policy key.
+
+    Mirror of updatePolicyRules in config.ts.
+    """
+    local = _state.get("local_policy_rules") or []
+    _state["server_policy_rules"] = list(rules)
+    local_ids = {getattr(r, "id", None) for r in local}
+    shadowed = [r for r in rules if getattr(r, "id", None) in local_ids]
+    if shadowed:
+        logging.getLogger("obsvr").warning(
+            "[obsvr] Policy poll returned %d rule(s) whose id is declared locally "
+            "(%s); the local declaration stands."
+            % (len(shadowed), ", ".join(str(getattr(r, "id", "?")) for r in shadowed))
+        )
+    config.policy_rules = list(local) + [
+        r for r in rules if getattr(r, "id", None) not in local_ids
+    ]
+
+
 def _reset() -> None:
     """Reset state (tests only)."""
     from .remote import _reset_remote
@@ -588,4 +632,6 @@ def _reset() -> None:
     _reset_run_state()
     _state["initialized"] = False
     _state["config"] = None
+    _state["local_policy_rules"] = None
+    _state["server_policy_rules"] = None
     _tenant_registry.clear()

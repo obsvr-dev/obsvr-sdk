@@ -1167,7 +1167,7 @@ def apply_pre_call_policy(
         # 1.4. Anti-tamper policy FLOOR (before customer rules; floor rules always
         #      enforce, and a floor block is excluded from the hook-override
         #      branches below). Lives in its own config field so a remote sync
-        #      replacing policy_rules can never delete it. TS parity: core.ts 1.4.
+        #      replacing the SERVER rule set can never delete it. TS parity: core.ts 1.4.
         floor_block = False
         floor_rule_id: Optional[str] = None
         floor_reason: Optional[str] = None

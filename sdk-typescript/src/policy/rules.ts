@@ -774,7 +774,7 @@ export function deriveRuleHash(rule: PolicyRule): string {
  * to allow, the floor is evaluated as its OWN pass BEFORE the customer rules,
  * and its decision is non-overridable (the caller excludes a floor block from
  * the hook-override branches, and the floor lives in its own config field so a
- * remote /policies sync — which replaces only `policyRules` — can never delete
+ * remote /policies sync — which replaces only the SERVER rule set — can never delete
  * it). Byte-identical to the Python `evaluate_floor`.
  */
 export function evaluateFloor(

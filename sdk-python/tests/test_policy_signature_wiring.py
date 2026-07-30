@@ -133,7 +133,12 @@ def test_a_valid_signature_is_applied(case_id):
     by the poll never applying anything at all."""
     _config_, rule_ids = _poll_case(case_id)
     assert PUSHED_RULE_ID in rule_ids
-    assert "local-floor" not in rule_ids  # a valid push does replace
+    # The locally declared rule stays beside it. This line used to assert the
+    # opposite — that a valid push REPLACES what init() declared — which is the
+    # behaviour that let a 200 carrying {"rules": []} disarm a deployment while
+    # stamping the sync as successful. A poll owns the server set and may empty
+    # it; it does not delete what the caller declared in code.
+    assert "local-floor" in rule_ids
 
 
 @pytest.mark.parametrize("case_id", REFUSING)

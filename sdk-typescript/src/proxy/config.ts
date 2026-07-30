@@ -401,6 +401,9 @@ export function init(config: LLMAuditInitConfig | ObsvrConfig): void {
   const resolved = resolveConfig(internal);
   state.config = resolved;
   state.initialized = true;
+  // What the caller declared in code, kept apart from what a poll delivers.
+  // See LOCALLY-DECLARED RULES on updatePolicyRules.
+  localPolicyRules = [...(resolved.policyRules ?? [])];
 
   // Governance bypass is permitted but never silent: disabling obsvr in a
   // production environment logs a prominent warning and emits a single
@@ -541,13 +544,51 @@ export function getTenantConfig(tenantId: string): ResolvedConfig {
 }
 
 /**
+ * Rules the caller declared in code, captured at `init()`. Replaced only by
+ * another `init()`; a poll can never remove one.
+ */
+let localPolicyRules: PolicyRule[] | null = null;
+/** Rules from the last successful poll. Replaced wholesale, empty included. */
+let serverPolicyRules: PolicyRule[] | null = null;
+
+/**
  * Mutate the in-memory policy rules and snapshot them for audit.
+ *
+ * LOCALLY-DECLARED RULES SURVIVE A POLL. The two sources have separate
+ * lifetimes: a poll owns the server set and may legitimately empty it, but it
+ * never deletes a rule the caller passed to `init({ policyRules })`.
+ *
+ * Why, given that the wholesale replacement looks like the simpler contract: a
+ * `200` carrying `{"rules":[]}` used to erase locally declared rules AND stamp
+ * the sync as successful, so `failMode: "closed"` never tripped — a deployment
+ * was silently disarmed by a response nobody ever sees, with nothing on the
+ * record saying its rules had gone. `policyFloor` already survived a poll, so
+ * local rules were the one tier a network response could delete, and making
+ * the three tiers consistent is the smaller change: the floor always survives,
+ * local survives a poll, the server set is the poll's to manage.
+ *
+ * A server rule carrying the id of a local one does NOT replace it — that is
+ * the same disarming edit wearing a matching id, and letting it through would
+ * reopen the hole for any deployment that has not pinned a policy key. The
+ * collision is logged rather than absorbed silently.
  */
 export function updatePolicyRules(rules: PolicyRule[]): void {
-  if (state.config) {
-    state.config.policyRules = rules;
-    snapshotPolicy(rules);
+  if (!state.config) return;
+  serverPolicyRules = rules;
+  const local = localPolicyRules ?? [];
+  const localIds = new Set(local.map((r) => r.id));
+  const shadowed = rules.filter((r) => localIds.has(r.id));
+  if (shadowed.length > 0) {
+    debugLog(
+      state.config,
+      "warn",
+      `Policy poll returned ${shadowed.length} rule(s) whose id is declared locally ` +
+        `(${shadowed.map((r) => r.id).join(", ")}); the local declaration stands.`,
+    );
   }
+  const effective = [...local, ...rules.filter((r) => !localIds.has(r.id))];
+  state.config.policyRules = effective;
+  snapshotPolicy(effective);
 }
 
 const VALID_RULE_ACTIONS = new Set(["block", "redact", "flag"]);
@@ -985,6 +1026,8 @@ export function _reset(): void {
   stopPolicyPolling();
   state.initialized = false;
   state.config = null;
+  localPolicyRules = null;
+  serverPolicyRules = null;
   state.wrappedClients = new WeakSet();
   tenantRegistry.clear();
   policySync.startedAt = null;

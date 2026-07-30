@@ -4,8 +4,11 @@ Parity with sdk-typescript/src/proxy/config.ts (policy poll + sync health) and
 sdk-typescript/src/policy/approvals.ts:
 
 - A daemon thread polls {ingest_url}/policies every refresh interval
-  (immediate first poll), replacing config.policy_rules with server rules
-  and updating the approval-grant set that rides along in the response.
+  (immediate first poll), replacing the SERVER rule set with what the response
+  carries and updating the approval-grant set that rides along with it. It does
+  NOT replace rules the caller declared in init(policy_rules=...): those have
+  their own lifetime and only another init() replaces them. See
+  apply_policy_rules in config.py for why.
 - 401/403 from /policies means the API key was revoked or the project was
   paused in the dashboard (kill switch): all governed calls block until a
   later poll succeeds again.
@@ -24,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from .config import ResolvedConfig
+from .config import ResolvedConfig, apply_policy_rules
 from .escrow import apply_escrow_response, snapshot_consumption
 
 # Stable per-process id sent as X-Obsvr-Instance-Id on every /policies poll.
@@ -372,19 +375,22 @@ def poll_once(config: ResolvedConfig) -> None:
             if isinstance(signature, dict) and signature.get("issued_at"):
                 _sync["last_applied_policy_issued_at"] = str(signature["issued_at"])
 
-    config.policy_rules = [
-        PolicyRule(
-            id=r["id"],
-            name=r["name"],
-            enabled=r["enabled"],
-            action=r["action"],
-            type=r["type"],
-            conditions=r["conditions"],
-            applies_to=r.get("applies_to"),
-            mode=r.get("mode"),
-        )
-        for r in valid
-    ]
+    apply_policy_rules(
+        config,
+        [
+            PolicyRule(
+                id=r["id"],
+                name=r["name"],
+                enabled=r["enabled"],
+                action=r["action"],
+                type=r["type"],
+                conditions=r["conditions"],
+                applies_to=r.get("applies_to"),
+                mode=r.get("mode"),
+            )
+            for r in valid
+        ],
+    )
 
     approvals_raw = body.get("approvals")
     if isinstance(approvals_raw, list):
