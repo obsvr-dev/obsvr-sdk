@@ -33,6 +33,7 @@ import hashlib
 import hmac as hmac_mod
 import json
 import logging
+import os
 import random
 import threading
 import time
@@ -133,6 +134,94 @@ _gap_marker_ordinal = 0
 # give it), and a gap that is never declared because the process was on its way
 # out is exactly the gap most worth recording.
 _last_config: Optional[ResolvedConfig] = None
+
+
+def _reseed_chain_after_fork() -> None:
+    """Give the child process its own chain, in the child.
+
+    ``_sdk_session_id`` and ``_seq_no`` are module state, and ``os.fork()``
+    copies module state. So the recommended deployment for this SDK's most
+    common host -- a pre-forking application server, which imports the app in
+    the parent and forks N workers -- gave every worker the SAME session id and
+    a sequence that restarts from wherever the parent had got to. N workers
+    produce N divergent chains all claiming one session, each one looking like a
+    fork of the others. Ingest ALREADY detects this and calls it
+    ``sequence_fork``: the detection existed and the prevention did not.
+
+    Four things move, and the last two are why this is not a three-line change:
+
+    * a fresh session id, because two chains must never claim one session;
+    * ``_seq_no``/``_last_sig`` back to the start, because the child's first
+      event is the head of a NEW chain, not a continuation of the parent's;
+    * the QUEUE is replaced rather than inherited. The child would otherwise
+      hold a copy of every event the parent had signed but not yet delivered,
+      and deliver it a second time -- the parent still owns those, and they
+      carry the parent's session and sequence, so a child re-sending them is a
+      replay rather than a rescue. Dropping the child's copy is the correct
+      half: the parent has not lost them;
+    * every lock is rebuilt. Only the forking thread survives a fork, so a lock
+      another thread happened to hold at that instant is held forever in the
+      child. ``_sign_lock`` guards sign-and-enqueue, so inheriting it locked
+      would hang the first governed call in every worker.
+
+    Registered with ``after_in_child`` only, paired with an acquire/release of
+    ``_sign_lock`` around the fork itself so the chain head cannot be observed
+    mid-advance. What is deliberately NOT changed is the sign-and-enqueue
+    atomicity this rests on: it stays a single reentrant-lock section with
+    ``_seq_no``/``_last_sig`` rolled back on ``Full``, so a signed-but-undelivered
+    event still cannot fork the chain on its own.
+
+    Twin: none. The TypeScript SDK has no ``fork()`` to survive.
+    """
+    global _sdk_session_id, _seq_no, _last_sig
+    global _queue, _sign_lock, _stats_lock, _worker_lock, _worker
+    global _gap_pending, _gap_marker_ordinal, _dropped
+
+    _sign_lock = threading.RLock()
+    _stats_lock = threading.Lock()
+    _worker_lock = threading.Lock()
+
+    _sdk_session_id = str(uuid.uuid4())
+    _seq_no = 0
+    _last_sig = None
+
+    # A fresh queue: drops the parent's undelivered events (the parent still has
+    # them) and discards any queue-internal lock inherited in a locked state.
+    _queue = Queue(maxsize=MAX_QUEUE_SIZE)
+
+    # These describe the PARENT's losses and its markers. The child has had none.
+    _gap_pending = 0
+    _gap_marker_ordinal = 0
+    _dropped = 0
+
+    # The inherited Thread object names a thread that does not exist here.
+    # `_ensure_worker` already re-checks `is_alive()`, so this is belt rather
+    # than braces -- but a `_worker` that reports a dead thread is a confusing
+    # thing to leave lying around in a child.
+    _worker = None
+
+
+def _acquire_sign_lock_before_fork() -> None:
+    """Hold the chain lock across the fork so no thread is mid-advance."""
+    _sign_lock.acquire()
+
+
+def _release_sign_lock_after_fork() -> None:
+    try:
+        _sign_lock.release()
+    except RuntimeError:
+        # In the child the lock object has already been replaced by
+        # _reseed_chain_after_fork, so there is nothing to release.
+        pass
+
+
+# POSIX only; Windows has no fork and no register_at_fork.
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_acquire_sign_lock_before_fork,
+        after_in_parent=_release_sign_lock_after_fork,
+        after_in_child=_reseed_chain_after_fork,
+    )
 
 
 def derive_signing_key(api_key: str) -> bytes:

@@ -647,6 +647,30 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The Python audit chain forked across `os.fork()`.** `_sdk_session_id` and
+  `_seq_no` are module state, and `fork()` copies module state — so a
+  pre-forking application server, which is the recommended deployment, gave
+  every worker the same session id and a sequence continuing from wherever the
+  parent had reached. N workers produced N divergent chains all claiming one
+  session, each looking like a fork of the others. Ingest already detected that
+  shape and named it `sequence_fork`: the detection existed and the prevention
+  did not.
+  There is now an `os.register_at_fork` handler, and it moves four things rather
+  than the obvious two: a fresh session id; `seq_no`/`prev_sig` back to the start,
+  because the child's first event heads a NEW chain; the sender queue replaced
+  rather than inherited, since the child would otherwise re-send events the
+  parent had signed but not delivered — a replay under the parent's session and
+  sequence, not a rescue; and every lock rebuilt, because only the forking thread
+  survives a fork and the sender runs a worker thread, so a lock held at that
+  instant would be held forever in the child. The chain lock is also held across
+  the fork itself so the head cannot be observed mid-advance.
+  Verified by actually forking: before the change two children share the
+  parent's session id, three `(session_id, seq_no)` pairs collide, and both
+  children re-send the parent's queued events; after it every pair is unique,
+  each child's chain verifies independently under the SDK's own verifier, and the
+  parent's chain is unchanged. The sign-and-enqueue atomicity this rests on is
+  deliberately untouched.
+
 - **Blocked events skipped payload truncation, so enforcement evidence was the
   likeliest thing to be dropped.** The TypeScript wrapper builds three
   `AuditEvent` literals by hand; the allowed and streaming ones truncate to
