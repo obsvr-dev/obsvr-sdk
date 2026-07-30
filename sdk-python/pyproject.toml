@@ -189,7 +189,17 @@ crypto = ["cryptography>=41.0.0"]
 # not both. 1.0 is the earliest release carrying nacl.signing.VerifyKey and
 # nacl.exceptions.BadSignatureError.
 crypto-nacl = ["PyNaCl>=1.0.0"]
-dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0"]
+# `mcp` is the one upstream framework package the test suite installs for real.
+# Every other integration is tested against hand-written fakes, which is stated
+# in tests/README.md rather than left to be discovered. This one is different
+# because SECURITY.md names the MCP tool gate as the surface to put a
+# destructive capability behind, and a gate nothing has driven against the real
+# package is graded by its own restatement. Same specifier as the `mcp` extra
+# above, so the version this is tested against is the version callers install.
+# It stays out of the blocking dependency audit by construction: that job runs
+# `pip-audit --strict .` over declared RUNTIME dependencies, which remain empty,
+# and the environment audit that would see these is report-only.
+dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=1.0.0,<2.0.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "obsvr._version.__version__" }

@@ -474,6 +474,39 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **The MCP tool gate is now driven against the real `mcp` package in CI, in
+  both languages — and every other integration test is labelled as what it is.**
+  This is a decision about which asymmetry to keep, so both halves are stated.
+
+  No integration test in either language had ever run against a real upstream
+  framework. They drive hand-written fakes, which pin this SDK's own logic and
+  its assumptions about a shape, but cannot see an upstream release that renames
+  the method being wrapped or stops delivering a callback. Every finding of that
+  kind in this project's history came from a live probe, never from the suites.
+
+  `mcp` is now the one exception, because `SECURITY.md` names that gate as the
+  surface to put a destructive capability behind. A real client, a real server
+  and the package's own in-memory transport, with the refusal graded on whether
+  the SERVER executed the tool body rather than on the caller's exception.
+  Python gains `mcp` in its `dev` extra at the same specifier the `mcp` extra
+  already declares; TypeScript needed no new dependency at all — the package was
+  already a devDependency that no test imported. Runtime dependencies stay at
+  zero in both packages, and the blocking dependency audit is unaffected: it
+  covers declared runtime dependencies, and the audit that sees test
+  dependencies is report-only.
+
+  **What prompted it, measured rather than argued.** With the real deny check
+  replaced by "allow everything", `sdk-typescript/tests/unit/mcp-integration.test.ts`
+  still passes 18 of 18 — it carries its own copy of the policy check, annotated
+  *"mirrors mcp.ts logic"*, and drives the copy instead of the module. Across
+  that whole suite only three pre-existing tests notice; in Python, six do. The
+  new files add four and three more.
+
+  The rest of the asymmetry is not being closed, and `tests/README.md` in each
+  SDK now says so plainly: which upstream packages are real in CI, which
+  surfaces are fakes, and what a green run on a faked surface does and does not
+  establish. A reader who assumed the integration suites exercised the
+  frameworks they name was previously left to discover otherwise.
 - **`docs/REMEDIATION.md` and `docs/RELEASE-GATE.md`.** An external reader could
   verify a handful of itemised defects in `SECURITY.md` while the inventory behind
   them — and the reasoning about which defects block a release at all — were not
