@@ -1,4 +1,5 @@
 import { init, _reset } from '../../src/proxy/config';
+import { isAlwaysBlockedIp, isPrivateOrReservedIp } from '../../src/utils/ssrf';
 
 /**
  * SSRF guard on the presidio analyzer/anonymizer endpoints. These receive the
@@ -65,4 +66,48 @@ describe('presidio endpoint SSRF guard (init)', () => {
       init({ ...BASE, presidio_analyzer_url: '   ' } as any),
     ).toThrow(/presidioAnalyzerUrl must be a non-empty string/i);
   });
+});
+
+/**
+ * Every IPv6 spelling that carries an IPv4 address. The guard folded exactly
+ * ONE of the four (`::ffff:`), so `http://[::169.254.169.254]/` reached the
+ * network through the external-policy backend and was accepted by `init()` as
+ * a Presidio URL while the `::ffff:` spelling of the same address was refused.
+ * "Always refused, no opt-out" held for one spelling of the address.
+ *
+ * The public-address rows are the controls: without them "everything IPv6 is
+ * blocked" would pass, which is a different bug and a worse one.
+ */
+describe('SSRF: every IPv6 form that carries an IPv4 address', () => {
+  const METADATA = [
+    ['169.254.169.254', 'IPv4 literal'],
+    ['::ffff:169.254.169.254', 'IPv4-mapped, dotted'],
+    ['::ffff:a9fe:a9fe', 'IPv4-mapped, hex (what the URL parser produces)'],
+    ['::169.254.169.254', 'IPv4-compatible, dotted'],
+    ['::a9fe:a9fe', 'IPv4-compatible, hex'],
+    ['64:ff9b::169.254.169.254', 'NAT64 well-known prefix'],
+    ['64:ff9b::a9fe:a9fe', 'NAT64, hex'],
+    ['2002:a9fe:a9fe::', '6to4'],
+    ['2002:a9fe:a9fe::1', '6to4 with a host suffix'],
+  ] as const;
+
+  for (const [ip, how] of METADATA) {
+    it(`always-blocks the metadata address written as ${how}`, () => {
+      expect(isAlwaysBlockedIp(ip)).toBe(true);
+    });
+  }
+
+  const PUBLIC = [
+    ['8.8.8.8', 'IPv4 literal'],
+    ['::ffff:8.8.8.8', 'IPv4-mapped public'],
+    ['2002:0808:0808::', '6to4 of a public address'],
+    ['2001:4860:4860::8888', 'ordinary public IPv6'],
+  ] as const;
+
+  for (const [ip, how] of PUBLIC) {
+    it(`does NOT block a public address written as ${how}`, () => {
+      expect(isAlwaysBlockedIp(ip)).toBe(false);
+      expect(isPrivateOrReservedIp(ip)).toBe(false);
+    });
+  }
 });

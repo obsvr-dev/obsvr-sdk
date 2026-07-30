@@ -15,12 +15,21 @@
  * behaviour in each case is deliberate; the absolute in this header was what
  * did not match it.
  *
- * The response phase is different and deliberately so: once the provider has
- * answered, "closed" is not an available action. Blocking cannot undo the
- * answer, and the published contract is that a response-side control never
- * withholds the value returned to the caller. So that phase never raises and
- * never withholds - it fails closed only on the STORED audit copy, which is
- * the one thing still in the SDK's hands.
+ * The response phase over the MODEL's answer is different and deliberately so:
+ * once the provider has answered, "closed" is not an available action. Blocking
+ * cannot undo the answer, and the published contract is that a response-side
+ * control over that surface never withholds the value returned to the caller.
+ * So THAT phase never raises and never withholds - it fails closed only on the
+ * STORED audit copy, which is the one thing still in the SDK's hands.
+ *
+ * That is NOT true of every surface this phase label covers, and the header
+ * used to read as if it were. The MCP tool-RESULT gate runs in the response
+ * phase and is PRE-DELIVERY - the value has not reached the caller yet - so it
+ * both raises and withholds, deliberately, and `mcp.ts` says so forty lines
+ * from here. Measured: a response-target block rule, a PII block, and a planted
+ * canary each raise out of `obsvrGovernMCP`, and a PII `redact` rewrites the
+ * value the caller receives. The distinction is whether the surface is still
+ * pre-delivery, not whether the label says "response".
  *
  * Twin: sdk-python/obsvr/policy.py (`record_detector_failure`).
  *

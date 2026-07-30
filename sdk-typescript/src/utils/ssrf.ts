@@ -50,31 +50,63 @@ function parseIpv4(ip: string): [number, number, number, number] | null {
   return octets as [number, number, number, number];
 }
 
+/** Render a 32-bit value carried in two hex groups as a dotted quad. */
+function hexPairToIpv4(hi: string, lo: string): string {
+  const h = parseInt(hi, 16);
+  const l = parseInt(lo, 16);
+  return `${(h >> 8) & 0xff}.${h & 0xff}.${(l >> 8) & 0xff}.${l & 0xff}`;
+}
+
 /**
- * If `ip` is an IPv4-mapped IPv6 address, return the embedded IPv4 dotted-quad;
- * otherwise null. Covers the dotted tail `::ffff:a.b.c.d`, the HEX form
- * `::ffff:HHHH:HHHH`, and the fully-expanded `0:0:0:0:0:ffff:...` prefix.
+ * If `ip` is an IPv6 address that CARRIES an IPv4 address, return that IPv4 as
+ * a dotted quad; otherwise null.
  *
- * This is load-bearing for the SSRF guard: Node's WHATWG URL parser normalizes
- * `[::ffff:169.254.169.254]` to the HEX form `::ffff:a9fe:a9fe`, which a
- * dotted-decimal-only check does not recognize — leaving the cloud-metadata
- * address reachable. Folding to IPv4 first closes that bypass.
+ * This is load-bearing for the SSRF guard, and it used to cover exactly one of
+ * the four ways an IPv6 literal can carry a v4 address. Measured: with only the
+ * `::ffff:` form folded, `http://[::169.254.169.254]/` reached `fetch` through
+ * the external-policy backend and was ACCEPTED by `init()` as a Presidio URL,
+ * while the `::ffff:` spelling of the same address was refused — so the
+ * "always blocked, no opt-out" claim over the cloud-metadata endpoint held for
+ * one spelling of it.
+ *
+ * The four forms, all of which route to the same host:
+ *   - IPv4-MAPPED      `::ffff:a.b.c.d` / `::ffff:HHHH:HHHH` / `0:0:0:0:0:ffff:…`
+ *   - IPv4-COMPATIBLE  `::a.b.c.d` / `::HHHH:HHHH` — deprecated, still routable
+ *   - NAT64            `64:ff9b::a.b.c.d` and `64:ff9b:1::…` (RFC 6052/8215)
+ *   - 6to4             `2002:HHHH:HHHH::…` (RFC 3056) — the v4 address is the
+ *                      two groups after the prefix
+ *
+ * Node's WHATWG URL parser normalizes a dotted tail to the hex form, so both
+ * spellings of every one of these must be recognized.
  */
 function mappedIpv4(ip: string): string | null {
   const norm = ip.toLowerCase().replace(/^\[|\]$/g, "");
-  // Leading zero groups may be compressed (`::`) or explicit (`0:0:0:0:0:`).
-  const m =
-    /^(?:::|(?:0:){1,5})ffff:(?:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(
-      norm,
-    );
+  const DOT = "(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})";
+  const HEX = "([0-9a-f]{1,4}):([0-9a-f]{1,4})";
+  const tail = `(?:${DOT}|${HEX})`;
+
+  // IPv4-mapped: leading zero groups compressed (`::`) or explicit.
+  let m = new RegExp(`^(?:::|(?:0:){1,5})ffff:${tail}$`).exec(norm);
+  // IPv4-compatible (deprecated, and the form the guard missed).
+  if (!m) m = new RegExp(`^(?:::|(?:0:){1,6})${tail}$`).exec(norm);
+  // NAT64 well-known prefix, both the /96 and the /48-with-suffix spellings.
+  if (!m) m = new RegExp(`^64:ff9b(?::0)*::${tail}$`).exec(norm);
+  if (!m) m = new RegExp(`^64:ff9b:1:(?:0:){0,3}:?${tail}$`).exec(norm);
+  // 6to4: the two groups immediately after the prefix ARE the v4 address.
+  // Anything after them is the site's own subnetting and does not change the
+  // host the packet reaches, so the match deliberately ignores the remainder.
+  if (!m) {
+    const six = /^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4})(?::|$)/.exec(norm);
+    if (six) return hexPairToIpv4(six[1], six[2]);
+  }
+
   if (!m) return null;
   if (m[1]) {
     const octets = parseIpv4(m[1]);
     return octets ? m[1] : null;
   }
-  const hi = parseInt(m[2], 16);
-  const lo = parseInt(m[3], 16);
-  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  if (m[2] && m[3]) return hexPairToIpv4(m[2], m[3]);
+  return null;
 }
 
 /** True for an IPv4 or IPv6 literal (with brackets already stripped). */

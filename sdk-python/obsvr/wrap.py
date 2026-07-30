@@ -69,8 +69,17 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
     """Emit an audit event. Sampling (config.sample_rate) applies ONLY to clean
     allowed events. Governed events (blocked / redacted / flagged / PII-detected)
     and errors are forensic evidence and are NEVER dropped — EV-2 requires every
-    governed call to emit exactly one audit event. Mirrors the TS sender, which
-    likewise never samples out governed events."""
+    governed call to emit exactly one audit event.
+
+    Mirrors the TS sender for enforcement actions and errors. It does NOT mirror
+    it for allowed-but-FLAGGED events, and the header used to say it did. This
+    gate is a three-way test (``success is False`` OR ``action_taken`` is not
+    ``allowed`` OR ``action_reason`` is set); the TypeScript gate at
+    ``wrapper.ts`` keys on ``action_taken`` alone. So an event carrying
+    ``action_reason: "pii_detected"`` with ``action_taken: "allowed"`` — a
+    detect_only PII finding — is sampled out there and kept here. Measured at
+    ``sample_rate=0`` with an identical prompt and policy: Python 1 event,
+    TypeScript 0."""
     c = compliance or {}
     governed = (
         event.get("success") is False

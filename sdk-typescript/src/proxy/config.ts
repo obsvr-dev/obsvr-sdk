@@ -184,9 +184,13 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
   // Run the STATIC SSRF guard at init on each configured endpoint (parity with
   // the external policy backend above). A presidio deployment is normally a
   // LOCAL sidecar (localhost / private host), so private/loopback are permitted
-  // here — but the cloud-metadata / link-local endpoint (169.254.169.254 and
-  // the IPv6 forms) is ALWAYS refused, no opt-out, closing the crown-jewel SSRF
-  // vector. Twin: sdk-python/obsvr/config.py.
+  // here — but the cloud-metadata / link-local endpoint is ALWAYS refused, no
+  // opt-out, closing the crown-jewel SSRF vector. "The IPv6 forms" is now four
+  // forms rather than one: IPv4-mapped (`::ffff:`), IPv4-COMPATIBLE (`::`),
+  // NAT64 (`64:ff9b::`) and 6to4 (`2002:`). Only the first was folded, so
+  // `http://[::169.254.169.254]/` was ACCEPTED here and stored verbatim while
+  // the `::ffff:` spelling of the same address was refused — the absolute held
+  // for one spelling of it. Twin: sdk-python/obsvr/config.py.
   for (const [name, purl] of [
     ["presidioAnalyzerUrl", config.presidio_analyzer_url],
     ["presidioAnonymizerUrl", config.presidio_anonymizer_url],

@@ -647,6 +647,37 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The cloud-metadata address was refused in one IPv6 spelling out of four.**
+  The SSRF guard folded IPv4-MAPPED IPv6 (`::ffff:a.b.c.d`) to its v4 address
+  and nothing else, so three other forms that route to the same host went
+  unrecognised: IPv4-COMPATIBLE (`::169.254.169.254`), NAT64
+  (`64:ff9b::169.254.169.254`) and 6to4 (`2002:a9fe:a9fe::`). Measured against
+  the real code paths, not the helper: `http://[::169.254.169.254]/` reached
+  `fetch` through the external policy backend and was **accepted and stored
+  verbatim** by `init()` as a Presidio analyzer URL — the endpoint that sees the
+  most sensitive data — while the `::ffff:` spelling of the identical address
+  was refused. Two comments asserting the address is "ALWAYS refused, no
+  opt-out" were therefore true of one spelling of it. All four forms now fold,
+  in both languages, with public addresses in every one of those spellings left
+  alone as the control — "everything IPv6 is blocked" is a different bug and a
+  worse one.
+
+- **Comments that asserted more than the code delivers.** Four absolutes were
+  settled by driving the code rather than reading it, and each is now narrowed
+  to what is true, with the measurement in the comment: the Python sender's
+  emission gate does **not** mirror TypeScript for allowed-but-flagged events
+  (the TS gate keys on `action_taken` alone, so a `detect_only` PII finding is
+  sampled out there and kept here); a per-event accept/reject "never costs the
+  others" only inside an accepted 2xx batch, since a 4xx dead-letters the whole
+  request; "the same bytes will always fail" is not true of auth-class 4xx,
+  which are key state rather than a property of the bytes; and the multi-turn
+  injection half-life bounds accumulation rather than preventing it — at the
+  shipped defaults, benign phrasings that match one weak signal crossed the
+  threshold at turn 3. The detector-guard header's response-phase absolute was
+  also scoped: it holds for a control over the model's answer and not for the
+  MCP tool-result gate, which is pre-delivery and therefore both raises and
+  withholds, deliberately.
+
 - **The two SDKs did not enforce the same policy, in three separate places.**
   All three are cross-language divergence, all three moved the conformance
   corpus, and they land together as one re-pin (35 files `a2e27106…` → 36 files

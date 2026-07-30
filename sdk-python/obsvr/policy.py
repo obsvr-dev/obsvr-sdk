@@ -1093,7 +1093,14 @@ def apply_pre_call_policy(
         # 1.2. Multi-turn injection scoring - catches payloads split across turns
         #      that no single message would trip. Session keyed by metadata
         #      user_id (falls back to a process-wide bucket); score decays with
-        #      a half-life so normal traffic never accumulates.
+        #      a half-life, so traffic matching NO weak signal never accumulates
+        #      at all and traffic spaced well beyond the half-life stays bounded
+        #      near one turn's weight. Traffic that repeatedly matches even ONE
+        #      weak signal at conversational spacing DOES cross the threshold —
+        #      measured at the shipped defaults (threshold 1.0, half-life 600s),
+        #      benign phrasings tripped at turn 3 at 10s spacing and still at
+        #      turn 7 at 300s. The half-life bounds accumulation; it does not
+        #      prevent it, and the header used to say it did.
         mti = getattr(config, "multi_turn_injection", None)
         if mti and mti.get("enabled") and action_taken != "blocked":
             from .injection_session import score_turn

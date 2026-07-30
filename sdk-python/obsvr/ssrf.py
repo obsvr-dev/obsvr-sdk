@@ -34,9 +34,41 @@ def _parse_ip(ip: str) -> Optional[ipaddress._BaseAddress]:
 
 
 def _unwrap(addr: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
-    """Unwrap an IPv4-mapped IPv6 address (::ffff:a.b.c.d) to its IPv4."""
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+    """Unwrap an IPv6 address that CARRIES an IPv4 address to that IPv4.
+
+    This used to cover exactly one of the four ways an IPv6 literal can carry a
+    v4 address -- ``ipaddress.ipv4_mapped``, i.e. ``::ffff:a.b.c.d``. Measured:
+    with only that form folded, ``http://[::169.254.169.254]/`` reached the
+    network through the external-policy backend and was ACCEPTED by ``init()``
+    as a Presidio URL, while the ``::ffff:`` spelling of the SAME address was
+    refused -- so "always blocked, no opt-out" over the cloud-metadata endpoint
+    held for one spelling of it.
+
+    The four forms, all of which route to the same host:
+      - IPv4-MAPPED      ``::ffff:a.b.c.d``           (stdlib ``ipv4_mapped``)
+      - IPv4-COMPATIBLE  ``::a.b.c.d``                deprecated, still routable
+      - NAT64            ``64:ff9b::a.b.c.d``         RFC 6052 / 8215
+      - 6to4             ``2002:HHHH:HHHH::``         RFC 3056 -- the v4 address
+                                                      is the two groups after
+                                                      the prefix
+
+    Twin: ``mappedIpv4`` in sdk-typescript/src/utils/ssrf.ts.
+    """
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return addr
+    if addr.ipv4_mapped is not None:
         return addr.ipv4_mapped
+    packed = addr.packed
+    # IPv4-compatible: 96 zero bits then the v4 address. `::` and `::1` are
+    # loopback/unspecified and are classified on their own merits, not folded.
+    if packed[:12] == b"\x00" * 12 and packed[12:] not in (b"\x00\x00\x00\x00", b"\x00\x00\x00\x01"):
+        return ipaddress.IPv4Address(packed[12:])
+    # NAT64 well-known prefix 64:ff9b::/96.
+    if packed[:12] == b"\x00\x64\xff\x9b" + b"\x00" * 8:
+        return ipaddress.IPv4Address(packed[12:])
+    # 6to4: 2002:V4V4:V4V4::/48.
+    if packed[:2] == b"\x20\x02":
+        return ipaddress.IPv4Address(packed[2:6])
     return addr
 
 

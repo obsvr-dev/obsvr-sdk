@@ -240,9 +240,16 @@ def _classify_status(status: int, path: str) -> str:
     """Failure taxonomy (SPEC posture, OTel consumererror pattern):
     'ok'        2xx, or a final server-side verdict (single-event 403).
     'retryable' 408/429/5xx and transport errors: retrying can help.
-    'permanent' every other 4xx: the same bytes will always fail
-                (bad key, malformed event, body too large). Retrying a
-                permanent failure only burns quota and hides the bug."""
+    'permanent' every other 4xx: retrying the same bytes AT THE SAME MOMENT
+                will not help (malformed event, body too large). Auth-class
+                4xx (401/403) are in this class too, and they are the reason
+                the header no longer says "the same bytes will always fail":
+                that is key state, not a property of the bytes. Measured — a
+                401 dead-letters with zero retries, and the identical event
+                re-posted with the same key header succeeds once the sink
+                answers 200. Retrying an auth failure in a hot loop burns
+                quota and hides the bug, so it is still classed permanent;
+                the event is dead-lettered rather than held."""
     if 200 <= status < 300:
         return "ok"
     if status == 403 and path == INGEST_PATH:
@@ -389,8 +396,13 @@ def _send_event(config: ResolvedConfig, event: Dict[str, Any]) -> str:
 def _send_event_batch(config: ResolvedConfig, events: list) -> tuple:
     """One request for up to SEND_BATCH_SIZE events via /ingest/batch.
 
-    The server accepts/rejects per event, so a blocked or duplicate event never
-    costs the others; 'retryable' means a transport failure worth retrying.
+    The server accepts/rejects per event INSIDE AN ACCEPTED (2xx) batch, so a
+    blocked or duplicate event reported that way costs only itself. A batch
+    answered with a 4xx is a different case and the header used to elide it:
+    the verdict applies to the whole request, so every event in it dead-letters
+    together. Measured: a batch of 25 answered 403 drops all 25, while the SAME
+    403 on the single-event path is a final server verdict and drops nothing.
+    'retryable' means a transport failure worth retrying.
     Returns ``(verdict, rejected_count)`` - the count of events the server
     refused individually, so the caller can account for them as delivered and
     refused rather than sent (twin of the TS sendEventBatch).

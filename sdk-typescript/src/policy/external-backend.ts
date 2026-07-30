@@ -16,7 +16,11 @@
  *      (records what it WOULD have done, never blocks) for safe rollout.
  *   3. SSRF guard on the backend URL (see utils/ssrf.ts): non-http(s) schemes and
  *      private/loopback/link-local/metadata addresses are refused, resolving
- *      before connect. Any guard failure is an error outcome -> fail-closed.
+ *      before connect and over every address the resolver returns. Any guard
+ *      failure is an error outcome -> fail-closed. "Metadata addresses" means
+ *      every IPv6 form that carries the v4 address, not only the mapped one:
+ *      until this was measured, `http://[::169.254.169.254]/` reached `fetch`
+ *      while `::ffff:169.254.169.254` was refused.
  *   4. Provenance: the emitted event records which backend decided (identity +
  *      a hash of the effective backend policy) via the ExternalBackendRecord.
  *
