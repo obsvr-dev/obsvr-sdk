@@ -165,9 +165,12 @@ function createAuditedCreate(
     // Always strip audit fields, even when not sampling
     const { cleaned_args, audit_fields } = filterArgs(args);
 
-    if (!shouldSample(config.sample_rate)) {
-      return originalMethod.apply(target, cleaned_args);
-    }
+    // Sampling gates the EMISSION of clean allowed events, never enforcement.
+    // Returning here skipped applyPreCallPolicy below, so a sub-1.0 sample_rate
+    // silently disabled PII/policy blocking on a fraction of traffic and let the
+    // raw prompt reach the provider. Carry the decision to the emit sites
+    // instead, as vertex.ts and bedrock.ts already do.
+    const shouldAudit = shouldSample(config.sample_rate);
 
     const request = cleaned_args[0] as Record<string, unknown> | undefined;
     const isStreaming = request?.stream === true;
@@ -248,6 +251,10 @@ function createAuditedCreate(
       }
     }
 
+    // Allowed: emit only when sampled in. Anything the policy acted on is
+    // enforcement evidence and is always recorded, as are errors below.
+    const auditThisCall = shouldAudit || policy.decision !== "allow";
+
     const startTime = performance.now();
     let response: unknown;
     try {
@@ -288,12 +295,13 @@ function createAuditedCreate(
         audit_fields,
         startTime,
         policy.compliance,
+        auditThisCall,
       );
     }
 
     const latencyMs = Math.round(performance.now() - startTime);
     const resolvedModel = extractResolvedModel(response as OpenAIChatResponse);
-    emitIntegrationEvent({
+    if (auditThisCall) emitIntegrationEvent({
       config,
       provider: opts.provider,
       model: extractModel(request as OpenAIChatRequest),
@@ -336,6 +344,7 @@ function wrapOpenAICompatStream(
   auditFields: AuditFields,
   startTime: number,
   compliance: ComplianceInfo,
+  auditThisCall: boolean,
 ): AsyncGenerator<unknown, void, unknown> {
   return (async function* () {
     const chunks: unknown[] = [];
@@ -353,7 +362,8 @@ function wrapOpenAICompatStream(
     } finally {
       const latencyMs = Math.round(performance.now() - startTime);
       const acc = accumulateOpenAIStream(chunks);
-      emitIntegrationEvent({
+      // A stream that failed is enforcement evidence and emits regardless.
+      if (auditThisCall || streamError !== null) emitIntegrationEvent({
         config,
         provider: opts.provider,
         model:

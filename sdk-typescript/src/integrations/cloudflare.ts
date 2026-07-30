@@ -255,9 +255,12 @@ function createAuditedRun(
     const callArgs = [...args];
     if (rawInputs !== undefined) callArgs[1] = inputs;
 
-    if (!shouldSample(config.sample_rate)) {
-      return originalRun.apply(target, callArgs);
-    }
+    // Sampling gates the EMISSION of clean allowed events, never enforcement.
+    // Returning here skipped applyPreCallPolicy below, so a sub-1.0 sample_rate
+    // silently disabled PII/policy blocking on a fraction of traffic and let the
+    // raw prompt reach the provider. Carry the decision to the emit sites
+    // instead, as vertex.ts and bedrock.ts already do.
+    const shouldAudit = shouldSample(config.sample_rate);
 
     const isStreaming = inputs?.stream === true;
     if (isStreaming && config.streaming_mode === "skip") {
@@ -350,6 +353,10 @@ function createAuditedRun(
       }
     }
 
+    // Allowed: emit only when sampled in. Anything the policy acted on is
+    // enforcement evidence and is always recorded, as are errors below.
+    const auditThisCall = shouldAudit || policy.decision !== "allow";
+
     const startTime = performance.now();
     let result: unknown;
     try {
@@ -396,7 +403,7 @@ function createAuditedRun(
       ...audit_fields.metadata,
       ...(isStreamResult ? { streaming: true } : {}),
     };
-    emitWorkersEvent(
+    if (auditThisCall) emitWorkersEvent(
       {
         config,
         provider: PROVIDER,

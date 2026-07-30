@@ -83,8 +83,12 @@ def _audit_step(step: Any, _metadata: Optional[Dict[str, Any]] = None) -> None:
         config = try_get_config()
         if config is None:
             return
-        if not _sender.should_sample(config.sample_rate):
-            return
+        # Sampling gates the EMISSION of clean allowed events, never the PII
+        # scan. Returning here skipped apply_observe_policy below, so a sub-1.0
+        # sample_rate silently dropped the scan and the redaction of the stored
+        # copy on a fraction of traffic. Carry the decision to the emit site,
+        # the same posture wrap.py ``_emit_audit`` already takes.
+        should_audit = _sender.should_sample(config.sample_rate)
         text = _step_text(step)
         if not text:
             return
@@ -98,6 +102,16 @@ def _audit_step(step: Any, _metadata: Optional[Dict[str, Any]] = None) -> None:
             else text
         )
 
+        # Allowed: emit only when sampled in. Anything the scan acted on is
+        # enforcement evidence and is always recorded.
+        compliance = observed["compliance"]
+        if not (
+            should_audit
+            or compliance.get("action_taken", "allowed") != "allowed"
+            or compliance.get("action_reason", "none") != "none"
+        ):
+            return
+
         emit_event(
             config,
             provider="unknown",
@@ -106,7 +120,7 @@ def _audit_step(step: Any, _metadata: Optional[Dict[str, Any]] = None) -> None:
             source=SOURCE,
             prompt=stored,
             response="",
-            compliance=observed["compliance"],
+            compliance=compliance,
             metadata=_metadata,
         )
     except Exception:

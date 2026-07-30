@@ -701,8 +701,12 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         config = try_get_config()
         if config is None:
             return
-        if not _sender.should_sample(config.sample_rate):
-            return
+        # Sampling gates the EMISSION of clean allowed events, never the PII
+        # scan. Returning here skipped apply_observe_policy below, so a sub-1.0
+        # sample_rate silently dropped the scan and the redaction of the stored
+        # copy on a fraction of traffic. Carry the decision to the emit site,
+        # the same posture wrap.py ``_emit_audit`` already takes.
+        should_audit = _sender.should_sample(config.sample_rate)
 
         serialized = serialized or {}
         id_parts = _get(serialized, "id") or []
@@ -744,6 +748,13 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             "redact_via": observed.get("stored_redaction_via"),
             "agent_run_id": parent_agent_run_id,
             "metadata": run_meta,
+            # Allowed: emit only when sampled in. Anything the scan acted on is
+            # enforcement evidence and is always recorded, as are errors.
+            "audit_this_call": (
+                should_audit
+                or observed["compliance"].get("action_taken", "allowed") != "allowed"
+                or observed["compliance"].get("action_reason", "none") != "none"
+            ),
         }
 
     # -- LLM ends ----------------------------------------------------------
@@ -752,6 +763,11 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         try:
             state = self._runs.pop(str(run_id), None)
             if state is None:
+                return
+            # Sampled out and the scan found nothing: the run was still
+            # governed, only this clean record is dropped. on_llm_error emits
+            # regardless — an error is enforcement evidence.
+            if not state.get("audit_this_call", True):
                 return
             config = try_get_config()
             if config is None:

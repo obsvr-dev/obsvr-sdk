@@ -98,6 +98,8 @@ interface RunState {
   shouldRedactStored: boolean;
   /** View-only detection: stored copies use a whole-text placeholder. */
   storedRedactionVia?: DeobfuscationView["method"];
+  /** Sampled in, OR the policy acted — governed calls are always recorded. */
+  auditThisCall: boolean;
   agentRunId?: string;
 }
 
@@ -819,7 +821,11 @@ export class ObsvrCallbackHandler {
     try {
       const config = tryGetConfig();
       if (!config) return;
-      if (!shouldSample(config.sample_rate)) return;
+      // Sampling gates the EMISSION of clean allowed events, never the PII
+      // scan. Returning here skipped applyObservePolicy below, so a sub-1.0
+      // sample_rate silently dropped the scan and the redaction of the stored
+      // copy on a fraction of traffic. Carry the decision to the emit site.
+      const shouldAudit = shouldSample(config.sample_rate);
 
       const { shouldRedactStored, compliance, storedRedactionVia } = applyObservePolicy(
         `${prompt} ${userText}`,
@@ -841,6 +847,12 @@ export class ObsvrCallbackHandler {
         compliance,
         shouldRedactStored,
         storedRedactionVia,
+        // Allowed: emit only when sampled in. Anything the scan acted on is
+        // enforcement evidence and is always recorded, as are errors.
+        auditThisCall:
+          shouldAudit ||
+          compliance.action_taken !== "allowed" ||
+          compliance.action_reason !== "none",
         agentRunId,
       });
     } catch {
@@ -854,6 +866,9 @@ export class ObsvrCallbackHandler {
     const state = this.runs.get(runId);
     if (!state) return;
     this.runs.delete(runId);
+    // Sampled out and the scan found nothing: the run was still governed, only
+    // this clean record is dropped. handleLLMError below always emits.
+    if (!state.auditThisCall) return;
 
     try {
       const config = tryGetConfig();

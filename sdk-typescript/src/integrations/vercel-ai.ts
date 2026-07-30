@@ -90,7 +90,8 @@ interface ModelLike {
 /** Per-call state stashed between transformParams and wrapGenerate/wrapStream */
 interface CallState {
   compliance: ComplianceInfo;
-  sampled: boolean;
+  /** Sampled in, OR the policy acted — governed calls are always recorded. */
+  auditThisCall: boolean;
 }
 
 const callState = new WeakMap<object, CallState>();
@@ -290,11 +291,12 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
       if (config.disabled) return params;
       setupExitHandlers(config);
 
+      // Sampling gates the EMISSION of clean allowed events, never enforcement.
+      // Returning here skipped applyPreCallPolicy below, so a sub-1.0
+      // sample_rate silently disabled PII/policy blocking on a fraction of
+      // traffic and let the raw prompt reach the provider. Carry the decision
+      // to the emit sites instead, as vertex.ts and bedrock.ts already do.
       const sampled = shouldSample(config.sample_rate);
-      if (!sampled) {
-        callState.set(params, { compliance: DEFAULT_COMPLIANCE, sampled });
-        return params;
-      }
 
       const { model, provider } = modelInfo(args.model);
       const userText = extractParamsLastUser(params);
@@ -365,7 +367,12 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
         }
       }
 
-      callState.set(params, { compliance: policy.compliance, sampled });
+      // Allowed: emit only when sampled in. A redaction that was applied is
+      // enforcement evidence and is always recorded (a block already threw).
+      callState.set(params, {
+        compliance: policy.compliance,
+        auditThisCall: sampled || policy.decision !== "allow",
+      });
       return params;
     },
 
@@ -379,7 +386,7 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
       if (config.disabled) return doGenerate();
 
       const state = callState.get(params);
-      if (state && !state.sampled) return doGenerate();
+      if (state && !state.auditThisCall) return doGenerate();
       const compliance = state?.compliance ?? DEFAULT_COMPLIANCE;
       const { model, provider } = modelInfo(args.model);
 
@@ -442,7 +449,7 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
       if (config.disabled) return doStream();
 
       const state = callState.get(params);
-      if (state && !state.sampled) return doStream();
+      if (state && !state.auditThisCall) return doStream();
       const compliance = state?.compliance ?? DEFAULT_COMPLIANCE;
       const { model, provider } = modelInfo(args.model);
 

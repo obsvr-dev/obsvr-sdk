@@ -209,8 +209,12 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
             config = try_get_config()
             if config is None:
                 return event_id
-            if not _sender.should_sample(config.sample_rate):
-                return event_id
+            # Sampling gates the EMISSION of clean allowed events, never the PII
+            # scan. Returning here skipped apply_observe_policy below, so a
+            # sub-1.0 sample_rate silently dropped the scan and the redaction of
+            # the stored copy on a fraction of traffic. Carry the decision to the
+            # emit site, the same posture wrap.py ``_emit_audit`` already takes.
+            should_audit = _sender.should_sample(config.sample_rate)
 
             messages = _payload_get(payload, "messages")
             prompt = _payload_get(payload, "prompt")
@@ -238,6 +242,13 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
                 "redact": observed["should_redact_stored"],
                 # View-only hit: stored copies use a whole-text placeholder.
                 "redact_via": observed.get("stored_redaction_via"),
+                # Allowed: emit only when sampled in. Anything the scan acted on
+                # is enforcement evidence and is always recorded.
+                "audit_this_call": (
+                    should_audit
+                    or observed["compliance"].get("action_taken", "allowed") != "allowed"
+                    or observed["compliance"].get("action_reason", "none") != "none"
+                ),
             }
         except Exception:
             pass
@@ -255,6 +266,10 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
                 return
             state = self._runs.pop(event_id or "default", None)
             if state is None:
+                return
+            # Sampled out and the scan found nothing: the run was still
+            # governed, only this clean record is dropped.
+            if not state.get("audit_this_call", True):
                 return
             config = try_get_config()
             if config is None:

@@ -246,8 +246,13 @@ class ObsvrTracingProcessor:
             config = try_get_config()
             if config is None:
                 return
-            if not _sender.should_sample(config.sample_rate):
-                return
+            # Sampling gates the EMISSION of clean span records, never the tool
+            # gate or the step limit. Returning here skipped _check_tool and
+            # check_steps below, so a sub-1.0 sample_rate silently disabled the
+            # agent policy on a fraction of traffic. Carry the decision to the
+            # emit sites; the policy events below are enforcement evidence and
+            # are emitted regardless, as wrap.py ``_emit_audit`` already does.
+            should_audit = _sender.should_sample(config.sample_rate)
 
             span_data = getattr(span, "span_data", span)
             stype = _span_type(span)
@@ -362,20 +367,21 @@ class ObsvrTracingProcessor:
                     state["step_count"] = step_index + 1
 
                 raw_input = getattr(span_data, "input", None) or getattr(span, "input", None)
-                emit_event(
-                    config,
-                    provider="unknown",
-                    model="unknown",
-                    operation="openai_agents.tool.call",
-                    source=SOURCE,
-                    prompt=_as_text(raw_input),
-                    response="",
-                    metadata={
-                        "agent_run_id": trace_id,
-                        "tool_name": tool_name,
-                        "step_index": step_index,
-                    },
-                )
+                if should_audit:
+                    emit_event(
+                        config,
+                        provider="unknown",
+                        model="unknown",
+                        operation="openai_agents.tool.call",
+                        source=SOURCE,
+                        prompt=_as_text(raw_input),
+                        response="",
+                        metadata={
+                            "agent_run_id": trace_id,
+                            "tool_name": tool_name,
+                            "step_index": step_index,
+                        },
+                    )
 
             elif stype == "generation":
                 # LLM generation span — the Chat Completions path. This span
@@ -389,19 +395,20 @@ class ObsvrTracingProcessor:
                 usage = read_token_usage(
                     getattr(span_data, "usage", None) or getattr(span, "usage", None)
                 )
-                emit_event(
-                    config,
-                    provider="openai",
-                    model=model,
-                    operation="llm",
-                    source=SOURCE,
-                    prompt=_as_text(raw_input),
-                    response=_as_text(raw_output),
-                    input_tokens=usage["input_tokens"],
-                    output_tokens=usage["output_tokens"],
-                    total_tokens=usage["total_tokens"],
-                    metadata={"agent_run_id": trace_id},
-                )
+                if should_audit:
+                    emit_event(
+                        config,
+                        provider="openai",
+                        model=model,
+                        operation="llm",
+                        source=SOURCE,
+                        prompt=_as_text(raw_input),
+                        response=_as_text(raw_output),
+                        input_tokens=usage["input_tokens"],
+                        output_tokens=usage["output_tokens"],
+                        total_tokens=usage["total_tokens"],
+                        metadata={"agent_run_id": trace_id},
+                    )
 
             elif stype == "response":
                 # LLM call on the RESPONSES path — and this is the default.
@@ -418,31 +425,32 @@ class ObsvrTracingProcessor:
                 usage = read_token_usage(
                     _field(resp, "usage") or _field(span_data, "usage")
                 )
-                emit_event(
-                    config,
-                    provider="openai",
-                    # This is the RESOLVED served snapshot, not the configured
-                    # alias. The alias is unrecoverable here: ResponseSpanData
-                    # carries only (response, input, usage), the agent span
-                    # carries no model, and trace metadata is caller-supplied —
-                    # so no span in this path ever holds it. Recorded in `model`
-                    # because it is the only model information that exists, with
-                    # the substitution stated in metadata rather than left for a
-                    # reader to infer from model == model_resolved.
-                    model=model,
-                    operation="llm",
-                    source=SOURCE,
-                    prompt=_responses_prompt(_field(span_data, "input")),
-                    response=_responses_output_text(_field(resp, "output")),
-                    input_tokens=usage["input_tokens"],
-                    output_tokens=usage["output_tokens"],
-                    total_tokens=usage["total_tokens"],
-                    metadata={
-                        "agent_run_id": trace_id,
-                        "response_id": _field(resp, "id"),
-                        "model_alias_unavailable": True,
-                    },
-                )
+                if should_audit:
+                    emit_event(
+                        config,
+                        provider="openai",
+                        # This is the RESOLVED served snapshot, not the configured
+                        # alias. The alias is unrecoverable here: ResponseSpanData
+                        # carries only (response, input, usage), the agent span
+                        # carries no model, and trace metadata is caller-supplied —
+                        # so no span in this path ever holds it. Recorded in `model`
+                        # because it is the only model information that exists, with
+                        # the substitution stated in metadata rather than left for a
+                        # reader to infer from model == model_resolved.
+                        model=model,
+                        operation="llm",
+                        source=SOURCE,
+                        prompt=_responses_prompt(_field(span_data, "input")),
+                        response=_responses_output_text(_field(resp, "output")),
+                        input_tokens=usage["input_tokens"],
+                        output_tokens=usage["output_tokens"],
+                        total_tokens=usage["total_tokens"],
+                        metadata={
+                            "agent_run_id": trace_id,
+                            "response_id": _field(resp, "id"),
+                            "model_alias_unavailable": True,
+                        },
+                    )
 
         except Exception:
             # Nothing raised from here reaches the caller: the provider's

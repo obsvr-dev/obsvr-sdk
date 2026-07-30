@@ -58,6 +58,8 @@ interface LlmRunState {
   /** View-only detection: stored copies use a whole-text placeholder. */
   storedRedactionVia?: DeobfuscationView["method"];
   streamText: string;
+  /** Sampled in, OR the policy acted — governed calls are always recorded. */
+  auditThisCall: boolean;
 }
 
 function messageText(msg: unknown): string {
@@ -200,7 +202,11 @@ export function obsvrLlamaIndexHandler<T extends CallbackManagerLike>(
     try {
       const config = tryGetConfig();
       if (!config) return;
-      if (!shouldSample(config.sample_rate)) return;
+      // Sampling gates the EMISSION of clean allowed events, never the PII
+      // scan. Returning here skipped applyObservePolicy below, so a sub-1.0
+      // sample_rate silently dropped the scan and the redaction of the stored
+      // copy on a fraction of traffic. Carry the decision to the emit site.
+      const shouldAudit = shouldSample(config.sample_rate);
 
       const payload = payloadOf(event);
       const { prompt, userText } = extractMessagesPrompt(payload);
@@ -218,6 +224,12 @@ export function obsvrLlamaIndexHandler<T extends CallbackManagerLike>(
         shouldRedactStored,
         storedRedactionVia,
         streamText: "",
+        // Allowed: emit only when sampled in. Anything the scan acted on is
+        // enforcement evidence and is always recorded.
+        auditThisCall:
+          shouldAudit ||
+          compliance.action_taken !== "allowed" ||
+          compliance.action_reason !== "none",
       });
     } catch {
       // Never throw inside a framework callback
@@ -242,6 +254,9 @@ export function obsvrLlamaIndexHandler<T extends CallbackManagerLike>(
       const state = runs.get(id);
       if (!state) return;
       runs.delete(id);
+      // Sampled out and the scan found nothing: the run was still governed,
+      // only this clean record is dropped.
+      if (!state.auditThisCall) return;
 
       const config = tryGetConfig();
       if (!config) return;
