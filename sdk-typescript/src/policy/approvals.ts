@@ -191,12 +191,35 @@ export function hasApproval(claim: ApprovalClaim): boolean {
   return matchApproval(claim) !== undefined;
 }
 
+/**
+ * Is this grant still live at `now`?
+ *
+ * `Date.parse` returns NaN for anything it cannot read, and EVERY comparison
+ * with NaN is false — so `Date.parse(expires_at) <= now` fell straight through
+ * for `"never"`, `""`, `"forever"` or any other unparseable string, and the
+ * grant matched forever. Measured: four such values matched at the current time
+ * AND at the year 9999, while `getApprovalGrants()` used the mirrored
+ * comparison `> now`, which is ALSO false for NaN — so the permanent grant was
+ * invisible to the inspection API at the same time as being live in the gate.
+ * An operator listing grants saw nothing.
+ *
+ * The header of this module says approvals always expire and there are no
+ * permanent grants. That was true of the intent and false of the code, so the
+ * code moved. Unparseable now means expired, which is the direction a
+ * human-in-the-loop authorization has to fail in, and one predicate serves both
+ * the gate and the listing so they cannot disagree again.
+ */
+function isLive(g: ApprovalGrant, now: number): boolean {
+  const expiresAt = Date.parse(g.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
 /** The grant that satisfies a claim, or undefined. */
 export function matchApproval(claim: ApprovalClaim): ApprovalGrant | undefined {
   const now = claim.now ?? Date.now();
   return grants.find((g) => {
     if (g.rule_id !== claim.ruleId) return false;
-    if (Date.parse(g.expires_at) <= now) return false;
+    if (!isLive(g, now)) return false;
     if (g.user_id && g.user_id !== claim.userId) return false;
     if (g.rule_hash && claim.ruleHash && g.rule_hash !== claim.ruleHash) return false;
     if (g.action_hash && claim.actionHash && g.action_hash !== claim.actionHash) return false;
@@ -222,10 +245,11 @@ export function revalidateApproval(claim: ApprovalClaim): boolean {
   return hasApproval(claim);
 }
 
-/** Current unexpired grants (for tests/inspection). */
+/** Current unexpired grants (for tests/inspection). Same predicate the gate
+ * uses, so what an operator can list is what can authorize a call. */
 export function getApprovalGrants(): ApprovalGrant[] {
   const now = Date.now();
-  return grants.filter((g) => Date.parse(g.expires_at) > now);
+  return grants.filter((g) => isLive(g, now));
 }
 
 /**

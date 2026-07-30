@@ -358,6 +358,26 @@ cut, when it is renamed to that version.
   against a real provider, both directions, with `detect_only` and no-policy as
   the controls that make a clean record attributable to the policy rather than
   to an SDK that always redacts.
+- **An approval whose expiry cannot be read as a date no longer authorizes
+  anything, and no longer hides.** `Date.parse` returns NaN for a string it
+  cannot read, and every comparison with NaN is false — so the gate's
+  `Date.parse(expires_at) <= now` fell straight through and the grant matched
+  forever, while the inspection API's mirrored `> now` was **also** false, so
+  the same permanent grant was invisible in the listing. Live in the gate,
+  absent from the audit: an operator reviewing grants saw nothing.
+
+  Measured: `"never"`, `""`, `"forever"` and `"not-a-date"` each satisfied a
+  claim at the current time and still satisfied it at the year 9999, and none of
+  the four was listed. The `/policies` poll accepted them because its filter
+  only required `expires_at` to be a **string**, so any response could mint a
+  permanent grant on a human-in-the-loop rule — and with no `policyPublicKey`
+  pinned, nothing authenticates that response. Unparseable now means expired, at
+  the gate and at the door, and one predicate serves both the gate and the
+  listing so they cannot disagree again.
+
+  The module has always documented that approvals **always expire** and that
+  there are no permanent grants. That was true of the intent and false of the
+  code, so the code moved rather than the sentence.
 
 ### Added
 

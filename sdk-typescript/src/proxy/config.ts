@@ -964,7 +964,12 @@ async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
           (a): a is ApprovalGrant =>
             !!a && typeof a === "object" &&
             typeof (a as ApprovalGrant).rule_id === "string" &&
-            typeof (a as ApprovalGrant).expires_at === "string",
+            typeof (a as ApprovalGrant).expires_at === "string" &&
+            // A string is not a date. Accepting one that `Date.parse` cannot
+            // read let any /policies response mint a grant that never expires —
+            // and nothing authenticates that response at all unless a policy
+            // key is pinned. Refused at the door as well as at the gate.
+            Number.isFinite(Date.parse((a as ApprovalGrant).expires_at)),
         ),
       );
     }
