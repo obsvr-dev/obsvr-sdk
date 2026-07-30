@@ -812,9 +812,24 @@ let exitFlushStarted = false;
  * - beforeExit: the loop is about to go idle; an awaited flush (ref'd timers)
  *   keeps it alive until the queue drains or the budget elapses. Guarded so
  *   the flush itself does not retrigger beforeExit forever.
- * - SIGTERM/SIGINT: flush within a bounded budget, then exit with the
- *   conventional signal exit code. Without the explicit exit, registering a
- *   handler would swallow the signal entirely.
+ * - SIGTERM/SIGINT: flush within a bounded budget, and exit ONLY when nothing
+ *   else is listening for that signal. See the note on ownership below.
+ *
+ * WHO OWNS TERMINATION. Attaching a signal listener replaces the runtime's
+ * default disposition for that signal, so a library that attaches one and does
+ * not exit swallows the signal outright — which is why the exit is here at all.
+ * But an unconditional exit is worse: it ends the process while the host's own
+ * shutdown is still draining connections or committing a transaction, and
+ * wrapping a client is not consent to that. Measured before this was changed: a
+ * host committing over 600ms was terminated 4ms after the signal, with nothing
+ * queued to flush; with events pending it was terminated at the 2s budget, so a
+ * drain longer than that died too.
+ *
+ * So ownership is decided WHEN THE SIGNAL FIRES rather than when this handler
+ * registered — a host may install its shutdown after wrapping a client — and it
+ * goes to the host whenever the host has a listener of its own. Sole listener,
+ * and the exit is ours to restore. Anything else, and the queue tail is the
+ * cheaper thing to lose.
  */
 export function setupExitHandlers(config: ResolvedConfig): void {
   if (handlersRegistered) return;
@@ -834,9 +849,25 @@ export function setupExitHandlers(config: ResolvedConfig): void {
       if (exitFlushStarted) return;
       exitFlushStarted = true;
       const code = signal === "SIGTERM" ? 143 : 130;
-      flushQueue(config, 2000)
-        .catch(() => { /* swallow errors during shutdown */ })
-        .finally(() => process.exit(code));
+      // No listenerCount to consult means no way to tell whether the host has
+      // its own shutdown, and a swallowed signal hangs the process forever
+      // where a truncated one merely ends it early. Keep the exit.
+      const soleListener =
+        typeof process.listenerCount !== "function" ||
+        process.listenerCount(signal) <= 1;
+      const flushed = flushQueue(config, 2000).catch(() => {
+        /* swallow errors during shutdown */
+      });
+      if (soleListener) {
+        void flushed.finally(() => process.exit(code));
+      } else {
+        // The host is shutting itself down. Flush beside it and let it choose
+        // when the process ends; reset the guard so a later beforeExit can
+        // still drain anything enqueued while it drained.
+        void flushed.finally(() => {
+          exitFlushStarted = false;
+        });
+      }
     };
     process.on("SIGTERM", () => signalHandler("SIGTERM"));
     process.on("SIGINT", () => signalHandler("SIGINT"));

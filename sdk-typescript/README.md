@@ -339,6 +339,14 @@ Before rule, PII, and injection matching, text is normalized (Unicode **NFKC** +
 
 Each cold start begins a fresh integrity session (`sdk_session_id`, `seq_no` reset). Multiple sessions starting at `seq_no=1` are expected and verify correctly. Call `await obsvr.flush()` before the runtime freezes.
 
+### Process shutdown
+
+Wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. They call `process.exit()` **only when nothing else is listening for that signal**: attaching a listener replaces the runtime's default disposition, so a library that attaches one and never exits leaves a process that ignores `SIGTERM` forever.
+
+If your application has its own graceful shutdown, it owns termination. obsvr flushes beside it and will not end the process while your drain, transaction commit or pool close is still in flight — the trade being that a host exiting before the flush completes drops whatever is still queued, which is the cheaper of the two losses. Ownership is decided **when the signal arrives**, not when the client was wrapped, so installing your handler after `wrap()` behaves the same way.
+
+The Python SDK installs no signal handlers; it flushes from `atexit`, which a default-disposition `SIGTERM` does not reach. Call `flush()` from your own shutdown there if the queue tail matters.
+
 ### SDK bypass
 
 Not calling `obsvr.init()` means no governance coverage; there is no post-hoc runtime check. Assert `obsvr.isInitialized()` at startup in production. Setting `disabled: true` in a production environment logs a prominent warning and emits a `governance_disabled` audit event so the bypass is on the record.

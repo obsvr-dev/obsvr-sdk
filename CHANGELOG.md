@@ -283,6 +283,31 @@ cut, when it is renamed to that version.
   case records one event whose verdict matches. The ASGI middleware was measured
   the same way, under a real server over a real socket. **Both claims survived**
   — the entries here are the evidence arriving, not a correction.
+- **Wrapping a client no longer takes ownership of process termination.**
+  `wrap()` installs `SIGTERM`/`SIGINT` handlers to flush the audit queue, and
+  they called `process.exit()` unconditionally once the flush settled. Measured
+  against a real host under a real signal: a service committing a transaction
+  over 600ms was terminated **4ms** after the signal with nothing queued to
+  flush, and with events pending against an unreachable ingest it was terminated
+  at the 2s budget — so any drain longer than that died too. Draining
+  connections, committing transactions and closing pools are exactly the work a
+  `SIGTERM` handler exists to do, and wrapping a client is not consent to lose
+  it.
+
+  The exit is now taken **only when nothing else is listening for that signal**.
+  That condition is the point: attaching a listener replaces the runtime's
+  default disposition, so simply not exiting would swallow the signal and leave a
+  process that ignores `SIGTERM` forever — a worse failure than exiting early.
+  Ownership is resolved when the signal fires rather than when the handler
+  registered, so a host that installs its shutdown after `wrap()` still keeps it.
+  The trade is stated in both READMEs: a host that exits before the flush
+  finishes drops the queue tail, which is the cheaper of the two losses.
+
+  **Not marked BREAKING**, but read it if you relied on the old behaviour: a host
+  with no shutdown of its own is unaffected and still exits 143 / 130, and a host
+  with one now completes it. Nothing in this repository documented the old
+  behaviour — no document mentioned signal handling at all, which is part of why
+  it shipped.
 
 ### Added
 
