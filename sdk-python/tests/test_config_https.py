@@ -24,7 +24,26 @@ def test_http_remote_url_raises():
 
 
 def test_http_remote_url_with_port_and_path_raises():
+    # A public host, so this isolates the TLS posture. The example here used to
+    # be 10.0.0.5, which the SSRF guard now refuses one step earlier for a
+    # different and stronger reason - pinned separately below.
     with pytest.raises(ValueError, match="must use https"):
+        _init("http://audit.example.com:3000/ingest")
+
+
+def test_private_ip_ingest_url_is_refused_by_the_ssrf_guard():
+    # Stronger than the https requirement, and it fires first: a literal
+    # private-range ingest URL is refused on the address, not on the scheme.
+    with pytest.raises(ValueError, match="failed the SSRF guard"):
+        _init("http://10.0.0.5:3000/ingest")
+
+
+def test_allow_http_does_not_rescue_a_private_ip(monkeypatch):
+    # The env opt-out relaxes the TLS posture only. It must not become a way to
+    # point ingest at a private address, which is what would happen if the guard
+    # ran after the opt-out instead of before it.
+    monkeypatch.setenv("OBSVR_ALLOW_HTTP", "1")
+    with pytest.raises(ValueError, match="failed the SSRF guard"):
         _init("http://10.0.0.5:3000/ingest")
 
 

@@ -35,19 +35,65 @@ def _sdk_version() -> str:
 _LOCAL_HOSTNAMES = {"localhost", "127.0.0.1", "::1"}
 
 
-def _validate_ingest_url_scheme(url: str) -> None:
-    """HTTPS enforced for non-localhost: a plaintext ingest URL would leak
-    prompts, responses, and the API key in transit. Rejected AT INIT with a
-    typed error (same posture as the E14 validation below). Explicit opt-out
-    for TLS-terminating proxies / private networks: OBSVR_ALLOW_HTTP=1."""
+def _validate_ingest_url(url: str) -> None:
+    """Validate ``ingest_url`` at init.
+
+    This endpoint receives every prompt, every response and the ``X-API-Key``
+    header, so it is the largest egress surface the SDK has -- larger than the
+    external policy backend or the Presidio endpoints, both of which already run
+    the SSRF guard while this one ran none of it.
+
+    Two checks, in order:
+
+      1. The STATIC SSRF guard, at the same posture as the Presidio endpoints.
+         The scheme must be http(s), so ``file:``, ``gopher:``, ``ftp:`` and
+         everything else are refused rather than accepted -- this function
+         previously returned early for ANY non-``http`` scheme, so
+         ``file:///etc/passwd`` was waved through. A literal-IP host must not be
+         a cloud-metadata / link-local address (ALWAYS refused, no opt-out, in
+         all four IPv6 spellings) and must not be a private/reserved range
+         unless the host is loopback.
+      2. TLS posture: a plaintext ``http`` ingest URL leaks prompts, responses
+         and the API key in transit, so it is refused off-loopback. Explicit
+         opt-out for TLS-terminating proxies / private networks:
+         ``OBSVR_ALLOW_HTTP=1``.
+
+    Loopback keeps working so local development and a local collector are
+    unaffected; the metadata address is refused there too, because it is refused
+    everywhere.
+
+    One limit, stated rather than implied: this is the STATIC guard, so a
+    HOSTNAME that resolves to a private or metadata address is not refused.
+    ``init()`` is synchronous and the resolving guard needs DNS, which is the
+    same limit the Presidio endpoints carry.
+
+    Twin: ``validateIngestUrl`` in sdk-typescript/src/proxy/config.ts, which has
+    no ``OBSVR_ALLOW_HTTP`` opt-out because that SDK reads no environment
+    variable at all. ``SECURITY.md`` scopes the opt-out to Python for that
+    reason.
+    """
     from urllib.parse import urlsplit
+
+    from .ssrf import SsrfError, assert_backend_url_static
+
+    if not url:
+        return  # unconfigured: resolve_config() has already warned, nothing is delivered
+
+    # Parse for the host first so the loopback exemption and the guard agree on
+    # what the host is. An unparseable URL leaves it empty and the guard reports
+    # it, rather than this raising a second, worse-worded error for the same URL.
     try:
-        parts = urlsplit(url)
+        host = (urlsplit(url).hostname or "").lower()
     except ValueError:
-        return  # unparseable URLs fail loudly at first request instead
-    if parts.scheme != "http":
-        return
-    if (parts.hostname or "").lower() in _LOCAL_HOSTNAMES:
+        host = ""
+    is_local = host in _LOCAL_HOSTNAMES
+
+    try:
+        parts = assert_backend_url_static(url, is_local)
+    except SsrfError as e:
+        raise ValueError(f"obsvr.init(): ingest_url failed the SSRF guard: {e}") from e
+
+    if parts.scheme != "http" or is_local:
         return
     if os.environ.get("OBSVR_ALLOW_HTTP", "").strip().lower() in ("1", "true"):
         return
@@ -318,7 +364,7 @@ def init(
             "WARNING: ingest_url is not configured. Audit events will not be "
             "delivered until ingest_url is set in obsvr.init()."
         )
-    _validate_ingest_url_scheme(url)
+    _validate_ingest_url(url)
 
     # Legacy {"action": "block"} shape -> {"default": "block"}
     policy = pii_policy

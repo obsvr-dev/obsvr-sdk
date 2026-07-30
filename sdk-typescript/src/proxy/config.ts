@@ -104,6 +104,78 @@ function isObsvrConfig(
 }
 
 /**
+ * Loopback hosts exempt from the HTTPS requirement and from the private-range
+ * half of the SSRF guard, for local development. Compared against the PARSED
+ * hostname, never against a substring of the URL. Twin: `_LOCAL_HOSTNAMES` in
+ * sdk-python/obsvr/config.py.
+ */
+const LOCAL_INGEST_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+/**
+ * Validate `ingest_url` and return it with any trailing slash removed.
+ *
+ * This endpoint receives every prompt, every response and the `X-API-Key`
+ * header, so it is the largest egress surface the SDK has — larger than the
+ * external policy backend or the Presidio endpoints, both of which already run
+ * this guard while this one ran none of it.
+ *
+ * Two checks, in order:
+ *
+ *  1. **The static SSRF guard**, at the same posture as the Presidio endpoints.
+ *     The scheme must be http(s), so `file:`, `gopher:`, `ftp:` and everything
+ *     else are refused rather than accepted — previously any non-`http` scheme
+ *     was waved through, `file:///etc/passwd` included. A literal-IP host must
+ *     not be a cloud-metadata / link-local address (ALWAYS refused, no opt-out,
+ *     in all four IPv6 spellings) and must not be a private/reserved range
+ *     unless the host is loopback.
+ *  2. **TLS posture**: plaintext `http` off-loopback is refused.
+ *
+ * Loopback keeps working so local development and a local collector are
+ * unaffected; the metadata address is refused there too, because it is refused
+ * everywhere.
+ *
+ * Two limits, stated rather than implied. This is the STATIC guard, so a
+ * HOSTNAME that resolves to a private or metadata address is not refused —
+ * `init()` is synchronous and the resolving guard needs DNS, which is the same
+ * limit the Presidio endpoints carry. And unlike the Python twin there is no
+ * `OBSVR_ALLOW_HTTP` escape hatch here: this SDK reads no environment variable
+ * anywhere in `src/`, and relaxing a transport check should not be the first
+ * one. `SECURITY.md` scopes that opt-out to Python for this reason.
+ *
+ * Twin: `_validate_ingest_url` in sdk-python/obsvr/config.py.
+ */
+function validateIngestUrl(raw: string): string {
+  const url = raw.replace(/\/$/, "");
+  // Parse for the host first so the loopback exemption and the guard agree on
+  // what the host is. An unparseable URL leaves it empty and the guard reports
+  // it, rather than this throwing a second, worse-worded error for the same URL.
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  } catch {
+    /* reported by assertBackendUrlStatic below */
+  }
+  const isLocal = LOCAL_INGEST_HOSTS.has(host);
+
+  let parsed: URL;
+  try {
+    parsed = assertBackendUrlStatic(url, { allowPrivateNetwork: isLocal });
+  } catch (e) {
+    throw new Error(
+      `obsvr.init(): ingest_url failed the SSRF guard: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  if (parsed.protocol === "http:" && !isLocal) {
+    throw new Error(
+      `obsvr.init(): ingest_url "${url}" uses plaintext HTTP for a non-localhost URL. ` +
+        "Use HTTPS to protect audit events in transit.",
+    );
+  }
+  return url;
+}
+
+/**
  * Validate and resolve configuration with defaults
  */
 function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
@@ -225,19 +297,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
         );
         return "";
       }
-      const url = config.ingest_url.replace(/\/$/, "");
-      // Enforce HTTPS for any non-localhost URL to protect audit data in transit
-      if (
-        url.startsWith("http://") &&
-        !url.includes("localhost") &&
-        !url.includes("127.0.0.1")
-      ) {
-        throw new Error(
-          `obsvr.init(): ingest_url "${url}" uses plaintext HTTP for a non-localhost URL. ` +
-            "Use HTTPS to protect audit events in transit.",
-        );
-      }
-      return url;
+      return validateIngestUrl(config.ingest_url);
     })(),
     sample_rate: sampleRate,
     max_payload_chars: config.max_payload_chars ?? 100000,

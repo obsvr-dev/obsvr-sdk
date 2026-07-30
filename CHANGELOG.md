@@ -647,6 +647,40 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The ingest URL ran no SSRF guard and no scheme allowlist, in either SDK.**
+  It is the URL the SDK POSTs to most — every prompt, every response, and the
+  `X-API-Key` header — and it was validated for exactly one thing: whether a
+  plaintext `http` URL pointed off-loopback. The Python validator's first
+  statement after parsing was `if parts.scheme != "http": return`, so
+  `file:///etc/passwd` was accepted, and the TypeScript half checked a
+  `http://` prefix and nothing else. Neither ran an address check of any kind,
+  so `https://[::169.254.169.254]/` — the cloud-metadata endpoint — was a valid
+  audit destination in both. The plaintext spellings of that address *were*
+  refused, but by the HTTPS requirement rather than by any address check;
+  swapping the scheme to `https` let the same address through.
+
+  Both SDKs now run the same static SSRF guard the external policy backend and
+  the presidio endpoints already ran: the scheme must be `http(s)`, the
+  cloud-metadata / link-local range is always refused in all four IPv6
+  spellings and regardless of the `OBSVR_ALLOW_HTTP` opt-out (which relaxes the
+  TLS posture only), and private/reserved literals are refused unless the host
+  is loopback — so a local collector keeps working and `https://10.0.0.5:8443`
+  does not. The guard is static, matching presidio: a hostname that *resolves*
+  to a private or metadata address is not refused, because `init()` is
+  synchronous in both languages and the resolving guard needs DNS. That limit
+  is now stated in `SECURITY.md` rather than implied.
+
+- **TypeScript accepted `http://localhost.evil.example.com` as a plaintext
+  ingest URL.** The loopback exemption was `!url.includes("localhost") &&
+  !url.includes("127.0.0.1")` over the whole URL string, so any host merely
+  *containing* either token — or any URL with one in its path or query — was
+  treated as local and allowed to ship prompts, responses and the API key in
+  the clear. It now compares the parsed hostname, which is what the Python twin
+  has always done. `SECURITY.md`'s claim that HTTPS is enforced for any
+  non-localhost ingest URL was false in TypeScript until this change, and its
+  claim that "every URL the SDK is told to POST to" is SSRF-guarded named two
+  of the three; both sentences moved with the code.
+
 - **The cloud-metadata address was refused in one IPv6 spelling out of four.**
   The SSRF guard folded IPv4-MAPPED IPv6 (`::ffff:a.b.c.d`) to its v4 address
   and nothing else, so three other forms that route to the same host went
