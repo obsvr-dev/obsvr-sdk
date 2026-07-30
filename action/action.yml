@@ -33,6 +33,18 @@ inputs:
     description: 'Node.js version used to run obsvr-verify.'
     required: false
     default: '22'
+  allow-gaps:
+    description: >-
+      Accept a bundle that verifies but is INCOMPLETE. The SDK signs a gap
+      marker at the position of any dropped events, so a lossy run declares its
+      own loss instead of reading clean; obsvr-verify reports that as exit 3,
+      which fails the job by default. Set to 'true' to treat it as a pass
+      (obsvr-verify --allow-gaps). Default 'false', because a bundle that is
+      missing events should stop a check that exists to establish what happened
+      — turn it on deliberately, for a pipeline where loss is expected and the
+      declaration itself is the record you wanted.
+    required: false
+    default: 'false'
 
 runs:
   using: 'composite'
@@ -58,6 +70,7 @@ runs:
         OBSVR_BUNDLE: ${{ inputs.bundle }}
         OBSVR_API_KEY: ${{ inputs.api-key }}
         OBSVR_SDK_VERSION: ${{ inputs.version }}
+        OBSVR_ALLOW_GAPS: ${{ inputs.allow-gaps }}
       run: |
         set -euo pipefail
 
@@ -66,8 +79,19 @@ runs:
           exit 2
         fi
 
-        # obsvr-verify exit codes: 0 = verified, 1 = chain broken, 2 = usage error.
+        # obsvr-verify exit codes: 0 = verified, 1 = chain broken, 2 = usage
+        # error, 3 = VALID BUT INCOMPLETE (a signed gap marker declares dropped
+        # events). 3 fails the job like any other non-zero, and used to do so
+        # with nothing here or in the README naming it — so the gap-marker
+        # feature, whose whole point is that a lossy run says so, surfaced to a
+        # consumer as an unexplained red check with no documented remedy. The
+        # remedy existed in the CLI as --allow-gaps and was not reachable from
+        # this action.
         args=("${OBSVR_BUNDLE}")
+        if [ "${OBSVR_ALLOW_GAPS}" = "true" ]; then
+          echo "::notice::allow-gaps is on - a bundle that verifies but declares dropped events will PASS (exit 3 treated as 0)."
+          args+=("--allow-gaps")
+        fi
         if [ -n "${OBSVR_API_KEY}" ]; then
           echo "Running FULL HMAC re-verification (api-key provided)."
           args+=("--api-key" "${OBSVR_API_KEY}")

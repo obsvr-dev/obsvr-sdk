@@ -962,6 +962,34 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The evidence-verification Action failed a consumer's CI on exit `3` with no
+  documented remedy — the gap-marker feature defeating its own tooling.** The
+  SDK signs a gap marker at the position of any dropped events so a lossy run
+  declares its own loss, and `obsvr-verify` reports that as *valid but
+  incomplete*: exit `3`, distinct from both a pass and a broken chain. The
+  Action's README documented `0`, `1` and `2` only, and its script carried a
+  comment listing the same three, so a bundle whose chain is perfectly intact
+  could turn a consumer's check red with nothing anywhere explaining why. The
+  remedy existed as the CLI's `--allow-gaps` and was not reachable from the
+  Action at all. Exit `3` is now documented, and an `allow-gaps` input exposes
+  the flag. It defaults to `false`: a bundle missing events should stop a check
+  that exists to establish what happened.
+- **The Node version badge pointed at a path that no longer exists.** It read
+  `main/sdk/package.json`; that directory was renamed to `sdk-typescript/`, so
+  the badge had been resolving against a 404.
+- **`sender.py`'s module docstring advertised a queue ten times smaller than the
+  one it builds** — `queue.Queue(100)` against `MAX_QUEUE_SIZE = 1000`. Already
+  disclosed in `BENCHMARKS.md` and still wrong at the source a reader of that
+  module sees first.
+- **The industry modules read as compliance packages and are not.** `healthcare`,
+  `fintech` and `legal` are exported from the package root and their docstrings
+  name HIPAA, so a reader arriving through the public exports can reasonably
+  expect a ready ruleset. They are evaluators and primitives — a
+  namespace-isolation predicate, a threshold comparator, a cross-tenant check —
+  which decide nothing until composed into `policyRules`. The barrel now says
+  so, and says that they are TypeScript-only so nothing built from them is
+  portable to the other SDK. That export surface is the only place they are
+  advertised: no public document mentions them at all.
 - **The blocking benchmark-integrity CI job was red, on a memory check that was
   measuring warm-up.** `bench/run-all.sh --quick` exited 1 and aborted at step 2
   of 4. Nothing was corrupt: the chain verified, signatures matched, the

@@ -1,6 +1,6 @@
 """Fire-and-forget audit sender.
 
-Bounded queue.Queue(100) + daemon worker thread, urllib.request POST to
+Bounded queue.Queue(MAX_QUEUE_SIZE, currently 1000) + daemon worker thread, urllib.request POST to
 {ingest_url}/ingest with X-API-Key, 429 backoff (1s -> 60s, x2), and an
 atexit flush. The delivery path never blocks or breaks the caller's LLM path:
 the enqueue is non-blocking and the POST happens on the worker thread.

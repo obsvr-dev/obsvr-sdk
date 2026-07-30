@@ -13,8 +13,25 @@ Two verification tiers, chosen by whether you supply an `api-key`:
 - **Full (with `api-key`)** — every HMAC signature is recomputed from content, so
   any content tamper breaks the check. Pass the key via a secret.
 
-Exit status maps straight to the check: `0` verified, `1` chain broken (job
-fails), `2` usage error (job fails).
+Exit status maps straight to the check:
+
+| Exit | Meaning | Job |
+| --- | --- | --- |
+| `0` | verified | passes |
+| `1` | chain broken | fails |
+| `2` | usage error | fails |
+| `3` | **valid but incomplete** — the chain verifies and a signed gap marker declares events were dropped | fails, unless `allow-gaps: 'true'` |
+
+Exit `3` is the one worth reading before you hit it. The SDK signs a gap marker
+at the position of any loss, so a lossy run declares its own loss rather than
+reading clean — and `obsvr-verify` reports *valid* and *incomplete* as different
+things instead of collapsing them. That distinction is the point of the feature,
+but it means a bundle whose chain is perfectly intact can still fail this check.
+
+Set `allow-gaps: 'true'` to accept it. The default is `false` on purpose: a
+bundle missing events should stop a check that exists to establish what
+happened. Turn it on deliberately, for a pipeline where loss is expected and the
+declaration is itself the record you wanted.
 
 ## Usage
 
