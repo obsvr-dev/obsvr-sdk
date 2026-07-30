@@ -441,6 +441,30 @@ cut, when it is renamed to that version.
   of which four fail when the change is reverted and the two that survive are
   the controls — the sync path, which never broke, and pre-call enforcement,
   which must not change.
+- **Resolved-model provenance is now catalogued as `KD-10`, and a second claimed
+  divergence was measured and found already closed.** `docs/REMEDIATION.md`
+  carried two adjacent capability gaps as prose rows in its still-open table.
+  Both were driven against one server rather than transcribed, and they split.
+
+  `model_resolved` / `provenance_source` **reproduces**: with a provider
+  answering under an identifier different from the one requested, TypeScript
+  records the served identifier and how it learned it, while the Python event
+  builder has no parameter for either, so no Python surface can carry them. It
+  is a capability divergence and not a verdict one — the model the caller
+  requested is captured identically on both sides and is what every rule
+  evaluates — which is what makes it eligible for that catalog at all.
+
+  Python provider detection was **already fixed** and the row was stale. It now
+  records the same attribution as its twin on every scenario, distinguishing a
+  loopback server from a vendor host from an unrecognised gateway, each with the
+  endpoint beside it. The claim was true when written and was made false by the
+  provider-label repair, which moved both SDKs rather than one. The row is gone
+  and the reason is recorded, because the correction runs the safe direction —
+  the document was understating the code, which is the kind of stale claim
+  nobody is harmed by and therefore nobody checks.
+
+  Corpus re-pinned, 36 files, both `conformance.pin` files regenerated and
+  agreeing.
 - **The TypeScript package being ESM-only is now stated where installation is
   documented, in all three places a reader arrives.** `"type": "module"` with
   only `import` export conditions, so `require("@obsvr/sdk")` fails and a
