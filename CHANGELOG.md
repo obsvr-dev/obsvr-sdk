@@ -742,6 +742,27 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   provider detector still reports `"openai"` for any client exposing
   `chat.completions`, so a cloud endpoint and a local server remain
   indistinguishable there.
+- **`action_taken` was a closed enum in name only, and the value that mattered most
+  was pinned by nothing.** The field a post-incident reader consults to learn what
+  governance did was a string-literal union declared twice in TypeScript and
+  enumerated nowhere at all in Python — whose own comments called it a closed enum.
+  The shared corpus pinned three of its six values across 31 fixtures, and
+  `not_evaluated` appeared in none of them: a live production value in both SDKs,
+  emitted from several surfaces, agreeing across languages only because it had been
+  widened in the same commit.
+
+  `conformance/fixtures/action_taken.json` now pins the set cross-language, with
+  the meaning of each verdict written down beside it — including the three things
+  `not_evaluated` must never do, each of which was a real defect here: be read as
+  `allowed`, be read as `blocked`, or be omitted so the server defaults it. Each
+  SDK carries a frozen mirror and a staleness suite asserting it equals the
+  fixture, plus a containment check over a real emission path rather than over the
+  helpers alone. In TypeScript the compiler additionally binds the set to **both**
+  interfaces that declare the field, in both directions, so a member added to one
+  declaration and not the others is a build error rather than a silent divergence.
+
+  **Corpus hash changed** — `9afde624…` to `e093dce7…`, 34 files to 35. Both
+  language pins move with it.
 - **The LangChain tool gate never fired on the runtime the framework now directs
   people to.** The allow/deny list, step limit and loop detector sat in
   `on_agent_action`, which the classic `AgentExecutor` still fires but the graph

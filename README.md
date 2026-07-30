@@ -537,6 +537,7 @@ The two SDKs are kept byte-for-byte compatible by shared fixtures in [`conforman
 - `eval_semantics.json` — policy-rule evaluation semantics, including shadow-mode inertness.
 - `rules_hash.json` — the canonical `policy_version` hash of a rule set, derived identically in both languages.
 - `reason_codes.json` — the closed registry of verdict reason codes; a staleness check in each SDK fails if the registries diverge or the engine emits an unregistered code.
+- `action_taken.json` — the closed set of event verdicts, with the meaning of each written down beside it. `not_evaluated` is the one to read: it means **no gate ran**, so it is neither `allowed` (a gate looked and permitted) nor `blocked` (a refusal). A staleness check in each SDK fails if its set diverges from the fixture or an emission path produces a verdict outside it, and in TypeScript the compiler additionally binds the set to both interfaces that declare the field.
 - `normalization.json`, `otel_attributes.json`, `effective_policy.json` — Unicode-normalization, telemetry-attribute, and effective-policy parity.
 - `tool_pinning.json`, `tool_content_hash.json` — the two tool digests, which are deliberately **different contracts**: one is the descriptor pin that catches a rug-pull, the other is the per-call evidence sealing which tool content and arguments a call actually saw. The fixtures pin, in both directions, that neither can be substituted for the other.
 

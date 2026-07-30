@@ -1,0 +1,49 @@
+{
+  "claimable": true,
+  "sdk_support": {
+    "ts": "required",
+    "py": "required"
+  },
+  "schema_version": 1,
+  "name": "action_taken",
+  "description": "Closed set of `action_taken` verdicts on an audit event — the field a reader consults to learn what governance DID. TS source: sdk-typescript/src/governance/action-taken.ts (ACTION_TAKEN, checked against the ComplianceInfo union at compile time in both places that declare it). Python twin: sdk-python/obsvr/events.py (ACTION_TAKEN). Both staleness suites (sdk-typescript/tests/unit/action-taken.test.ts, sdk-python/tests/test_action_taken.py) assert their frozen set equals `verdicts` here and that no emission path produces a value outside it. Values are stable wire strings: renaming one is a breaking change and adding one breaks exhaustive switches in consumer code. This exists because `not_evaluated` was a live production value in BOTH SDKs, emitted from several surfaces, with zero cross-language pin — the two agreed only because they had been changed in the same commit, which is the divergence class this corpus exists to close.",
+  "verdicts": [
+    "allowed",
+    "blocked",
+    "hook_error",
+    "hook_timeout",
+    "not_evaluated",
+    "redacted"
+  ],
+  "semantics": [
+    {
+      "verdict": "allowed",
+      "meaning": "A gate ran and permitted the operation.",
+      "must_not_be_read_as": "that no gate ran — that is `not_evaluated`."
+    },
+    {
+      "verdict": "blocked",
+      "meaning": "The governed operation was refused and did NOT execute.",
+      "invariant": "For every event where action_taken is `blocked`, the governed operation did not execute. Pinned per surface by the enforcement-reporting invariant in both languages, which asserts both halves: the operation did not run, and the record says so."
+    },
+    {
+      "verdict": "redacted",
+      "meaning": "The operation proceeded with content removed or replaced before it left the process."
+    },
+    {
+      "verdict": "hook_error",
+      "meaning": "A customer pre-call hook raised. The verdict records the layer that failed rather than inventing a policy outcome for it."
+    },
+    {
+      "verdict": "hook_timeout",
+      "meaning": "A customer pre-call hook exceeded its budget. Same reasoning as hook_error."
+    },
+    {
+      "verdict": "not_evaluated",
+      "meaning": "No gate reached the operation, so there is no verdict to report.",
+      "must_not_be_read_as": "`allowed`, which asserts a gate looked and permitted, and emphatically not `blocked`, which asserts a refusal.",
+      "must_not_be_omitted": "The ingest schema defaults an absent action_taken, so omitting the field mints `allowed` one layer down — which is the false claim this value exists to avoid.",
+      "reason_travels_on": "metadata.obsvr_telemetry.policy_not_evaluated, carrying the surface, the gate that did not run, and why."
+    }
+  ]
+}

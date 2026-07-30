@@ -16,6 +16,38 @@ from .policy import DEFAULT_COMPLIANCE
 from .reason_codes import ReasonCode
 
 
+#: The closed set of ``action_taken`` verdicts, sorted.
+#:
+#: PYTHON HAD NO ENUMERATION OF THIS AT ALL. Comments in this file already called
+#: it "the closed action_taken enum", and the closure existed only in TypeScript,
+#: as a string-literal union. So the field a post-incident reader consults to
+#: learn what governance did was closed by convention on one side and by nothing
+#: at all on the other.
+#:
+#: What made that urgent rather than untidy: ``not_evaluated`` was live in BOTH
+#: SDKs, emitted from several surfaces, and pinned by no fixture. The two
+#: languages agreed only because they had been widened in the same commit. Every
+#: other instance of that pattern in this codebase was found by a live probe
+#: rather than by a check.
+#:
+#: Pinned cross-language by ``conformance/fixtures/action_taken.json``; the twin
+#: is ``ACTION_TAKEN`` in sdk-typescript/src/governance/action-taken.ts, where a
+#: compile-time check binds it to both interfaces that declare the union. Each
+#: language asserts against the fixture, which makes the two agree transitively
+#: without comparing them directly.
+#:
+#: Adding a member is BREAKING for consumers with exhaustive branches; renaming
+#: one is a wire-format change to evidence already stored.
+ACTION_TAKEN = (
+    "allowed",
+    "blocked",
+    "hook_error",
+    "hook_timeout",
+    "not_evaluated",
+    "redacted",
+)
+
+
 def _resolved_reason_code(comp):
     """The event's registry reason code: the deciding layer's explicit code
     when it supplied one, PERMITTED for a clean or overridden allow, else the
