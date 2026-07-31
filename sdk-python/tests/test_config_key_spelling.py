@@ -6,7 +6,9 @@ SSN reached the provider. It now warns.
 
 This SDK cannot reach that state: ``init()`` declares explicit keyword-only
 parameters, so a wrong-style or misspelled key is a ``TypeError`` at the call —
-louder than a warning, and CPython even names the key that was meant.
+louder than a warning. On 3.13 and up CPython also names the key that was meant,
+which is the interpreter's doing rather than this SDK's and so is asserted only
+where it exists.
 
 That immunity is a property of the signature, not a decision anyone recorded, so
 it is asserted here. Adding ``**kwargs`` to ``init()`` would silently turn every
@@ -15,6 +17,8 @@ tests fail if that happens.
 
 Twin: sdk-typescript/tests/unit/config-key-spelling.test.ts.
 """
+
+import sys
 
 import pytest
 
@@ -34,9 +38,16 @@ class TestConfigKeySpelling:
                 ingest_url="https://x",
                 piiPolicy={"rules": {"ssn": "redact"}},
             )
-        # The key that was refused, and the one that was meant.
+        # Naming the key that was refused is the guarantee, and it holds on every
+        # interpreter this package supports: the call is loud, not a silent no-op.
         assert "piiPolicy" in str(exc.value)
-        assert "pii_policy" in str(exc.value)
+        # Naming the key that was MEANT is CPython's own suggestion, added in
+        # 3.13. Asserting it unconditionally pins an interpreter feature as if it
+        # were an SDK property, and fails on 3.10 through 3.12, all of which
+        # requires-python still declares. The TypeScript twin has to produce this
+        # hint itself; here it is the interpreter's gift where it is offered.
+        if sys.version_info >= (3, 13):
+            assert "pii_policy" in str(exc.value)
 
     def test_a_typo_is_rejected_not_ignored(self):
         _reset()
