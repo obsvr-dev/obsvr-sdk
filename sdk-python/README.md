@@ -328,7 +328,7 @@ limitations and neither list may be read across to the other — the TypeScript 
 has two of its own that do not apply here (it is ESM-only, and its named
 compatibility wrappers govern one method), and two below do not apply to it. The
 combined list for both, with the scope marked on each entry, is in the
-[repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-seven-limits-worth-knowing).
+[repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
    Only the MCP surface runs against the real upstream package in CI. A green

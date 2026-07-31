@@ -76,7 +76,10 @@ Two ways in. Both evaluate policy **before the request leaves your process**.
   ```
   A module-customization hook loads _before_ your app. When a supported provider module is imported **by its exact package specifier from ESM**, the SDK swaps that module's exported client class for a **construct-trap `Proxy`**, so `new OpenAI()`, `new Anthropic()` and `getGenerativeModel()` return governed instances automatically — including clients constructed deep inside third-party libraries you don't control.
 
-  **Three things escape it, each measured rather than reasoned about:** a `require()` entry point (the hook does not intercept CommonJS at all), a subpath import such as `openai/index.mjs` or `openai/client` (the specifier table is exact-match), and other client classes exported by a governed package — `AzureOpenAI` and `BedrockOpenAI` ride through ungoverned. An escaped client records nothing rather than recording something false, and `obsvr.wrap()` governs all of them. See the [TypeScript README](sdk-typescript/README.md#zero-code-global-coverage-no-monkey-patching).
+  Some entry points fall outside the hook — see
+  [Before you install](#before-you-install-the-eight-limits-worth-knowing).
+  An escaped client records nothing rather than something false, and
+  `obsvr.wrap()` governs all of them.
 - **Python** — `obsvr.init(auto=True)` auto-instruments providers and frameworks with a clean registration point (OpenAI/Anthropic construction, the OpenAI Agents trace processor, the LlamaIndex callback manager); frameworks that need a per-call handler are detected and reported with the one line to add.
 
 ```mermaid
@@ -91,14 +94,16 @@ flowchart TD
 
 **No global monkey-patching.** The primary paths never mutate a shared prototype, class, or module object: TypeScript wraps with a `Proxy`, and Python uses native framework callbacks and transparent `__getattr__` wrappers (including a non-mutating `govern_mcp()` for MCP). The real client stays a **genuine SDK client**, so APM, OpenTelemetry, and other tracing on the same SDKs keep working, and clients constructed before `init()` pick up governance on their first call after. Two **opt-in** paths are the honest exceptions, documented where they live: the zero-code auto-register replaces a provider's module binding with a governed subclass (Python has no `Proxy` primitive), and the AutoGen helper decorates the single agent instance you hand it — neither touches a class shared with other code.
 
-**Overhead** is one in-process, deterministic policy pass per call plus event emission that does not wait on the ingest transport — a slow or dead backend does not slow your calls (measured: a 25 ms-per-POST transport leaves the hot path unchanged). Signing-only adds **~14µs** median in TypeScript. **One exception, stated because it is the only thing on that path that can block:** with `otel` mirroring configured, the TypeScript sender calls the exporter **synchronously, before the enqueue** — a span that takes 300 ms to start blocks the caller for 300 ms. Python mirrors after the enqueue and exposes only the caller's latency. See [Benchmarks](#benchmarks).
+**Overhead** is one in-process, deterministic policy pass per call plus event emission that does not wait on the ingest transport — a slow or dead backend does not slow your calls (measured: a 25 ms-per-POST transport leaves the hot path unchanged). Signing-only adds **~14µs** median in TypeScript. See [Benchmarks](#benchmarks).
+
+**One exception, stated because it is the only thing on that path that can block:** with `otel` mirroring configured, the TypeScript sender calls the exporter **synchronously, before the enqueue** — a span that takes 300 ms to start blocks the caller for 300 ms. Python mirrors after the enqueue and exposes only the caller's latency.
 
 ---
 
 ## Quickstart
 
-> Read [the seven limits worth knowing](#before-you-install-the-seven-limits-worth-knowing)
-> first. Four of them are specific to one of the two SDKs.
+> Read [the eight limits worth knowing](#before-you-install-the-eight-limits-worth-knowing)
+> first. Five of them are specific to one of the two SDKs.
 
 **TypeScript**
 
@@ -246,7 +251,13 @@ obsvr.init({
 
 ## PII & sensitive-data detection
 
-Detection runs locally, **before the request leaves your process**, and again post-call for the audit record. Matching is Unicode-normalized (NFKC + zero-width/bidi stripping + a curated confusable fold), so lookalike, fullwidth, and zero-width-obfuscated payloads can't slip a keyword or PII pattern — **and the fold is deliberately not left to the host runtime**, because NFKC is not a stable cross-language primitive: Node folds through ICU, which tracks the current Unicode release, while CPython ships a frozen table per minor version, so every Unicode release leaves a residue one runtime folds to ASCII and the other does not (measured: 41 such codepoints at the declared Python floor, 37 at 3.12/3.13, 1 at 3.14 — never zero). Those are vendored into the curated fold, so both SDKs agree whatever Unicode version they ship — and redaction scrubs those same forms rather than forwarding them while the event claims "redacted". Each type maps to `block`, `redact`, or `detect_only`. The canonical list is **19 types**:
+Detection runs locally, **before the request leaves your process**, and again post-call for the audit record. Matching is Unicode-normalized (NFKC + zero-width/bidi stripping + a curated confusable fold), so lookalike, fullwidth, and zero-width-obfuscated payloads can't slip a keyword or PII pattern. Each type maps to `block`, `redact`, or `detect_only`. The canonical list is **19 types**:
+
+<details><summary>Why the Unicode fold is vendored rather than left to the host runtime</summary>
+
+The fold is deliberately not left to the host runtime, because NFKC is not a stable cross-language primitive: Node folds through ICU, which tracks the current Unicode release, while CPython ships a frozen table per minor version, so every Unicode release leaves a residue one runtime folds to ASCII and the other does not (measured: 41 such codepoints at the declared Python floor, 37 at 3.12/3.13, 1 at 3.14 — never zero). Those are vendored into the curated fold, so both SDKs agree whatever Unicode version they ship — and redaction scrubs those same forms rather than forwarding them while the event claims "redacted".
+
+</details>
 
 | Coverage                        | Types                                                                                                                                                       |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -296,7 +307,12 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   ```typescript
   mcpToolPolicy: { pinning: { enabled: true, mode: "block" } },
   ```
-- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. **That holds only where obsvr is genuinely on the tool boundary, which is not everywhere.** Measured, per integration and per language: it holds on MCP and the LangChain handler in both SDKs, on `obsvrGovernTool` in TypeScript, and on AutoGen and PydanticAI in Python. It does NOT hold on the OpenAI Agents tracing processor in either language (that surface cannot refuse a tool at all), nor on the Python CrewAI handler, nor on LlamaIndex. It DOES now hold inside a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`) on the TypeScript side, where obsvr gates each tool's callback before the runner is constructed — measured live in both directions, since a tainted session previously executed a tool named in `destructiveTools` there. The runner's intermediate model turns remain audited rather than gated, and a hosted tool the provider executes itself has no callback to gate. Put a destructive capability behind MCP or `obsvrGovernTool`. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list; the hint can only ever add (a server cannot describe itself out of the set), and `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list — the hint can only ever add (a server cannot describe itself out of the set); `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+
+  **Enforcement is a per-integration property, not an SDK-wide one.** See
+  [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)
+  for the measured state of every surface in both languages. Put a destructive
+  capability behind MCP or `obsvrGovernTool`.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
 
 ---
@@ -618,12 +634,12 @@ The corpus is **hash-pinned**: `conformance/MANIFEST.sha256` digests every fixtu
 
 Documented plainly, from the code. For the full threat model — what the signature chain does and does not prove — and how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
-### Before you install: the seven limits worth knowing
+### Before you install: the eight limits worth knowing
 
 Every one of these is documented in more detail further down this page or in the
 document linked beside it. They are collected here, once, because someone
-deciding whether to adopt this should not have to assemble them from seven
-sections. **Four of the seven apply to one SDK and not the other**, so the scope
+deciding whether to adopt this should not have to assemble them from eight
+sections. **Five of the eight apply to one SDK and not the other**, so the scope
 is marked on each.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
@@ -676,6 +692,16 @@ is marked on each.
    `google-genai`, has no adapter and is not intercepted.
    [Which one you have](#framework--provider-support).
 
+8. **The zero-code auto-register misses three things, each measured rather
+   than reasoned about.** *(TypeScript only)* A `require()` entry point (the
+   hook does not intercept CommonJS at all), a subpath import such as
+   `openai/index.mjs` or `openai/client` (the specifier table is exact-match),
+   and other client classes exported by a governed package — `AzureOpenAI`
+   and `BedrockOpenAI` ride through ungoverned. An escaped client records
+   nothing rather than recording something false, and `obsvr.wrap()` governs
+   all of them.
+   [Detail](sdk-typescript/README.md#zero-code-global-coverage-no-monkey-patching).
+
 One distinction decides which of these limits would block a release and which
 ship documented, and it is worth stating before you read them: **a record that
 claims an enforcement which did not happen blocks; a control that does not fire
@@ -689,13 +715,38 @@ that line.
 - **Streaming.** With `stream: true`, PII scanning and policy hooks run **before** the LLM is contacted, so a blocked call never opens the stream. But **post-call** response scanning on streamed output is audit-time, not enforcement-time: tokens reach the caller as they arrive.
 - **Signing model.** The client chain is symmetric (API-key-derived): it proves capture order and detects modification, but a key-holder could construct validly-signed events. The service's countersignature and Ed25519 root are what give external, public verifiability. Integrity, not non-repudiation against a key-holder.
 - **Enforcement vs. sampling.** `sampleRate` gates audit-event _emission_ only — enforcement (PII, rules, hooks) runs on **every** call regardless of the sample rate.
-- **Fail mode.** Default is **fail-open**: if a hook times out or throws, or a detector layer fails while deciding, the call is allowed, that layer's enforcement is lost for it, and the failure is counted (`detector_errors` on the fleet poll) and recorded on the call's own event. Set `failMode: 'closed'` for policies that must never fail open (and note that a closed policy with rule-polling disabled degrades to last-good rules). Three things `failMode` deliberately cannot move: `policy_floor` and `canary` always fail **closed** (a floor that cannot run must not wave a call through — that is what a floor is for); a `redact` decision whose redactor then throws **blocks** rather than forwarding the content it was told to strip; and once the provider has answered, nothing is withheld from your application, so a response-side failure falls closed only on the *stored audit copy*, which becomes `[UNSCANNED:detector_error]` rather than content nothing scanned. Every layer's posture per failure state is pinned by `conformance/fixtures/fail_mode.json` and asserted in both SDKs.
+- **Fail mode.** Default is fail-open — a detector that throws loses its
+  enforcement for that call, counted and recorded on the event. Set
+  `failMode: 'closed'` for policies that must never fail open.
+
+  <details><summary>Per-layer behaviour, and the three things failMode cannot move</summary>
+
+  Default is **fail-open**: if a hook times out or throws, or a detector layer fails while deciding, the call is allowed, that layer's enforcement is lost for it, and the failure is counted (`detector_errors` on the fleet poll) and recorded on the call's own event. Set `failMode: 'closed'` for policies that must never fail open (and note that a closed policy with rule-polling disabled degrades to last-good rules). Three things `failMode` deliberately cannot move: `policy_floor` and `canary` always fail **closed** (a floor that cannot run must not wave a call through — that is what a floor is for); a `redact` decision whose redactor then throws **blocks** rather than forwarding the content it was told to strip; and once the provider has answered, nothing is withheld from your application, so a response-side failure falls closed only on the *stored audit copy*, which becomes `[UNSCANNED:detector_error]` rather than content nothing scanned. Every layer's posture per failure state is pinned by `conformance/fixtures/fail_mode.json` and asserted in both SDKs.
+
+  </details>
 - **PII scope.** Policy decisions scan the last user message; `name`, `address`, `person`, `location`, `medical`, `national_id` require Presidio and never fire on the built-in regex.
 - **Budget scope.** In-process token/request budgets are enforced **per SDK instance**, and token usage is recorded post-call, so N instances can allow up to N× a limit and budgets lag by one call. The counter store is bounded at 10,000 scopes per meter; past that it refuses a new scope rather than evicting a live counter, since evicting one would reset that scope's count and hand a caller who can mint scope values a free quota. A scope it could not admit goes **unmetered** under the default fail-open, or is refused with `QUOTA_UNMETERED` under `failMode: 'closed'`; either way the call's event records that the rule did not run, so an unenforced quota never reads as a compliant call. Fleet-wide quota escrow is coordinated by the ingest service; enforce hard global caps upstream if you need them.
 - **Serverless.** Each cold start begins a fresh integrity session (`sdk_session_id`, `seq_no` reset). Multiple sessions starting at `seq_no=1` are expected and verify correctly. Call `await obsvr.flush()` before the runtime freezes.
-- **Process shutdown.** In TypeScript, wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. They end the process **only when nothing else is listening for that signal** — attaching a handler replaces the runtime's default disposition, so a library that attaches one and never exits swallows the signal instead. When your application has its own graceful shutdown, it owns termination: obsvr flushes beside it and never ends the process out from under it, which is the trade — a host that exits before the flush completes drops whatever is still queued. Ownership is decided when the signal arrives rather than when the client was wrapped, so installing your handler after `wrap()` works. **Python differs and installs no signal handlers at all**: it flushes from `atexit`, which a default-disposition `SIGTERM` never reaches, so a container stop drops the queue tail there. Call `await obsvr.flush()` / `obsvr.flush()` in your own shutdown if the tail matters.
+- **Process shutdown.** In TypeScript, wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. Python installs no signal handlers at all and flushes from `atexit` instead, so a container stop can drop the queue tail there. Call `obsvr.flush()` in your own shutdown if the tail matters.
+
+  <details><summary>Signal-ownership semantics, and why the two SDKs differ</summary>
+
+  In TypeScript, wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. They end the process **only when nothing else is listening for that signal** — attaching a handler replaces the runtime's default disposition, so a library that attaches one and never exits swallows the signal instead. When your application has its own graceful shutdown, it owns termination: obsvr flushes beside it and never ends the process out from under it, which is the trade — a host that exits before the flush completes drops whatever is still queued. Ownership is decided when the signal arrives rather than when the client was wrapped, so installing your handler after `wrap()` works. **Python differs and installs no signal handlers at all**: it flushes from `atexit`, which a default-disposition `SIGTERM` never reaches, so a container stop drops the queue tail there. Call `await obsvr.flush()` / `obsvr.flush()` in your own shutdown if the tail matters.
+
+  </details>
 - **SDK bypass.** Not calling `init()` means no coverage — there is no post-hoc runtime check; assert `obsvr.isInitialized()` at startup. `disabled: true` in production emits a `governance_disabled` event so the bypass is on the record.
-- **A `JSON.parse` defect in some supported Node runtimes.** Measured, not inferred: on **V8 14.1.146.11 (Node 25.9.0)**, parsing an object can bind a value to a key the document never contained, when an earlier parse in the same process used a same-shaped key. Four lines with no obsvr code reproduce it, it survives `--jitless`, and it is **absent on V8 12.4.254.21 (Node 22.23.1)**. `json.loads` on the Python side is correct, so where it bites is a TypeScript process parsing a `/policies` response whose rule conditions carry such a key: the two SDKs would then canonicalize that policy differently and stamp different `policy_version` values on identical policy. Realistic rule conditions do not carry lone-quote, lone-backslash or lone-surrogate keys, so this is a stated limit rather than an observed failure — but it is a property of the runtime that no amount of care in this repository removes, and the parity harness now attributes a divergence of this shape to the runtime rather than reporting it as an SDK parity failure.
+- **A `JSON.parse` defect in some supported Node runtimes.** On **V8 14.1.146.11
+  (Node 25.9.0)**, parsing an object can bind a value to a key the document
+  never contained, when an earlier parse in the same process used a
+  same-shaped key — absent on V8 12.4.254.21 (Node 22.23.1). Realistic rule
+  conditions don't hit it, so this is a stated limit rather than an observed
+  failure.
+
+  <details><summary>How the defect surfaces, and how the parity harness accounts for it</summary>
+
+  Measured, not inferred: on **V8 14.1.146.11 (Node 25.9.0)**, parsing an object can bind a value to a key the document never contained, when an earlier parse in the same process used a same-shaped key. Four lines with no obsvr code reproduce it, it survives `--jitless`, and it is **absent on V8 12.4.254.21 (Node 22.23.1)**. `json.loads` on the Python side is correct, so where it bites is a TypeScript process parsing a `/policies` response whose rule conditions carry such a key: the two SDKs would then canonicalize that policy differently and stamp different `policy_version` values on identical policy. Realistic rule conditions do not carry lone-quote, lone-backslash or lone-surrogate keys, so this is a stated limit rather than an observed failure — but it is a property of the runtime that no amount of care in this repository removes, and the parity harness now attributes a divergence of this shape to the runtime rather than reporting it as an SDK parity failure.
+
+  </details>
 - **Two copies of the SDK in one process.** If the SDK is installed twice — directly and again as a transitive dependency — the first copy to `init()` governs and the second logs a warning and stands down, so one call is never governed or emitted twice. A copy that stood down does **not** wrap: clients wrapped only through it are **not governed**. The warning names the fix (deduplicate the dependency); do not treat it as cosmetic.
 - **Audit-sender serialization.** An exception inside a detector layer never reaches your application (see "Fail mode" above), but one obsvr path is still unguarded and is named rather than buried: the audit sender serializes host-supplied `metadata` with a plain `JSON.stringify`, so metadata carrying a throwing property getter, a throwing `toJSON`, or a circular reference can surface from the sender. It is tracked with its own posture decision. Pass plain, serializable metadata until it is closed.
 
