@@ -1915,8 +1915,7 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   with thirteen and now holds twenty, the chain-format change above having
   added the format-1, format-2, and mixed-chain cases. Consumers of the
   existing `events` and key material are unaffected.
-  ([`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5),
-  [`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
+  ([`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
 - `conformance/fixtures/eval_semantics.json` gained dedicated cases for EV-3,
   EV-14, and EV-22 — statements `conformance/SPEC-evaluation.md` listed as
   covered but which no fixture actually pinned — shrinking the uncovered list
