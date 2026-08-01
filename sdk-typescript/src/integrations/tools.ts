@@ -48,6 +48,32 @@ import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "obsvr_tool";
 
+/**
+ * Names of every tool a pre-execution gate speaks for — the wrapper below, or
+ * an integration-owned gate registered through {@link registerGovernedToolName}
+ * (openai-agents' tool input guardrails). Audit rails that would otherwise
+ * re-judge a governed call after the fact consult this so they never stamp
+ * `not_evaluated` beside a real gate's own verdict. Process-lifetime by
+ * design — a governed name stays the gate's to speak for. Twin of the Python
+ * `_GOVERNED_TOOL_NAMES` registry.
+ */
+const GOVERNED_TOOL_NAMES = new Set<string>();
+
+/** Whether a tool of this name is governed by a pre-execution gate. */
+export function isToolGoverned(toolName: string): boolean {
+  return GOVERNED_TOOL_NAMES.has(toolName);
+}
+
+/** Record that a pre-execution gate outside this module speaks for a name. */
+export function registerGovernedToolName(toolName: string): void {
+  GOVERNED_TOOL_NAMES.add(toolName);
+}
+
+/** Test hook. The registry is process-lifetime everywhere else. */
+export function _resetGovernedToolNames(): void {
+  GOVERNED_TOOL_NAMES.clear();
+}
+
 /** A refusal that must reach the caller: either the taint latch's own block or
  *  a detector failure that resolved closed. Carried out of the guard as a value
  *  so the guard cannot swallow the enforcement it exists to protect. */
@@ -167,6 +193,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
 
   const toolName = resolveToolName(t, options);
   const original = t[execKey] as (...args: unknown[]) => unknown;
+  GOVERNED_TOOL_NAMES.add(toolName);
 
   const cfgAtWrap = tryGetConfig();
   if (cfgAtWrap) setupExitHandlers(cfgAtWrap);

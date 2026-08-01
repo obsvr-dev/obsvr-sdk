@@ -13,6 +13,16 @@
  * The exact API for registering processors varies across openai-agents versions.
  * Consult the installed package's documentation for the current registration method.
  *
+ * THE PROCESSOR RECORDS TOOL POLICY; THE GATE LIVES ELSEWHERE IN THIS MODULE.
+ * The framework awaits each tool's own `inputGuardrails` BEFORE invoking it,
+ * and {@link attachToolGate} puts obsvr's guardrail there: a denied tool is
+ * refused by the guardrail contract's `rejectContent` sentinel — the model
+ * receives the block message as the tool's result, the run continues, and the
+ * tool's callable is never entered. `obsvrGovernTool` (tools.ts) remains the
+ * wrapper alternative; its refusal throws out of `invoke`, which this
+ * framework wraps into `ToolCallError` — the RUN ABORTS. Choose by what a
+ * denial should do to the run.
+ *
  * @packageDocumentation
  */
 
@@ -28,12 +38,15 @@ import {
   setupExitHandlers,
   toolGateNotEvaluatedCompliance,
   tryGetConfig,
+  type ComplianceInfo,
   type IntegrationOptions,
 } from "./core.js";
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
 import { readTokenUsage } from "../proxy/extractors/token-usage.js";
+import { isToolGoverned, registerGovernedToolName } from "./tools.js";
+import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "openai_agents_js";
 
@@ -84,11 +97,264 @@ function checkSteps(
   return count < limit ? "allow" : (policy.stepLimitAction ?? "block");
 }
 
+// ---------------------------------------------------------------------------
+// Pre-execution tool gate — the guardrail mechanism
+// ---------------------------------------------------------------------------
+
+/** The one obsvr guardrail name; attachment is idempotent against it. */
+const TOOL_GATE_GUARDRAIL_NAME = "obsvr_tool_gate";
+
+/** Blocked-tool verdict (fresh per call so one event's compliance cannot
+ *  bleed into the next — same posture as the Python twin). */
+function toolDeniedCompliance(): ComplianceInfo {
+  return {
+    event_type: "blocked_call",
+    policy_version: "none",
+    action_taken: "blocked",
+    action_reason: "policy_violation",
+    reason_code: ReasonCode.TOOL_DENIED,
+    action_source: "policy_rules",
+    redacted_types: [],
+    blocked_types: [],
+  };
+}
+
+/** The guardrail contract's output shapes, spelled explicitly. A missing
+ *  `behavior` is normalized to ALLOW by the framework — fail-open — so every
+ *  return from the gate carries one on purpose. */
+interface ToolGateGuardrailOutput {
+  outputInfo?: unknown;
+  behavior:
+    | { type: "allow" }
+    | { type: "rejectContent"; message: string };
+}
+
+/** Duck-typed shape of an @openai/agents tool input guardrail definition. */
+export interface ObsvrToolInputGuardrail {
+  type: "tool_input";
+  name: string;
+  run: (data: unknown) => Promise<ToolGateGuardrailOutput>;
+}
+
+/**
+ * A tool input guardrail enforcing the `agentPolicy` tool list.
+ *
+ * The executor awaits tool input guardrails BEFORE invoking the tool, so a
+ * refusal here binds: the tool's callable is never entered. Refusal is by the
+ * guardrail contract's returned sentinel — `rejectContent` — which hands the
+ * model the block message as the tool's result and lets the run continue. The
+ * record is `blocked`/`TOOL_DENIED`, true on this path.
+ *
+ * The guardrail never throws. A throw from a guardrail becomes
+ * `ToolInputGuardrailTripwireTriggered` → `ToolCallError` and aborts the
+ * caller's WHOLE RUN — an internal obsvr failure must not become the host's
+ * outage. So an internal failure follows `failMode`: the default "open"
+ * allows the call with this layer lost, "closed" refuses it through the same
+ * sentinel.
+ *
+ * Prefer {@link attachToolGate}, which attaches this across an agent's tools
+ * and returns a detach handle.
+ */
+export function makeToolGateGuardrail(
+  options: IntegrationOptions = {},
+): ObsvrToolInputGuardrail {
+  return {
+    type: "tool_input",
+    name: TOOL_GATE_GUARDRAIL_NAME,
+    run: async (data: unknown): Promise<ToolGateGuardrailOutput> => {
+      try {
+        const config = tryGetConfig();
+        if (!config) return { behavior: { type: "allow" } };
+        const policy = config.agentPolicy;
+        if (!policy) return { behavior: { type: "allow" } };
+        const toolCall = ((data as Record<string, unknown> | undefined)
+          ?.toolCall ?? {}) as Record<string, unknown>;
+        const toolName = String(toolCall.name ?? "unknown_tool");
+        const { allowed, reason } = checkTool(toolName, policy);
+        if (allowed) return { behavior: { type: "allow" } };
+        emitIntegrationEvent({
+          config,
+          provider: "unknown",
+          model: "unknown",
+          operation: "openai_agents.agent.policy.tool_blocked",
+          source: SOURCE,
+          prompt: "",
+          response: "",
+          success: false,
+          metadata: {
+            tool_name: toolName,
+            reason,
+            tool_call_id: String(toolCall.callId ?? ""),
+          },
+          compliance: toolDeniedCompliance(),
+          options,
+        });
+        return {
+          outputInfo: { obsvr: { reason } },
+          behavior: {
+            type: "rejectContent",
+            message: `[obsvr] Tool '${toolName}' blocked by agent policy (${reason})`,
+          },
+        };
+      } catch {
+        if (tryGetConfig()?.failMode === "closed") {
+          return {
+            behavior: {
+              type: "rejectContent",
+              message:
+                "[obsvr] Tool blocked: policy evaluation failed (failMode=closed)",
+            },
+          };
+        }
+        return { behavior: { type: "allow" } };
+      }
+    },
+  };
+}
+
+export interface AttachToolGateOptions extends IntegrationOptions {
+  /** Walk handoff targets reachable from this agent too (the default). */
+  includeHandoffs?: boolean;
+}
+
+function isAgentLike(obj: unknown): obj is Record<string, unknown> {
+  return (
+    !!obj &&
+    typeof obj === "object" &&
+    Array.isArray((obj as Record<string, unknown>).tools) &&
+    Array.isArray((obj as Record<string, unknown>).handoffs)
+  );
+}
+
+function attachGateToAgent(
+  agent: Record<string, unknown>,
+  guardrail: ObsvrToolInputGuardrail,
+  attached: Array<Record<string, unknown>>,
+  ungateable: string[],
+  visited: Set<unknown>,
+  includeHandoffs: boolean,
+): void {
+  if (visited.has(agent)) return;
+  visited.add(agent);
+  for (const entry of agent.tools as unknown[]) {
+    const tool = entry as Record<string, unknown> | undefined;
+    // Hosted provider-side tools carry no client-side invocation to guard.
+    if (tool?.type !== "function") continue;
+    if (!Array.isArray(tool.inputGuardrails)) {
+      // The array is created by tool() itself on every build that ALSO
+      // consults it, so its absence means the build predates the mechanism.
+      // Setting the property anyway would arm a gate no executor ever asks —
+      // the silent no-op shape — so the tool is reported instead.
+      ungateable.push(String(tool.name ?? "unknown_tool"));
+      continue;
+    }
+    const guardrails = tool.inputGuardrails as Array<Record<string, unknown>>;
+    if (guardrails.some((g) => g?.name === TOOL_GATE_GUARDRAIL_NAME)) continue;
+    guardrails.push(guardrail as unknown as Record<string, unknown>);
+    attached.push(tool);
+    registerGovernedToolName(String(tool.name ?? "unknown_tool"));
+  }
+  if (!includeHandoffs) return;
+  for (const entry of agent.handoffs as unknown[]) {
+    const target = isAgentLike(entry)
+      ? entry
+      : isAgentLike((entry as Record<string, unknown> | undefined)?.agent)
+        ? ((entry as Record<string, unknown>).agent as Record<string, unknown>)
+        : undefined;
+    if (target) {
+      attachGateToAgent(
+        target,
+        guardrail,
+        attached,
+        ungateable,
+        visited,
+        includeHandoffs,
+      );
+    }
+  }
+}
+
+/**
+ * Attach the pre-execution tool gate to every function tool on `agent`.
+ *
+ * Pushes obsvr's guardrail into each function tool's own `inputGuardrails` —
+ * the framework's per-tool extension point, read fresh by the executor before
+ * every invocation. Attachment is BY TOOL OBJECT: a tool shared between two
+ * agents is gated for both, and a tool constructed after this call is not
+ * gated until it is attached too. With `includeHandoffs` (the default),
+ * handoff targets reachable from this agent — directly or through a
+ * `handoff()` object's agent reference — are walked as well, cycles included.
+ *
+ * Not covered, stated rather than implied: hosted provider-side tools (no
+ * client-side invocation to guard) and MCP-server tools, which the framework
+ * converts per turn after this call runs — govern those at the MCP boundary,
+ * where obsvr already enforces.
+ *
+ * Returns an idempotent detach handle that removes exactly what this call
+ * attached. THROWS LOUDLY when a function tool carries no `inputGuardrails`
+ * array — that build's executor never consults guardrails, and a silent
+ * no-op install would be a gate the caller believes in and does not have;
+ * gate those tools with `obsvrGovernTool` instead (its refusal aborts the
+ * run rather than returning a denial to the model).
+ */
+export function attachToolGate(
+  agent: unknown,
+  options: AttachToolGateOptions = {},
+): () => void {
+  const guardrail = makeToolGateGuardrail(options);
+  const attached: Array<Record<string, unknown>> = [];
+  const ungateable: string[] = [];
+  if (!isAgentLike(agent)) {
+    throw new Error(
+      "[obsvr] attachToolGate expects an @openai/agents Agent (an object " +
+        "carrying tools[] and handoffs[])",
+    );
+  }
+  attachGateToAgent(
+    agent,
+    guardrail,
+    attached,
+    ungateable,
+    new Set(),
+    options.includeHandoffs !== false,
+  );
+  if (ungateable.length > 0) {
+    // Refuse loudly AFTER undoing the partial attach: a half-armed gate that
+    // throws reads as installed to the caller who catches.
+    for (const tool of attached) {
+      const arr = tool.inputGuardrails as unknown[];
+      const at = arr.indexOf(guardrail as unknown);
+      if (at >= 0) arr.splice(at, 1);
+    }
+    throw new Error(
+      `[obsvr] this @openai/agents build carries no inputGuardrails array on ` +
+        `tool(s) ${ungateable.join(", ")}, so its executor never consults ` +
+        `tool input guardrails and the pre-execution gate cannot install. ` +
+        `Gate the tools themselves instead: obsvrGovernTool`,
+    );
+  }
+  let removed = false;
+  return function detach(): void {
+    if (removed) return;
+    removed = true;
+    for (const tool of attached) {
+      const arr = tool.inputGuardrails as unknown[];
+      const at = arr.indexOf(guardrail as unknown);
+      if (at >= 0) arr.splice(at, 1);
+    }
+  };
+}
+
 /**
  * SpanProcessor-compatible processor for the OpenAI Agents SDK.
  *
  * Emits audit events for agent run lifecycle, tool calls, and LLM generations.
- * Enforces `agentPolicy` tool restrictions and step limits at tool-call spans.
+ * OBSERVES `agentPolicy`: a function span ends after its tool has returned,
+ * and the processor hooks are dispatched fire-and-forget, so nothing here can
+ * refuse anything. Refusal lives in {@link attachToolGate} (a denied tool
+ * comes back to the model as a blocked-tool result) and `obsvrGovernTool`
+ * (a denied tool aborts the run); this processor is the audit rail beneath
+ * them.
  *
  * @example
  * ```ts
@@ -227,7 +493,11 @@ export class ObsvrTraceProcessor {
 
         if (toolName && agentPolicy) {
           const { allowed, reason } = checkTool(toolName, agentPolicy);
-          if (!allowed) {
+          // A name a real pre-execution gate speaks for (the guardrail from
+          // attachToolGate, or an obsvrGovernTool wrapper) already carries
+          // the gate's own verdict; stamping not_evaluated beside it would
+          // contradict a true blocked record.
+          if (!allowed && !isToolGoverned(toolName)) {
             emitIntegrationEvent({
               config,
               provider: "unknown",

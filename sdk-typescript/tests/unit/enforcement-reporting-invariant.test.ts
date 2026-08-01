@@ -37,10 +37,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as url from 'node:url';
 import { getConfig } from '../../src/proxy/config';
-import { obsvrGovernTool } from '../../src/integrations/tools';
+import { obsvrGovernTool, _resetGovernedToolNames } from '../../src/integrations/tools';
 import { obsvrGovernMCP } from '../../src/integrations/mcp';
 import { ObsvrCallbackHandler } from '../../src/integrations/langchain';
-import { ObsvrTraceProcessor } from '../../src/integrations/openai-agents';
+import {
+  ObsvrTraceProcessor,
+  makeToolGateGuardrail,
+} from '../../src/integrations/openai-agents';
 import { governRunnerTools } from '../../src/proxy/runner-tool-gate';
 import type { ResolvedConfig } from '../../src/proxy/types';
 
@@ -51,6 +54,7 @@ let sentEvents: any[] = [];
 beforeEach(() => {
   _reset();
   _resetSender();
+  _resetGovernedToolNames();
   sentEvents = [];
   (global as any).fetch = async (_url: any, opts: any) => {
     sentEvents.push(JSON.parse(opts.body));
@@ -197,6 +201,26 @@ async function driveLangChain(spy: Spy): Promise<Outcome> {
 }
 
 /**
+ * The openai-agents guardrail gate. The executor awaits each tool's own
+ * `inputGuardrails` BEFORE invoking it (@openai/agents-core
+ * runner/toolExecution.js, read at 0.13.4 and shape-identical at 0.13.0 and
+ * 0.14.2): `rejectContent` means the tool is NOT invoked and the message
+ * becomes its model-visible result; `allow` proceeds to invocation. The
+ * driver dispatches exactly that contract against obsvr's own guardrail.
+ */
+async function driveOpenAIAgentsGuardrail(spy: Spy): Promise<Outcome> {
+  const guardrail = makeToolGateGuardrail();
+  const out = await guardrail.run({
+    toolCall: { name: SPY_TOOL, callId: 'call-inv-1', arguments: '{"amount":500}' },
+  });
+  if (out.behavior.type !== 'rejectContent') {
+    spy.enter(SPY_TOOL);
+  }
+  await settle();
+  return { spy, events: sentEvents };
+}
+
+/**
  * MCP. The gate precedes `callTool`, which is the actual invocation boundary,
  * and it reads a DIFFERENT config block from every other surface here — pinned
  * in the row so a rename cannot quietly disarm it.
@@ -315,6 +339,15 @@ const TABLE: Array<{
     source: 'src/integrations/openai-agents.ts',
     drive: driveTraceProcessor,
     grade: 'records_only',
+    policyKey: 'agent_policy',
+  },
+  // Same file, second mechanism: the processor row above stays graded as the
+  // audit rail it is; the guardrail is where refusal actually lives.
+  {
+    name: 'openai-agents:guardrail-gate',
+    source: 'src/integrations/openai-agents.ts',
+    drive: driveOpenAIAgentsGuardrail,
+    grade: 'enforces',
     policyKey: 'agent_policy',
   },
 ];
