@@ -43,6 +43,13 @@ calls ``self.func`` directly, bypassing ``_run``), and the stored callable is
 where they converge. A reentrancy guard keeps a delegating entry point from
 being gated or audited twice for one invocation.
 
+A governed tool also DECLINES RESULT CACHING where the framework offers a say
+(``cache_function``). A result cache serves a repeat call from the framework's
+own memory without entering the callable, so a cached answer would escape this
+gate entirely — and escape it invisibly, since no execution happens for a
+side-effect instrument to count. Measured on CrewAI: allowed once, denied
+after, the caller still received the cached output. See :func:`_never_cache`.
+
 A refusal is a RAISE of ``ObsvrPolicyError`` from inside the tool's callable.
 What the framework does with it is the framework's contract — CrewAI converts
 it into a failed-tool observation and the run continues; LangChain propagates
@@ -83,6 +90,16 @@ _GOVERNED_TOOL_NAMES: Set[str] = set()
 def is_tool_governed(tool_name: str) -> bool:
     """Whether a tool of this name has been wrapped by :func:`govern_tool`."""
     return tool_name in _GOVERNED_TOOL_NAMES
+
+
+def governed_tool_names() -> Set[str]:
+    """A copy of the governed-name registry.
+
+    For audit rails whose framework renames tools before dispatch and so
+    cannot ask about a name they can only recognize after normalizing it
+    (CrewAI sanitizes, and the transform is not invertible).
+    """
+    return set(_GOVERNED_TOOL_NAMES)
 
 #: Exec-attr resolution table: (sync_attr, async_attr) in priority order.
 #: ORDER IS THE CONTRACT (the TS twin learned this the hard way: three shapes
@@ -379,6 +396,40 @@ def _wrap_callable(
     return gated
 
 
+def _never_cache(_args: Any = None, _result: Any = None) -> bool:
+    """Decline memoization of a governed tool's result.
+
+    A framework result cache answers a repeat call out of its own memory
+    WITHOUT invoking the tool's callable — which is the only place this
+    governor sits. Measured on CrewAI with the crew's cache enabled: a tool
+    run while allowed and re-requested after the policy denied it was served
+    the cached output, the tool body was never entered, and so the
+    side-effect instrument read ZERO while the caller still received the
+    content — a block that never happened, reported as one.
+
+    Refusing to cache is what keeps "every invocation is governed" literally
+    true: the call reaches the callable every time, so the gate rules every
+    time. Frameworks that consult a ``cache_function`` to decide whether to
+    store a result (CrewAI reads it at every cache-write site) therefore get
+    a permanent no from a governed tool.
+    """
+    return False
+
+
+def _refuse_result_caching(tool: Any) -> bool:
+    """Neutralize a framework's result cache for this tool. Returns applied."""
+    if not hasattr(tool, "cache_function"):
+        return False
+    try:
+        object.__setattr__(tool, "cache_function", _never_cache)
+        return True
+    except Exception:
+        # A container that will not accept the override still gets the gate;
+        # it just keeps whatever caching it had. Never break the caller's tool
+        # over a defence-in-depth measure.
+        return False
+
+
 def _copy_tool(tool: Any) -> Any:
     """A shallow copy when the object permits one, else the object itself.
 
@@ -423,6 +474,7 @@ def govern_tool(tool: Any, name: Optional[str] = None, **options: Any) -> Any:
         return tool
 
     governed = _copy_tool(tool)
+    _refuse_result_caching(governed)
     inflight = contextvars.ContextVar("obsvr_tool_gate_inflight", default=False)
     for attr in exec_attrs:
         original = getattr(governed, attr)

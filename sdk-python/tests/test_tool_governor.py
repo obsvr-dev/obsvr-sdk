@@ -302,3 +302,42 @@ def test_signature_survives_wrapping_for_schema_inference(sent):
     obsvr.init(api_key="test", sample_rate=1)
     governed = govern_tool(_RunShapedTool())
     assert "amount" in _inspect.signature(governed._run).parameters
+
+
+class _CacheableTool:
+    """A crewai-shaped tool that lets the framework decide about memoization."""
+
+    name = "read_secret"
+    description = "reads a secret"
+
+    def __init__(self):
+        self.calls = 0
+        self.cache_function = lambda _args=None, _result=None: True
+
+    def _run(self, **kwargs):
+        self.calls += 1
+        return "SECRET"
+
+
+def test_a_governed_tool_refuses_framework_result_caching(sent):
+    """A cache hit answers from the framework's memory without entering the
+    callable, so it escapes this gate AND leaves no execution to count — the
+    marker reads zero for the opposite of the right reason. Measured on
+    CrewAI: allowed once, denied after, the caller still got the payload."""
+    obsvr.init(api_key="test", sample_rate=1)
+    tool = _CacheableTool()
+    governed = govern_tool(tool)
+
+    assert governed.cache_function() is False, "a governed result must not be cached"
+    assert governed.cache_function({"a": 1}, "SECRET") is False
+    # The caller's own object is untouched; only the governed copy declines.
+    assert tool.cache_function() is True
+
+
+def test_declining_the_cache_never_breaks_a_tool_without_one(sent):
+    """The refusal is shape-based, like the exec-attr table: a tool carrying
+    no cache_function is returned gated and otherwise unchanged."""
+    obsvr.init(api_key="test", sample_rate=1)
+    governed = govern_tool(_RunShapedTool())
+    assert not hasattr(governed, "cache_function")
+    assert governed._run(amount=3) == "sent 3"
