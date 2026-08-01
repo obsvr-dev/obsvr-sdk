@@ -586,3 +586,186 @@ def test_autogen_uninitialized_no_op(sent):
     agent._run_hook("process_message_before_send",
                     message={"role": "assistant", "content": "hi"})
     assert len(sent) == 0
+
+
+# ---------------------------------------------------------------------------
+# LangChain: the per-run controls need a run, and finding one is not free
+#
+# Driven here against the argument shapes the two runtimes actually deliver,
+# recorded from live runs: the graph runtime passes serialized=None with the
+# identity in `name=` and graph markers in `metadata`, and dispatches a tool
+# whose immediate parent is the node rather than the run; the classic executor
+# passes serialized=None with name="AgentExecutor" and delivers BOTH pre-tool
+# callbacks for one tool call.
+# ---------------------------------------------------------------------------
+
+
+class _ToolAction:
+    tool = "search"
+    tool_input = "q"
+
+
+def _graph_root(h, run_id="g-root"):
+    """The graph runtime's top-level chain start: serialized is None."""
+    h.on_chain_start(None, {"messages": []}, run_id=run_id, parent_run_id=None,
+                     tags=[], metadata={"ls_integration": "langgraph"},
+                     name="LangGraph")
+
+
+def _graph_node(h, run_id, parent, node="tools", step=1):
+    h.on_chain_start(None, {}, run_id=run_id, parent_run_id=parent,
+                     tags=[f"graph:step:{step}"],
+                     metadata={"langgraph_node": node, "langgraph_step": step},
+                     name=node)
+
+
+def _tool_start(h, run_id, parent, name="search"):
+    h.on_tool_start({"name": name, "description": "d"}, "q",
+                    run_id=run_id, parent_run_id=parent, inputs={"q": "q"})
+
+
+def test_langchain_opens_an_agent_run_when_serialized_is_none(sent):
+    """The graph runtime never fills serialized in; the run must still open."""
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    _graph_root(h)
+    starts = [e for e in sent if e["operation"] == "langchain.agent.run.start"]
+    assert len(starts) == 1
+    assert starts[0]["metadata"]["agent_run_id"]
+
+
+def test_langchain_step_budget_survives_the_node_between_run_and_tool(sent):
+    """The tool's parent is the dispatching node, and the budget is above it."""
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={"max_steps": 2})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    _graph_root(h)
+    for i in range(2):
+        _graph_node(h, f"node-{i}", "g-root", step=i)
+        _tool_start(h, f"tool-{i}", f"node-{i}")
+        h.on_chain_end({}, run_id=f"node-{i}")
+    calls = [e for e in sent if e["operation"] == "langchain.tool.call"]
+    assert [e["metadata"]["step_index"] for e in calls] == [0, 1]
+    # one run, and every tool call charged to it
+    assert len({e["metadata"]["agent_run_id"] for e in calls}) == 1
+
+    _graph_node(h, "node-2", "g-root", step=2)
+    with pytest.raises(ValueError, match=r"\[obsvr\] Step limit"):
+        _tool_start(h, "tool-2", "node-2")
+
+
+def test_langchain_step_budget_is_per_run_not_per_handler(sent):
+    """A second run on the same handler gets its own budget."""
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={"max_steps": 1})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    for run in ("a", "b"):
+        _graph_root(h, run_id=run)
+        _graph_node(h, f"n-{run}", run)
+        _tool_start(h, f"t-{run}", f"n-{run}")
+        h.on_chain_end({}, run_id=f"n-{run}")
+        h.on_chain_end({"output": "done"}, run_id=run)
+    calls = [e for e in sent if e["operation"] == "langchain.tool.call"]
+    assert [e["metadata"]["step_index"] for e in calls] == [0, 0]
+    assert len({e["metadata"]["agent_run_id"] for e in calls}) == 2
+
+
+def test_langchain_gates_after_a_classic_run_on_the_same_handler(sent):
+    """The double-gate credit is spent per call, so it cannot disarm the gate.
+
+    A handler-wide latch made this exact sequence fail open: the classic
+    executor delivers on_agent_action, and every later on_tool_start — including
+    every tool of every later graph run, which delivers no other pre-tool
+    callback — returned before reaching the gate.
+    """
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["search"]})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+
+    # classic run: the legacy callback rules, and the tool callback follows
+    h.on_chain_start(None, {"input": "go"}, run_id="c1", parent_run_id=None,
+                     tags=[], name="AgentExecutor")
+    with pytest.raises(ValueError, match=r"\[obsvr\] Tool blocked"):
+        h.on_agent_action(_ToolAction(), run_id="c1", parent_run_id=None)
+
+    # graph run on the SAME handler: only on_tool_start is delivered
+    _graph_root(h, run_id="g1")
+    _graph_node(h, "n1", "g1")
+    with pytest.raises(ValueError, match=r"\[obsvr\] Tool blocked"):
+        _tool_start(h, "t1", "n1")
+    assert len([e for e in sent
+                if e["operation"] == "langchain.agent.policy.tool_blocked"]) == 2
+
+
+def test_langchain_charges_one_step_when_both_pre_tool_callbacks_arrive(sent):
+    """The classic executor delivers both for one tool call; it costs one step."""
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    h.on_chain_start(None, {"input": "go"}, run_id="c1", parent_run_id=None,
+                     tags=[], name="AgentExecutor")
+    for i in range(2):
+        h.on_agent_action(_ToolAction(), run_id="c1", parent_run_id=None)
+        _tool_start(h, f"t{i}", "c1")
+    calls = [e for e in sent if e["operation"] == "langchain.tool.call"]
+    assert [e["metadata"]["step_index"] for e in calls] == [0, 1]
+
+
+def test_langchain_leaves_a_plain_chain_alone(sent):
+    """A chain that calls no tool is not announced as an agent run."""
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    h.on_chain_start(None, {"q": "hi"}, run_id="p1", parent_run_id=None,
+                     tags=[], name="RunnableSequence")
+    h.on_chain_end({"output": "hi"}, run_id="p1")
+    assert [e["operation"] for e in sent] == []
+
+
+def test_langchain_reads_the_tool_name_from_serialized_not_the_run_name(sent):
+    """Under the graph runtimes the run name is the NODE, and matching it would
+    compare "tools" against the policy and refuse nothing."""
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["search"]})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    _graph_root(h)
+    _graph_node(h, "n1", "g-root")
+    with pytest.raises(ValueError, match=r"Tool blocked by agent policy: search"):
+        h.on_tool_start({"name": "search", "description": "d"}, "q",
+                        run_id="t1", parent_run_id="n1", name="tools")
+
+
+def test_langchain_records_a_gap_when_the_call_carries_no_tool_name(sent):
+    """No name and a policy that names tools is a gap, not an allow."""
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["search"]})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    _graph_root(h)
+    h.on_tool_start({}, "q", run_id="t1", parent_run_id="g-root")
+    gaps = [e for e in sent
+            if e["operation"] == "langchain.agent.policy.tool_not_evaluated"]
+    assert len(gaps) == 1
+    assert gaps[0]["action_taken"] == "not_evaluated"
+    assert not [e for e in sent if e["action_taken"] == "blocked"]
+
+
+def test_langchain_on_tool_start_is_not_a_coroutine():
+    """langchain-core swallows an async handler's exception unconditionally.
+
+    ``_run_coros`` logs and discards whatever a coroutine handler raises without
+    consulting ``raise_error`` — an asymmetry the framework documents in its own
+    source. A gate defined with ``async def`` would therefore refuse nothing on
+    the sync dispatcher, which is the one an async agent reaches whenever the
+    tool itself is synchronous.
+    """
+    import inspect
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    for name in ("on_tool_start", "on_agent_action", "on_chain_start",
+                 "on_chain_end"):
+        assert not inspect.iscoroutinefunction(
+            getattr(ObsvrCallbackHandler, name)
+        ), f"{name} must stay synchronous"

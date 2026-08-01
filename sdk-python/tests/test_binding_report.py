@@ -86,11 +86,13 @@ class TestRealIntegrationsReport:
     def test_every_guarded_integration_reports_its_binds(self):
         # Importing the modules is what records; assert each names itself.
         import obsvr.integrations.haystack  # noqa: F401
+        import obsvr.integrations.langchain  # noqa: F401
         import obsvr.integrations.pydantic_ai  # noqa: F401
 
         reported = integration_bindings()
         for name in (
             "haystack",
+            "langchain",
             "pydantic_ai",
         ):
             assert name in reported, f"{name} records no binding at all"

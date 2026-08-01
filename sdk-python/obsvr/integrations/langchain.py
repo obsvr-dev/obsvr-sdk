@@ -1,12 +1,26 @@
-"""LangChain (Python) integration — observe-only callback handler.
+"""LangChain (Python) integration — a callback handler that also gates tools.
 
-Pairs on_llm_start/on_chat_model_start with on_llm_end/on_llm_error by
-run_id. PII policy applies to the *stored* copy (block is downgraded to
-redact-in-event) because the request already went to the LLM.
+Model calls are observe-only: on_llm_start/on_chat_model_start pair with
+on_llm_end/on_llm_error by run_id, and PII policy applies to the *stored* copy
+(block is downgraded to redact-in-event) because the request already went to
+the LLM.
 
-Agent-level tracing: on_chain_start/end/error track AgentExecutor runs
-and enforce agent_policy (tool restrictions, step limits, output controls).
-on_agent_action and on_tool_end/error capture individual tool invocations.
+Tool calls are not. ``on_tool_start`` is a real pre-execution gate: the tool
+base class dispatches it before the ``try`` that guards execution, and this
+handler sets ``raise_error``, so a refusal escapes ``run()`` before the tool
+body is reached. ``agent_policy``'s allow/deny list and per-run step budget are
+both decided there.
+
+The step budget needs a run to belong to, and finding one is the part that has
+to be done by hand. Neither runtime says "an agent started" in the argument the
+old code read: ``on_chain_start`` receives ``serialized=None`` from the graph
+runtime at both the graph root and every node, and from ``Chain.invoke`` on the
+classic executor, with the identity carried in a separate ``name`` keyword.
+Neither runtime hands a callback more than its immediate parent either, and
+under the graph runtimes a tool's immediate parent is the node that dispatched
+it rather than the run. So this handler records the chain edges it is given,
+treats the outermost run as the agent run, and walks upward from a tool call to
+find it.
 """
 
 # Interception: LangChain Python callback API (non-mutating). Pass ObsvrCallbackHandler() via callbacks=[...] — no LangChain internals are modified.
@@ -17,6 +31,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import sender as _sender
+from ..binding_report import record_binding
 from ..agent_policy import (
     apply_loop_detection,
     check_steps,
@@ -30,6 +45,7 @@ from ..events import (
     infer_provider_from_string,
     step_limit_compliance,
     tool_denied_compliance,
+    tool_gate_not_evaluated_compliance,
 )
 from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
@@ -38,13 +54,24 @@ from ..span_attributes import SPAN_ATTR
 
 try:  # pragma: no cover - exercised only when langchain-core is installed
     from langchain_core.callbacks import BaseCallbackHandler  # type: ignore
-except ImportError:  # shim base class so import never fails
+
+    record_binding("langchain", "langchain_core.callbacks.BaseCallbackHandler")
+except ImportError as _exc:  # shim base class so import never fails
+    record_binding(
+        "langchain", "langchain_core.callbacks.BaseCallbackHandler", _exc
+    )
 
     class BaseCallbackHandler:  # type: ignore
         pass
 
 
 SOURCE = "langchain_py"
+
+# The ancestry map is fed by chain starts and drained by chain ends. A caller
+# that abandons a stream generator mid-run leaves ends undelivered, so the map
+# is bounded rather than trusted to drain.
+_MAX_TRACKED_CHAINS = 4096
+_MAX_ANCESTRY_HOPS = 64
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -94,19 +121,45 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
-def _is_agent_chain(
+# Metadata keys the graph runtime attaches to every run it owns. Unlike tags,
+# metadata is INHERITABLE (``CallbackManager.get_child`` copies
+# ``inheritable_metadata`` and adds the step tag with ``inherit=False``), so
+# these reach a nested run where ``graph:step:N`` does not.
+_GRAPH_METADATA_KEYS = ("langgraph_step", "langgraph_node", "ls_integration")
+
+
+def _names_an_agent(
     serialized: Any,
     tags: Optional[List[str]],
+    name: Optional[str],
+    metadata: Any,
 ) -> bool:
-    """Return True when this chain event looks like an AgentExecutor run."""
+    """Whether this chain event identifies itself as an agent or a graph.
+
+    ``serialized`` is read LAST and is not relied on, because the framework
+    almost never fills it in: the graph runtime passes a literal ``None`` at
+    both the graph root and every node, the classic executor passes ``None``
+    from ``Chain.invoke``, and ``Runnable._call_with_config`` defaults it to
+    ``None`` at every call site but the prompt classes. The identity travels in
+    the separate ``name`` keyword ("AgentExecutor", "LangGraph", the node name)
+    and in the graph metadata. Reading only ``serialized`` is what left the
+    per-run controls with no run to attach to on either runtime.
+    """
+    if isinstance(name, str) and "agent" in name.lower():
+        return True
+    # "LangGraph" is the compiled graph's default name; it contains no "agent".
+    if isinstance(name, str) and "langgraph" in name.lower():
+        return True
+    if isinstance(metadata, dict) and any(k in metadata for k in _GRAPH_METADATA_KEYS):
+        return True
+    if isinstance(tags, list) and "agent" in [str(t).lower() for t in tags]:
+        return True
     id_parts = (_get(serialized, "id") or [])
     id_str = ".".join(str(p) for p in id_parts).lower()
     if "agentexecutor" in id_str or "agent" in id_str:
         return True
-    if isinstance(tags, list) and "agent" in [str(t).lower() for t in tags]:
-        return True
-    name = str(_get(serialized, "name") or "").lower()
-    if "agent" in name:
+    ser_name = str(_get(serialized, "name") or "").lower()
+    if "agent" in ser_name:
         return True
     return False
 
@@ -126,13 +179,50 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         self._agent_runs: Dict[str, Dict[str, Any]] = {}
         self._retrievals: Dict[str, Dict[str, Any]] = {}
         self._options = options
-        # Whether the legacy agent-action callback has been seen on this handler.
-        # Both callbacks reach the same gate, and only one runtime delivers each:
-        # the classic executor fires `on_agent_action`, and the graph runtimes
-        # fire only `on_tool_start`. A run that somehow delivers both must be
-        # gated ONCE, or a tool would be charged two steps and audited twice.
-        # Twin of `_sawAgentAction` in the TypeScript handler.
-        self._saw_agent_action = False
+        # run_id -> parent_run_id, for every chain run this handler has seen.
+        # A callback is handed its IMMEDIATE parent only, and under the graph
+        # runtimes a tool's immediate parent is the node that dispatched it, not
+        # the run the budget belongs to. The edge set is enough to rebuild the
+        # ancestry because every node traces its own chain start.
+        self._chain_parents: Dict[str, Optional[str]] = {}
+        # Tool calls the legacy agent-action callback has already ruled on, per
+        # run. Both pre-tool callbacks reach the same gate and the classic
+        # executor delivers BOTH for one tool call, so the second delivery must
+        # be consumed or the tool is charged two steps and audited twice. This
+        # is a per-call credit rather than a latch: a latch is set once and read
+        # forever, so one classic run would disarm the gate for every later run
+        # on the same handler. Twin of `_sawAgentAction` in the TypeScript
+        # handler, which still has the latch.
+        self._action_gated: Dict[str, int] = {}
+
+    # -- run ancestry -------------------------------------------------------
+
+    def _remember_parent(self, run_key: str, parent_key: Optional[str]) -> None:
+        """Record one chain edge, bounded so an abandoned stream cannot grow it."""
+        if len(self._chain_parents) >= _MAX_TRACKED_CHAINS:
+            for stale in list(self._chain_parents)[: _MAX_TRACKED_CHAINS // 4]:
+                self._chain_parents.pop(stale, None)
+        self._chain_parents[run_key] = parent_key
+
+    def _agent_key_at_or_above(self, key: Optional[str]) -> Optional[str]:
+        """The nearest ancestor (or self) that owns agent-run state."""
+        hops = 0
+        while key is not None and hops < _MAX_ANCESTRY_HOPS:
+            if key in self._agent_runs:
+                return key
+            key = self._chain_parents.get(key)
+            hops += 1
+        return None
+
+    def _agent_state_for(self, run_id: Any, parent_run_id: Any) -> Optional[Dict[str, Any]]:
+        """The agent run a tool/retriever callback belongs to, by walking upward."""
+        for start in (parent_run_id, run_id):
+            if start is None:
+                continue
+            key = self._agent_key_at_or_above(str(start))
+            if key is not None:
+                return self._agent_runs[key]
+        return None
 
     # -- agent chain starts / ends -----------------------------------------
 
@@ -144,11 +234,28 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         run_id: Any = None,
         parent_run_id: Any = None,
         tags: Any = None,
+        metadata: Any = None,
         **kwargs: Any,
     ) -> None:
         try:
-            if not _is_agent_chain(serialized, tags):
+            run_key = str(run_id)
+            parent_key = str(parent_run_id) if parent_run_id is not None else None
+            self._remember_parent(run_key, parent_key)
+
+            named_agent = _names_an_agent(
+                serialized, tags, kwargs.get("name"), metadata
+            )
+            # The outermost traced run IS the agent run: it is the invocation the
+            # caller attached this handler to, and it is the one signal both
+            # runtimes give unconditionally. A chain that names itself an agent
+            # opens its own run too, but only when no ancestor already owns one,
+            # so a graph does not open a second budget at every node.
+            if parent_run_id is not None:
+                if not named_agent or self._agent_key_at_or_above(parent_key) is not None:
+                    return
+            if run_key in self._agent_runs:
                 return
+
             config = try_get_config()
             if config is None:
                 return
@@ -158,25 +265,38 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                 "agent_run_id": agent_run_id,
                 "start_time": time.time(),
                 "step_count": 0,
+                # A run that never calls a tool is an ordinary chain, and this
+                # handler is attached to plenty of those. Announcing it only
+                # once it does something agentic keeps the run record for runs
+                # that have one, without adding a pair of events to every
+                # prompt-and-model chain in the process.
+                "announced": False,
             }
             loop_block = resolve_loop_detection(getattr(config, "agent_policy", None))
             if loop_block is not None:
                 agent_state["loop_detector"] = create_loop_detector(loop_block)
-            self._agent_runs[str(run_id)] = agent_state
+            self._agent_runs[run_key] = agent_state
 
-            emit_event(
-                config,
-                provider="unknown",
-                model="unknown",
-                operation="langchain.agent.run.start",
-                source=SOURCE,
-                prompt="",
-                response="",
-                metadata={"agent_run_id": agent_run_id},
-                options=self._options or None,
-            )
+            if named_agent:
+                self._announce_run(config, agent_state)
         except Exception:
             pass
+
+    def _announce_run(self, config: Any, agent_state: Dict[str, Any]) -> None:
+        if agent_state.get("announced"):
+            return
+        agent_state["announced"] = True
+        emit_event(
+            config,
+            provider="unknown",
+            model="unknown",
+            operation="langchain.agent.run.start",
+            source=SOURCE,
+            prompt="",
+            response="",
+            metadata={"agent_run_id": agent_state["agent_run_id"]},
+            options=self._options or None,
+        )
 
     def on_chain_end(
         self,
@@ -186,8 +306,12 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
+            self._chain_parents.pop(str(run_id), None)
+            self._action_gated.pop(str(run_id), None)
             run_state = self._agent_runs.pop(str(run_id), None)
             if run_state is None:
+                return
+            if not run_state.get("announced"):
                 return
             config = try_get_config()
             if config is None:
@@ -259,8 +383,12 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         try:
+            self._chain_parents.pop(str(run_id), None)
+            self._action_gated.pop(str(run_id), None)
             run_state = self._agent_runs.pop(str(run_id), None)
             if run_state is None:
+                return
+            if not run_state.get("announced"):
                 return
             config = try_get_config()
             if config is None:
@@ -321,30 +449,53 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
           still propagates and the tool still does not run.
 
         The tool NAME comes from ``serialized["name"]``, which the base class
-        builds from the tool instance's own name. The ``name`` keyword is the
-        run name and is normally absent, so it is a fallback and not the source.
-        (The TypeScript twin is the other way round: there the serialized id is
-        the tool CLASS and the run name is the reliable one.)
+        fills in from the tool instance itself at both dispatch sites and is
+        therefore the only trustworthy source. The ``name`` keyword is the RUN
+        name, and under the graph runtimes the run name is the graph node — every
+        tool in a graph arrives as ``name="tools"``. Reading it would compare the
+        node's name against the policy and match nothing, so it is not read at
+        all. (The TypeScript twin is the other way round: there the serialized id
+        is the tool CLASS and the run name is the reliable one.)
         """
-        if self._saw_agent_action:
+        if self._consume_action_gate(run_id, parent_run_id):
             return
         self._gate_tool(
-            tool_name=self._tool_name_from_start(serialized, kwargs),
+            tool_name=self._tool_name_from_start(serialized),
             tool_input=inputs if inputs is not None else input_str,
             run_id=run_id,
             parent_run_id=parent_run_id,
         )
 
     @staticmethod
-    def _tool_name_from_start(serialized: Any, kwargs: Dict[str, Any]) -> str:
-        """The tool's own name, preferring the source the framework fills in."""
+    def _tool_name_from_start(serialized: Any) -> str:
+        """The tool's own name, from the one field the framework fills in."""
         name = _get(serialized, "name")
         if isinstance(name, str) and name:
             return name
-        run_name = kwargs.get("name")
-        if isinstance(run_name, str) and run_name:
-            return run_name
         return ""
+
+    def _consume_action_gate(self, run_id: Any, parent_run_id: Any) -> bool:
+        """Whether the legacy callback already ruled on THIS tool call.
+
+        Credited per call and spent per call. The predecessor was a handler-wide
+        latch, so a single run on the classic executor left every later
+        ``on_tool_start`` on that handler returning early — a gate that looked
+        installed and refused nothing, on a runtime that delivers no other
+        pre-tool callback.
+        """
+        for start in (parent_run_id, run_id):
+            if start is None:
+                continue
+            key: Optional[str] = str(start)
+            hops = 0
+            while key is not None and hops < _MAX_ANCESTRY_HOPS:
+                pending = self._action_gated.get(key, 0)
+                if pending > 0:
+                    self._action_gated[key] = pending - 1
+                    return True
+                key = self._chain_parents.get(key)
+                hops += 1
+        return False
 
     def on_agent_action(
         self,
@@ -354,9 +505,11 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         parent_run_id: Any = None,
         **kwargs: Any,
     ) -> None:
-        # The classic executor's pre-tool callback. Recorded so the modern hook
-        # does not gate the same tool a second time.
-        self._saw_agent_action = True
+        # The classic executor's pre-tool callback; the graph runtimes dispatch
+        # it nowhere. Credited against this run so the modern hook does not gate
+        # the same call a second time.
+        key = str(run_id) if run_id is not None else str(parent_run_id)
+        self._action_gated[key] = self._action_gated.get(key, 0) + 1
         self._gate_tool(
             tool_name=str(getattr(action, "tool", None) or ""),
             tool_input=getattr(action, "tool_input", None),
@@ -382,15 +535,48 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             if config is None:
                 return
 
-            # Find agent run state from parent_run_id or run_id
-            agent_state = self._agent_runs.get(str(parent_run_id)) or \
-                          self._agent_runs.get(str(run_id))
+            # The run this call belongs to, found by walking the recorded chain
+            # ancestry. The immediate parent is the dispatching node under the
+            # graph runtimes and the executor itself under the classic one, so a
+            # direct lookup finds a budget on one runtime and nothing on the
+            # other — which is how the per-run controls came to hold nothing.
+            agent_state = self._agent_state_for(run_id, parent_run_id)
+            if agent_state is not None:
+                self._announce_run(config, agent_state)
             agent_run_id = agent_state["agent_run_id"] if agent_state else ""
             step_index = agent_state["step_count"] if agent_state else 0
 
             policy = getattr(config, "agent_policy", None) or {}
 
             # Check tool policy
+            if not tool_name and (
+                policy.get("denied_tools") or policy.get("allowed_tools") is not None
+            ):
+                # Both dispatch sites fill the tool's own name in, so this is the
+                # rail for a build that stops doing so rather than a path taken
+                # today. A policy that names tools and a call that cannot be
+                # named is a gap; recording it is the only honest answer, and
+                # inventing an allow or a block would both be worse.
+                emit_event(
+                    config,
+                    provider="unknown",
+                    model="unknown",
+                    operation="langchain.agent.policy.tool_not_evaluated",
+                    source=SOURCE,
+                    prompt="",
+                    response="",
+                    success=False,
+                    metadata={"agent_run_id": agent_run_id, "step_index": step_index},
+                    compliance=tool_gate_not_evaluated_compliance(
+                        surface="langchain.on_tool_start",
+                        gate="tool_gate",
+                        reason=(
+                            "the pre-tool callback carried no tool name, so the "
+                            "tool policy had nothing to match this call against"
+                        ),
+                    ),
+                    options=self._options or None,
+                )
             if tool_name:
                 ok, reason = _check_tool(tool_name, policy)
                 if not ok:
@@ -511,8 +697,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             if config is None:
                 return
 
-            agent_state = self._agent_runs.get(str(parent_run_id)) or \
-                          self._agent_runs.get(str(run_id))
+            agent_state = self._agent_state_for(run_id, parent_run_id)
             agent_run_id = agent_state["agent_run_id"] if agent_state else ""
 
             output_text = str(output) if output is not None else ""
@@ -547,8 +732,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             if config is None:
                 return
 
-            agent_state = self._agent_runs.get(str(parent_run_id)) or \
-                          self._agent_runs.get(str(run_id))
+            agent_state = self._agent_state_for(run_id, parent_run_id)
             agent_run_id = agent_state["agent_run_id"] if agent_state else ""
 
             emit_event(
@@ -586,8 +770,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         try:
             if try_get_config() is None:
                 return
-            agent_state = self._agent_runs.get(str(parent_run_id)) or \
-                          self._agent_runs.get(str(run_id))
+            agent_state = self._agent_state_for(run_id, parent_run_id)
             id_path = None
             if isinstance(serialized, dict):
                 id_path = serialized.get("id")
@@ -728,7 +911,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         # Link to parent agent run if available
         parent_agent_run_id = None
         if parent_run_id is not None:
-            parent_state = self._agent_runs.get(str(parent_run_id))
+            parent_state = self._agent_state_for(None, parent_run_id)
             if parent_state:
                 parent_agent_run_id = parent_state["agent_run_id"]
 
