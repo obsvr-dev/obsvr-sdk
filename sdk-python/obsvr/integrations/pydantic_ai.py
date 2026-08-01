@@ -1,19 +1,32 @@
-"""PydanticAI integration — governance via a toolset wrapper.
+"""PydanticAI integration — governance at the toolset boundary.
 
-PydanticAI runs every tool call through its toolset's ``call_tool`` method, and
-ships ``WrapperToolset`` precisely so a toolset can be wrapped to intercept that
-call. ``ObsvrToolset`` subclasses it (when PydanticAI is installed) and governs
-each tool call before delegating:
+PydanticAI runs every tool call through a toolset's ``call_tool`` method, and
+ships ``WrapperToolset`` precisely so a toolset can be wrapped to intercept
+that call. ``ObsvrToolset`` subclasses it (when PydanticAI is installed) and
+governs each call before delegating:
 
 - tool allow/deny (``agent_policy``),
 - built-in PII scan + structured rules + the pre-call hook (HITL) on the tool
   arguments.
 
-A block **raises** from ``call_tool`` — the wrapped toolset's ``call_tool`` is
-never reached, so the tool never executes and the error propagates up through
-the agent run (PydanticAI surfaces it as a tool failure). All other toolset
-behavior (tool discovery, entering/exiting, name-conflict handling) is
-inherited unchanged from ``WrapperToolset``.
+A block **raises** from ``call_tool`` before the wrapped toolset is reached, so
+the tool never executes. The raise is not a ``ModelRetry``, so PydanticAI does
+not turn it into a retry prompt and does not hand it back to the model: it
+propagates and ends the run. That is the intended shape for a policy refusal —
+a denied tool should not become something the model is invited to route around
+— but it is a run-ending exception rather than a recoverable tool failure, and
+calling code should expect to catch it.
+
+WHICH TOOLS A WRAPPER COVERS. ``ObsvrToolset`` governs the toolset it wraps,
+and that is the whole story only when every tool lives in that toolset. Usually
+none does: an agent keeps its OWN function toolset for ``@agent.tool``,
+``@agent.tool_plain`` and ``Agent(tools=[...])``, and PydanticAI combines that
+with anything passed to ``Agent(toolsets=[...])`` as SIBLINGS. A combined
+toolset dispatches each call to whichever sibling owns the tool, so a wrapper
+around one never sees a call into another. Measured on a real agent graph, one
+policy, one tool name: refused through ``Agent(toolsets=[ObsvrToolset(...)])``,
+and executed — payload returned to the caller — with the same tool registered
+through ``@agent.tool``.
 
 Usage::
 
@@ -24,14 +37,15 @@ Usage::
 
     obsvr.init(api_key="...", ingest_url="https://...",
                agent_policy={"denied_tools": ["shell_exec"]})
-    tools = FunctionToolset([...])
-    agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(tools)])
+
+    agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(FunctionToolset([...]))])
 """
 
 # Interception: PydanticAI WrapperToolset.call_tool override (non-mutating).
 # The wrapped toolset is delegated to; a policy block raises before delegation,
 # stopping the tool from ever executing.
 
+import dataclasses
 import json
 from typing import Any, Dict, Optional, Tuple
 
@@ -83,6 +97,7 @@ def _args_prompt(tool_name: str, tool_args: Any) -> str:
         return f"{tool_name}(...)"
 
 
+@dataclasses.dataclass(init=False, eq=False)
 class ObsvrToolset(_WrapperToolset):  # type: ignore[misc]
     """Governing wrapper around any PydanticAI toolset.
 
@@ -90,13 +105,28 @@ class ObsvrToolset(_WrapperToolset):  # type: ignore[misc]
     into the rules-eval identity and attached to the audit as the principal).
     """
 
-    def __init__(self, wrapped: Any, **options: Any) -> None:
+    # PydanticAI rebuilds a toolset tree with ``dataclasses.replace`` — that is
+    # what ``WrapperToolset.visit_and_replace`` does, and the agent runs it over
+    # its own tree. ``replace`` reconstructs through ``__init__`` from the
+    # DECLARED FIELDS, so anything held outside them is dropped: measured, a
+    # rebuilt toolset came back with its options at ``{}``, and every audit
+    # event it went on to emit carried no caller principal. Enforcement was
+    # unaffected, which is exactly why it stayed invisible — the tool was still
+    # refused, the record just stopped saying on whose behalf. Declaring the
+    # options as a FIELD is what carries them through the rebuild.
+    _obsvr_options: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
+    def __init__(
+        self, wrapped: Any, _obsvr_options: Optional[Dict[str, Any]] = None, **options: Any
+    ) -> None:
         try:
             super().__init__(wrapped)
         except TypeError:  # pragma: no cover - shim path / alternate ctor
             object.__setattr__(self, "wrapped", wrapped)
+        merged = dict(_obsvr_options or {})
+        merged.update(options)
         # object.__setattr__ so a frozen-dataclass base still accepts the field.
-        object.__setattr__(self, "_obsvr_options", options)
+        object.__setattr__(self, "_obsvr_options", merged)
 
     def _identity_meta(self) -> Optional[Dict[str, Any]]:
         opts = getattr(self, "_obsvr_options", {}) or {}
