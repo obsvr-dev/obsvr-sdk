@@ -55,6 +55,17 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **The CrewAI extra's range is now a measurement: `crewai>=1.0.0,<2.0.0`
+  (was `>=0.30.0`, uncapped).** Nothing below 1.0.0 was ever driven, so
+  nothing below 1.0.0 was ever supported — it was only claimed; this narrows
+  the claim to the versions a per-release capability matrix and live
+  boundary runs actually stand behind, and caps the untested next major.
+  **Not marked BREAKING:** the package has not shipped a release, so nothing
+  depended on the wider claim. The hook gate is a 1.15.3+ capability inside
+  that range (adjacent tested pair; 1.8.0–1.15.2 accept hook registrations
+  they never consult, which the installer detects and refuses loudly); the
+  tool governor covers the whole range.
+  ([`89227de`](https://github.com/obsvr-dev/obsvr-sdk/commit/89227de))
 - **The conformance corpus hash changed — re-pin if you pinned it.**
   `conformance/MANIFEST.sha256` moved from `corpus_sha256 = be5d1238…` to
   `fdb4579d…`, and both `conformance.pin` files with it. No fixture content,
@@ -556,6 +567,20 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **`govern_tool` / `govern_tools` — framework-agnostic tool governance,
+  the Python twin of `obsvrGovernTool`.** Wraps a tool object's own execute
+  callable (resolved across `on_invoke_tool`, `_run`/`_arun` with `func`
+  co-gated, `execute`, `call`/`acall`, `invoke`/`ainvoke`, `run`/`arun`, and
+  bare callables; sync and async as a pair, one verdict and one audit event
+  per invocation) so a denied tool raises the typed `ObsvrPolicyError` before
+  its body runs on any framework, whatever hook APIs it has or lacks. The
+  gated call runs the FULL pre-call pipeline — rules, floor, PII, canary,
+  session-taint destructive gate — and every event carries the sealed
+  tool-content digest. Exported from the package root, matching the
+  TypeScript entry point. CrewAI dispatch driven live on both executor paths
+  and measured per version across the supported range; the other frameworks'
+  shapes are pinned offline.
+  ([`46946c4`](https://github.com/obsvr-dev/obsvr-sdk/commit/46946c4))
 - **The MCP tool gate is now driven against the real `mcp` package in CI, in
   both languages — and every other integration test is labelled as what it is.**
   This is a decision about which asymmetry to keep, so both halves are stated.
@@ -966,6 +991,38 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **CrewAI (Python): a denied tool now never runs — and where nothing can
+  bind, the record stopped lying about it.**
+
+  CrewAI delivers the step callback only after the step it reports: on the
+  ReAct text path (any model whose `supports_function_calling()` is False)
+  the executor runs the tool and then hands over the `AgentAction`; on the
+  native function-calling path the callback carries no tool name at all. The
+  old gate hung there anyway — it emitted `action_taken: "blocked"` with
+  `TOOL_DENIED` for calls that had already executed, and the bare
+  `RuntimeError` it raised was retried by the executor (only its own
+  `ToolExecutionFailedError` passes through), re-running the whole task.
+  Measured live: one denied call's side effect written three times under the
+  default `max_retry_limit` of 2.
+
+  Enforcement moved AHEAD of execution, on two independent mechanisms —
+  CrewAI's own `before_tool_call` hook via `install_tool_gate_hook()`
+  (returned-sentinel refusal, both executor paths, feature-detected dispatch,
+  loud refusal on builds that register hooks but never consult them) and the
+  new tool governor (below). Driven live on both paths with a
+  side-effect-counting tool: a denied tool writes ZERO marker lines under
+  either mechanism, exactly one on every paired allow control, and the two
+  mechanisms redden independently under mutation. With neither installed the
+  step callback is an audit rail and says so: `not_evaluated` with the reason
+  in `metadata.obsvr_telemetry.policy_not_evaluated`, no raise, no retry.
+
+  The kickoff callbacks are corrected on the same contract-reading: current
+  Crew takes `before_kickoff_callbacks` / `after_kickoff_callbacks` (plural,
+  list-valued; the singular kwargs the docstrings showed are silently
+  discarded by Crew's `extra="ignore"` config), and Crew assigns each
+  callback's return over its inputs and result, so obsvr's callbacks now
+  return what they receive instead of `None`.
+  ([`403c4da`](https://github.com/obsvr-dev/obsvr-sdk/commit/403c4da))
 - **Mixing camelCase and snake_case config keys silently dropped half a
   configuration. `init()` now warns and names every key it ignored.**
 

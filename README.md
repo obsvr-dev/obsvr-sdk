@@ -521,19 +521,20 @@ to set a provider label and a source, not to widen coverage.
 ### Does a tool-policy block actually stop the tool?
 
 **This is the table to read before you put a destructive capability behind a
-policy.** Every row was driven against a real run and graded on a captured audit
-event; none was inferred from the code being present. The two languages do not
-agree, so neither column may be read across to the other.
+policy.** Rows are graded on a captured audit event from a real run rather than
+inferred from the code being present — and the one cell that has not yet been
+driven live says so on its face rather than borrowing this sentence. The two
+languages do not agree, so neither column may be read across to the other.
 
 | Surface | TypeScript | Python |
 | --- | --- | --- |
 | MCP (`callTool`) | **enforces** | **enforces** |
-| `obsvrGovernTool` | **enforces** | *no equivalent* |
+| tool governor (`obsvrGovernTool` / `govern_tool`) | **enforces** | **enforces** — CrewAI dispatch driven live on both executor paths and per version across the supported range; other framework shapes pinned offline |
 | LangChain | **enforces** | **enforces** |
 | AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
 | Pydantic-AI | *no integration* | **enforces**, not yet driven live |
 | OpenAI Agents | **records only**¹ | **records only**¹ |
-| CrewAI | *no integration* | **not wired** (its step limit does fire) |
+| CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
 | provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | *no integration* |
@@ -543,11 +544,12 @@ agree, so neither column may be read across to the other.
 - **records only** — a gate runs, but too late to stop anything. A denied tool
   executes and its result reaches the caller. The event records
   `not_evaluated` with the reason, because it cannot honestly claim a refusal.
-  On both sides this is the tracing-processor surface: the framework invokes
-  processor callbacks fire-and-forget, so nothing raised there reaches the run,
-  and a function span does not end until its tool has already returned.
-- **not wired** — the gate is implemented but hangs off a callback current
-  runtimes do not deliver. Nothing is refused and no block event is emitted.
+  The tracing-processor surface is this way on both sides: the framework
+  invokes processor callbacks fire-and-forget, so nothing raised there reaches
+  the run, and a function span does not end until its tool has already
+  returned. CrewAI's step callback reports this way too when neither of its
+  pre-execution mechanisms is installed — it is delivered only after the step
+  it names.
 
 ¹ Tool policy on this surface records only, and that is the row above. Its
   **model-call** path is a separate question with a separate answer: it is
@@ -587,8 +589,9 @@ but `max_steps` needs a conversation boundary the framework's send hook cannot
 see, so it applies only when the run-level helper (`patch_initiate_chat`) is
 installed as well; without it the limit is recorded `not_evaluated` rather than
 applied, because an unscoped counter is per process and decays into a blanket
-denial. On CrewAI the reverse holds: the tool gate is not wired, but the step
-check runs on every step callback and so does fire.
+denial. On CrewAI the step check rides the step callback and fires post-hoc,
+while the tool gate proper moved OFF that callback entirely — to the
+pre-execution hook and the governed tool, which is what made it real.
 
 Per-package version ranges — declared floor and ceiling, what is verified against a captured audit event versus only bound, and which rows have no artifact at all — are in [COMPATIBILITY.md](COMPATIBILITY.md), generated from the audit artifacts rather than maintained by hand.
 
@@ -671,13 +674,15 @@ is marked on each.
    `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()` and does not
    block there. Full layer-by-layer list in [SECURITY.md](SECURITY.md).
 
-5. **Three tool gates refuse nothing.** CrewAI is not wired and LlamaIndex has no
-   tool gate at all *(both Python only)*. The OpenAI Agents tracing surface cannot
-   refuse in **either** SDK, and that one is structural rather than pending: the
-   framework wraps every processor callback in its own `try`/`except`, and the
-   gate runs after the tool has already returned. Those events record
-   `not_evaluated` — never `blocked` — so they are a silence, not a false
-   refusal. Put a destructive capability behind MCP.
+5. **Two tool surfaces refuse nothing, and both have a governed alternative.**
+   LlamaIndex has no tool gate of its own *(Python; on either SDK, gate the
+   tool itself with the tool governor)*. The OpenAI Agents tracing surface
+   cannot refuse in **either** SDK, and that one is structural rather than
+   pending: the framework wraps every processor callback in its own
+   `try`/`except`, and the gate runs after the tool has already returned.
+   Where a surface records a denial it cannot enforce, it records
+   `not_evaluated` — never `blocked` — a silence, not a false refusal. Put a
+   destructive capability behind MCP or behind a governed tool.
    [Per-surface grading](#framework--provider-support).
 
 6. **The Python SDK installs no signal handlers, so a container stop drops the
