@@ -18,7 +18,7 @@ Which versions of each package the obsvr SDK works with.
 | `llama-index-core`        | `>=0.11.23`                           | `0.11.23` – `0.14.23`                                | declared       |
 | `mcp`                     | `>=2.0.0,<3.0.0`                      | `1.29.0`, `2.0.0`                                    | **matrix**     |
 | `openai`                  | `>=1.66.0`                            | `1.0.0` – `2.50.0`                                   | floor located  |
-| `openai-agents`           | `>=0.0.2`                             | `0.0.2` – `0.19.1`                                   | declared       |
+| `openai-agents`           | `>=0.19.0,<1.0.0`                     | `0.19.0`, `0.19.2`                                   | floor located  |
 | `opentelemetry-api`       | `>=1.20.0`                            | —                                                    | declared       |
 | `pydantic-ai-slim`        | `>=2.0.0,<3.0.0`                      | `2.0.0`, `2.22.0`                                    | **matrix**     |
 | `PyNaCl`                  | `>=1.0.0`                             | —                                                    | declared       |
@@ -51,6 +51,12 @@ every row presented the same way whether or not it had been.
   (at the release below, the audited path is absent; at the floor, it is
   audited on a real call), with the reasoning recorded per extra in
   `sdk-python/pyproject.toml`. The open top is not covered by that work.
+  `openai-agents` is the sharpest instance: at 0.18.0 and every release back
+  to 0.4.0, the framework fails to construct its own `Usage` container under
+  the current `openai` client, so `Runner.run` dies before any tool is
+  reached — measured per release; at 0.19.0 the full tool-gate suite runs
+  live and green, as it does at 0.19.2, so both listed versions are live
+  legs, not resolver output.
 - **declared** — the range is asserted and no run has covered it. This is the
   honest label for most of the matrix, and it is deliberately **not** narrowed
   to whatever happens to be installed: a range nobody has driven is untested,
@@ -77,7 +83,7 @@ Python side.
 | `@google/generative-ai`           | `>=0.1.0 <1.0.0`                | `0.1.0` – `0.24.1`    | declared       |
 | `@langchain/core`                 | `>=0.2.0`                       | `0.2.0` – `1.2.3`     | declared       |
 | `@modelcontextprotocol/sdk`       | `>=1.0.0 <1.25.0 \|\| >=1.30.0` | `1.30.0`              | declared       |
-| `@openai/agents`                  | `>=0.13.0 <1.0.0`               | `0.13.0` – `0.14.0`   | declared       |
+| `@openai/agents`                  | `>=0.13.0 <1.0.0`               | `0.13.0`, `0.13.4`, `0.14.2` | declared  |
 | `@opentelemetry/api`              | `>=1.4.0`                       | `1.4.0` – `1.9.1`     | declared       |
 | `ai`                              | `>=3.3.28`                      | `3.4.33` – `7.0.41`   | declared       |
 | `llamaindex`                      | `>=0.5.9`                       | `0.5.9` – `0.12.1`    | declared       |
@@ -85,6 +91,14 @@ Python side.
 | `together-ai`                     | `>=0.6.0 <1.0.0`                | `0.6.0` – `0.44.0`    | declared       |
 
 `@google/generative-ai` is the legacy line, end-of-life 2025-08. Its replacement `@google/genai` is **not supported yet**.
+
+The `@openai/agents` row's Observed versions are live tool-gate legs, not
+resolver output: the declared floor `0.13.0`, the harness-installed `0.13.4`,
+and the latest `0.14.2` each ran the full paired allow/deny suite (denied tool
+at zero side-effect writes, payload absent from what the caller received)
+against a real provider. The row stays `declared` because no release below the
+floor was driven — the label is about locating an edge, and that edge has not
+been walked.
 
 **Module format: ESM only.** `@obsvr/sdk` declares `"type": "module"` and every export condition is `import`, so a CommonJS consumer cannot `require()` it at any version. Independently of loading, the zero-code `--import` interception path does not reach `require()` — `module.register()` hooks do not intercept it — so a CJS entrypoint is ungoverned on that path even where the packages above are dual-format. `obsvr.wrap()` and the named compatibility wrappers are unaffected. See the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only) for why dual-publishing is scoped as future work rather than a quick fix.
 

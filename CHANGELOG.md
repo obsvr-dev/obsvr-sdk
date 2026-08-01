@@ -74,6 +74,17 @@ cut, when it is renamed to that version.
   resolves its server class and session helper by capability rather than by the
   names one major used.
   ([`7b9a967`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b9a967))
+- **The openai-agents extra's range is now a measurement:
+  `openai-agents>=0.19.0,<1.0.0` (was `>=0.0.2`, uncapped).** Every release
+  from 0.4.0 through 0.18.0 fails to construct its own `Usage` container
+  under the current `openai` client — `Runner.run` dies before any tool is
+  reached — so 0.19.0 is the oldest release that completes a live run at all,
+  measured per release rather than asserted. The tool gate is live-proven at
+  0.19.0 and 0.19.2. A version the gate never ran on was never supported,
+  only claimed; this narrows the claim to what the runs stand behind and caps
+  the untested next major. **Not marked BREAKING:** the package has not
+  shipped a release, so nothing depended on the wider claim.
+  ([`019cd7e`](https://github.com/obsvr-dev/obsvr-sdk/commit/019cd7e))
 - **The CrewAI extra's range is now a measurement: `crewai>=1.0.0,<2.0.0`
   (was `>=0.30.0`, uncapped).** Nothing below 1.0.0 was ever driven, so
   nothing below 1.0.0 was ever supported — it was only claimed; this narrows
@@ -586,6 +597,32 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **`attach_tool_gate` / `attachToolGate` — OpenAI Agents now refuses a denied
+  tool before it runs, in both languages.** The framework consults each
+  function tool's own input guardrails BEFORE invoking it, and the new
+  installer puts obsvr's guardrail there, walking every function tool
+  reachable from an agent (handoff targets included, by tool object). A
+  denied tool is refused by the guardrail contract's returned sentinel
+  (`reject_content` / `rejectContent`) — the model receives the block message
+  as the tool's result, the run continues, and the `blocked`/`TOOL_DENIED`
+  record is true at the point it is written. The tool governor
+  (`govern_tool` / `obsvrGovernTool`) is the second, independent mechanism on
+  this surface with the opposite run semantics: its refusal raises out of the
+  tool's own callable, which the framework converts to a run abort
+  (`UserError` in Python, `ToolCallError` in TypeScript) carrying obsvr's
+  typed denial. Both mechanisms driven live with a side-effect-counting tool
+  and the payload asserted absent from what the caller received — Python at
+  openai-agents 0.19.0 and 0.19.2 on the plain, streamed and handoff routes;
+  TypeScript at @openai/agents 0.13.0, 0.13.4 and 0.14.2 on the plain and
+  streamed routes — with paired allow controls at exactly one write and the
+  two mechanisms reddening independently under mutation. Installation
+  feature-detects the framework's guardrail surface by attribute presence and
+  refuses loudly where no executor would consult it; the tracing processor
+  defers to any gate governing a name instead of stamping `not_evaluated`
+  beside the gate's own verdict.
+  ([`9e1d085`](https://github.com/obsvr-dev/obsvr-sdk/commit/9e1d085),
+  [`f84d838`](https://github.com/obsvr-dev/obsvr-sdk/commit/f84d838),
+  [`703e3d2`](https://github.com/obsvr-dev/obsvr-sdk/commit/703e3d2))
 - **`govern_tool` / `govern_tools` — framework-agnostic tool governance,
   the Python twin of `obsvrGovernTool`.** Wraps a tool object's own execute
   callable (resolved across `on_invoke_tool`, `_run`/`_arun` with `func`
@@ -1066,6 +1103,15 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   any user- or tenant-scoped quota rule metered the wrong bucket. The options
   are now a declared field and survive the rebuild.
   ([`f4726c3`](https://github.com/obsvr-dev/obsvr-sdk/commit/f4726c3))
+- **OpenAI Agents (TypeScript): each function span is processed once, not once
+  per hook delivery.** `onSpanStart` and `onSpanEnd` both fed `processSpan`,
+  and the function and generation branches carried no end guard — so every
+  tool call emitted two `tool.call` events and two policy verdicts, and the
+  step counter was charged twice, tripping `maxSteps` at half its configured
+  budget. The span payload for those branches is complete only at END, so
+  that is now the one delivery they process; the agent span still derives
+  `run.start` from its start delivery.
+  ([`37ff9e8`](https://github.com/obsvr-dev/obsvr-sdk/commit/37ff9e8))
 
 - **CrewAI (Python): a policy naming a tool the way CrewAI does refused
   nothing.** CrewAI sanitizes every tool name before dispatch — lowercased,

@@ -291,17 +291,38 @@ captured audit event.
 | `obsvrGovernTool` | **enforces** — wraps the tool's own execute and gates before delegating |
 | LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError` |
 | LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |
-| OpenAI Agents SDK | **records only** — see below |
+| OpenAI Agents SDK | **enforces** via `attachToolGate` and/or `obsvrGovernTool` — see below |
 | `chat.completions.runTools`, `beta.messages.toolRunner` | **enforces on the tools, not on the turns** — see below |
 
-**OpenAI Agents SDK: records only.** A `TracingProcessor` cannot refuse anything
-— the framework dispatches processor callbacks fire-and-forget, so nothing raised
-there reaches the run — and a function span does not end until its tool has
-returned. So a denied tool executes and its result reaches the caller. The event
-records `action_taken: "not_evaluated"` with the reason in
-`metadata.obsvr_telemetry.policy_not_evaluated`; it must not be read as a
-refusal. To actually refuse tools under that framework, wrap them with
-`obsvrGovernTool`.
+**OpenAI Agents SDK: enforces, through two independent pre-execution
+mechanisms.** Driven live at `@openai/agents` 0.13.0, 0.13.4 and 0.14.2 with a
+side-effect-counting tool: a denied tool writes ZERO marker lines under either
+mechanism, exactly one on every paired allow control, with the tool's payload
+asserted absent from what the caller received; the two redden independently
+under mutation.
+
+- `attachToolGate(agent)` pushes obsvr's tool input guardrail into each
+  function tool's own `inputGuardrails` — the framework's per-tool extension
+  point, awaited by the runtime BEFORE every invocation — walking handoff
+  targets reachable from the agent, by tool OBJECT. Refusal is the guardrail
+  contract's `rejectContent` sentinel: the model receives the block message as
+  the tool's result and the run continues. The record is `blocked` /
+  `TOOL_DENIED`, true on this path. A function tool carrying no
+  `inputGuardrails` array (a build whose executor never consults guardrails)
+  makes the attach THROW and roll back rather than arm a property nothing
+  reads. Hosted provider-side tools have no client-side invocation to guard,
+  and MCP-server tools are converted per turn after the attach — govern those
+  at the MCP boundary.
+- `obsvrGovernTool(tool)` gates the tool's own `invoke`; its refusal throws,
+  which the framework wraps into `ToolCallError` — the RUN ABORTS with obsvr's
+  denial in the error chain. Choose by what a denial should do to the run.
+
+The `TracingProcessor` beneath them is the audit rail and still cannot refuse
+anything — the framework dispatches processor callbacks fire-and-forget, and a
+function span does not end until its tool has returned. With no mechanism
+installed a denied tool records `action_taken: "not_evaluated"` with the reason
+in `metadata.obsvr_telemetry.policy_not_evaluated`; beside a real gate it
+defers, so no `not_evaluated` appears next to the gate's own verdict.
 
 **Provider tool runners: the tools are gated, the intermediate turns are not.**
 A runner invokes its tools itself and holds the raw provider client, so obsvr
@@ -391,11 +412,15 @@ The combined list for both, with the scope marked on each entry, is in the
    while the stored copy reads redacted. A `piiPolicy` of `{ssn: "block"}` blocks
    through `obsvr.wrap()` and does not block there.
 
-5. **The OpenAI Agents tracing surface cannot refuse a tool, structurally.** The
-   framework wraps every processor callback in its own `try`/`catch`, and the gate
-   runs after the tool has already returned. Those events record `not_evaluated`,
-   never `blocked` — a silence, not a false refusal. Put a destructive capability
-   behind MCP or `obsvrGovernTool`. [Grading](#framework-integrations).
+5. **The OpenAI Agents tracing surface cannot refuse a tool, structurally —
+   the gates on that framework live elsewhere.** The framework dispatches
+   processor callbacks fire-and-forget, and the gate there runs after the tool
+   has already returned; those events record `not_evaluated`, never `blocked`
+   — a silence, not a false refusal. The surface itself enforces through the
+   framework's own pre-invocation tool guardrails (`attachToolGate`) or
+   `obsvrGovernTool`, and the processor defers to either. Put a destructive
+   capability behind MCP, a tool guardrail, or a governed tool.
+   [Grading](#framework-integrations).
 
 6. **The current Google Gemini SDK is not supported.** obsvr binds
    `@google/generative-ai`, the legacy line, which reached end-of-life in August

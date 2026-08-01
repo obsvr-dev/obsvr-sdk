@@ -137,11 +137,11 @@ a vocabulary obsvr invented.
     - `autogen` — **enforces**, and now on every call in a message: it used to read only the first, so a denied name in a parallel batch still executed — fixed, and re-probed live on ag2 0.3.2 and 0.14.0 with the batching control showing both calls running unpoliced.
     - `langchain` — does not enforce THIS control. It has a pre-execution callback its runtimes do deliver (`on_tool_start`, where its agent-policy tool gate enforces — see below), but the taint latch's destructive-tools set is not consulted at that boundary. Wrap the tool with `govern_tool` to carry it there.
     - `crewai` — its pre-execution hook gate (`install_tool_gate_hook`) enforces the agent-policy allow/deny list before the tool runs, on both executor paths, but does not consult the destructive-tools set either; the step callback is delivered only after the step it reports and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
-    - `openai_agents` — does not enforce: its gate runs in `on_span_end`, after the tool has returned, and no tracing-processor callback can refuse anything because the framework wraps each one in its own `try/except` — its events record `not_evaluated` rather than a verdict.
+    - `openai_agents` — its pre-execution guardrail gate (`attach_tool_gate`) enforces the agent-policy allow/deny list before the tool runs — the executor consults tool input guardrails ahead of invocation — but does not consult the destructive-tools set; the tracing processor beneath it runs in `on_span_end`, after the tool has returned, and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
     - `llamaindex` — no tool gate of its own.
 
     The non-enforcing rows stay listed under "Bypass surface". **Put a destructive capability behind `mcp`, or behind a `govern_tool`-wrapped tool.** Detection quality is still not the lever here and reachability still is — a missed or borderline injection is harmless if it cannot reach a destructive capability, which is why this composition matters more than adding detector patterns — but a reachability argument is only worth what the enforcement points under it are worth, and those are named above rather than assumed.
-  - **TypeScript, measured the same way — and it does not read across from Python.** `obsvrGovernTool` **enforces** (it wraps the tool's own execute and gates before delegating), the LangChain handler **enforces** — it gates in the pre-execution `handleToolStart` and sets `awaitHandlers`/`raiseError` so a refusal inside a callback aborts the tool, where Python's `on_tool_start` gate covers agent policy but not this control — and MCP enforces on the same `callTool` boundary as its Python twin. The tracing-processor surface **records only** there as well, for the same structural reason, and it was emitting a false `blocked` until this was measured. `llamaindex` and `vercel-ai` carry no gate of their own and are governed per tool through `obsvrGovernTool`. The LangChain row still differs between the SDKs, so neither column may be read across to the other.
+  - **TypeScript, measured the same way — and it does not read across from Python.** `obsvrGovernTool` **enforces** (it wraps the tool's own execute and gates before delegating), the LangChain handler **enforces** — it gates in the pre-execution `handleToolStart` and sets `awaitHandlers`/`raiseError` so a refusal inside a callback aborts the tool, where Python's `on_tool_start` gate covers agent policy but not this control — and MCP enforces on the same `callTool` boundary as its Python twin. On openai-agents, `attachToolGate`'s guardrail enforces the agent-policy allow/deny list before invocation but, like its Python twin, does not consult the destructive-tools set — wrap the tool with `obsvrGovernTool` for this control; the tracing-processor surface beneath it **records only**, for the same structural reason as Python's, and it was emitting a false `blocked` until this was measured. `llamaindex` and `vercel-ai` carry no gate of their own and are governed per tool through `obsvrGovernTool`. The LangChain row still differs between the SDKs, so neither column may be read across to the other.
   - **Where the names come from.** Membership is exact names only (a capability set that pattern-matched would be a detector again) and costs one set-membership test at the tool gate. The list is no longer the only source: a discovered MCP tool whose descriptor declares `annotations.destructiveHint: true` joins the set by itself, so a deployment that enabled the latch and configured no list still gets a capability gate rather than silently getting none. The hint is admitted in ONE direction: it can only ADD. A `destructiveHint: false` is a safety claim from the tool server — the untrusted party the latch exists to defend against — so it is ignored, and an ABSENT hint is likewise treated as non-destructive, which is the compatible default and is stated here rather than left implied (most deployed servers publish no annotations, and reading silence as destructive would turn `flag` into a blanket block for them). A descriptor the SDK cannot read at all resolves to destructive, because an unreadable field is the same escape as a lying one. An operator entry always applies regardless of what a descriptor says, hints are recorded per governed client and never un-recorded by a later listing, and `honorDestructiveHints: false` restricts the set to the configured list alone. The whole table — `(descriptor_hint, operator_list, taint_state) → decision`, plus how the hint itself is read — is pinned cross-language in `conformance/fixtures/session_taint.json` (`tool_gate_cases`, `descriptor_hint_cases`).
   - **Honest limits.** The latch is keyed on the **caller-supplied** session identity (`metadata.user_id ?? session_id ?? tenant_id`) — thread a real session id, or every call shares one `"global"` bucket and the latch cannot distinguish sessions; the store is in-process and bounded (10,000 sessions, oldest evicted), so it resets on restart; and the enforcement point is the SDK's own egress path, so it cannot stop egress that bypasses the SDK (see "Bypass surface"). The turn that first taints a session is handled by its own gate and is never double-penalised — only *subsequent* egress is escalated.
   - **A tool boundary the SDK was NOT on, and now is:** a provider tool runner (`chat.completions.runTools`, `beta.messages.toolRunner`) invokes its tools itself, so `destructiveTools` did not reach them — measured, a tainted session executed `send_money` there under `flag`. obsvr now gates each of the runner's tool callbacks through the same wrapper before the runner is constructed, and both directions were re-measured live. The runner's intermediate model turns are still audited rather than gated, and a hosted tool the provider executes on its own infrastructure has no local callback to gate; see "Bypass surface" for both limits.
@@ -285,21 +285,35 @@ What the SDKs do about it:
     ends the run rather than becoming a retry prompt the model can work around. It
     implements no step limit at all.
 
-  - **`openai_agents` — does not enforce.** Its gate runs in `on_span_end`, after the
-    tool has returned, and the exception it raised to stop the run was swallowed by the
-    framework's trace-processor handling: the tool executed, its result reached the
-    caller, and the event for that call carried `action_taken: "blocked"` with
-    `TOOL_DENIED` — a false record rather than a coverage gap, which is the grade that
-    made it release-blocking. That record is **fixed**: the event now carries
-    `action_taken: "not_evaluated"` and states in
-    `metadata.obsvr_telemetry.policy_not_evaluated` that the decision arrives after the
-    tool has already returned and cannot bind it. The step limit and loop detection on
-    that surface report the same way, for the same reason. **The gate still does not
-    enforce** — a silence, documented here and unrepaired — and the reason is structural:
-    the framework wraps every processor callback in `try/except` and only logs, so no
-    tracing-processor hook can refuse a call. A pre-execution boundary does exist on a
-    different registration surface: the framework awaits its run hooks before invoking a
-    tool and does not swallow their exceptions, which is where a real gate would go.
+  - **`openai_agents` — enforces, as of the guardrail gate; the tracing processor
+    beneath it records.** The processor's history is the instructive half and stays
+    written down: its gate runs in `on_span_end`, after the tool has returned, and the
+    exception it raised to stop the run was swallowed by the framework's
+    trace-processor handling — the tool executed, its result reached the caller, and
+    the event for that call carried `action_taken: "blocked"` with `TOOL_DENIED`, a
+    false record rather than a coverage gap, which is the grade that made it
+    release-blocking. That record is **fixed**: with no gate installed the event
+    carries `action_taken: "not_evaluated"` and states in
+    `metadata.obsvr_telemetry.policy_not_evaluated` that the decision arrives after
+    the tool has already returned and cannot bind it. The step limit and loop
+    detection on the processor report the same way, for the same reason — no
+    tracing-processor hook can refuse a call, structurally. **Refusal now lives on
+    the framework's own pre-invocation surface instead:** `attach_tool_gate` appends
+    obsvr's `ToolInputGuardrail` to every function tool reachable from the agent
+    (handoff targets included), the executor consults tool input guardrails before
+    invoking the tool, and a denied tool is refused by the `reject_content` sentinel
+    — the model receives the block message as the tool's result, the run continues,
+    and the `blocked`/`TOOL_DENIED` record is true at the point it is written.
+    `govern_tool` is the second, independent mechanism: its refusal raises and the
+    run aborts as `UserError` chained from obsvr's typed error. Both driven live at
+    openai-agents 0.19.0 and 0.19.2 — denied tool at zero side-effect writes with
+    the payload absent from the run result, on the plain, streamed and handoff
+    routes, paired allow controls at one write, the two mechanisms reddening
+    independently under mutation — and the installer feature-detects BOTH framework
+    halves (guardrail types and the executor's consult site) by attribute presence,
+    refusing loudly on a build that would accept a registration no executor asks
+    about. Beside either gate the processor defers: no `not_evaluated` beside the
+    gate's own verdict.
 
   - **`llamaindex` — no tool gate of any kind.**
 

@@ -533,7 +533,7 @@ not agree, so neither column may be read across to the other.
 | LangChain | **enforces** | **enforces** |
 | AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
 | Pydantic-AI | *no integration* | **enforces** with `govern_agent`, driven live at both ends of the supported range — a denied tool at ZERO side-effect writes, allow controls at exactly one, and the latest version additionally driven against a real provider whose model chose to call the tool. Which mechanism you install decides the coverage: `govern_agent` binds to the toolset the agent assembles and reaches every tool however it was registered, while `ObsvrToolset` governs the toolset it wraps and nothing beside it — measured, a tool registered with `@agent.tool` executed under a policy that denied it, because an agent's own function toolset is a SIBLING of the wrapped one and a combined toolset dispatches to whichever sibling owns the tool |
-| OpenAI Agents | **records only**¹ | **records only**¹ |
+| OpenAI Agents | **enforces** via two independent pre-execution mechanisms — obsvr's tool input guardrail (`attachToolGate`: the runtime awaits each function tool's own `inputGuardrails` before invoking it; a denied tool's block message returns to the model as the tool's result and the run continues) and/or a governed tool (`obsvrGovernTool`: the refusal throws out of `invoke`, which the framework wraps into `ToolCallError` — the run aborts with obsvr's denial in the error chain). Driven live at `@openai/agents` 0.13.0, 0.13.4 and 0.14.2: a denied tool at ZERO side-effect writes with the payload asserted absent from what the caller received, allow controls at exactly one write, on the plain and streamed routes, and with the tracing processor registered beside the gate — one `tool.call` per span and no `not_evaluated` beside the gate's verdict. The tracing processor itself remains records-only¹ and defers to either gate | **enforces** via the same two mechanisms — `attach_tool_gate` (obsvr's `ToolInputGuardrail` on every function tool reachable from the agent, handoff targets included; refuses by the guardrail contract's `reject_content` sentinel, run continues) and/or `govern_tool` (gates `on_invoke_tool`; the refusal raises and the run aborts as `UserError` chained from obsvr's typed error). Driven live at `openai-agents` 0.19.0 and 0.19.2: denied tool at ZERO writes on the plain, streamed and handoff routes with the payload absent from the run result, allow controls at one. With no mechanism installed the honest rail records `not_evaluated` with the reason — measured in the same run |
 | CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. Also driven live around those paths — delegation to a coworker, the crew's result cache, the hierarchical manager, `kickoff_async` / `kickoff_for_each` / `async_execution`, tools attached to a Task, and streaming — with the tool's payload asserted absent from what the caller received, not only the side effect absent. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
@@ -674,15 +674,18 @@ is marked on each.
    `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()` and does not
    block there. Full layer-by-layer list in [SECURITY.md](SECURITY.md).
 
-5. **Two tool surfaces refuse nothing, and both have a governed alternative.**
+5. **One tool surface refuses nothing, and it has a governed alternative.**
    LlamaIndex has no tool gate of its own *(Python; on either SDK, gate the
-   tool itself with the tool governor)*. The OpenAI Agents tracing surface
-   cannot refuse in **either** SDK, and that one is structural rather than
-   pending: the framework wraps every processor callback in its own
-   `try`/`except`, and the gate runs after the tool has already returned.
-   Where a surface records a denial it cannot enforce, it records
-   `not_evaluated` — never `blocked` — a silence, not a false refusal. Put a
-   destructive capability behind MCP or behind a governed tool.
+   tool itself with the tool governor)*. The OpenAI Agents **tracing
+   processor** still cannot refuse in either SDK — that is structural: the
+   framework dispatches processor callbacks fire-and-forget, and a function
+   span ends after its tool has returned — but the surface now enforces
+   through the framework's own pre-invocation tool guardrails
+   (`attach_tool_gate` / `attachToolGate`) or a governed tool, and the
+   processor is the audit rail beneath them. Where a surface records a
+   denial it cannot enforce, it records `not_evaluated` — never `blocked` —
+   a silence, not a false refusal. Put a destructive capability behind MCP,
+   a tool guardrail, or a governed tool.
    [Per-surface grading](#framework--provider-support).
 
 6. **The Python SDK installs no signal handlers, so a container stop drops the
