@@ -55,6 +55,25 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **The MCP and PydanticAI extras now declare the current major, measured at
+  both ends: `mcp>=2.0.0,<3.0.0` (was `>=1.0.0,<2.0.0`) and
+  `pydantic-ai-slim>=2.0.0,<3.0.0` (was `>=0.4.4`, uncapped).** The `mcp` cap
+  existed because protocol major 2 renamed the descriptor fields the
+  integration reads; those reads now resolve both spellings, so the range moves
+  onto the current major rather than around it. The PydanticAI specifier had a
+  floor at the release that first ships `WrapperToolset` and no ceiling at all,
+  claiming two majors nothing had ever run against. **Raising a floor withdraws
+  no working version — it ends a claim that was never measured.** Both ranges
+  are now driven end to end: MCP over real JSON-RPC against a real server on
+  both protocol majors, every client route into `tools/call` at zero executions
+  for a denied tool; PydanticAI at `2.0.0` and `2.22.0` per tool-registration
+  style, with the latest additionally driven against a real provider whose
+  model chose to call the denied tool. **Not marked BREAKING:** the package has
+  not shipped a release, so nothing depended on the wider claim. The `dev`
+  extra tracks the `mcp` extra as before, so the SDK's own MCP test now
+  resolves its server class and session helper by capability rather than by the
+  names one major used.
+  ([`7b9a967`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b9a967))
 - **The CrewAI extra's range is now a measurement: `crewai>=1.0.0,<2.0.0`
   (was `>=0.30.0`, uncapped).** Nothing below 1.0.0 was ever driven, so
   nothing below 1.0.0 was ever supported — it was only claimed; this narrows
@@ -990,6 +1009,63 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
 
 ### Fixed
+
+- **MCP (Python): two client routes into `tools/call` reached a denied tool's
+  body.** `ClientSession.call_tool` is a convenience over `send_request`, and
+  the gate bound only to the convenience. Anything that built the frame itself
+  went around it — including the package's own task API,
+  `session.experimental.call_tool_as_task`, which sends a `CallToolRequest`
+  and never touches `call_tool`. Measured against a real server over real
+  JSON-RPC with the tool denied: both routes executed it, and the hand-built
+  route additionally handed the caller the tool's payload. The gate now also
+  binds at `send_request` and inspects the frame, so a `tools/call` runs the
+  same sequence whichever route built it while every other request passes
+  through untouched, and a reentrancy guard keeps the delegated call the gate
+  itself issues from being judged twice. One route remains uncovered and is
+  measured rather than described: a `ClientSessionGroup` handed the raw session
+  from underneath an instance wrapper dispatches through that object, so
+  `govern_mcp` never sees it and only the class-level `patch_mcp` reaches it.
+  ([`2cc6910`](https://github.com/obsvr-dev/obsvr-sdk/commit/2cc6910))
+
+- **MCP (Python): on protocol major 2 the descriptor controls read every field
+  as absent.** `mcp` 2.0 moved the protocol types onto a snake_case base with
+  `alias_generator=to_camel`, so `Tool.inputSchema`, `PaginatedResult.nextCursor`
+  and `ToolAnnotations.destructiveHint` became `input_schema`, `next_cursor` and
+  `destructive_hint` while the wire form stayed identical. A `getattr` for one
+  spelling reads as absent against the other rather than raising, which is the
+  quiet shape: the schema-surface poisoning scan finds no schema to scan, the
+  descriptor pin hash commits to a document with the schema missing from it,
+  and the destructive-capability gate finds no hint to gate on — three controls
+  going silent while reporting success. One reader now resolves both spellings
+  for every caller. Measured: with a directive placed only in a parameter's
+  JSON Schema, a 2.0.0 server's poisoned tool is flagged and stripped from the
+  listing the model is shown.
+  ([`e27a33b`](https://github.com/obsvr-dev/obsvr-sdk/commit/e27a33b))
+
+- **PydanticAI (Python): a tool registered with `@agent.tool` ran under a
+  policy that denied it.** `ObsvrToolset` governs the toolset it wraps, and an
+  agent's own function toolset — where `@agent.tool`, `@agent.tool_plain` and
+  `Agent(tools=[...])` put their tools — is a SIBLING of it. A combined toolset
+  dispatches each call to whichever sibling owns the tool, so the wrapper never
+  saw those calls. Measured on a real agent graph with one policy and one tool
+  name: refused through `Agent(toolsets=[ObsvrToolset(...)])`, and executed with
+  its payload returned to the caller through `@agent.tool`. This was a coverage
+  gap rather than a false record — nothing claimed to have refused the call that
+  ran. `govern_agent(agent)` binds to the toolset the agent assembles for its
+  tool manager, the one object every dispatch crosses, so the registration style
+  stops deciding whether the policy applies.
+  ([`044abcb`](https://github.com/obsvr-dev/obsvr-sdk/commit/044abcb))
+
+- **PydanticAI (Python): audit events named no caller principal.** PydanticAI
+  rebuilds an agent's toolset tree with `dataclasses.replace`, which
+  reconstructs each node from its declared fields, and the `user_id` /
+  `service_name` / `metadata` options `ObsvrToolset` held outside those fields
+  did not survive: a rebuilt wrapper came back with its options at `{}`.
+  Enforcement was never affected, which is why this went unnoticed — a denied
+  tool was still refused, the record just stopped saying on whose behalf, and
+  any user- or tenant-scoped quota rule metered the wrong bucket. The options
+  are now a declared field and survive the rebuild.
+  ([`f4726c3`](https://github.com/obsvr-dev/obsvr-sdk/commit/f4726c3))
 
 - **CrewAI (Python): a policy naming a tool the way CrewAI does refused
   nothing.** CrewAI sanitizes every tool name before dispatch — lowercased,

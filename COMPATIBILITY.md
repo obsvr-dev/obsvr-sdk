@@ -16,11 +16,11 @@ Which versions of each package the obsvr SDK works with.
 | `haystack-ai`             | `>=2.0.0`                             | `2.0.0` – `3.0.0`                                    | declared       |
 | `langchain-core`          | `>=0.2.0`                             | `0.2.0` – `1.5.2`                                    | declared       |
 | `llama-index-core`        | `>=0.11.23`                           | `0.11.23` – `0.14.23`                                | declared       |
-| `mcp`                     | `>=1.0.0,<2.0.0`                      | `1.29.0`                                             | declared       |
+| `mcp`                     | `>=2.0.0,<3.0.0`                      | `1.29.0`, `2.0.0`                                    | **matrix**     |
 | `openai`                  | `>=1.66.0`                            | `1.0.0` – `2.50.0`                                   | floor located  |
 | `openai-agents`           | `>=0.0.2`                             | `0.0.2` – `0.19.1`                                   | declared       |
 | `opentelemetry-api`       | `>=1.20.0`                            | —                                                    | declared       |
-| `pydantic-ai-slim`        | `>=0.4.4`                             | `0.4.4` – `2.19.0`                                   | declared       |
+| `pydantic-ai-slim`        | `>=2.0.0,<3.0.0`                      | `2.0.0`, `2.22.0`                                    | **matrix**     |
 | `PyNaCl`                  | `>=1.0.0`                             | —                                                    | declared       |
 | `starlette`               | `>=0.30.0`                            | `0.30.0` – `1.3.1`                                   | declared       |
 
@@ -35,13 +35,18 @@ statement that anything in the range was run, and until this column existed
 every row presented the same way whether or not it had been.
 
 - **matrix** — the declared range is stood up by a per-version matrix: one
-  environment per listed version, the tool governor driven through each
-  release's own dispatch, and the range boundaries additionally driven live
-  against a real provider with a denied tool's side effect at zero. **`crewai`
-  is the only row that earns this today.** Its listed versions are the ones a
-  rerun actually covers; the boundaries `1.0.0` and `1.15.10` are the live
-  legs, and `1.15.2`/`1.15.3` are the adjacent pair locating the
-  `before_tool_call` hook's arrival.
+  environment per listed version, the gate driven through each release's own
+  dispatch, and a denied tool's side effect measured at zero against a paired
+  allow control that reaches exactly one. Three rows earn it, and what supplies
+  the "real" half differs by surface. `crewai` and `pydantic-ai-slim` drive
+  their range boundaries against a real provider, because on those surfaces
+  nothing is proven until a model has CHOSEN to call the tool: crewai's
+  boundaries are `1.0.0` and `1.15.10` with `1.15.2`/`1.15.3` the adjacent pair
+  locating the `before_tool_call` hook's arrival, and pydantic-ai's are `2.0.0`
+  and `2.22.0`. `mcp` needs no provider and is not weaker for it — a real
+  client and a real server exchange real JSON-RPC, so the tool call is made
+  directly and every client route into `tools/call` is driven rather than
+  waited for. Its listed versions span both protocol majors.
 - **floor located** — the FLOOR is an adjacent tested pair established live
   (at the release below, the audited path is absent; at the floor, it is
   audited on a real call), with the reasoning recorded per extra in
@@ -120,23 +125,24 @@ the same clients.
 | Package | Language | Declared         | Why                                                                                                                            |
 | ------- | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `ag2`   | Python   | `>=0.3.2,<1.0`   | 1.0 removed the agent class this integration binds, and renamed the import package.                                            |
-| `mcp`   | Python   | `>=1.0.0,<2.0.0` | 2.0 renamed the tool descriptor fields the integration reads, which silently disables the schema scan and the capability gate. |
 
 ## Open support-matrix decisions
 
 Recorded here rather than acted on: each is a decision about what this package
-intends to support, which is the owner's call and not a defect to patch. All
-three are stated as of the 2026-08-01 version sweep.
+intends to support, which is the owner's call and not a defect to patch. Both
+are stated as of the 2026-08-01 version sweep; a third, `mcp`, was answered by
+porting the three reads it named rather than by relaxing a cap.
 
 | Range | Latest upstream | The question |
 | --- | --- | --- |
 | `ag2>=0.3.2,<1.0` (Python) | `1.0.1` | The cap EXCLUDES the current major, so the declared range tracks only the pre-1.0 line. The cap itself is correct and load-bearing — 1.0 renamed the import package and removed the class the integration binds, both re-confirmed — so the question is whether to support 1.x at all, not whether to widen the cap. Separately, the 0.x line was forked and now publishes under the `autogen` distribution, so this range currently follows the abandoned half of a fork. |
-| `mcp>=1.0.0,<2.0.0` (Python) | `2.0.0` | Same shape, same correctness: at 2.0 the hook still binds and the deny gate still fires, but protocol fields move to snake_case and three `getattr`-read controls go dark (schema-poisoning scan, tool pinning, destructive-capability hint gate). Supporting 2.x means porting those three reads, not relaxing the cap. |
 | `ai>=3.3.28` (TypeScript) | `7.0.47` | Four majors of unbounded floor. The declared range promises every release from 3.3.28 onward, across four breaking majors, with no top. Nothing here says it is wrong — it says nothing has bounded it. |
 
-The Python caps above are the only two ranges in either manifest that exclude
-their package's current major, and each has a stated reason (see "Versions that
-will not work"). Every other range is open at the top.
+`ag2` is now the only range in either manifest that excludes its package's
+current major, and its reason is stated above and under "Versions that will not
+work". The `mcp` cap that used to sit beside it is gone: the three
+`getattr`-read controls were ported to read both protocol spellings, and the
+range moved onto the current major rather than around it.
 
 _Except where the evidence column says otherwise, the Observed columns come from
 an integration-test matrix run outside this repository; that harness is not

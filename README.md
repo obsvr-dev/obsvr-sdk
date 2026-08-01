@@ -522,17 +522,17 @@ to set a provider label and a source, not to widen coverage.
 
 **This is the table to read before you put a destructive capability behind a
 policy.** Rows are graded on a captured audit event from a real run rather than
-inferred from the code being present — and the one cell that has not yet been
-driven live says so on its face rather than borrowing this sentence. The two
-languages do not agree, so neither column may be read across to the other.
+inferred from the code being present, and a cell resting on anything weaker
+says so on its face rather than borrowing this sentence. The two languages do
+not agree, so neither column may be read across to the other.
 
 | Surface | TypeScript | Python |
 | --- | --- | --- |
-| MCP (`callTool`) | **enforces** | **enforces** |
+| MCP (`callTool`) | **enforces** | **enforces** — driven end to end over real JSON-RPC against a real server, on protocol majors 1 and 2. A denied tool at ZERO executions on every client route into `tools/call`, allow controls at exactly one: the documented `call_tool`, a hand-built frame passed to `send_request`, the task API, and a session group holding the governed session. The gate binds at `send_request`, which all of them converge on. One route stays uncovered and is measured rather than described: a session group handed the RAW session underneath an instance wrapper dispatches through that object, and only the class-level `patch_mcp` reaches it |
 | tool governor (`obsvrGovernTool` / `govern_tool`) | **enforces** | **enforces** — CrewAI dispatch driven live on both executor paths and per version across the supported range; other framework shapes pinned offline. A governed tool also declines the framework's result cache (Python), because a cache hit answers from the framework's memory without entering the gated callable |
 | LangChain | **enforces** | **enforces** |
 | AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
-| Pydantic-AI | *no integration* | **enforces**, not yet driven live |
+| Pydantic-AI | *no integration* | **enforces** with `govern_agent`, driven live at both ends of the supported range — a denied tool at ZERO side-effect writes, allow controls at exactly one, and the latest version additionally driven against a real provider whose model chose to call the tool. Which mechanism you install decides the coverage: `govern_agent` binds to the toolset the agent assembles and reaches every tool however it was registered, while `ObsvrToolset` governs the toolset it wraps and nothing beside it — measured, a tool registered with `@agent.tool` executed under a policy that denied it, because an agent's own function toolset is a SIBLING of the wrapped one and a combined toolset dispatches to whichever sibling owns the tool |
 | OpenAI Agents | **records only**¹ | **records only**¹ |
 | CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. Also driven live around those paths — delegation to a coworker, the crew's result cache, the hierarchical manager, `kickoff_async` / `kickoff_for_each` / `async_execution`, tools attached to a Task, and streaming — with the tool's payload asserted absent from what the caller received, not only the side effect absent. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
