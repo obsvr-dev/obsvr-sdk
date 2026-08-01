@@ -389,6 +389,14 @@ export class ObsvrTraceProcessor {
   async onTraceEnd(_trace: unknown): Promise<void> {}
 
   async onSpanStart(span: OpenAIAgentSpan): Promise<void> {
+    // Only the agent span derives anything from its START (run.start). The
+    // function and generation branches used to run on both deliveries, which
+    // emitted every tool call twice — two tool.call events, two
+    // tool_not_evaluated events — and charged stepCount twice, tripping
+    // maxSteps at half its budget. Their payload is complete at END, so that
+    // is the one delivery they process.
+    const spanData = (span.spanData ?? {}) as Record<string, unknown>;
+    if (spanData.type !== "agent") return;
     this.processSpanAdvisory(adaptSpan(span));
   }
 

@@ -247,4 +247,34 @@ describe('the processor beside a real gate', () => {
     expect(sentEvents.filter((e) => e.action_taken === 'not_evaluated')).toHaveLength(1);
   });
 
+  it('processes a function span once, not once per hook delivery', async () => {
+    // onSpanStart and onSpanEnd both ran the function branch: two tool.call
+    // events per call and stepCount charged twice, tripping maxSteps at half
+    // its budget. The payload is complete at END; that is the one delivery.
+    init({ api_key: 'test', sample_rate: 1, agent_policy: { maxSteps: 2 } } as any);
+    const proc: any = new ObsvrTraceProcessor();
+
+    // The agent span's START creates the per-trace step counter.
+    await proc.onSpanStart({
+      traceId: 'trace-gate-1',
+      spanId: 'span-agent',
+      spanData: { type: 'agent', name: 'A' },
+    });
+
+    for (const spanId of ['span-a', 'span-b']) {
+      const span = functionSpan('some_tool', spanId, undefined);
+      await proc.onSpanStart(span);
+      await proc.onSpanEnd({ ...span, endedAt: new Date().toISOString() });
+    }
+    await settle();
+
+    const calls = sentEvents.filter((e) => e.operation === 'openai_agents.tool.call');
+    expect(calls).toHaveLength(2);
+    expect(calls.map((e) => e.metadata.step_index)).toEqual([0, 1]);
+    // Two calls under maxSteps 2: within budget, no step_limit event. The
+    // double-charge used to trip it here.
+    expect(
+      sentEvents.filter((e) => e.operation === 'openai_agents.agent.policy.step_limit'),
+    ).toHaveLength(0);
+  });
 });
