@@ -146,7 +146,31 @@ llamaindex = ["llama-index-core>=0.11.23"]
 # that never names the interpreter. The marker makes the extra resolve to
 # nothing there instead, which is the same practical outcome (crewai is
 # uninstallable on 3.14) reached cleanly and stated in the manifest.
-crewai = ["crewai>=0.30.0; python_version < '3.14'"]
+#
+# The previous range, >=0.30.0 with no cap, was an assertion, not a
+# measurement: nothing below 1.0.0 was ever driven, so nothing below 1.0.0
+# was ever supported — it was only claimed. The range now stands on a version
+# matrix (one venv per version, capability probed by attribute presence, the
+# governor driven through each version's own to_structured_tool/invoke and
+# tool.run dispatch): the tool governor gates on every version probed —
+# 1.0.0, 1.8.0, 1.12.0, 1.14.0, 1.14.7, 1.15.0 through 1.15.4, 1.15.7,
+# 1.15.10 — and 1.0.0 and 1.15.10 were additionally driven LIVE, a denied
+# tool's side effect at zero writes on both, the allow control at exactly
+# one.
+#
+# The pre-execution hook gate is a 1.15.3+ capability, and the edge is an
+# adjacent tested pair with a trap inside it: 1.8.0 through 1.15.2 ship the
+# register/unregister half of the hook system with NO dispatcher and no
+# executor call site, so a hook accepted there is never consulted.
+# install_tool_gate_hook() feature-detects the dispatch side (never the
+# version string) and refuses loudly with a pointer at govern_tool on any
+# build where hooks would be accepted but never asked.
+#
+# The cap excludes the next major on purpose: 1.x → 2.x is where this
+# framework has historically moved its dispatch internals, and a range that
+# silently claims an unreleased major is the same untested promise the old
+# floor was.
+crewai = ["crewai>=1.0.0,<2.0.0; python_version < '3.14'"]
 # autogen.py codes to ConversableAgent.register_hook — the AutoGen 0.2.x API,
 # whose maintained continuation is the ag2 distribution. The previously declared
 # distribution is no longer that project: its 0.10.0 is a proxy for the 0.4+
