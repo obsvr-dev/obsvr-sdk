@@ -470,6 +470,134 @@ def _drive_govern_tool(spy, sent):
     return Outcome(spy, sent, raised)
 
 
+def _drive_govern_tool_on_invoke(spy, sent):
+    """The governor on the openai-agents ``FunctionTool`` shape.
+
+    The framework awaits ``tool.on_invoke_tool(tool_context, arguments)`` —
+    the input rides at POSITION 1, not 0, and the callable is async. Both
+    halves of that contract have to hold or the gate reads the run context
+    as the tool input; this driver dispatches exactly as the framework does
+    (``tool.py``'s ``_invoke_function_tool_with_metadata``, re-read at
+    0.19.2).
+    """
+    from obsvr.integrations.tools import govern_tool
+
+    class _FunctionTool:
+        name = SPY_TOOL
+        description = "moves money"
+        tool_input_guardrails = None
+
+        async def on_invoke_tool(self, ctx, args_json):
+            return spy.enter(SPY_TOOL)
+
+    governed = govern_tool(_FunctionTool())
+
+    async def go():
+        await governed.on_invoke_tool(object(), '{"amount": 500}')
+
+    raised = None
+    try:
+        asyncio.run(go())
+    except BaseException as exc:  # noqa: BLE001
+        raised = exc
+    return Outcome(spy, sent, raised)
+
+
+def _openai_agents_guardrail_stub():
+    """A stub of the two framework halves obsvr's guardrail factory probes.
+
+    sdk-python's venv carries no frameworks by design, so the factory's
+    feature-detect is satisfied here the way the invariant file satisfies
+    every other framework contract: with the smallest faithful model of the
+    upstream surface (``agents.tool_guardrails`` types at 0.4.0 == 0.19.2,
+    and the dispatch half's consult site by attribute presence).
+    """
+    import types
+
+    class ToolGuardrailFunctionOutput:
+        def __init__(self, output_info=None, behavior=None):
+            self.output_info = output_info
+            self.behavior = behavior or {"type": "allow"}
+
+        @classmethod
+        def allow(cls, output_info=None):
+            return cls(output_info, {"type": "allow"})
+
+        @classmethod
+        def reject_content(cls, message, output_info=None):
+            return cls(output_info, {"type": "reject_content", "message": message})
+
+    class ToolInputGuardrail:
+        def __init__(self, guardrail_function, name=None):
+            self.guardrail_function = guardrail_function
+            self.name = name
+
+    tg = types.ModuleType("agents.tool_guardrails")
+    tg.ToolGuardrailFunctionOutput = ToolGuardrailFunctionOutput
+    tg.ToolInputGuardrail = ToolInputGuardrail
+
+    te = types.ModuleType("agents.run_internal.tool_execution")
+
+    async def _execute_tool_input_guardrails(**kwargs):  # pragma: no cover
+        return None
+
+    te._execute_tool_input_guardrails = _execute_tool_input_guardrails
+
+    run_internal = types.ModuleType("agents.run_internal")
+    run_internal.tool_execution = te
+
+    agents_mod = types.ModuleType("agents")
+    agents_mod.tool_guardrails = tg
+    agents_mod.run_internal = run_internal
+
+    return {
+        "agents": agents_mod,
+        "agents.tool_guardrails": tg,
+        "agents.run_internal": run_internal,
+        "agents.run_internal.tool_execution": te,
+    }
+
+
+def _drive_openai_agents_guardrail(spy, sent):
+    """openai-agents consults tool input guardrails BEFORE invoking the tool.
+
+    The executor's contract (``run_internal/tool_execution.py``, read at
+    0.19.2 and identical at 0.4.0): ``reject_content`` means the tool is
+    NOT invoked and the message becomes the tool's output to the model;
+    ``allow`` proceeds to invocation. The driver dispatches exactly that,
+    against obsvr's guardrail built by its own factory.
+    """
+    import sys
+
+    stub = _openai_agents_guardrail_stub()
+    saved = {name: sys.modules.get(name) for name in stub}
+    sys.modules.update(stub)
+    try:
+        from obsvr.integrations.openai_agents import make_tool_gate_guardrail
+
+        guardrail = make_tool_gate_guardrail()
+        data = type(
+            "Data",
+            (),
+            {
+                "context": type(
+                    "Ctx", (), {"tool_name": SPY_TOOL, "tool_call_id": "call-1"}
+                )(),
+                "agent": None,
+            },
+        )()
+        out = guardrail.guardrail_function(data)
+        if out.behavior["type"] != "reject_content":
+            spy.enter(SPY_TOOL)
+    finally:
+        for name, prior in saved.items():
+            if prior is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = prior
+    return Outcome(spy, sent, None)
+
+
 # ── The table ────────────────────────────────────────────────────────────────
 #
 # `policy_key` is the config field each surface reads. MCP deliberately reads a
@@ -490,6 +618,10 @@ TABLE = [
     # as the AUDIT rail they are; these two are where refusal actually lives.
     ("crewai:gate-hook", _drive_crewai_gate_hook, "agent_policy", ENFORCES),
     ("tools", _drive_govern_tool, "agent_policy", ENFORCES),
+    # openai-agents' pre-execution mechanisms. The tracing-processor row above
+    # stays RECORDS_ONLY — it is the audit rail; these two are the gates.
+    ("openai_agents:guardrail-gate", _drive_openai_agents_guardrail, "agent_policy", ENFORCES),
+    ("tools:on-invoke-tool", _drive_govern_tool_on_invoke, "agent_policy", ENFORCES),
 ]
 
 # Rows this invariant currently CATCHES. Each marker names a live defect and

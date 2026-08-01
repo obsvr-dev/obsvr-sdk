@@ -101,6 +101,18 @@ def governed_tool_names() -> Set[str]:
     """
     return set(_GOVERNED_TOOL_NAMES)
 
+
+def register_governed_tool_name(tool_name: str) -> None:
+    """Record that a pre-execution gate outside this module speaks for a name.
+
+    For integration-owned gates whose refusal lives in the framework's own
+    pre-invocation surface (openai-agents' tool input guardrails) rather than
+    in a wrapped callable. One registry serves every audit rail that must not
+    stamp ``not_evaluated`` beside a real gate's own verdict, whichever
+    mechanism the gate is. Process-lifetime, like the wrapper's own entries.
+    """
+    _GOVERNED_TOOL_NAMES.add(tool_name)
+
 #: Exec-attr resolution table: (sync_attr, async_attr) in priority order.
 #: ORDER IS THE CONTRACT (the TS twin learned this the hard way: three shapes
 #: appended late were silent no-ops until added). ``_run`` outranks the public

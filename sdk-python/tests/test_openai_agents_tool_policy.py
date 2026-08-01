@@ -192,6 +192,51 @@ def test_loop_detection_still_claims_blocked_where_a_caller_can_halt(sent):
     assert "policy_not_evaluated" not in _telemetry(sent[-1])
 
 
+def test_the_processor_stays_silent_beside_a_real_gate(sent, monkeypatch):
+    """With a gate governing the name, the gate is the tool-policy authority.
+
+    The guardrail (or a govern_tool wrapper) ruled on this call BEFORE it
+    resolved; the processor adding ``not_evaluated`` about the same call
+    would be a second, contradictory verdict next to a true blocked record.
+    Same deference the CrewAI step callback applies, through one registry.
+    """
+    from obsvr.integrations import tools as tools_mod
+    from obsvr.integrations.tools import register_governed_tool_name
+
+    monkeypatch.setattr(tools_mod, "_GOVERNED_TOOL_NAMES", set())
+    register_governed_tool_name("send_money")
+
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    proc, span = _processor_and_span()
+
+    proc.on_span_end(span)
+
+    assert not [e for e in sent if e["action_taken"] == "not_evaluated"], (
+        "the processor re-judged a call a real gate already ruled on"
+    )
+    # Still observed as a call — deference is not silence about the step.
+    assert any(e["operation"] == "openai_agents.tool.call" for e in sent)
+
+
+def test_an_ungoverned_name_still_gets_the_honest_rail(sent, monkeypatch):
+    """The control for the deference above: with NO gate on the name, the
+    ``not_evaluated`` record is the honest rail and must keep appearing."""
+    from obsvr.integrations import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_GOVERNED_TOOL_NAMES", set())
+
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    proc, span = _processor_and_span()
+
+    proc.on_span_end(span)
+
+    assert [e for e in sent if e["action_taken"] == "not_evaluated"], (
+        "the honest rail disappeared for a name no gate speaks for"
+    )
+
+
 def test_the_not_evaluated_compliance_reaches_the_wire_shape():
     """The mirror, pinned directly.
 

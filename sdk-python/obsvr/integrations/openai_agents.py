@@ -28,8 +28,8 @@ Completions path, which carries the configured model alias) and ``response``
 (the Responses path, which is the DEFAULT — ``get_use_responses_by_default()``
 returns True — and carries only the served snapshot).
 
-THIS INTEGRATION RECORDS TOOL POLICY; IT DOES NOT ENFORCE IT. Read this before
-configuring ``agent_policy`` against it.
+THE TRACING PROCESSOR RECORDS TOOL POLICY; THE GATE LIVES ELSEWHERE IN THIS
+MODULE. Read this before configuring ``agent_policy`` against it.
 
 A TracingProcessor cannot refuse anything. The provider's tracing layer invokes
 every processor callback inside its own ``try/except Exception`` and only logs
@@ -42,17 +42,32 @@ Both halves were measured, not inferred: a spy tool recorded that it had
 already been entered when the gate ran, and the swallowing is visible in the
 installed package's own tracing provider.
 
-So ``denied_tools``, ``allowed_tools`` and ``max_steps`` are OBSERVED on this
-surface. When one of them would have refused a call, the event says
-``action_taken: "not_evaluated"`` and carries the reason in
-``metadata.obsvr_telemetry.policy_not_evaluated``. It previously said
-``blocked``, which asserted a refusal of a call that had in fact completed and
-returned its result to the caller.
+So on the processor alone, ``denied_tools``, ``allowed_tools`` and
+``max_steps`` are OBSERVED. When one of them would have refused a call and no
+real gate governs the tool, the event says ``action_taken: "not_evaluated"``
+and carries the reason in ``metadata.obsvr_telemetry.policy_not_evaluated``.
+It previously said ``blocked``, which asserted a refusal of a call that had in
+fact completed and returned its result to the caller.
 
-For tool policy that actually refuses, gate at a boundary that can: the
-framework's own tool hooks are awaited before the tool is invoked and their
-exceptions are NOT swallowed, and the MCP integration is the reference
-implementation of a gate at the invocation boundary.
+TOOL POLICY THAT ACTUALLY REFUSES gates at the framework's own pre-invocation
+surfaces, and this module wires both directions of it:
+
+- :func:`attach_tool_gate` appends obsvr's ``ToolInputGuardrail`` to every
+  function tool reachable from an agent. The executor consults tool input
+  guardrails BEFORE invoking the tool; a denied tool is refused by the
+  guardrail contract's ``reject_content`` sentinel, so the model receives the
+  block message as the tool's result and the run continues. The tool's
+  callable is never entered.
+- ``obsvr.govern_tool(tool)`` (``integrations/tools.py``) gates inside the
+  tool's own ``on_invoke_tool`` with the full pre-call policy net. A refusal
+  raises the SDK's typed policy error, which this framework's per-tool error
+  boundary converts to ``UserError`` — the RUN ABORTS. Choose it when a
+  denied tool should end the run rather than come back to the model as a
+  denied-tool result.
+
+Either way the record is ``blocked``/``TOOL_DENIED``, true at the point it is
+written, and the processor's audit rail stays silent for a governed name
+rather than stamping ``not_evaluated`` beside the gate's own verdict.
 """
 
 # Interception: openai-agents TracingProcessor interface (non-mutating).
@@ -61,7 +76,7 @@ implementation of a gate at the invocation boundary.
 import json
 import time
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .. import sender as _sender
 from ..agent_policy import (
@@ -73,7 +88,11 @@ from ..agent_policy import (
 )
 from ..config import try_get_config
 from ..deobfuscate import redact_for_storage
-from ..events import emit_event, tool_gate_not_evaluated_compliance
+from ..events import (
+    emit_event,
+    tool_denied_compliance,
+    tool_gate_not_evaluated_compliance,
+)
 from ..policy import apply_observe_policy
 from ..token_usage import read_token_usage
 from ..dedupe import claim_emission
@@ -126,6 +145,236 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     if allowed is not None and tool_name not in allowed:
         return False, "tool_not_in_allowlist"
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Pre-execution tool gate — the guardrail mechanism
+# ---------------------------------------------------------------------------
+
+#: The one obsvr guardrail name; attachment is idempotent against it.
+_TOOL_GATE_GUARDRAIL_NAME = "obsvr_tool_gate"
+
+
+def _guardrail_dispatch_present() -> bool:
+    """Whether this build's executor CONSULTS tool input guardrails.
+
+    Registration alone is not the capability: CrewAI shipped seven releases
+    that accept hook registrations no executor ever asks about, and a gate
+    accepted-but-never-consulted is a silent no-op the caller believes in.
+    So this probes the CONSUMER half — the executor's guardrail consult
+    site — by attribute presence at its two known homes, never by comparing
+    version strings (forks, backports and vendored builds lie about
+    versions; attribute presence does not).
+    """
+    try:
+        from agents.run_internal import tool_execution as _tool_execution
+
+        if callable(getattr(_tool_execution, "_execute_tool_input_guardrails", None)):
+            return True
+    except Exception:
+        pass
+    try:
+        from agents import _run_impl as _run_impl_module
+
+        run_impl = getattr(_run_impl_module, "RunImpl", None)
+        if run_impl is not None and callable(
+            getattr(run_impl, "_execute_input_guardrails", None)
+        ):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def make_tool_gate_guardrail(run_context: Optional[Dict[str, Any]] = None) -> Any:
+    """A ``ToolInputGuardrail`` enforcing the agent-policy tool list.
+
+    The executor runs tool input guardrails BEFORE invoking the tool, so a
+    refusal here binds: the tool's callable is never entered. Refusal is by
+    the guardrail contract's returned sentinel — ``reject_content`` — which
+    hands the model the block message as the tool's result and lets the run
+    continue. The record is ``blocked``/``TOOL_DENIED``, true on this path.
+
+    The guardrail never raises. A raise from a guardrail function is caught
+    by the executor's per-tool error boundary and re-raised as ``UserError``,
+    aborting the caller's WHOLE RUN — an internal obsvr failure must not
+    become the host's outage. So an internal failure follows ``fail_mode``:
+    the default "open" allows the call with this layer lost, "closed" refuses
+    it through the same sentinel.
+
+    Prefer :func:`attach_tool_gate`, which attaches this across an agent's
+    tools and returns a detach handle.
+    """
+    try:
+        from agents.tool_guardrails import (
+            ToolGuardrailFunctionOutput,
+            ToolInputGuardrail,
+        )
+    except ImportError as e:
+        raise ImportError(
+            "[obsvr] this openai-agents build has no tool input guardrails, "
+            "so the pre-execution gate cannot install. Gate the tools "
+            "themselves instead: obsvr.govern_tool"
+        ) from e
+    if not _guardrail_dispatch_present():
+        raise ImportError(
+            "[obsvr] this openai-agents build ships guardrail types but its "
+            "executor never consults tool input guardrails, so a gate here "
+            "would be a silent no-op. Gate the tools themselves instead: "
+            "obsvr.govern_tool"
+        )
+
+    ctx = run_context if run_context is not None else {}
+
+    def _tool_gate(data: Any) -> Any:
+        try:
+            config = try_get_config()
+            if config is None:
+                return ToolGuardrailFunctionOutput.allow()
+            policy = getattr(config, "agent_policy", None) or {}
+            tool_ctx = getattr(data, "context", None)
+            tool_name = str(getattr(tool_ctx, "tool_name", "") or "unknown_tool")
+            ok, reason = _check_tool(tool_name, policy)
+            if ok:
+                return ToolGuardrailFunctionOutput.allow()
+            emit_event(
+                config,
+                provider="unknown",
+                model="unknown",
+                operation="openai_agents.agent.policy.tool_blocked",
+                source=SOURCE,
+                prompt="",
+                response="",
+                success=False,
+                metadata={
+                    "agent_run_id": ctx.get("agent_run_id", ""),
+                    "tool_name": tool_name,
+                    "reason": reason,
+                    "tool_call_id": str(getattr(tool_ctx, "tool_call_id", "") or ""),
+                },
+                compliance=tool_denied_compliance(),
+            )
+            return ToolGuardrailFunctionOutput.reject_content(
+                message=f"[obsvr] Tool '{tool_name}' blocked by agent policy ({reason})"
+            )
+        except Exception:
+            if getattr(try_get_config(), "fail_mode", "open") == "closed":
+                return ToolGuardrailFunctionOutput.reject_content(
+                    message=(
+                        "[obsvr] Tool blocked: policy evaluation failed "
+                        "(fail_mode=closed)"
+                    )
+                )
+            return ToolGuardrailFunctionOutput.allow()
+
+    return ToolInputGuardrail(
+        guardrail_function=_tool_gate, name=_TOOL_GATE_GUARDRAIL_NAME
+    )
+
+
+def _is_function_tool(tool: Any) -> bool:
+    """Duck-typed: carries the guardrail field and an invokable callable.
+
+    Hosted provider-side tools (web search, computer use) carry neither —
+    they execute inside the provider and no client-side guardrail can bind
+    them, so they pass through unchanged and undocumented names in a policy
+    cannot silently look governed.
+    """
+    return hasattr(tool, "tool_input_guardrails") and callable(
+        getattr(tool, "on_invoke_tool", None)
+    )
+
+
+def _looks_like_agent(obj: Any) -> bool:
+    return hasattr(obj, "tools") and hasattr(obj, "handoffs")
+
+
+def _attach_gate(
+    agent: Any,
+    guardrail: Any,
+    attached: List[Any],
+    visited: Set[int],
+    include_handoffs: bool,
+) -> None:
+    from .tools import register_governed_tool_name
+
+    if id(agent) in visited:
+        return
+    visited.add(id(agent))
+    for tool in list(getattr(agent, "tools", None) or []):
+        if not _is_function_tool(tool):
+            continue
+        existing = list(getattr(tool, "tool_input_guardrails", None) or [])
+        if any(
+            getattr(g, "name", None) == _TOOL_GATE_GUARDRAIL_NAME for g in existing
+        ):
+            continue  # one gate per tool, however many agents share it
+        # object.__setattr__ so a frozen container cannot veto the gate.
+        object.__setattr__(tool, "tool_input_guardrails", existing + [guardrail])
+        attached.append(tool)
+        register_governed_tool_name(str(getattr(tool, "name", "") or "unknown_tool"))
+    if not include_handoffs:
+        return
+    for entry in list(getattr(agent, "handoffs", None) or []):
+        target = entry
+        if not _looks_like_agent(target):
+            # A Handoff object keeps a weak reference to the agent it was
+            # built from; a dead or absent reference leaves that target for
+            # its own attach_tool_gate call.
+            ref = getattr(entry, "_agent_ref", None)
+            target = ref() if callable(ref) else None
+        if target is not None and _looks_like_agent(target):
+            _attach_gate(target, guardrail, attached, visited, include_handoffs)
+
+
+def attach_tool_gate(
+    agent: Any,
+    run_context: Optional[Dict[str, Any]] = None,
+    include_handoffs: bool = True,
+) -> Callable[[], None]:
+    """Attach the pre-execution tool gate to every function tool on ``agent``.
+
+    Appends obsvr's guardrail to each function tool's own
+    ``tool_input_guardrails`` — the framework's per-tool extension point,
+    consulted by the executor before the tool is invoked. Attachment is BY
+    TOOL OBJECT: a tool shared between two agents is gated for both, and a
+    ``FunctionTool`` constructed after this call is not gated until it is
+    attached too. With ``include_handoffs`` (the default), handoff targets
+    reachable from this agent — directly or through a ``handoff()`` object's
+    agent reference — are walked as well, cycles included.
+
+    Not covered, stated rather than implied: hosted provider-side tools
+    (no client-side invocation to guard) and MCP-server tools, which the
+    framework converts per turn after this call runs — govern those at the
+    MCP boundary, where obsvr already enforces.
+
+    Returns an idempotent detach handle that removes exactly what this call
+    attached. Raises ``ImportError`` LOUDLY on a build whose executor never
+    consults guardrails — a silent no-op install would be a gate the caller
+    believes in and does not have.
+    """
+    guardrail = make_tool_gate_guardrail(run_context=run_context)
+    attached: List[Any] = []
+    _attach_gate(agent, guardrail, attached, set(), include_handoffs)
+    removed = False
+
+    def _detach() -> None:
+        nonlocal removed
+        if removed:
+            return
+        removed = True
+        for tool in attached:
+            try:
+                current = list(getattr(tool, "tool_input_guardrails", None) or [])
+                if guardrail in current:
+                    current.remove(guardrail)
+                    object.__setattr__(
+                        tool, "tool_input_guardrails", current or None
+                    )
+            except Exception:
+                pass
+
+    return _detach
 
 
 def _as_text(value: Any) -> str:
@@ -195,8 +444,10 @@ class ObsvrTracingProcessor:
     """TracingProcessor for the openai-agents Python SDK.
 
     Emits audit events for agent run lifecycle, tool calls (function spans),
-    and LLM generations. Enforces ``agent_policy`` tool restrictions and step
-    limits at function span boundaries.
+    and LLM generations. OBSERVES ``agent_policy``: a function span ends after
+    its tool has returned, so nothing here can refuse anything (see the module
+    docstring). Refusal lives in :func:`attach_tool_gate` and
+    ``obsvr.govern_tool``; this processor is the audit rail beneath them.
 
     Register via::
 
@@ -312,8 +563,14 @@ class ObsvrTracingProcessor:
                 policy: Dict[str, Any] = getattr(config, "agent_policy", None) or {}
 
                 if tool_name:
+                    # A name a real pre-execution gate speaks for (the guardrail
+                    # from attach_tool_gate, or a govern_tool wrapper) already
+                    # carries the gate's own verdict; stamping not_evaluated
+                    # beside it would contradict a true blocked record.
+                    from .tools import is_tool_governed
+
                     ok, reason = _check_tool(tool_name, policy)
-                    if not ok:
+                    if not ok and not is_tool_governed(tool_name):
                         emit_event(
                             config,
                             provider="unknown",
@@ -336,7 +593,8 @@ class ObsvrTracingProcessor:
                                     f"tool policy would have refused this call "
                                     f"({reason}), but the decision is reached "
                                     f"after the tool has already returned and "
-                                    f"cannot bind it"
+                                    f"cannot bind it; enforce with "
+                                    f"attach_tool_gate or govern_tool"
                                 ),
                             ),
                         )
