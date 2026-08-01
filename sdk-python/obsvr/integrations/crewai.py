@@ -62,6 +62,8 @@ nothing raised, and the run-level audit silently never happens.
 # make_step_callback() as step_callback= at Crew/Agent construction time —
 # no live-object mutation. obsvr_step_callback kept as deprecated alias.
 
+import re as _re
+import unicodedata as _unicodedata
 import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -78,6 +80,63 @@ from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
 
 SOURCE = "crewai"
+
+#: CrewAI's tool-name normalizer, resolved once on first use. Held as a cell
+#: rather than imported at module scope: this module must import cleanly with
+#: no CrewAI installed, and the helper has moved before.
+_sanitizer_cell: list = []
+
+
+_CAMEL_LOWER_UPPER = _re.compile(r"([a-z])([A-Z])")
+_CAMEL_UPPER_LOWER = _re.compile(r"([A-Z]+)([A-Z][a-z])")
+_QUOTES = _re.compile(r"[\'\"]+")
+_DISALLOWED = _re.compile(r"[^a-zA-Z0-9]+")
+_DUPLICATE_UNDERSCORE = _re.compile(r"_+")
+
+
+def _mirror_sanitize(name: str) -> str:
+    """CrewAI's normalization rules, reimplemented.
+
+    Used when CrewAI does not expose its own helper. Falling back to the name
+    UNCHANGED would be the more obvious choice and the wrong one: identity
+    silently restores the exact fail-open this normalization exists to close,
+    so a helper that moves upstream would turn the gate off without a word.
+    A mirror can drift; identity is guaranteed to be wrong.
+
+    Deliberately omits the >64-character hash-suffix truncation, which is not
+    reproducible from the name alone. Names that long normalize on the
+    authoritative path whenever CrewAI is installed, which is every case where
+    a CrewAI dispatch actually happens.
+    """
+    name = _unicodedata.normalize("NFKD", name)
+    name = name.encode("ascii", "ignore").decode("ascii")
+    name = _CAMEL_UPPER_LOWER.sub(r"\1_\2", name)
+    name = _CAMEL_LOWER_UPPER.sub(r"\1_\2", name)
+    name = name.lower()
+    name = _QUOTES.sub("", name)
+    name = _DISALLOWED.sub("_", name)
+    name = _DUPLICATE_UNDERSCORE.sub("_", name)
+    return name.strip("_")
+
+
+def _sanitize_tool_name(name: str) -> str:
+    """Normalize a tool name the way CrewAI's dispatch does.
+
+    Prefers CrewAI's own function, so the two can never disagree about a name
+    on a machine where CrewAI is what does the renaming.
+    """
+    if not _sanitizer_cell:
+        try:
+            from crewai.utilities.string_utils import sanitize_tool_name
+
+            _sanitizer_cell.append(sanitize_tool_name)
+        except Exception:
+            _sanitizer_cell.append(_mirror_sanitize)
+    fn = _sanitizer_cell[0]
+    try:
+        return str(fn(name))
+    except Exception:
+        return _mirror_sanitize(name)
 
 
 def _step_text(step: Any) -> str:
@@ -99,12 +158,30 @@ def _step_text(step: Any) -> str:
 
 
 def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
-    """Return (allowed, reason). reason is empty string when allowed."""
+    """Return (allowed, reason). reason is empty string when allowed.
+
+    Names are compared through CrewAI's OWN normalization, because that is
+    what the executor hands a tool hook. CrewAI sanitizes every tool name
+    before dispatch — lowercased, camelCase split, anything outside
+    ``[a-z0-9_]`` replaced with an underscore — so the hook is asked about
+    ``delegate_work_to_coworker`` for the tool that CrewAI's docs, the agent's
+    prompt and the caller's policy all call "Delegate work to coworker".
+    Comparing the strings raw therefore matched NOTHING for any tool whose
+    name was not already in sanitized form: the denied tool ran and no record
+    was written, the silent-no-op shape this integration keeps finding.
+    Normalizing both sides lets the policy be written either way.
+    """
     denied = policy.get("denied_tools") or []
     allowed = policy.get("allowed_tools")  # None = all allowed
-    if tool_name in denied:
+    normalized = _sanitize_tool_name(tool_name)
+
+    def names_match(entry: Any) -> bool:
+        text = str(entry)
+        return text == tool_name or _sanitize_tool_name(text) == normalized
+
+    if any(names_match(d) for d in denied):
         return False, "tool_denied"
-    if allowed is not None and tool_name not in allowed:
+    if allowed is not None and not any(names_match(a) for a in allowed):
         return False, "tool_not_in_allowlist"
     return True, ""
 
@@ -342,13 +419,19 @@ def make_step_callback(
             # anything but its own ToolExecutionFailedError as retryable, so
             # a raise from this callback re-runs the whole task (and the
             # denied tool's side effect) up to max_retry_limit more times.
-            from .tools import is_tool_governed
+            from .tools import governed_tool_names
 
-            if (
-                tool_name is not None
-                and not _tool_gate_hook_active()
-                and not is_tool_governed(str(tool_name))
-            ):
+            # Compared under CrewAI's normalization for the same reason
+            # _check_tool is: the step carries the sanitized dispatch name,
+            # while the registry holds the name the tool object declared. A
+            # raw miss here would stamp a post-hoc not_evaluated beside the
+            # wrapper's real verdict — two verdicts about one call.
+            governed = tool_name is not None and any(
+                _sanitize_tool_name(known) == _sanitize_tool_name(str(tool_name))
+                for known in governed_tool_names()
+            )
+
+            if tool_name is not None and not _tool_gate_hook_active() and not governed:
                 ok, reason = _check_tool(str(tool_name), policy)
                 if not ok:
                     emit_event(
