@@ -92,8 +92,20 @@ openai = ["openai>=1.66.0"]
 # upstream history (the namespace was removed when that API graduated, and
 # beta.messages returned at 0.36.0), not an obsvr regression.
 anthropic = ["anthropic>=0.16.0"]
-# add_trace_processor, the symbol obsvr.auto binds, arrives in 0.0.2.
-openai-agents = ["openai-agents>=0.0.2"]
+# The floor is where the framework RUNS under the current openai client, not
+# where obsvr's symbols first appear. add_trace_processor reaches back to
+# 0.0.2 and the tool-guardrail surface attach_tool_gate binds arrives at
+# 0.4.0 (types and executor consult in the same release) — but every release
+# 0.4.0-0.18.0 fails to construct its own Usage container under openai
+# 2.52.0 (InputTokensDetails now requires cache_write_tokens, and those
+# releases build it by hand), so Runner.run dies before any tool is reached.
+# Measured 2026-08-02: 0.19.0 is the oldest release that completes a live
+# run, and the tool gate is live-proven at 0.19.0 and 0.19.2 (denied tool at
+# zero side-effect writes, both mechanisms, paired allow controls). The old
+# >=0.0.2 floor was a claim about releases the gate had never run on; a
+# version it never worked on was never supported, only claimed. Capability
+# is still probed by attribute presence, never by version comparison.
+openai-agents = ["openai-agents>=0.19.0,<1.0.0"]
 # generate_content has been in AUDITABLE_METHODS and duck-typed by
 # _detect_provider all along, and the README teaches the wrap, but no extra
 # named the distribution — so `pip install "obsvr-sdk[gemini]"` failed on a
