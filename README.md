@@ -529,12 +529,12 @@ languages do not agree, so neither column may be read across to the other.
 | Surface | TypeScript | Python |
 | --- | --- | --- |
 | MCP (`callTool`) | **enforces** | **enforces** |
-| tool governor (`obsvrGovernTool` / `govern_tool`) | **enforces** | **enforces** — CrewAI dispatch driven live on both executor paths and per version across the supported range; other framework shapes pinned offline |
+| tool governor (`obsvrGovernTool` / `govern_tool`) | **enforces** | **enforces** — CrewAI dispatch driven live on both executor paths and per version across the supported range; other framework shapes pinned offline. A governed tool also declines the framework's result cache (Python), because a cache hit answers from the framework's memory without entering the gated callable |
 | LangChain | **enforces** | **enforces** |
 | AutoGen | *no integration* | **enforces** (its step limit needs the run-level helper) |
 | Pydantic-AI | *no integration* | **enforces**, not yet driven live |
 | OpenAI Agents | **records only**¹ | **records only**¹ |
-| CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
+| CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. Also driven live around those paths — delegation to a coworker, the crew's result cache, the hierarchical manager, `kickoff_async` / `kickoff_for_each` / `async_execution`, tools attached to a Task, and streaming — with the tool's payload asserted absent from what the caller received, not only the side effect absent. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **no tool gate** |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
 | provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | *no integration* |

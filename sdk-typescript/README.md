@@ -97,7 +97,7 @@ Use `providers: ['openai']` in `obsvr.init()` to narrow which providers the inte
 
 #### What this does not reach
 
-This section used to say *every* client anywhere in the process. It isn't, and the gaps were measured against a real provider with a governed control in the same run, not reasoned about. What the hook governs is the **default and named client export** of a supported package, imported by its **exact specifier**, from an **ESM** entry point. Three things escape:
+The hook's reach is narrower than *every* client anywhere in the process, and the gaps below were measured against a real provider with a governed control in the same run rather than reasoned about. What the hook governs is the **default and named client export** of a supported package, imported by its **exact specifier**, from an **ESM** entry point. Three things escape:
 
 | Escapes | Why |
 | --- | --- |

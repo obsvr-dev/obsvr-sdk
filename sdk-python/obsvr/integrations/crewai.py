@@ -53,9 +53,9 @@ Usage (composable constructor pattern)::
 
 The kickoff kwargs are ``before_kickoff_callbacks`` / ``after_kickoff_callbacks``,
 plural and list-valued. The singular ``before_kickoff=`` / ``after_kickoff=``
-this docstring used to show are not Crew fields on current releases, and
-Crew's pydantic config is ``extra="ignore"`` — the kwargs are DISCARDED with
-nothing raised, and the run-level audit silently never happens.
+spellings are not Crew fields on current releases, and Crew's pydantic config
+is ``extra="ignore"`` — those kwargs are DISCARDED with nothing raised, so a
+crew wired that way produces no run-level audit and no error saying so.
 """
 
 # Interception: constructor argument (composable, non-mutating). Pass

@@ -133,7 +133,7 @@ a vocabulary obsvr invented.
 - **Session taint latch escalates a compromised session's later egress.** With `sessionTaint: { enabled: true }` (both SDKs), once a prompt-injection or a canary leak is detected in a session, that session is marked tainted and its subsequent egress — LLM calls, tool-call arguments, MCP calls — is escalated: `action: "flag"` (the default) annotates the events (`rule_id: sdk:session_tainted`) so the compromise is visible without bricking the session; `action: "block"` refuses the tainted session's egress. This is a session-level LATCH, not data-flow label propagation: it does not tag individual values and follow them, it records that a session id is compromised and remembers it (the per-call scanners can miss a staged exfiltration; the latch does not). **`destructiveTools` is a list of EXACT tool names a tainted session may never invoke, and where the SDK is genuinely on the tool boundary it does exactly what the design intends** — ordinary egress in a tainted session stays merely flagged, while the capabilities that could do damage (`send_money`, `delete_records`, ...) go dark, under `action: "flag"` and not only under `block`. **It is on fewer boundaries than that reads, and the honest statement is per surface rather than per SDK — so it is stated per surface:**
   - **Python, per integration that can invoke a tool, measured rather than inferred:**
     - `mcp` — **enforces**, unconditionally and including under `flag`: a denied tool's callback does not run, because the SDK patches `call_tool` itself, the actual boundary, rather than hanging a check off a callback near it. Measured live.
-    - `govern_tool` (the framework-agnostic tool governor, twin of TypeScript's `obsvrGovernTool`) — **enforces at the tool's own boundary**: it runs the same pre-call pipeline as MCP, destructive-capability gate included, before the wrapped callable is entered. The taint gate is pinned by the governor's own tests; the governor's dispatch coverage was driven live on CrewAI, both executor paths. A tool wrapped with it carries this control into ANY framework.
+    - `govern_tool` (the framework-agnostic tool governor, twin of TypeScript's `obsvrGovernTool`) — **enforces at the tool's own boundary**: it runs the same pre-call pipeline as MCP, destructive-capability gate included, before the wrapped callable is entered. The taint gate is pinned by the governor's own tests; the governor's dispatch coverage was driven live on CrewAI, both executor paths. A tool wrapped with it carries this control into ANY framework. A governed tool also declines the framework's RESULT CACHE where the framework offers a say (`cache_function`): a cache hit answers a repeat call from the framework's own memory without entering the gated callable, so it escapes the gate *and* leaves no execution for a side-effect instrument to count — measured on CrewAI, where a tool run while allowed and re-requested after the policy denied it handed the caller the cached payload at zero new executions.
     - `autogen` — **enforces**, and now on every call in a message: it used to read only the first, so a denied name in a parallel batch still executed — fixed, and re-probed live on ag2 0.3.2 and 0.14.0 with the batching control showing both calls running unpoliced.
     - `langchain` — does not enforce THIS control. It has a pre-execution callback its runtimes do deliver (`on_tool_start`, where its agent-policy tool gate enforces — see below), but the taint latch's destructive-tools set is not consulted at that boundary. Wrap the tool with `govern_tool` to carry it there.
     - `crewai` — its pre-execution hook gate (`install_tool_gate_hook`) enforces the agent-policy allow/deny list before the tool runs, on both executor paths, but does not consult the destructive-tools set either; the step callback is delivered only after the step it reports and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
@@ -171,7 +171,139 @@ What the SDKs do about it:
 - `disabled: true` in a production environment logs a prominent warning and emits a `governance_disabled` audit event, so the bypass is itself on the tamper-evident record.
 - Quota and rate-limit rules evaluated in the SDK are per-process. N workers = N times the budget. Treat SDK quotas as soft limits; server-side rate limits at ingest are authoritative. The counter store is also bounded (10,000 scopes per meter, request and token budgets counted separately), and past the cap it refuses a new scope rather than evicting a live one: a counter still inside its window *is* the enforcement state, so evicting it would reset that scope's count, which a caller able to mint scope values could use to buy itself a fresh quota. Scopes already tracked keep counting, and slots free as their windows elapse. A scope the store could not admit is not enforced and never passes as a compliant call: under the default `failMode: 'open'` the call proceeds unmetered, under `'closed'` it is refused with reason code `QUOTA_UNMETERED`, and either way the call's own signed event carries `obsvr_telemetry.quota_unmetered` naming the rule, its scope, and which way it resolved.
 - **Provider tool runners: the tools are now gated, the intermediate turns are not.** `chat.completions.runTools` and `beta.messages.toolRunner` are governed at the invocation (a refused run never reaches the provider, and each model call and tool call is audited). The tools themselves are plain callbacks the provider's SDK invokes directly, and the runner holds the raw provider client, so obsvr was not in the path of turns 2..N **or of the tool executions**. Measured, not inferred: with `sessionTaint: { enabled: true, action: "flag", destructiveTools: ["send_money"] }` and the session already tainted (`rule_id: sdk:session_tainted` confirmed on the preceding call's event), a runner invocation executed `send_money`. **Repaired for tool execution.** obsvr now wraps each of the runner's tool callbacks in the same gate `obsvrGovernTool` applies, at the one point either runner will accept a substitution — before it is constructed, since both snapshot their tool set when the method is applied. Denied tools, allowlists and `destructiveTools` all reach a runner's tools, and a refused tool's callback does not run. Verified live on both runners against real providers, each paired with a policy-off control showing the same tool executing, and against a build of the previous commit that reproduces the bypass — so the assertion has a demonstrated false state rather than an assumed one. **Three limits remain, and they are limits rather than defects.** (1) The model calls the loop makes on turns 2..N are audited but **not** gated; reaching them means substituting the runner's own client, and a refusal arriving on turn 3 lands after earlier tools have had real side effects — a block after money moved is not a block, so that needs a stated position before it ships. (2) A hosted or server-side tool the provider executes on its own infrastructure exposes no local callback, so there is nothing to gate; those are named individually in `tool_gate_ungated_tools` on the run's start event. (3) The refusal shape differs by provider because the runners do: `beta.messages.toolRunner` invokes tools inside a `try`/`catch`, so a refusal returns to the model as an error tool result and the loop continues; `chat.completions.runTools` does not guard its tool call, so a refusal propagates and the run ends. Both fail closed. **Python ships no tool-runner integration at all**, so none of this applies there. The runner's own per-tool event still records `action_taken: "not_evaluated"` — it is an observation of the turn and not a second verdict — and `policy_not_evaluated.gate` distinguishes the two absences: `runner_observation` when the gate ran and the decision is on that tool's own `tool.call` event, `tool_gate` when no gate reached the call. `metadata.tool_gate` says `callback` or `absent`.
-- **Most of the Python framework tool gates do not refuse anything, and one of them records that it did.** The tool allow/deny list, `destructiveTools` and the per-run step limit are implemented on every Python integration that can invoke a tool — but an implemented gate is not a reachable one, and reachability was measured per integration rather than inferred from the code being present. Two hold: `mcp`, which patches `call_tool` and so sits on the actual boundary, and `autogen`, which enforces on its pre-send hook. `autogen` inspected only the first tool call in a message, so a denied name in a parallel batch executed; it now checks every call and charges the step budget per call, re-probed live on two ag2 releases. Two conditions travel with it, both measured: the hook fires on the SENDING agent, so registering on the initiating proxy alone leaves tool policy inert while still emitting a full audit trail, and **`max_steps` applies on this surface only when `patch_initiate_chat` is also installed.** That helper is what scopes the budget to one conversation, and the send hook has no other conversation boundary to observe; without it the counter would be per thread for the life of the process, so a second conversation would inherit what the first spent and a long-lived process would exhaust the budget permanently, refusing every tool call after that. **The limit is therefore not applied when it cannot be scoped**, and each affected tool call records `action_taken: "not_evaluated"` naming the reason in `metadata.obsvr_telemetry.policy_not_evaluated`. That is a deliberate weakening: a control that decays into a blanket denial gets switched off by whoever is on call, leaving neither the control nor a record that it is gone, whereas an unenforced limit that says so stays visible and auditable. The tool allow/deny gate is unaffected and needs no run scope — this condition is confined to `max_steps`. **`openai_agents` does not hold, and it used to fail in the worst available direction.** Its gate runs in `on_span_end`, which is after the tool has returned, and the exception it raised to stop the run was swallowed by the framework's trace-processor handling — so the tool executed, its result reached the caller, **and obsvr emitted `action_taken: "blocked"` with `TOOL_DENIED` about that call.** That false record is **fixed**: the event now carries `action_taken: "not_evaluated"` and states in `metadata.obsvr_telemetry.policy_not_evaluated` that the decision arrives after the tool has already returned and cannot bind it. The step limit and loop detection on that surface report the same way, for the same reason. **The gate still does not enforce** — that is a silence, documented here and unrepaired — and the reason it cannot is structural: the framework wraps every processor callback in `try/except` and only logs, so no tracing-processor hook can refuse a call. A pre-execution boundary does exist on a different registration surface (the framework awaits its run hooks before invoking a tool, and does not swallow their exceptions), which is where a real gate would go. **`langchain` now holds, and it did not.** Its gate sat only in `on_agent_action` — a callback the CLASSIC executor still fires but the graph runtimes never do — so on a modern install nothing was refused and no block event was emitted, while a complete audit trail was still produced. That is the harder failure to notice, because it looks configured. The gate now also runs in `on_tool_start`, which the framework dispatches before the block that guards tool execution and outside the error handling that would otherwise convert a refusal into a tool result; the handler already set `raise_error`, so the surface was available and unused rather than absent. Re-probed live on **both** runtimes with a policy-off control on each, and against the previous commit, which still lets the denied tool run. Both pre-tool callbacks reach one shared gate, so a runtime delivering both does not charge the tool twice. `crewai` now holds, through TWO independent pre-execution mechanisms, because nothing hung off its step callback ever could: CrewAI delivers that callback only after the step it reports — with the tool name on the ReAct path (any model whose `supports_function_calling()` is False), with no tool name at all on the native function-calling path. **The hook gate** (`install_tool_gate_hook()`) registers on CrewAI's own `before_tool_call` hook system, which is consulted before every tool execution on BOTH executor paths; it refuses by the hook system's returned-sentinel contract (`False`), never by raising — the dispatcher swallows a raising hook and RUNS the tool, so the sentinel is the only contract that does not fail open — and the refusal is handed back to the agent as a blocked-tool observation while the run continues. Its record says `blocked` with `TOOL_DENIED`, which on this path is the truth. It is process-global (the only scope CrewAI offers for tool hooks), covers the agent-policy allow/deny list, and the installer feature-detects the hook system by attribute presence — failing loudly, with a pointer at the tool governor, on builds that lack it. **The wrapped tool** (`govern_tool`) gates inside the tool's own callable and needs no CrewAI API at all; a refusal there surfaces to the agent as a failed-tool observation. Driven live against a real provider on both paths, both mechanisms, with a side-effect-counting tool: a denied tool writes its marker ZERO times under either mechanism, exactly once on every paired allow control, and the two mechanisms redden independently under mutation. With NEITHER installed the step callback stays an audit rail and says so honestly: a denied tool that already ran on the ReAct path records `action_taken: "not_evaluated"` with the reason in `metadata.obsvr_telemetry.policy_not_evaluated` — it once recorded `blocked` there and raised, and the raise re-ran the task and the denied tool's side effect under the executor's retry loop; both halves were measured live before being fixed — and the native path records no per-tool verdict at all. `llamaindex` has no tool gate of any kind. The step limit is unreachable wherever the gate's callback never fires; on `crewai` the callback does fire and the step check with it, but on the same after-the-fact terms as everything else that callback carries. `pydantic_ai` overrides `call_tool` (`integrations/pydantic_ai.py:110`), which is structurally the shape that works, but it **has not been driven live**, and it implements no step limit at all. **On Python, `mcp`, `langchain`, `autogen`, `pydantic_ai`, `crewai` (via its hook gate) and any `govern_tool`-wrapped tool are the surfaces on which a tool-policy decision means what it says** — `autogen` re-probed live on two releases after its batching defect was fixed, `pydantic_ai` structurally sound and covered offline but still not driven live, `crewai` driven live on both executor paths with the denied tool's side effect at zero. On TypeScript the equivalent set is `mcp`, `obsvrGovernTool`, the LangChain handler and a provider tool runner's tools; `govern_tool` is `obsvrGovernTool`'s Python twin. No Python surface is known to emit a false `blocked` any longer — the tracing processor's and CrewAI's ReAct path were the two found, and both now record honestly.
+- **Python framework tool gates: most now refuse, two cannot, and every one reports
+  which it is.** The tool allow/deny list, `destructiveTools` and the per-run step limit
+  are implemented on every Python integration that can invoke a tool — but an implemented
+  gate is not a reachable one, and reachability was measured per integration rather than
+  inferred from the code being present. Per surface:
+
+  - **`mcp` — enforces.** Patches `call_tool`, so it sits on the actual boundary.
+
+  - **`autogen` — enforces** on its pre-send hook, re-probed live on two ag2 releases.
+    It inspected only the first tool call in a message, so a denied name in a parallel
+    batch executed; it now checks every call and charges the step budget per call. Two
+    measured conditions travel with it. The hook fires on the SENDING agent, so
+    registering on the initiating proxy alone leaves tool policy inert while still
+    emitting a full audit trail. And **`max_steps` applies only when
+    `patch_initiate_chat` is also installed** — that helper is what scopes the budget to
+    one conversation, and the send hook has no other conversation boundary to observe.
+    Without it the counter would be per thread for the life of the process: a second
+    conversation would inherit what the first spent, and a long-lived process would
+    exhaust the budget permanently, refusing every tool call after that. **The limit is
+    therefore not applied when it cannot be scoped**, and each affected call records
+    `action_taken: "not_evaluated"` naming the reason in
+    `metadata.obsvr_telemetry.policy_not_evaluated`. That is a deliberate weakening: a
+    control that decays into a blanket denial gets switched off by whoever is on call,
+    leaving neither the control nor a record that it is gone, whereas an unenforced limit
+    that says so stays visible and auditable. The allow/deny gate is unaffected and needs
+    no run scope — this condition is confined to `max_steps`.
+
+  - **`langchain` — enforces, and did not before.** Its gate sat only in
+    `on_agent_action`, a callback the CLASSIC executor still fires but the graph runtimes
+    never do, so on a modern install nothing was refused and no block event was emitted
+    while a complete audit trail was still produced — the harder failure to notice,
+    because it looks configured. The gate now also runs in `on_tool_start`, which the
+    framework dispatches before the block guarding tool execution and outside the error
+    handling that would otherwise convert a refusal into a tool result; the handler
+    already set `raise_error`, so the surface was available and unused rather than
+    absent. Re-probed live on **both** runtimes with a policy-off control on each, and
+    against the previous commit, which still lets the denied tool run. Both pre-tool
+    callbacks reach one shared gate, so a runtime delivering both does not charge the
+    tool twice.
+
+  - **`crewai` — enforces, through two independent pre-execution mechanisms**, because
+    nothing hung off its step callback ever could: CrewAI delivers that callback only
+    after the step it reports — with the tool name on the ReAct path (any model whose
+    `supports_function_calling()` is False), with no tool name at all on the native
+    function-calling path.
+
+    **The hook gate** (`install_tool_gate_hook()`) registers on CrewAI's own
+    `before_tool_call` hook system, consulted before every tool execution on BOTH
+    executor paths. It refuses by that system's returned-sentinel contract (`False`),
+    never by raising — the dispatcher swallows a raising hook and RUNS the tool, so the
+    sentinel is the only contract that does not fail open — and the refusal reaches the
+    agent as a blocked-tool observation while the run continues. Its record says
+    `blocked` with `TOOL_DENIED`, which on this path is the truth. It is process-global
+    (the only scope CrewAI offers for tool hooks), covers the agent-policy allow/deny
+    list, and the installer feature-detects the hook system by attribute presence,
+    failing loudly with a pointer at the tool governor on builds that lack it.
+
+    **The wrapped tool** (`govern_tool`) gates inside the tool's own callable and needs
+    no CrewAI API at all; a refusal there surfaces to the agent as a failed-tool
+    observation.
+
+    Driven live against a real provider on both paths, both mechanisms, with a
+    side-effect-counting tool: a denied tool writes its marker ZERO times under either
+    mechanism, exactly once on every paired allow control, and the two redden
+    independently under mutation.
+
+    **Six routes AROUND those two paths were then driven the same way** — delegation to a
+    coworker, the crew's result cache, the hierarchical manager, `kickoff_async` /
+    `kickoff_for_each` / a Task's `async_execution`, tools attached to a Task rather than
+    an Agent, and streaming — each with a paired allow control proving the route reaches
+    the tool, and each asserting the tool's payload is absent from what the caller
+    RECEIVED rather than only that nothing executed. Every one is gated. Three findings
+    from that sweep are worth stating plainly:
+
+    1. **A result cache hit used to defeat the governed tool and look like a clean
+       block.** The cache answers without entering the callable, so the side-effect count
+       read zero — the number a perfect refusal produces — while the caller got the
+       payload. A governed tool now declines caching. The hook gate was never affected,
+       because CrewAI consults it after the cache read and its refusal replaces the
+       cached result.
+    2. **CrewAI renames tools before dispatch** (lowercased, camelCase split,
+       non-alphanumerics to underscore), so a policy naming a tool the way CrewAI's own
+       docs and prompts do — "Delegate work to coworker" — matched nothing: the denied
+       tool ran and no record said a policy had been consulted. Both sides of the
+       comparison are now normalized, so the list can be written either way. This
+       affected any tool whose name was not already lowercase-with-underscores, not just
+       the injected delegation tools.
+    3. **`govern_tool` governs an OBJECT, not a name** — measured, not warned about. When
+       only the delegating agent's tools were wrapped and the coworker's list still held
+       the original, the coworker ran the denied tool. Wrap the tools every agent
+       actually holds, or install the hook gate, which is process-global and has no such
+       edge.
+
+    With NEITHER mechanism installed the step callback stays an audit rail and says so: a
+    denied tool that already ran on the ReAct path records `action_taken: "not_evaluated"`
+    with the reason in `metadata.obsvr_telemetry.policy_not_evaluated`. It once recorded
+    `blocked` there and raised, and the raise re-ran the task and the denied tool's side
+    effect under the executor's retry loop; both halves were measured live before being
+    fixed. The native path records no per-tool verdict at all.
+
+  - **`pydantic_ai` — structurally sound, not yet driven live.** It overrides `call_tool`
+    (`integrations/pydantic_ai.py:110`), which is the shape that works, but it has not
+    been driven against a live provider and it implements no step limit at all.
+
+  - **`openai_agents` — does not enforce.** Its gate runs in `on_span_end`, after the
+    tool has returned, and the exception it raised to stop the run was swallowed by the
+    framework's trace-processor handling: the tool executed, its result reached the
+    caller, and the event for that call carried `action_taken: "blocked"` with
+    `TOOL_DENIED` — a false record rather than a coverage gap, which is the grade that
+    made it release-blocking. That record is **fixed**: the event now carries
+    `action_taken: "not_evaluated"` and states in
+    `metadata.obsvr_telemetry.policy_not_evaluated` that the decision arrives after the
+    tool has already returned and cannot bind it. The step limit and loop detection on
+    that surface report the same way, for the same reason. **The gate still does not
+    enforce** — a silence, documented here and unrepaired — and the reason is structural:
+    the framework wraps every processor callback in `try/except` and only logs, so no
+    tracing-processor hook can refuse a call. A pre-execution boundary does exist on a
+    different registration surface: the framework awaits its run hooks before invoking a
+    tool and does not swallow their exceptions, which is where a real gate would go.
+
+  - **`llamaindex` — no tool gate of any kind.**
+
+  The step limit is unreachable wherever the gate's callback never fires. On `crewai` the
+  callback does fire and the step check with it, but on the same after-the-fact terms as
+  everything else that callback carries.
+
+  **On Python, `mcp`, `langchain`, `autogen`, `pydantic_ai`, `crewai` (via its hook gate)
+  and any `govern_tool`-wrapped tool are the surfaces on which a tool-policy decision
+  means what it says.** On TypeScript the equivalent set is `mcp`, `obsvrGovernTool`, the
+  LangChain handler and a provider tool runner's tools; `govern_tool` is
+  `obsvrGovernTool`'s Python twin. No Python surface is known to emit a false `blocked`
+  any longer — the tracing processor's and CrewAI's ReAct path were the two found, and
+  both now record honestly.
 - **Three surfaces the READMEs list as supported run far less policy than `obsvr.wrap()` does, and the difference is not a tool-gate question.** Measured layer by layer rather than read off the code, in both languages. **LangChain, LlamaIndex and the OpenAI Agents tracing processor** call the observe-only path: the PII scan runs and the stored copy is redacted, and that is all. The tracing processor is the most recent arrival and the reason this sentence used to say *two*: its model-call path ran no policy pipeline whatsoever until it was wired to the same net, so raw PII went into signed events at any sample rate while its two siblings stored a redacted copy. Both READMEs were corrected when that landed and this section was not, which is what a per-claim recency check is for. `policyRules`, the non-overridable `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch/stale-policy integrity gate, the response-side scan, and PII **blocking** do not run there, and metering is opt-in. So a `pii_policy` of `{ssn: "block"}` refuses the call through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and through any of those three the call goes out with the SSN in it while the event records the stored copy as redacted — the record is honest about what it stored and says nothing false about a block, but the control a reader configured did not fire. **The named compatibility wrappers** (`wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare`, `wrapOpenAICompatible`) govern `chat.completions.create` and nothing else: counted against real clients, 17 governed method paths through `obsvr.wrap()` against 1 through these, with `responses.*`, `.parse`, `.stream`, `runTools`, `completions.create` and the whole assistants surface binding through ungoverned and unaudited. Both are silences rather than false records, and both are repairable by wrapping with `obsvr.wrap()` instead — it accepts the same clients. Put an enforcement decision on `obsvr.wrap()` or on MCP.
 
 - **A customer `regex` rule is authored once and run by two engines, and they do not agree everywhere.** Measured, not inferred: 30 diverging verdicts across 17 construct families, driven through both SDKs' real validators and matchers. The split has two halves and only one of them is closable by rejection.
@@ -205,7 +337,7 @@ The durable guarantee is about what *was* captured, not about forcing capture: e
 - **There is no default audit destination, in either SDK.** An unset `ingest_url` means events go nowhere: the SDK logs a loud no-delivery warning at `init()` and drops them. Governance itself is unaffected — policy still runs on every call — only delivery stops. **This is a change in the Python SDK.** Previously an unset `ingest_url` defaulted to `http://localhost:3000`, so a misconfigured Python process silently streamed governed events — including redacted prompt text on `blocked_call` events — to whatever happened to be listening on that local port, while the TypeScript SDK on the identical misconfiguration warned and delivered nothing. If you relied on that default in development, pass `ingest_url="http://localhost:3000"` explicitly. Both SDKs now also treat an unusable ingest URL as a counted delivery failure rather than an exception raised inside a background thread.
 - **Customer-configured outbound endpoints are SSRF-guarded.** Every URL the SDK is told to POST to — the external policy backend (OPA/Cedar), the presidio analyzer/anonymizer endpoints **which receive the prompt/PII content being scanned**, and **`ingest_url`, which receives every prompt, every response and the `X-API-Key` header** — is validated: non-`http(s)` schemes are rejected, and the cloud-metadata / link-local range (`169.254.169.254`, all four IPv6 forms that route to it — IPv4-mapped, IPv4-compatible, NAT64 and 6to4 — plus `fe80::/10` and `fd00:ec2::254`) is **always** refused, closing the crown-jewel SSRF vector. The external backend additionally resolves the hostname and re-checks every resolved address before each call, and blocks private/RFC1918 ranges unless `allowPrivateNetwork` is set. Presidio, which is normally a **local sidecar**, permits private/loopback hosts (so `localhost:5002` works out of the box) while still always refusing the metadata range; its URL is validated statically at `init()`. `ingest_url` is validated statically at `init()` too, and exempts only the parsed loopback hosts from the private-range check, so a local collector works while `https://10.0.0.5:8443` and `https://[::169.254.169.254]/` are both refused.
 
-  **This sentence used to say "every URL" and name only two of the three.** `ingest_url` ran no scheme allowlist and no address check at all: its validator returned early for any scheme that was not exactly `http`, so `file:///etc/passwd` was accepted, and the cloud-metadata endpoint over `https` was a valid audit destination in both SDKs. The plaintext spellings were refused, but by the HTTPS requirement above rather than by any address check — swap the scheme to `https` and the same address was accepted.
+  **The guard reaches all three endpoints as of the SSRF repair; before it, `ingest_url` was outside it.** `ingest_url` ran no scheme allowlist and no address check at all: its validator returned early for any scheme that was not exactly `http`, so `file:///etc/passwd` was accepted, and the cloud-metadata endpoint over `https` was a valid audit destination in both SDKs. The plaintext spellings were refused, but by the HTTPS requirement above rather than by any address check — swap the scheme to `https` and the same address was accepted.
 
   Honest limit, and it applies to presidio and to ingest alike: both guards are init-time and static (literal-IP + scheme), so neither resolves a hostname per-call — a hostname that later rebinds to a metadata IP is a residual TOCTOU. `init()` is synchronous in both SDKs and the resolving guard needs DNS, so closing this means either an async `init()` or a check on the delivery path; the external policy backend is the only endpoint that gets the resolving check today. Both URLs are operator-configured rather than runtime-attacker-controlled, which is why the static guard is the proportionate one — though on the zero-code Python entry point `ingest_url` comes from the `OBSVR_INGEST_URL` environment variable, so "operator-configured" means whatever set that variable.
 - Customer-supplied regex rules pass a ReDoS validator (nested quantifiers, quantified alternation, and backreferences rejected; bounded input length) before they are ever executed.

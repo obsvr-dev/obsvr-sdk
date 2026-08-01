@@ -65,7 +65,7 @@ cut, when it is renamed to that version.
   that range (adjacent tested pair; 1.8.0–1.15.2 accept hook registrations
   they never consult, which the installer detects and refuses loudly); the
   tool governor covers the whole range.
-  ([`89227de`](https://github.com/obsvr-dev/obsvr-sdk/commit/89227de))
+  ([`406da3e`](https://github.com/obsvr-dev/obsvr-sdk/commit/406da3e))
 - **The conformance corpus hash changed — re-pin if you pinned it.**
   `conformance/MANIFEST.sha256` moved from `corpus_sha256 = be5d1238…` to
   `fdb4579d…`, and both `conformance.pin` files with it. No fixture content,
@@ -991,8 +991,36 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
-- **CrewAI (Python): a denied tool now never runs — and where nothing can
-  bind, the record stopped lying about it.**
+- **CrewAI (Python): a policy naming a tool the way CrewAI does refused
+  nothing.** CrewAI sanitizes every tool name before dispatch — lowercased,
+  camelCase split, non-alphanumerics to underscore — so the tool gate hook was
+  asked about `delegate_work_to_coworker` while `denied_tools` held
+  "Delegate work to coworker", the spelling CrewAI's own documentation, the
+  agent's prompt and therefore the caller use. The strings were compared raw,
+  so they matched nothing: the denied tool ran, and no event recorded that a
+  policy had been consulted at all. Both sides are now normalized, so either
+  spelling works. This was never delegation-specific — it affected any tool
+  whose name was not already lowercase-with-underscores, `searchWeb` and
+  `Search Web` included. Found live by denying CrewAI's auto-injected
+  delegation tool by name and watching the marker file gain a line.
+  ([`7d093d2`](https://github.com/obsvr-dev/obsvr-sdk/commit/7d093d2))
+
+- **The tool governor (Python): a framework result-cache hit bypassed the gate
+  and looked like a clean block.** `govern_tool` gates the tool's own
+  callable, and a cache hit answers a repeat call from the framework's memory
+  without entering it. So a tool executed while allowed and re-requested after
+  the policy denied it returned the cached payload to the caller at ZERO new
+  executions — zero being exactly the number a correct refusal produces, which
+  is what made it invisible to a side-effect instrument. A governed tool now
+  declines caching wherever the framework offers a say (`cache_function`), so
+  the call reaches the callable every time and the gate rules every time.
+  Measured on CrewAI through its own dispatch on both executor paths.
+  CrewAI's hook gate was never affected: it is consulted after the cache read
+  and its refusal replaces the cached result.
+  ([`a2dbbdf`](https://github.com/obsvr-dev/obsvr-sdk/commit/a2dbbdf))
+
+- **CrewAI (Python): a denied tool now never runs, and where nothing can bind,
+  the call records `not_evaluated` rather than a block.**
 
   CrewAI delivers the step callback only after the step it reports: on the
   ReAct text path (any model whose `supports_function_calling()` is False)
@@ -1606,16 +1634,17 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   refused — currently lands only on the wrapper path. On the integrations and MCP
   the block stands and the hook is still refused, but the attempt is not recorded
   on the event.
-- **The OpenAI Agents integration recorded `blocked` in TypeScript too.** The
-  same defect as the Python one below, on the npm package. It emitted
+- **OpenAI Agents (TypeScript): tool-gate events record `not_evaluated`.** The
+  same defect as the Python one below, on the npm package: the gate emitted
   `action_taken: "blocked"` with `TOOL_DENIED` from a method whose own docstring
   explains that a throw there cannot block anything, because the modern
   `TracingProcessor` hooks are dispatched fire-and-forget — and which says
-  enforcement lives in `obsvrGovernTool`. The integration knew it could not
-  refuse and recorded a refusal anyway. Those events now carry `not_evaluated`
-  with the reason, the step limit and loop detection stop claiming halts they
-  cannot perform, and `applyLoopDetection` takes the same `canHalt` argument as
-  its Python twin.
+  enforcement lives in `obsvrGovernTool`. On this project's severity axis a
+  recorded refusal from a path that cannot refuse is a false record rather than
+  a coverage gap, which is what made it release-blocking. Those events now carry
+  `not_evaluated` with the reason, the step limit and loop detection report only
+  halts they can perform, and `applyLoopDetection` takes the same `canHalt`
+  argument as its Python twin.
 
   Found by measuring, not by reading across. The TypeScript tool gates had never
   been driven, and the measurement was also the first evidence for the opposite
