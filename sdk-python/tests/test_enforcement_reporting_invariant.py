@@ -61,6 +61,15 @@ SPY_TOOL = "send_money"
 BENIGN_TOOL = "get_weather"
 
 
+@pytest.fixture(autouse=True)
+def _fresh_governed_names(monkeypatch):
+    """govern_tool registers wrapped names process-wide (the crewai step
+    callback defers to them); tests must not inherit each other's registry."""
+    from obsvr.integrations import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_GOVERNED_TOOL_NAMES", set())
+
+
 @pytest.fixture
 def captured(sent, monkeypatch):
     """Event capture that does not depend on test ORDER.
@@ -387,6 +396,80 @@ def _drive_crewai_step_callback(spy, sent):
     return Outcome(spy, sent, raised)
 
 
+class _ReActCrewStep:
+    """A step payload shaped like the ReAct path's ``AgentAction``: ``tool`` set.
+
+    Any model whose ``supports_function_calling()`` is False takes this path —
+    measured live. Unlike the native shape above, the tool name IS delivered,
+    but the executor runs the tool first and hands the callback the action
+    afterwards, so the only honest record is one that does not claim a block.
+    """
+
+    def __init__(self):
+        self.tool = SPY_TOOL
+        self.tool_input = '{"amount": 500}'
+        self.text = f"Action: {SPY_TOOL}"
+
+
+def _drive_crewai_step_callback_react(spy, sent):
+    from obsvr.integrations.crewai import make_step_callback
+
+    callback = make_step_callback()
+    spy.enter(SPY_TOOL)  # ReAct runs the tool, THEN delivers the AgentAction
+
+    raised = None
+    try:
+        callback(_ReActCrewStep())
+    except BaseException as exc:  # noqa: BLE001
+        raised = exc
+    return Outcome(spy, sent, raised)
+
+
+def _drive_crewai_gate_hook(spy, sent):
+    """CrewAI's before_tool_call hook, driven on the framework's own contract.
+
+    The hook system consults the hook BEFORE executing the tool, and a
+    returned ``False`` means the tool is not run (CrewAI hands the agent a
+    blocked-tool observation instead). The driver models exactly that: the
+    spy runs only when the hook did not return the blocking sentinel. No
+    crewai import — the hook factory is framework-free; only registration
+    needs the framework.
+    """
+    from obsvr.integrations.crewai import make_tool_gate_hook
+
+    class _HookContext:
+        tool_name = SPY_TOOL
+        tool_input = {"amount": 500}
+        agent = None
+
+    hook = make_tool_gate_hook()
+    verdict = hook(_HookContext())
+    if verdict is not False:
+        spy.enter(SPY_TOOL)
+    return Outcome(spy, sent, None)
+
+
+def _drive_govern_tool(spy, sent):
+    """The framework-agnostic governor: the gate lives inside the tool's own
+    callable, so calling the governed tool IS the invocation boundary."""
+    from obsvr.integrations.tools import govern_tool
+
+    class _Tool:
+        name = SPY_TOOL
+        description = "moves money"
+
+        def _run(self, amount: int = 0):
+            return spy.enter(SPY_TOOL)
+
+    governed = govern_tool(_Tool())
+    raised = None
+    try:
+        governed._run(amount=500)
+    except BaseException as exc:  # noqa: BLE001
+        raised = exc
+    return Outcome(spy, sent, raised)
+
+
 # ── The table ────────────────────────────────────────────────────────────────
 #
 # `policy_key` is the config field each surface reads. MCP deliberately reads a
@@ -400,6 +483,13 @@ TABLE = [
     ("openai_agents", _drive_tracing_processor, "agent_policy", RECORDS_ONLY),
     ("langchain", _drive_langchain_callbacks, "agent_policy", ENFORCES),
     ("crewai", _drive_crewai_step_callback, "agent_policy", INERT),
+    # Same module, second delivery shape: `surface:variant` names a driver for
+    # a payload the same gate receives on a different runtime path.
+    ("crewai:react", _drive_crewai_step_callback_react, "agent_policy", RECORDS_ONLY),
+    # The pre-execution mechanisms. The step-callback rows above stay graded
+    # as the AUDIT rail they are; these two are where refusal actually lives.
+    ("crewai:gate-hook", _drive_crewai_gate_hook, "agent_policy", ENFORCES),
+    ("tools", _drive_govern_tool, "agent_policy", ENFORCES),
 ]
 
 # Rows this invariant currently CATCHES. Each marker names a live defect and
@@ -463,6 +553,144 @@ def test_blocked_implies_not_executed(name, driver, policy_key, grade, captured)
     """A `blocked` record must mean the operation did not happen."""
     _init_with_deny(policy_key)
     assert_invariant(grade, driver(Spy(), captured))
+
+
+def test_crewai_react_denial_records_not_evaluated_and_does_not_raise(captured):
+    """The two halves of the CrewAI repair, pinned separately from the grade.
+
+    Record half: a denied tool on the ReAct path must be recorded as
+    ``not_evaluated`` naming the reason — the tool has already run when the
+    step callback fires, so ``blocked`` would be a false record.
+
+    Raise half: the callback must not raise. CrewAI's executor passes through
+    only its own ``ToolExecutionFailedError`` and retries the whole task on
+    anything else, so a raise here re-runs the already-executed tool's side
+    effect — measured live at three writes for one denied call under the
+    default ``max_retry_limit`` of 2.
+    """
+    _init_with_deny("agent_policy")
+    outcome = _drive_crewai_step_callback_react(Spy(), captured)
+
+    assert outcome.raised is None, (
+        f"the step callback raised; CrewAI retries the task on this and "
+        f"re-runs the denied tool: {outcome.describe()}"
+    )
+
+    not_evaluated = [
+        e for e in outcome.events if e.get("action_taken") == "not_evaluated"
+    ]
+    assert not_evaluated, f"no not_evaluated record: {outcome.describe()}"
+    event = not_evaluated[0]
+    assert event.get("operation") == "crewai.agent.policy.tool_not_evaluated"
+
+    telemetry = (event.get("metadata") or {}).get("obsvr_telemetry") or {}
+    pne = telemetry.get("policy_not_evaluated") or {}
+    assert pne.get("surface") == "crewai.step_callback"
+    assert pne.get("gate") == "tool_gate"
+    assert "after the tool has already run" in (pne.get("reason") or "")
+
+
+def test_crewai_step_callback_defers_to_an_installed_gate_hook(captured, monkeypatch):
+    """With the gate hook active, the hook is the tool-policy authority.
+
+    The hook ruled on this call BEFORE it resolved — blocked or allowed — so
+    the post-hoc callback adding ``not_evaluated`` about the same call would
+    be a second, contradictory verdict. The step is still observed as a step;
+    it is just not re-judged.
+    """
+    import obsvr.integrations.crewai as crewai_mod
+
+    _init_with_deny("agent_policy")
+    monkeypatch.setattr(crewai_mod, "_active_tool_gate_hooks", 1)
+    outcome = _drive_crewai_step_callback_react(Spy(), captured)
+
+    assert outcome.raised is None
+    assert not any(
+        e.get("action_taken") == "not_evaluated" for e in outcome.events
+    ), outcome.describe()
+    assert any(e.get("operation") == "crewai.step" for e in outcome.events)
+
+
+def test_crewai_step_callback_defers_to_a_governed_tool(captured):
+    """Same authority rule as the hook, for the wrapper: a name govern_tool
+    owns gets its verdicts from the wrapper (blocked pre-execution, or an
+    audited allowed call) — the post-hoc callback must not add
+    ``not_evaluated`` about it."""
+    from obsvr.integrations import tools as tools_mod
+
+    _init_with_deny("agent_policy")
+    tools_mod._GOVERNED_TOOL_NAMES.add(SPY_TOOL)
+    outcome = _drive_crewai_step_callback_react(Spy(), captured)
+
+    assert outcome.raised is None
+    assert not any(
+        e.get("action_taken") == "not_evaluated" for e in outcome.events
+    ), outcome.describe()
+
+
+def test_crewai_gate_hook_never_raises_and_fails_open(captured, monkeypatch):
+    """The hook dispatcher swallows exceptions and RUNS the tool, so the only
+    honest failure posture for the hook is an explicit allow. A context whose
+    ``tool_name`` access explodes must yield None (allow), not a raise the
+    dispatcher would silently convert into fail-open anyway."""
+    from obsvr.integrations.crewai import make_tool_gate_hook
+
+    _init_with_deny("agent_policy")
+
+    class _ExplodingContext:
+        @property
+        def tool_name(self):
+            raise RuntimeError("attacker-shaped context")
+
+    hook = make_tool_gate_hook()
+    assert hook(_ExplodingContext()) is None
+
+
+def test_gate_hook_install_fails_loudly_without_the_hook_system(captured):
+    """On a CrewAI build with no before_tool_call hook system the installer
+    must refuse with a pointer at the wrapper — feature-detected by attribute
+    presence, never version-compared, and never a silent no-op the caller
+    would mistake for a gate. (crewai is not installed in this test env, so
+    this IS the no-hook-system case.)"""
+    from obsvr.integrations.crewai import install_tool_gate_hook
+
+    with pytest.raises(ImportError, match="govern_tool"):
+        install_tool_gate_hook()
+
+
+def test_crewai_kickoff_callbacks_honour_the_replace_contract(sent):
+    """Crew ASSIGNS each kickoff callback's return over what it passed in
+    (``normalized = before_callback(normalized)``; ``result = after_callback(result)``).
+
+    An observe-only callback returning None therefore discards the caller's
+    inputs dict, or hands the caller None instead of their CrewOutput. Both
+    directions are pinned, with and without a chained callback.
+    """
+    from obsvr.integrations.crewai import make_crew_callbacks
+
+    obsvr.init(api_key="test", sample_rate=1)
+
+    before_cb, after_cb = make_crew_callbacks()
+    inputs = {"topic": "quarterly report"}
+    result = object()  # stands in for CrewOutput
+    assert before_cb(inputs) is inputs
+    assert after_cb(result) is result
+
+    # A chained observe-only callback (returns None) must not break the chain.
+    seen = []
+    before_cb, after_cb = make_crew_callbacks(
+        existing_before=lambda i: seen.append(("before", i)),
+        existing_after=lambda r: seen.append(("after", r)),
+    )
+    assert before_cb(inputs) is inputs
+    assert after_cb(result) is result
+    assert seen == [("before", inputs), ("after", result)]
+
+    # A chained TRANSFORMING callback keeps its transformation.
+    before_cb, after_cb = make_crew_callbacks(
+        existing_before=lambda i: {**i, "extra": True},
+    )
+    assert before_cb(inputs) == {"topic": "quarterly report", "extra": True}
 
 
 def test_autogen_gates_every_position_in_a_batched_message(captured):
@@ -549,7 +777,9 @@ def test_the_table_covers_every_surface_that_has_a_tool_gate():
         if "def _check_tool(" in text or "def _check_tool_policy(" in text:
             gated.add(path.stem)
 
-    graded = {row[0] for row in TABLE}
+    # A `surface:variant` row is a second driver for the same module — one
+    # gate, another delivery shape — so it grades its base surface.
+    graded = {row[0].split(":")[0] for row in TABLE}
     missing = gated - graded
     assert not missing, (
         f"these surfaces carry a tool gate but are not graded in the "
