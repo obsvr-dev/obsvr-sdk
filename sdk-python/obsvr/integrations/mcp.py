@@ -21,6 +21,7 @@ Usage:
     patch_mcp(ClientSession)
 """
 
+import contextvars
 import copy
 import dataclasses
 import inspect
@@ -34,6 +35,7 @@ from typing import Any, Dict, List, Optional
 from ..capability_hints import CapabilityStore, create_capability_store, declares_destructive
 from ..config import ResolvedConfig, get_config, try_get_config
 from ..events import build_audit_event
+from ..mcp_fields import descriptor_field
 from ..normalize import normalize_for_matching
 from ..policy import apply_pre_call_policy
 from ..reason_codes import ReasonCode
@@ -168,11 +170,7 @@ def scan_tool_description(tool: Any, deobfuscation: Any = None) -> List[str]:
         or (tool.get("description") if isinstance(tool, dict) else "")
         or ""
     )
-    input_schema = (
-        getattr(tool, "inputSchema", None)
-        if not isinstance(tool, dict)
-        else (tool.get("inputSchema") or tool.get("input_schema"))
-    )
+    input_schema = descriptor_field(tool, "inputSchema")
 
     reasons: List[str] = []
     state = {"bidi": False, "concealed": False}
@@ -341,6 +339,51 @@ class McpToolBlockedError(RuntimeError):
     """Raised when a tool call is blocked by policy (denylist, allowlist, PII, hook)."""
 
 
+#: Set while the gate is running the call it already approved, so the
+#: ``send_request`` binding does not re-judge the request ``call_tool`` issues
+#: on its way out. Per-task, so concurrent calls on one session are
+#: independent.
+_gate_inflight: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "obsvr_mcp_gate_inflight", default=False
+)
+
+#: JSON-RPC method that carries a tool invocation.
+_CALL_TOOL_METHOD = "tools/call"
+
+
+def _tool_call_frame(request: Any) -> "Optional[tuple]":
+    """``(tool_name, arguments)`` if this request frame is a tools/call, else None.
+
+    The frame arrives as a union wrapper around the concrete request model, so
+    this unwraps ``root`` (pydantic v2 RootModel) a bounded number of times and
+    reads the method off whatever it finds. Structure is probed rather than
+    matched against an imported class: the type moves between mcp majors, a
+    vendored build may re-declare it, and a failed isinstance would silently
+    downgrade this to no gate at all. Anything unrecognized returns None and is
+    passed through ungoverned — this binding exists to catch tool calls, not to
+    stand in front of the whole protocol.
+    """
+    node = request
+    for _ in range(4):
+        if node is None:
+            return None
+        method = descriptor_field(node, "method")
+        if method == _CALL_TOOL_METHOD:
+            params = descriptor_field(node, "params")
+            if params is None:
+                return None
+            name = descriptor_field(params, "name")
+            return (
+                str(name) if name is not None else "unknown",
+                descriptor_field(params, "arguments"),
+            )
+        nxt = getattr(node, "root", None)
+        if nxt is None or nxt is node:
+            return None
+        node = nxt
+    return None
+
+
 # ── The patch ────────────────────────────────────────────────────────────────
 
 def _build_governed_mcp_callables(
@@ -348,6 +391,7 @@ def _build_governed_mcp_callables(
     base_options: Optional[Dict[str, Any]],
     original_call_tool: Any,
     original_list_tools: Any,
+    original_send_request: Any = None,
 ):
     """Build the governed ``call_tool`` / ``list_tools`` callables wrapping the
     given originals — the single home of the MCP enforcement logic, shared by
@@ -357,7 +401,8 @@ def _build_governed_mcp_callables(
     Each returned callable takes the real MCP session as its first argument and
     invokes ``original_*(session, ...)``, so it behaves identically whether that
     session came from a patched class or from a wrapper delegating to a live
-    instance. Returns ``(governed_call_tool, governed_list_tools_or_None)``.
+    instance. Returns ``(governed_call_tool, governed_list_tools_or_None,
+    governed_send_request_or_None)``.
 
     ``base_options`` mirrors the TS ``obsvrGovernMCP(Client, config, opts)``
     per-client options (``user_id`` / ``service_name`` / ``metadata``): the
@@ -436,7 +481,17 @@ def _build_governed_mcp_callables(
             meta["tenant_id"] = principal["tenant_id"]
         return principal, meta
 
-    async def governed_call_tool(self: Any, name: str, arguments: Optional[Dict[str, Any]] = None, **kw: Any) -> Any:
+    async def _governed_tool_call(
+        self: Any, name: str, arguments: Optional[Dict[str, Any]], invoke: Any
+    ) -> Any:
+        """The gate itself, over an arbitrary way of performing the call.
+
+        ``invoke`` is an awaitable-returning thunk that actually issues the
+        request, so the same nine gates run whether the caller reached this
+        through ``call_tool`` or through a hand-built ``tools/call`` frame
+        handed to ``send_request``. There is one copy of the enforcement
+        sequence and every route is a thunk into it.
+        """
         cfg = _current_config()
         tool_name = name or "unknown"
         # Sealed evidence of WHICH tool content and arguments this call saw,
@@ -656,7 +711,11 @@ def _build_governed_mcp_callables(
 
         # 3. Execute the original call
         try:
-            result_obj = await original_call_tool(self, name, arguments, **kw)
+            token = _gate_inflight.set(True)
+            try:
+                result_obj = await invoke()
+            finally:
+                _gate_inflight.reset(token)
         except McpToolBlockedError:
             raise
         except BaseException as e:
@@ -832,6 +891,51 @@ def _build_governed_mcp_callables(
         )
         return final_result
 
+    async def governed_call_tool(
+        self: Any, name: str, arguments: Optional[Dict[str, Any]] = None, **kw: Any
+    ) -> Any:
+        async def invoke() -> Any:
+            return await original_call_tool(self, name, arguments, **kw)
+
+        return await _governed_tool_call(self, name or "unknown", arguments, invoke)
+
+    # ── The raw-frame route ─────────────────────────────────────────────────
+    # ``call_tool`` is a convenience over ``send_request``; it is not the only
+    # way to reach tools/call and it is not the deepest. A client can build the
+    # frame itself, and the mcp package's own task API does exactly that —
+    # ``session.experimental.call_tool_as_task`` sends a CallToolRequest with a
+    # task attached, never touching ``call_tool``. Measured against a real
+    # server over real JSON-RPC before this gate existed: with the tool denied,
+    # both routes executed it, and the raw route additionally handed the
+    # caller the tool's payload.
+    #
+    # So the gate binds to ``send_request`` as well and inspects the frame:
+    # anything that is not tools/call passes straight through (initialize,
+    # tools/list, resources, pings), and a tools/call frame runs the same
+    # sequence ``call_tool`` runs. Binding here rather than only at the
+    # convenience method means a route added by a future protocol revision is
+    # governed the day it ships, provided it goes through send_request.
+    governed_send_request = None
+    if original_send_request is not None and inspect.iscoroutinefunction(original_send_request):
+
+        async def governed_send_request(
+            self: Any, request: Any, *args: Any, **kw: Any
+        ) -> Any:
+            async def invoke() -> Any:
+                return await original_send_request(self, request, *args, **kw)
+
+            # Already inside the gate: this is the delegated call the gate
+            # itself issued (call_tool -> send_request under a class patch).
+            # Re-entering would evaluate the policy twice and emit two records
+            # for one call.
+            if _gate_inflight.get():
+                return await invoke()
+            parsed = _tool_call_frame(request)
+            if parsed is None:
+                return await invoke()
+            tool_name, arguments = parsed
+            return await _governed_tool_call(self, tool_name, arguments, invoke)
+
     # ── Tool-poisoning defense on discovery ─────────────────────────────────
     governed_list_tools = None
     if original_list_tools is not None and inspect.iscoroutinefunction(original_list_tools):
@@ -935,7 +1039,10 @@ def _build_governed_mcp_callables(
                 # cursor means a page, so absence is not removal; None cursor =
                 # full listing (parity with TS null/undefined handling).
                 cursor_arg = args[0] if args else kw.get("cursor")
-                paged = getattr(result, "nextCursor", None) is not None or cursor_arg is not None
+                paged = (
+                    descriptor_field(result, "nextCursor") is not None
+                    or cursor_arg is not None
+                )
                 if not paged:
                     listed = {_tool_name_of(t) for t in tools}
                     missing = sorted(n for n in pin_store.pinned_names() if n not in listed)
@@ -1035,7 +1142,7 @@ def _build_governed_mcp_callables(
 
             return result
 
-    return governed_call_tool, governed_list_tools
+    return governed_call_tool, governed_list_tools, governed_send_request
 
 
 _PATCH_MCP_DEPRECATION_WARNED = False
@@ -1070,12 +1177,22 @@ def patch_mcp(
         )
     original_call_tool = session_class.call_tool
     original_list_tools = getattr(session_class, "list_tools", None)
-    governed_call_tool, governed_list_tools = _build_governed_mcp_callables(
-        config, options, original_call_tool, original_list_tools
+    original_send_request = getattr(session_class, "send_request", None)
+    governed_call_tool, governed_list_tools, governed_send_request = (
+        _build_governed_mcp_callables(
+            config, options, original_call_tool, original_list_tools,
+            original_send_request,
+        )
     )
     session_class.call_tool = governed_call_tool
     if governed_list_tools is not None:
         session_class.list_tools = governed_list_tools
+    if governed_send_request is not None:
+        # Reaches every client route at once, including the ones that never
+        # touch call_tool: the task API, a hand-built frame, and a session held
+        # by a ClientSessionGroup (which keeps the raw session objects it built
+        # and so never sees an instance wrapper).
+        session_class.send_request = governed_send_request
     setattr(session_class, _PATCHED_ATTR, True)
 
 
@@ -1090,12 +1207,26 @@ class _GovernedMCPSession:
     ClientSession)`` is False — call methods on the returned object.)
     """
 
-    __slots__ = ("_obsvr_session", "_obsvr_call_tool", "_obsvr_list_tools")
+    __slots__ = (
+        "_obsvr_session",
+        "_obsvr_call_tool",
+        "_obsvr_list_tools",
+        "_obsvr_send_request",
+        "_obsvr_experimental",
+    )
 
-    def __init__(self, session: Any, governed_call_tool: Any, governed_list_tools: Any) -> None:
+    def __init__(
+        self,
+        session: Any,
+        governed_call_tool: Any,
+        governed_list_tools: Any,
+        governed_send_request: Any = None,
+    ) -> None:
         object.__setattr__(self, "_obsvr_session", session)
         object.__setattr__(self, "_obsvr_call_tool", governed_call_tool)
         object.__setattr__(self, "_obsvr_list_tools", governed_list_tools)
+        object.__setattr__(self, "_obsvr_send_request", governed_send_request)
+        object.__setattr__(self, "_obsvr_experimental", None)
 
     def __getattr__(self, name: str) -> Any:
         # Reached only for attributes not defined on this wrapper → real session.
@@ -1111,6 +1242,41 @@ class _GovernedMCPSession:
         if self._obsvr_list_tools is None:
             return await self._obsvr_session.list_tools(*args, **kw)
         return await self._obsvr_list_tools(self._obsvr_session, *args, **kw)
+
+    async def send_request(self, request: Any, *args: Any, **kw: Any) -> Any:
+        """Governed raw-frame route. A tools/call frame built by hand reaches
+        the same gate ``call_tool`` does; every other request passes through.
+        Without this the wrapper's own ``__getattr__`` would hand the caller
+        the real session's ``send_request`` and the gate would be one attribute
+        lookup away from being optional."""
+        if self._obsvr_send_request is None:
+            return await self._obsvr_session.send_request(request, *args, **kw)
+        return await self._obsvr_send_request(self._obsvr_session, request, *args, **kw)
+
+    @property
+    def experimental(self) -> Any:
+        """The session's experimental feature set, rebound to this wrapper.
+
+        ``ExperimentalClientFeatures`` holds the session it was built with and
+        issues its own frames through that session's ``send_request``. Handed
+        out unchanged it would carry the REAL session, so
+        ``call_tool_as_task`` would run a denied tool — measured, before this
+        binding existed. Reconstructing the same class against the wrapper
+        routes it back through the governed ``send_request``. If the attribute
+        or its shape is not what this expects (it does not exist on mcp 2.x),
+        the real one is returned rather than an error: the routes it can reach
+        are governed at ``send_request`` regardless of which object issues
+        them."""
+        cached = object.__getattribute__(self, "_obsvr_experimental")
+        if cached is not None:
+            return cached
+        real = getattr(object.__getattribute__(self, "_obsvr_session"), "experimental")
+        try:
+            rebound = type(real)(self)
+        except Exception:  # noqa: BLE001 - an unexpected ctor shape is not fatal
+            return real
+        object.__setattr__(self, "_obsvr_experimental", rebound)
+        return rebound
 
 
 def govern_mcp(
@@ -1137,7 +1303,13 @@ def govern_mcp(
         return session
     original_call_tool = type(session).call_tool
     original_list_tools = getattr(type(session), "list_tools", None)
-    governed_call_tool, governed_list_tools = _build_governed_mcp_callables(
-        config, options, original_call_tool, original_list_tools
+    original_send_request = getattr(type(session), "send_request", None)
+    governed_call_tool, governed_list_tools, governed_send_request = (
+        _build_governed_mcp_callables(
+            config, options, original_call_tool, original_list_tools,
+            original_send_request,
+        )
     )
-    return _GovernedMCPSession(session, governed_call_tool, governed_list_tools)
+    return _GovernedMCPSession(
+        session, governed_call_tool, governed_list_tools, governed_send_request
+    )
