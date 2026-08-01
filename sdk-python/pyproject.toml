@@ -115,18 +115,22 @@ openai-agents = ["openai-agents>=0.0.2"]
 # distribution with a different response shape, and it is NOT intercepted; the
 # READMEs carry both states.
 gemini = ["google-generativeai"]
-# Bounded below 2.0 on evidence, not caution. mcp 2.0.0 moved the protocol
-# types to a snake_case base model (alias_generator=to_camel), so the three
-# descriptor fields obsvr/integrations/mcp.py reads through getattr are renamed
-# and the camelCase spellings survive only as serialization aliases:
-# Tool.inputSchema -> input_schema, PaginatedResult.nextCursor -> next_cursor,
-# ToolAnnotations.destructiveHint -> destructive_hint. On 2.x every one of them
-# would read as absent rather than raise, which silently switches off the
-# schema-surface poisoning scan, drops inputSchema out of the descriptor pin
-# hash (a rug-pull that edits only the schema would then hash identically), and
-# empties the destructive-capability gate. Upstream advises the same bound for
-# callers that have not migrated.
-mcp = ["mcp>=1.0.0,<2.0.0"]
+# The current major, bounded below the next. mcp 2.0.0 moved the protocol types
+# to a snake_case base model (alias_generator=to_camel), renaming the three
+# descriptor fields the integration reads — Tool.inputSchema -> input_schema,
+# PaginatedResult.nextCursor -> next_cursor, ToolAnnotations.destructiveHint ->
+# destructive_hint — leaving the camelCase spellings as serialization aliases
+# only. A single-spelling read finds them absent rather than raising, so obsvr
+# reads both (obsvr/mcp_fields.py) and the rename stopped being a reason to
+# exclude the major. Driven end to end at 2.0.0 over real JSON-RPC: a denied
+# tool at zero executions on every client route, and a descriptor poisoned only
+# in its schema still flagged and stripped from the listing.
+#
+# The floor is 2.0.0 because that is where the range is MEASURED, not because
+# 1.x is known broken — the same legs are green at 1.29.0 and the harness keeps
+# them. A range nobody has driven is a claim rather than a promise, and this one
+# now ends where the evidence does.
+mcp = ["mcp>=2.0.0,<3.0.0"]
 langchain = ["langchain-core>=0.2.0"]
 # NOTE: this floor rests on WEAKER evidence than the others in this file, and
 # the difference is deliberate. The other floors name the first release that
@@ -194,12 +198,18 @@ fastapi = ["starlette>=0.30.0"]
 otel = ["opentelemetry-api>=1.20.0"]
 bedrock = ["boto3>=1.34.0"]
 vertex = ["google-cloud-aiplatform>=1.38.0"]
-# pydantic_ai.toolsets.WrapperToolset — the symbol pydantic_ai.py binds — does
-# not exist until 0.4.4. Below it nothing raises: ObsvrToolset falls back to a
-# local shim and govern_toolset() still returns an object, but it is not a
-# toolset PydanticAI accepts, so denied-tool policy, per-tool auditing and step
-# limits are all silently inert while the manifest advertises support.
-pydantic-ai = ["pydantic-ai-slim>=0.4.4"]
+# The current major, bounded below the next. The previous specifier had a floor
+# of 0.4.4 — the release that first ships pydantic_ai.toolsets.WrapperToolset,
+# below which ObsvrToolset falls back to a local shim that PydanticAI does not
+# accept as a toolset — and NO ceiling, so it claimed two majors nothing had
+# ever run against. Raising the floor withdraws no working version: it ends a
+# claim that was never measured.
+#
+# Both ends of this range are driven: 2.0.0 and 2.22.0, paired allow/deny per
+# tool-registration style, with the latest additionally driven against a real
+# provider whose model chose to call the denied tool. A denied tool executes
+# zero times on both.
+pydantic-ai = ["pydantic-ai-slim>=2.0.0,<3.0.0"]
 haystack = ["haystack-ai>=2.0.0"]
 # Ed25519 verification of signed remote policy. Optional because the package
 # ships zero mandatory runtime dependencies and Python has no stdlib Ed25519;
@@ -223,7 +233,7 @@ crypto-nacl = ["PyNaCl>=1.0.0"]
 # It stays out of the blocking dependency audit by construction: that job runs
 # `pip-audit --strict .` over declared RUNTIME dependencies, which remain empty,
 # and the environment audit that would see these is report-only.
-dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=1.0.0,<2.0.0"]
+dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=2.0.0,<3.0.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "obsvr._version.__version__" }

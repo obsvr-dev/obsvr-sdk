@@ -4,7 +4,7 @@ Every other integration in this suite is tested against hand-written fakes, and
 until this file existed so was this one — on the surface ``SECURITY.md`` names
 as the place to put a destructive capability behind. A gate whose only evidence
 is a restatement of itself is graded by its own copy, so this drives a real
-``FastMCP`` server and a real ``ClientSession`` over the package's own in-memory
+server and a real ``ClientSession`` over the package's own in-memory
 transport.
 
 The grading is not "the caller raised". It is whether the SERVER executed the
@@ -24,8 +24,69 @@ from obsvr.config import _reset
 from obsvr.integrations.mcp import govern_mcp
 
 mcp_pkg = pytest.importorskip("mcp", reason="the `mcp` dev dependency is not installed")
-from mcp.server.fastmcp import FastMCP  # noqa: E402
-from mcp.shared.memory import create_connected_server_and_client_session  # noqa: E402
+
+import importlib  # noqa: E402
+from contextlib import asynccontextmanager  # noqa: E402
+
+import anyio  # noqa: E402
+from mcp.shared.memory import create_client_server_memory_streams  # noqa: E402
+
+
+def _server_class():
+    """The high-level server class, whatever this major calls it.
+
+    Resolved by asking the package what it holds, never by comparing a version
+    string: 1.x calls it ``FastMCP``, 2.x calls it ``MCPServer``, and a fork or
+    a vendored build reports whatever version it likes.
+    """
+    for module, attr in (
+        ("mcp.server.fastmcp", "FastMCP"),
+        ("mcp.server.mcpserver", "MCPServer"),
+    ):
+        try:
+            return getattr(importlib.import_module(module), attr)
+        except Exception:  # noqa: BLE001 - absent on the other major
+            continue
+    pytest.skip("no high-level MCP server class in this build")
+
+
+def _lowlevel_of(server):
+    """The lowlevel protocol server the high-level one wraps."""
+    for attr in ("_mcp_server", "_lowlevel_server"):
+        found = getattr(server, attr, None)
+        if found is not None:
+            return found
+    pytest.skip(f"cannot reach the lowlevel server on {type(server).__name__}")
+
+
+@asynccontextmanager
+async def create_connected_server_and_client_session(server):
+    """A live, initialized ``ClientSession`` wired to ``server``.
+
+    1.x ships this helper; 2.0 removed it and left only the stream pair, so it
+    is assembled here from the piece both majors still have.
+    """
+    lowlevel = _lowlevel_of(server)
+    async with create_client_server_memory_streams() as (client_streams, server_streams):
+        client_read, client_write = client_streams
+        server_read, server_write = server_streams
+
+        async def _serve():
+            await lowlevel.run(
+                server_read,
+                server_write,
+                lowlevel.create_initialization_options(),
+                raise_exceptions=False,
+            )
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_serve)
+            async with mcp_pkg.ClientSession(client_read, client_write) as session:
+                await session.initialize()
+                try:
+                    yield session
+                finally:
+                    tg.cancel_scope.cancel()
 
 
 def _init(**extra):
@@ -42,8 +103,8 @@ def _captured(monkeypatch):
 
 
 def _build_real_server(executed):
-    """A real FastMCP server: one destructive-shaped tool, one benign one."""
-    server = FastMCP("obsvr-test-server")
+    """A real MCP server: one destructive-shaped tool, one benign one."""
+    server = _server_class()("obsvr-test-server")
 
     @server.tool(description="Transfer funds. Stands in for a destructive capability.")
     def send_money(amount: int) -> str:
