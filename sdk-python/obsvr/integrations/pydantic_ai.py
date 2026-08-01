@@ -28,22 +28,31 @@ policy, one tool name: refused through ``Agent(toolsets=[ObsvrToolset(...)])``,
 and executed — payload returned to the caller — with the same tool registered
 through ``@agent.tool``.
 
+:func:`govern_agent` binds one level up, to the toolset the agent assembles for
+its tool manager, which is the single object every dispatch passes through. Use
+it whenever tools can reach the agent by more than one route.
+
 Usage::
 
     from pydantic_ai import Agent
     from pydantic_ai.toolsets import FunctionToolset
-    from obsvr.integrations.pydantic_ai import ObsvrToolset
+    from obsvr.integrations.pydantic_ai import ObsvrToolset, govern_agent
     import obsvr
 
     obsvr.init(api_key="...", ingest_url="https://...",
                agent_policy={"denied_tools": ["shell_exec"]})
 
+    # Covers every tool the agent can dispatch, however it was registered.
+    agent = govern_agent(Agent("openai:gpt-4o"))
+
+    # Or govern one toolset, where that toolset holds every tool there is.
     agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(FunctionToolset([...]))])
 """
 
-# Interception: PydanticAI WrapperToolset.call_tool override (non-mutating).
-# The wrapped toolset is delegated to; a policy block raises before delegation,
-# stopping the tool from ever executing.
+# Interception: PydanticAI WrapperToolset.call_tool override (non-mutating),
+# either around a toolset the caller owns or around the toolset the agent
+# assembles for its tool manager. The wrapped toolset is delegated to; a policy
+# block raises before delegation, stopping the tool from ever executing.
 
 import dataclasses
 import json
@@ -191,3 +200,61 @@ class ObsvrToolset(_WrapperToolset):  # type: ignore[misc]
 def govern_toolset(toolset: Any, **options: Any) -> ObsvrToolset:
     """Convenience: wrap a toolset in an ``ObsvrToolset``."""
     return ObsvrToolset(toolset, **options)
+
+
+_AGENT_GOVERNED_ATTR = "_obsvr_agent_governed"
+
+
+def govern_agent(agent: Any, **options: Any) -> Any:
+    """Govern EVERY tool an agent can dispatch, however it was registered.
+
+    ``ObsvrToolset`` governs the toolset it wraps, which is the whole story only
+    when every tool lives in that toolset. It usually does not. An agent keeps
+    its own function toolset for ``@agent.tool``, ``@agent.tool_plain`` and
+    ``Agent(tools=[...])``, and PydanticAI combines that with the toolsets
+    passed to ``Agent(toolsets=[...])`` as SIBLINGS — a combined toolset
+    dispatches each call to the toolset that owns the tool, so a wrapper around
+    one sibling never sees a call to another. Measured on a real agent graph
+    with the tool denied: through ``Agent(toolsets=[ObsvrToolset(...)])`` it was
+    refused, and the same policy against the same tool registered with
+    ``@agent.tool`` executed it and returned its payload to the caller.
+
+    This binds one level up, to the assembled toolset the agent hands its tool
+    manager — the single object every tool call is dispatched through, whoever
+    owns the tool. Registration style stops mattering, and so does the order
+    tools were added: tools registered AFTER this call are governed too,
+    because the tree is assembled per run and wrapped as it is assembled.
+
+    The seam is feature-detected, not version-compared — forks, backports and
+    vendored builds report whatever version they like. Where it is absent this
+    raises rather than returning an agent that quietly governs nothing, and
+    names the wrapper as the alternative.
+
+    Idempotent. Returns the agent, so it reads as ``agent = govern_agent(agent)``.
+    """
+    if getattr(agent, _AGENT_GOVERNED_ATTR, False):
+        return agent
+
+    assemble = getattr(agent, "_get_toolset", None)
+    if not callable(assemble):
+        raise ImportError(
+            "[obsvr] This PydanticAI build does not expose the toolset-assembly "
+            "seam govern_agent() binds to (Agent._get_toolset). Wrap the "
+            "toolset instead — obsvr.integrations.pydantic_ai.ObsvrToolset — "
+            "and register every tool in it, or gate the tool's own callable "
+            "with obsvr.govern_tool."
+        )
+
+    def governed_assemble(*args: Any, **kwargs: Any) -> Any:
+        return ObsvrToolset(assemble(*args, **kwargs), **options)
+
+    try:
+        object.__setattr__(agent, "_get_toolset", governed_assemble)
+        object.__setattr__(agent, _AGENT_GOVERNED_ATTR, True)
+    except Exception as exc:  # noqa: BLE001 - a container that refuses the bind
+        raise ImportError(
+            "[obsvr] Could not bind the tool gate to this PydanticAI agent "
+            f"({type(exc).__name__}). Wrap the toolset instead — "
+            "obsvr.integrations.pydantic_ai.ObsvrToolset."
+        ) from exc
+    return agent
