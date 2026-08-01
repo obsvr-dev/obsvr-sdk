@@ -35,6 +35,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from .decision_record import sha256_hex
+from .mcp_fields import descriptor_field
 import json
 import math
 
@@ -109,12 +110,16 @@ def _canonical_json_for_hash(value: Any) -> str:
 
 def _field(tool: Any, attr: str) -> Any:
     """Read a descriptor field from an attr-style object (mcp.types.Tool) or
-    a plain dict -- the same dual-access convention scan_tool_description uses.
+    a plain dict -- the same dual-access convention scan_tool_description uses,
+    under either protocol spelling (``inputSchema`` / ``input_schema``).
+
+    The spelling matters more here than anywhere else it is read: a field this
+    cannot resolve is OMITTED from the canonical projection rather than hashed
+    as null, so a single-spelling read commits the pin to a document with the
+    schema missing from it, and a later swap of that schema then verifies
+    against a pin that never covered it.
     """
-    v = getattr(tool, attr, None)
-    if v is None and isinstance(tool, dict):
-        v = tool.get(attr)
-    return v
+    return descriptor_field(tool, attr)
 
 
 def _plain(value: Any) -> Any:

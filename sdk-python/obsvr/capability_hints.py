@@ -58,6 +58,8 @@ from __future__ import annotations
 import threading
 from typing import Any, List, Optional
 
+from .mcp_fields import descriptor_field
+
 __all__ = [
     "declares_destructive",
     "CapabilityStore",
@@ -77,17 +79,17 @@ def _annotations_of(tool: Any) -> Optional[dict]:
     """
     if tool is None:
         return None
-    if isinstance(tool, dict):
-        value = tool.get("annotations")
-    else:
-        value = getattr(tool, "annotations", None)
+    value = descriptor_field(tool, "annotations")
     if isinstance(value, dict):
-        return value
+        # A dict-shaped annotations mapping may itself carry either spelling.
+        return {"destructiveHint": descriptor_field(value, "destructiveHint")}
     if value is None or isinstance(value, (str, bytes, int, float, bool, list, tuple)):
         return None
-    # A model object: read the one field this module cares about off it.
-    hint = getattr(value, "destructiveHint", None)
-    return {"destructiveHint": hint}
+    # A model object: read the one field this module cares about off it, under
+    # either protocol spelling — the mcp package renamed it to
+    # ``destructive_hint`` at 2.0, and a single-spelling read would report every
+    # descriptor as making no claim rather than failing visibly.
+    return {"destructiveHint": descriptor_field(value, "destructiveHint")}
 
 
 def declares_destructive(tool: Any) -> bool:

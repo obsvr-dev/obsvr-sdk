@@ -237,6 +237,14 @@ class TestRegistryGate:
         # declared. Same exemption reason as cost.py, whose two halves this
         # module now holds.
         "metering.py",
+        # Reads one descriptor field under either of the two spellings the MCP
+        # protocol types have carried. Decides nothing: it returns the value it
+        # finds, or the caller's default. The layers that DO decide on what it
+        # returns — tool_pinning, capability_hints, the MCP descriptor scan —
+        # carry their own dispositions. It cannot fail open, because "not
+        # present under either name" is a value it returns rather than an
+        # exception it raises. Same exemption reason as tool_content_hash.py.
+        "mcp_fields.py",
         "normalize.py",
         "otel_mirror.py",
         "pii_types.py",
