@@ -62,6 +62,10 @@ from .cloudevents import (  # noqa: F401
 # Typed policy-block error: catch this to tell "refused by policy" apart
 # from a provider or transport failure without matching on the message.
 from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
+# Framework-agnostic tool governance at the package root, matching the
+# TypeScript twin (`import { obsvrGovernTool } from "@obsvr/sdk"`): the two
+# SDKs must not diverge on the entry point for the same primitive.
+from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .wrap import wrap  # noqa: F401
 # Why an optional integration failed to bind, not merely that it did: an
@@ -74,6 +78,8 @@ from ._version import __version__  # noqa: F401  # single source: obsvr/_version
 __all__ = [
     "init",
     "wrap",
+    "govern_tool",
+    "govern_tools",
     "integration_bindings",
     "unbound_symbols",
     "explain",

@@ -53,9 +53,10 @@ with the empty-descriptor digest. That is the honest record of what the
 producer actually saw, and it is stable: the same call always yields the same
 hash. Giving MCP a real descriptor digest means retaining descriptors from
 ``tools/list``, which is its own change - and one the TS twin has not made
-either, so the two stay level. A caller holding a real descriptor (TypeScript
-reaches this through ``obsvrGovernTool``, which has no Python twin today) can
-pass it here directly and get the stronger digest.
+either, so the two stay level. A caller holding a real descriptor — each SDK
+reaches this through its tool governor, ``obsvrGovernTool`` in TypeScript and
+``integrations.tools.govern_tool`` here — can pass it directly and get the
+stronger digest.
 """
 
 from __future__ import annotations

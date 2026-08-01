@@ -181,4 +181,7 @@ def test_is_consumed_at_the_tool_boundary_and_nowhere_else():
         # Imports only - a prose mention of the module is not wiring.
         and pattern.search(p.read_text(encoding="utf-8"))
     )
-    assert hits == ["integrations/mcp.py"]
+    # Both consumers are tool-invocation boundaries: the MCP call path and the
+    # framework-agnostic tool governor. Anything else appearing here is a new
+    # evidence claim and needs the same scrutiny these two got.
+    assert hits == ["integrations/mcp.py", "integrations/tools.py"]
