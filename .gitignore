@@ -27,7 +27,7 @@ htmlcov/
 bench/results/
 .claude/
 
-# Local working notes and agent instructions. Not published.
+# Local, unpublished
 docs/
 CLAUDE.md
 LAUNCH.md

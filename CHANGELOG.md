@@ -9,9 +9,7 @@ changes to closed enums count as breaking, because they break exhaustive
 switches in consumer code. Entries are kept short by default; the long ones are
 the ones that change something you depend on.
 
-Each entry links the commit that made the change. This repository takes direct
-pushes rather than pull requests, so a commit is the smallest reviewable unit
-there is to link.
+Each entry links the commit that made the change.
 
 ## [Unreleased]
 
@@ -522,10 +520,9 @@ cut, when it is renamed to that version.
   closing them means widening the interception path across the whole declared
   version range of each provider package rather than editing a table.
 - **Resolved-model provenance is now catalogued as `KD-10`, and a second claimed
-  divergence was measured and found already closed.** An internal remediation
-  inventory carried two adjacent capability gaps as prose rows in a still-open
-  table.
-  Both were driven against one server rather than transcribed, and they split.
+  divergence was measured and found already closed.** Two adjacent capability
+  gaps had been described in the same terms. Both were driven against one server
+  rather than transcribed, and they split.
 
   `model_resolved` / `provenance_source` **reproduces**: with a provider
   answering under an identifier different from the one requested, TypeScript

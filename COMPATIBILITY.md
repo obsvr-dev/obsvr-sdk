@@ -160,17 +160,17 @@ the same clients.
 | ------- | -------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | `ag2`   | Python   | `>=0.3.2,<1.0`   | 1.0 removed the agent class this integration binds, and renamed the import package.                                            |
 
-## Open support-matrix decisions
+## Ranges not yet bounded by measurement
 
 Recorded here rather than acted on: each is a decision about what this package
 intends to support, which is the owner's call and not a defect to patch. Both
 are stated as of the 2026-08-01 version sweep; a third, `mcp`, was answered by
 porting the three reads it named rather than by relaxing a cap.
 
-| Range | Latest upstream | The question |
+| Range | Latest upstream | What bounds it |
 | --- | --- | --- |
-| `ag2>=0.3.2,<1.0` (Python) | `1.0.1` | The cap EXCLUDES the current major, so the declared range tracks only the pre-1.0 line. The cap itself is correct and load-bearing — 1.0 renamed the import package and removed the class the integration binds, both re-confirmed — so the question is whether to support 1.x at all, not whether to widen the cap. What 1.x IS has now been read rather than inferred: a from-scratch framework under the same distribution name, with no `ConversableAgent`, no `register_hook`, no `initiate_chat` and no function map, whose tools are invoked at a single point behind a first-class around-hook — `BaseMiddleware.on_tool_execution`, which takes a `call_next` and whose refusal contract is demonstrated by the project's own human-approval middleware. Nothing of the 0.x integration transfers, and the framework-agnostic `govern_tool` does not reach 1.x tools either. Its similarly-named siblings are not substitutes: `ag2/policies/` is LLM-context assembly with no veto channel, and `ag2/observers/` swallows every exception on its documented path. Separately, the 0.x line was forked and now publishes under the `autogen` distribution, and upstream tells 0.x users to install `ag2-classic`, which this extra does not name — so this range currently follows one half of a fork under a name the other half kept. |
-| `ai>=3.3.28` (TypeScript) | `7.0.47` | Four majors of unbounded floor. The declared range promises every release from 3.3.28 onward, across four breaking majors, with no top. Nothing here says it is wrong — it says nothing has bounded it. |
+| `ag2>=0.3.2,<1.0` (Python) | `1.0.1` | The cap EXCLUDES the current major, so the declared range tracks only the pre-1.0 line. The cap itself is correct and load-bearing — 1.0 renamed the import package and removed the class the integration binds, both re-confirmed — so what is open is whether to support 1.x at all, not whether to widen the cap. What 1.x IS has been read rather than inferred: a from-scratch framework under the same distribution name, with no `ConversableAgent`, no `register_hook`, no `initiate_chat` and no function map, whose tools are invoked at a single point behind a first-class around-hook — `BaseMiddleware.on_tool_execution`, which takes a `call_next` and whose refusal contract is demonstrated by the project's own human-approval middleware. Nothing of the 0.x integration transfers, and the framework-agnostic `govern_tool` does not reach 1.x tools either. Its similarly-named siblings are not substitutes: `ag2/policies/` is LLM-context assembly with no veto channel, and `ag2/observers/` swallows every exception on its documented path. Separately, the 0.x line was forked and now publishes under the `autogen` distribution, and upstream tells 0.x users to install `ag2-classic`, which this extra does not name — so this range currently follows one half of a fork under a name the other half kept. |
+| `ai>=3.3.28` (TypeScript) | `7.0.47` | Four majors of unbounded floor. The declared range promises every release from 3.3.28 onward, across four breaking majors, with no top. No run has covered any of it, so the range is untested rather than known wrong. |
 
 `ag2` is now the only range in either manifest that excludes its package's
 current major, and its reason is stated above and under "Versions that will not

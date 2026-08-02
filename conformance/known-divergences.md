@@ -22,12 +22,12 @@ what the History is for. The next live entry takes the next free number, which
 is why the catalog currently holds KD-6, KD-9 and KD-10 with gaps between them.
 
 **A row is added only after the divergence is re-measured, never transcribed
-from prose.** KD-10 came from the still-open table of an internal remediation
-inventory, which listed two adjacent capability gaps in the same terms. Driving both
-against one server showed one of them was **already closed** — the other SDK's
-provider attribution had been made endpoint-derived and the prose had not caught
-up — so filing both would have catalogued a divergence that no longer existed.
-Only the one that still reproduces is here.
+from prose.** KD-10 was proposed alongside a second capability gap described in
+the same terms. Driving both against one server showed the second was **already
+closed** — the other SDK's provider attribution had been made endpoint-derived
+and the prose describing it had not caught up — so filing both would have
+catalogued a divergence that no longer existed. Only the one that still
+reproduces is here.
 
 History:
 - 2026-07-28: KD-5 (customer-rule eval context on the TypeScript integrations
@@ -141,7 +141,7 @@ History:
   `quota_unit: "tokens"` via a token-budget path with post-call
   `record_token_usage`, matching TS (`rules.py`, `metering.py`, `wrap.py`).
 - 2026-07-11 (wave 1): several previously-silent divergences were FIXED (not
-  accepted) during the production-review remediation: Python customer hook
+  accepted): Python customer hook
   could override the enforcement-integrity gate / kill switch (now guarded,
   `policy.py`); Python `model_gate` rules never fired (now implemented,
   `rules.py`); Python quota `scope` fell back to `user_id` for any scope (now
