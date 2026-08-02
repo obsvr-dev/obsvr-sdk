@@ -348,8 +348,9 @@ We document enforcement limits honestly.
 
 **Scope: this list is the Python SDK only.** The two SDKs do not have the same
 limitations and neither list may be read across to the other — the TypeScript SDK
-has two of its own that do not apply here (it is ESM-only, and its named
-compatibility wrappers govern one method), and two below do not apply to it. The
+has three of its own that do not apply here (it is ESM-only, its named
+compatibility wrappers govern one method, and its zero-code auto-register misses
+three import shapes), and one below does not apply to it. The
 combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 

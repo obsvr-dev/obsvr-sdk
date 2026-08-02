@@ -643,7 +643,7 @@ Documented plainly, from the code. For the full threat model — what the signat
 Every one of these is documented in more detail further down this page or in the
 document linked beside it. They are collected here, once, because someone
 deciding whether to adopt this should not have to assemble them from eight
-sections. **Five of the eight apply to one SDK and not the other**, so the scope
+sections. **Four of the eight apply to one SDK and not the other**, so the scope
 is marked on each.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
@@ -676,7 +676,9 @@ is marked on each.
    block there. Full layer-by-layer list in [SECURITY.md](SECURITY.md).
 
 5. **Two agent surfaces refuse only where you bind them, and one audit rail
-   refuses nothing at all.** On LlamaIndex and AutoGen a tool gate exists and
+   refuses nothing at all.** *(both SDKs — the AutoGen half is Python only,
+   since TypeScript ships no AutoGen integration)* On LlamaIndex and AutoGen a
+   tool gate exists and
    enforces, but WHICH mechanism you install decides what it covers, because
    each framework can reach a tool by more than one route: on LlamaIndex,
    wrapping the `tools=[...]` list by hand misses a tool supplied per turn by

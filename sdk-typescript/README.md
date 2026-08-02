@@ -381,11 +381,11 @@ Use it for frameworks governed at the tool level (LlamaIndex, Vercel AI) so thei
 
 We document enforcement limits honestly — what the signature chain does and does not prove, streaming semantics, fail-open/closed behavior, and the inherent bypass surface of any in-process library. The key ones:
 
-### Before you install: the six limits of the TypeScript SDK
+### Before you install: the seven limits of the TypeScript SDK
 
 **Scope: this list is the TypeScript SDK only.** The two SDKs do not have the
 same limitations and neither list may be read across to the other — the Python
-SDK has two of its own that do not apply here, and two below do not apply to it.
+SDK has one of its own that does not apply here, and three below do not apply to it.
 The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
@@ -422,7 +422,16 @@ The combined list for both, with the scope marked on each entry, is in the
    capability behind MCP, a tool guardrail, or a governed tool.
    [Grading](#framework-integrations).
 
-6. **The current Google Gemini SDK is not supported.** obsvr binds
+6. **The zero-code auto-register misses three things, each measured rather
+   than reasoned about.** A `require()` entry point (the hook does not
+   intercept CommonJS at all), a subpath import such as `openai/index.mjs` or
+   `openai/client` (the specifier table is exact-match), and other client
+   classes exported by a governed package — `AzureOpenAI` and `BedrockOpenAI`
+   ride through ungoverned. An escaped client records nothing rather than
+   recording something false, and `obsvr.wrap()` governs all of them.
+   [Detail](#zero-code-global-coverage-no-monkey-patching).
+
+7. **The current Google Gemini SDK is not supported.** obsvr binds
    `@google/generative-ai`, the legacy line, which reached end-of-life in August
    2025. `@google/genai` has no adapter and is not intercepted.
 

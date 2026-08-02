@@ -37,7 +37,7 @@ every row presented the same way whether or not it had been.
 - **matrix** — the declared range is stood up by a per-version matrix: one
   environment per listed version, the gate driven through each release's own
   dispatch, and a denied tool's side effect measured at zero against a paired
-  allow control that reaches exactly one. Three rows earn it, and what supplies
+  allow control that reaches exactly one. Seven rows earn it, and what supplies
   the "real" half differs by surface. `crewai` and `pydantic-ai-slim` drive
   their range boundaries against a real provider, because on those surfaces
   nothing is proven until a model has CHOSEN to call the tool: crewai's
@@ -48,7 +48,7 @@ every row presented the same way whether or not it had been.
   directly and every client route into `tools/call` is driven rather than
   waited for. Its listed versions span both protocol majors.
 
-  Two more rows earn it in the same terms. `langchain-core` lists `1.0.0` and
+  Four more rows earn it in the same terms. `langchain-core` lists `1.0.0` and
   `1.5.3`, each driven on BOTH runtimes — the graph runtime and the classic
   executor, which deliver different pre-tool callbacks — with a denied tool at
   zero executions, a paired allow control at three, and a step budget of two
@@ -59,6 +59,15 @@ every row presented the same way whether or not it had been.
   exist at 2.0.0 at all, so what is measured there is that the tool-gate
   installer refuses loudly instead of arming a gate nothing would consult. That
   is the same shape as crewai's listed releases below its hook's arrival.
+
+  `ag2` and `llama-index-core` earn it on their own tool gates, each driven
+  live at two versions. `ag2` lists `0.3.2` and `0.9.9`, with both mechanisms
+  exercised at each — the `process_message_before_send` hook and the
+  `execute_function` gate — a denied tool at zero side-effect writes against a
+  paired allow control reaching exactly one. `llama-index-core` lists `0.14.5`
+  and `0.14.23`, `govern_agent` driven on the plain, ReAct, tool-retriever and
+  multi-agent-handoff routes with the denied tool's payload asserted absent
+  from the `ToolCallResult` the caller received.
 - **floor located** — the FLOOR is an adjacent tested pair established live
   (at the release below, the audited path is absent; at the floor, it is
   audited on a real call), with the reasoning recorded per extra in
