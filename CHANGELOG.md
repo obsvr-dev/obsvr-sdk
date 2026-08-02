@@ -1047,6 +1047,42 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **`govern_tool` raised out of the caller's program on a tool whose callable
+  is exposed as a property (Python).** The gate installs by SHADOWING — an
+  instance attribute that wins at lookup over the class one — and
+  `object.__setattr__` honours data descriptors, so a property could never be
+  shadowed however callable it looked. ag2's `autogen.tools.Tool` exposes its
+  callable as `func`, a property with no setter, and the write raised
+  `AttributeError` at the caller rather than degrading; a property WITH a setter
+  was quieter and worse, accepting the write, running the setter and installing
+  nothing. Such an attribute is no longer treated as an entry point, and a
+  recognized tool whose entry points are all ungateable comes back exactly as it
+  was passed — never converted into a bare function, and never entered in the
+  governed-name registry, since the audit rails on other surfaces stand down for
+  a registered name and would otherwise turn a coverage gap into their silence.
+  Verified live: after the fix the tool registers on a real agent and its side
+  effect still runs. Slots are unaffected and still gated (they are storage, not
+  behaviour), and the install site now confirms the write reached lookup rather
+  than trusting it, which is what catches a read-only C-level attribute such as
+  `functools.partial.func` and a lookup-forwarding proxy.
+
+- **`govern_tool` gated one half of a two-spelling entry point (Python).** The
+  table paired `invoke` with `ainvoke` alone, so a framework spelling the async
+  half `invoke_async` had one entry point governed and the other untouched:
+  measured on a real agent, the same governed tool refused on the synchronous
+  run and executed on the asynchronous one, returned its payload to the caller,
+  and recorded nothing at all. Resolution now co-gates a small table of async
+  aliases, which is additive — a tool carrying none of them resolves to exactly
+  the attributes it did before.
+
+  Both fixes ship with a sweep behind them rather than a third instance of the
+  same surprise. Every supported framework's real tool object was resolved
+  through the table and the result pinned per framework, so an addition that
+  moved an existing shape onto a different entry point now fails a test instead
+  of reaching a customer. Measured against the table as it previously stood, six
+  of the eight tool shapes resolve identically and the only two that move are
+  the two above.
+
 - **MCP (Python): two client routes into `tools/call` reached a denied tool's
   body.** `ClientSession.call_tool` is a convenience over `send_request`, and
   the gate bound only to the convenience. Anything that built the frame itself

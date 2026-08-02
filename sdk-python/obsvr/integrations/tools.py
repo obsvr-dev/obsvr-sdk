@@ -25,23 +25,34 @@ something::
     safe_search = govern_tool(search_tool)
     agent = Agent(..., tools=[safe_search])
 
-Where the gate physically sits, per framework shape (first match wins):
+Where the gate physically sits, per framework shape (first match wins). The
+right-hand column is MEASURED — every supported framework's real tool object was
+resolved through this table and the result is pinned in
+``tests/test_tool_governor.py``:
 
     on_invoke_tool     openai-agents ``FunctionTool`` (input is argument 1)
-    _run / _arun       crewai and langchain ``BaseTool`` subclasses (what
-                       structured-tool conversion captures)
+    _run / _arun       crewai ``BaseTool`` and langchain ``StructuredTool``
+                       (what structured-tool conversion captures)
     execute            execute-shaped tool objects
-    call / acall       llamaindex ``FunctionTool``
+    call / acall       llamaindex ``FunctionTool``, ``QueryEngineTool`` and the
+                       sync-to-async adapter
     invoke / ainvoke   structured tools exposing only the public surface
     run / arun         run-shaped tool objects
     func               plain function-holder shapes
     (bare callable)    a plain function is wrapped and returned directly
 
+Two surfaces resolve to nothing here, by shape rather than by omission:
+pydantic-ai's ``Tool`` carries no execute attribute at all and is governed at
+its toolset boundary, and MCP has no client-side tool object — its gate binds
+``ClientSession.send_request``.
+
 PLUS ``func`` alongside whichever attr matched, whenever the object stores
 its callable in a ``func`` field: entry points fan out (crewai's ``Tool.run``
 calls ``self.func`` directly, bypassing ``_run``), and the stored callable is
-where they converge. A reentrancy guard keeps a delegating entry point from
-being gated or audited twice for one invocation.
+where they converge. PLUS the async ALIASES in ``_ASYNC_ALIASES``, because one
+logical entry point can have more than one async spelling and Haystack's
+``Tool`` uses ``invoke_async`` rather than ``ainvoke``. A reentrancy guard keeps
+a delegating entry point from being gated or audited twice for one invocation.
 
 A governed tool also DECLINES RESULT CACHING where the framework offers a say
 (``cache_function``). A result cache serves a repeat call from the framework's
@@ -58,15 +69,27 @@ body was never entered. A tool shape the table does not recognize is returned
 unchanged; a wrapped tool is a shallow COPY where the object permits it, so the
 caller's original is not mutated.
 
-ONE SHAPE IS NEITHER GOVERNED NOR RETURNED UNCHANGED, and it is stated here
-rather than left for a caller to discover. Where the attr the table matches is
-a read-only PROPERTY, the write below raises ``AttributeError`` out of
-``govern_tool`` instead of degrading. Measured on ``ag2``'s ``autogen.tools.Tool``
-(0.9.x), whose only matching attr is ``func``, a property with no setter over a
-private ``_func``; the same would hold for any container exposing its callable
-that way. Wrap the underlying FUNCTION before the framework builds its tool
-object — that is governed normally, and on ag2 the gated callable survives into
-the agent's function map intact.
+GOVERNING A CALLER MUST NOT DAMAGE THE CALLER, and one shape used to. The gate
+installs by SHADOWING — an instance attribute that wins at lookup over the class
+one — so an attribute backed by a data descriptor cannot be gated however
+callable it looks. ``ag2``'s ``autogen.tools.Tool`` exposes its callable as
+``func``, a property with no setter over a private ``_func``, and
+``object.__setattr__`` honours data descriptors: the write raised
+``AttributeError`` straight out of ``govern_tool`` and into the caller's
+program. A property WITH a setter is quieter and worse — the write succeeds, the
+setter runs, and no gate is installed.
+
+Such an attribute is therefore not an entry point at all. It is skipped during
+resolution, and a recognized tool whose entry points are ALL ungateable comes
+back exactly as it was passed: never converted into a bare function, and — the
+part that matters beyond this module — never registered in the governed-name
+registry, because the audit rails on other surfaces stand down for a registered
+name and would turn a coverage gap into their silence.
+
+To govern such a tool, wrap the underlying FUNCTION before the framework builds
+its tool object around it. That is gated normally, and on ag2 the gated callable
+survives all of the framework's own wrapping layers into the executor's function
+map — which is where ``integrations/autogen.py`` puts it.
 """
 
 import contextvars
@@ -74,6 +97,7 @@ import copy
 import functools
 import inspect
 import json
+import types
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from ..capability_hints import declares_destructive
@@ -129,6 +153,11 @@ def register_governed_tool_name(tool_name: str) -> None:
 #: ``run``/``invoke`` because crewai's structured-tool conversion captures the
 #: BOUND ``_run`` (``base_tool.py: func=self._run``) — gating anything shallower
 #: leaves that captured reference ungoverned.
+#:
+#: What each supported framework resolves to is pinned in
+#: ``tests/test_tool_governor.py`` against shapes read off the real tool classes,
+#: so an addition here that moved an existing shape onto a different attribute
+#: would fail rather than be discovered by a customer.
 _EXEC_ATTR_PAIRS: Tuple[Tuple[str, Optional[str]], ...] = (
     ("on_invoke_tool", None),
     ("_run", "_arun"),
@@ -150,6 +179,72 @@ _ASYNC_ALIASES: Dict[str, Tuple[str, ...]] = {
     "invoke": ("invoke_async",),
 }
 
+#: Every name the table can reach, for recognizing a tool shape whose entry
+#: points turn out not to be gateable (see :func:`_carries_exec_attr`).
+_ALL_EXEC_ATTR_NAMES: frozenset = frozenset(
+    [name for pair in _EXEC_ATTR_PAIRS for name in pair if name]
+    + [alias for aliases in _ASYNC_ALIASES.values() for alias in aliases]
+)
+
+
+def _shadowable(tool: Any, attr: str) -> bool:
+    """Whether an instance attribute could shadow this class attribute.
+
+    The gate installs by SHADOWING: an entry in the instance ``__dict__`` wins
+    at lookup over a plain function or any other non-data descriptor, which is
+    what the conversion helpers that capture a bound callable then read. A DATA
+    descriptor never loses to the instance dict, so an attribute backed by one
+    cannot be gated however callable it looks — and both of the outcomes that
+    produced were wrong. ag2's ``Tool.func`` is a property with no setter, so
+    ``object.__setattr__`` RAISED ``AttributeError`` out of the caller's
+    program; a property WITH a setter is quieter and worse, because the write
+    succeeds, runs the setter, and installs no gate at all.
+
+    Slots are the exception and are treated as writable: a ``member_descriptor``
+    is storage rather than behaviour, so shadowing one does reach dispatch. It
+    is not decidable statically whether a given slot is read-only —
+    ``functools.partial.func`` is a ``member_descriptor`` too and refuses the
+    write — which is why the install site verifies rather than trusting this.
+
+    Reading the CLASS rather than the instance is deliberate: it answers the
+    question without running a property getter, and some getters raise.
+    """
+    for klass in type(tool).__mro__:
+        if attr in klass.__dict__:
+            descriptor = klass.__dict__[attr]
+            descriptor_type = type(descriptor)
+            if not (
+                hasattr(descriptor_type, "__set__")
+                or hasattr(descriptor_type, "__delete__")
+            ):
+                return True
+            return isinstance(descriptor, types.MemberDescriptorType)
+    return True  # absent from every class: instance-only, so plainly writable
+
+
+def _is_gateable(tool: Any, attr: str) -> bool:
+    """Present, callable, and installable. Shadowability is checked FIRST so a
+    property getter is never run just to decide it cannot be gated."""
+    if not _shadowable(tool, attr):
+        return False
+    try:
+        return callable(getattr(tool, attr, None))
+    except Exception:  # noqa: BLE001 - a getter that raises is not an entry point
+        return False
+
+
+def _carries_exec_attr(tool: Any) -> bool:
+    """Whether this looks like a framework TOOL OBJECT rather than a callable.
+
+    Used only when nothing could be gated, to decide between the two ways of
+    coming back empty-handed. A tool object whose entry points are all
+    ungateable must be returned AS IT IS; running it through the bare-callable
+    branch would hand the caller a plain function in place of their tool, which
+    on ag2 fails at ``Agent()`` construction rather than anywhere near here. A
+    plain function carries none of these names and is unaffected.
+    """
+    return any(hasattr(type(tool), name) for name in _ALL_EXEC_ATTR_NAMES)
+
 
 def _resolve_exec_attrs(
     tool: Any, extra: Optional[Tuple[str, ...]] = None
@@ -167,6 +262,12 @@ def _resolve_exec_attrs(
     below keeps an entry point that DOES delegate inward from being gated
     and audited twice.
 
+    An attribute that cannot be SHADOWED is not an entry point and is skipped —
+    see :func:`_shadowable`. Every framework whose exec attributes were
+    enumerated resolves to the same attributes it did before that filter
+    existed; the one shape it changes is ag2's ``Tool``, whose only match was a
+    property and which used to raise out of ``govern_tool``.
+
     ``extra`` names further attrs a CALLER knows this framework's dispatch can
     reach, appended to whatever the table resolved. It exists because the table
     is framework-agnostic by design and some shapes hide a second, equally
@@ -178,21 +279,21 @@ def _resolve_exec_attrs(
     """
     resolved: Tuple[str, ...] = ()
     for sync_attr, async_attr in _EXEC_ATTR_PAIRS:
-        if callable(getattr(tool, sync_attr, None)):
+        if _is_gateable(tool, sync_attr):
             attrs = [sync_attr]
-            if async_attr and callable(getattr(tool, async_attr, None)):
+            if async_attr and _is_gateable(tool, async_attr):
                 attrs.append(async_attr)
-            for alias_name in _ASYNC_ALIASES.get(sync_attr, ()):
-                if callable(getattr(tool, alias_name, None)):
-                    attrs.append(alias_name)
-            if sync_attr != "func" and callable(getattr(tool, "func", None)):
+            for alias in _ASYNC_ALIASES.get(sync_attr, ()):
+                if _is_gateable(tool, alias):
+                    attrs.append(alias)
+            if sync_attr != "func" and _is_gateable(tool, "func"):
                 attrs.append("func")
             resolved = tuple(attrs)
             break
     if extra:
         seen = set(resolved)
         for name in extra:
-            if name in seen or not callable(getattr(tool, name, None)):
+            if name in seen or not _is_gateable(tool, name):
                 continue
             seen.add(name)
             resolved = resolved + (name,)
@@ -542,7 +643,7 @@ def govern_tool(
     tool_name = _resolve_tool_name(tool, name)
 
     if not exec_attrs:
-        if callable(tool):
+        if callable(tool) and not _carries_exec_attr(tool):
             original = tool
             inflight: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
                 "obsvr_tool_gate_inflight", default=False
@@ -557,6 +658,7 @@ def govern_tool(
     governed = _copy_tool(tool)
     _refuse_result_caching(governed)
     inflight = contextvars.ContextVar("obsvr_tool_gate_inflight", default=False)
+    installed = []
     for attr in exec_attrs:
         original = getattr(governed, attr)
         wrapped = _wrap_callable(
@@ -566,7 +668,30 @@ def govern_tool(
         # gate: the instance attribute shadows the class method (or replaces
         # the stored field value, for `func`), which is exactly what the
         # conversion helpers that capture the BOUND callable read.
-        object.__setattr__(governed, attr, wrapped)
+        #
+        # THEN CONFIRM IT TOOK, because resolution cannot always know. A slot
+        # and a read-only C-level attribute are the same descriptor type, so
+        # `functools.partial.func` refuses a write that a real slot accepts;
+        # and a container could accept the write and store it somewhere lookup
+        # never reads. Governing a caller must not damage the caller, so a
+        # refusal is skipped rather than raised through them.
+        try:
+            object.__setattr__(governed, attr, wrapped)
+            took = getattr(governed, attr, None) is wrapped
+        except Exception:  # noqa: BLE001 - a container that vetoes the write
+            took = False
+        if took:
+            installed.append(attr)
+
+    if not installed:
+        # Recognized, and gateable nowhere. Hand back the ORIGINAL: the copy
+        # may carry a disabled result cache, and the caller is better off with
+        # the object they passed. The name is deliberately NOT registered —
+        # the governed-name registry is what the audit rails on other surfaces
+        # consult before standing down, so claiming a name here would convert
+        # a coverage gap into their silence.
+        return tool
+
     _GOVERNED_TOOL_NAMES.add(tool_name)
     return governed
 
