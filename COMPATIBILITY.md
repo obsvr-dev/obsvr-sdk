@@ -162,9 +162,8 @@ the same clients.
 
 ## Ranges not yet bounded by measurement
 
-Recorded here rather than acted on: each is a decision about what this package
-intends to support, which is the owner's call and not a defect to patch. Both
-are stated as of the 2026-08-01 version sweep; a third, `mcp`, was answered by
+Two declared ranges stand on reasoning rather than on a per-version run, and
+what is known about each is recorded here. A third, `mcp`, was resolved by
 porting the three reads it named rather than by relaxing a cap.
 
 | Range | Latest upstream | What bounds it |
@@ -180,6 +179,4 @@ range moved onto the current major rather than around it.
 
 _Except where the evidence column says otherwise, the Observed columns come from
 an integration-test matrix run outside this repository; that harness is not
-published, so those cells are updated by hand when the matrix is re-run. The
-`crewai` row is different: its versions are the ones `crewai-versions` covers on
-a rerun, and it is the one row in this file that can be re-derived._
+published, so those cells are updated by hand when the matrix is re-run._
