@@ -18,7 +18,8 @@ Optional extras for the provider clients `obsvr.register` / `obsvr.auto` patch:
 pip install "obsvr-sdk[openai]"           # OpenAI client governance
 pip install "obsvr-sdk[anthropic]"        # Anthropic client governance
 pip install "obsvr-sdk[openai-agents]"    # OpenAI Agents tool gate + tracing processor
-pip install "obsvr-sdk[mcp]"              # MCP tool governance (mcp 1.x)
+pip install "obsvr-sdk[gemini]"           # Google Gemini (legacy google-generativeai)
+pip install "obsvr-sdk[mcp]"              # MCP tool governance (mcp 2.x)
 ```
 
 Optional extras for framework integrations:
@@ -33,6 +34,7 @@ pip install "obsvr-sdk[bedrock]"          # AWS Bedrock (boto3) governance
 pip install "obsvr-sdk[vertex]"           # Google Vertex AI governance
 pip install "obsvr-sdk[pydantic-ai]"      # PydanticAI toolset governance
 pip install "obsvr-sdk[haystack]"         # Haystack 2.x / 3.x prompt guard + Agent tool gate
+pip install "obsvr-sdk[otel]"             # OpenTelemetry span mirroring
 ```
 
 Ed25519 verification of signed remote policy needs one of two backends —

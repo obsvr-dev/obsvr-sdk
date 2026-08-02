@@ -139,7 +139,7 @@ History:
   still stored/redacted and is still what multi-turn injection accumulates over
   (tests in `test_policy.py`). KD-2 (token quotas): Python now meters
   `quota_unit: "tokens"` via a token-budget path with post-call
-  `record_token_usage`, matching TS (`rules.py`, `quota.py`, `wrap.py`).
+  `record_token_usage`, matching TS (`rules.py`, `metering.py`, `wrap.py`).
 - 2026-07-11 (wave 1): several previously-silent divergences were FIXED (not
   accepted) during the production-review remediation: Python customer hook
   could override the enforcement-integrity gate / kill switch (now guarded,

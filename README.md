@@ -171,7 +171,7 @@ Anthropic and Google Gemini wrap identically — for Gemini, against the legacy 
 
 ## Policy engine
 
-Deterministic code only; no LLM in the decision path. Rules run **before** the provider call. **14 rule types** are enforced by the SDK:
+Deterministic code only; no LLM in the decision path. Rules run **before** the provider call. Fourteen rule types are declared, and **13 are enforced by the rule engine** — `pii` is a valid policy type with no rule-engine branch by design, because PII is enforced by the dedicated scan below rather than by authoring a `pii` rule:
 
 `keyword` · `regex` · `topic_allow` · `topic_deny` · `pii` · `action_gate` · `namespace_isolation` · `cross_tenant_block` · `destructive_op_gate` · `source_grounding` · `environment_gate` · `quota` · `model_gate` · `protocol_facet`
 
@@ -223,11 +223,11 @@ try {
 
 **ReDoS-hardened rules.** Customer-supplied `regex` rules are checked by a static catastrophic-backtracking validator before they can be installed, **and** every match executes against a bounded input slice (≤ 50 KB). Two layers of defense in depth: the validator rejects the known pathological shapes, and the input cap bounds the blast radius of anything that slips past it, so a hostile pattern is contained rather than left to run unbounded against a large input.
 
-**Signed policy distribution (both languages).** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. Python needs an Ed25519 backend for this (`pip install "obsvr-sdk[crypto]"`); with a key pinned and none installed the policy is **refused**, not waved through, and the event says which. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego via the `obsvr-export-rego` CLI for teams running policy-as-code.
+**Signed policy distribution (both languages).** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. Python needs an Ed25519 backend for this (`pip install "obsvr-sdk[crypto]"`); with a key pinned and none installed the policy is **refused**, not waved through, and the event says which. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego for teams running policy-as-code; the `obsvr-export-rego` CLI that writes the bundle ships in the **TypeScript** package only.
 
 **Non-overridable policy floor.** Rules in `policyFloor` (same shape as `policyRules`) are the operator baseline that customer rules and hooks cannot weaken: `enabled: false` / `mode: "shadow"` are ignored, the `onPreCall` hook can never un-block or downgrade a floor match (the attempt is recorded as `floor_override_ignored` on the signed event), and a remote policy sync cannot delete it. Rule precedence is three tiers with three lifetimes: the **floor** survives everything; **`policyRules` you declare in `init()`** survive a poll and are replaced only by another `init()`; the **server's own rules** are the poll's to manage, and an empty ruleset legitimately clears them. A poll used to replace all of it, so a `200` carrying `{"rules":[]}` erased locally declared rules while stamping the sync successful — disarming a deployment via a response nobody sees. A floor `redact` **fails closed to a block**. Off by default.
 
-**Where the floor is verified to reach, measured rather than asserted.** Driven live: it blocks before send on the client wrapper, on a framework integration, and on MCP tool arguments — the destination is never reached and the event records `blocked` with `floor_version` stamped, so a floor change is auditable from the event stream. A customer `onPreCall` hook returning "allow" does **not** un-block a floor match on any of the three. Two limits worth knowing rather than discovering: the `floor_override_ignored` record of a refused override attempt currently lands only on the **wrapper** path, so on integrations and MCP the block stands but the attempt to weaken it is not recorded; and the governance `evaluate()`/`explain()` endpoint is covered by unit tests in both languages but was not driven in that live pass. "Every surface" is the design intent and is now evidenced on three of the four — a claim of that shape was true of the tool gate too, right up until it was measured.
+**Where the floor is verified to reach, measured rather than asserted.** Driven live: it blocks before send on the client wrapper, on a framework integration, and on MCP tool arguments — the destination is never reached and the event records `blocked` with `floor_version` stamped, so a floor change is auditable from the event stream. A customer `onPreCall` hook returning "allow" does **not** un-block a floor match on any of the three. Two limits worth knowing rather than discovering: in **Python** the `floor_override_ignored` record of a refused override attempt lands only on the **wrapper** path, so on the integrations and on MCP the block stands but the attempt to weaken it is not recorded (TypeScript records it on every integration path — `integrations/core.ts` produces it and Bedrock, Vertex, Vercel AI, the compatibility wrappers, Cloudflare and MCP all merge it onto the event); and the governance `evaluate()`/`explain()` endpoint is covered by unit tests in both languages but was not driven in that live pass. "Every surface" is the design intent and is evidenced on three of the four.
 
 ```typescript
 obsvr.init({
@@ -487,7 +487,7 @@ processor in both languages, driven rather than read off the code:
 | PII **detection** and the stored redacted copy | yes | **yes** |
 | Canary token kept out of the stored event | yes | **yes** |
 | PII **block** — the call is refused, the provider never reached | yes | **no** |
-| `policyRules` (all 14 rule types) | yes | **no** |
+| `policyRules` (all 13 enforced rule types) | yes | **no** |
 | `policyFloor`, the non-overridable operator baseline | yes | **no** |
 | `onPreCall` hook | yes | **no** |
 | Outbound redaction — the provider gets the scrubbed text | yes | **no** |
@@ -595,7 +595,7 @@ denial. On CrewAI the step check rides the step callback and fires post-hoc,
 while the tool gate proper moved OFF that callback entirely — to the
 pre-execution hook and the governed tool, which is what made it real.
 
-Per-package version ranges — declared floor and ceiling, what is verified against a captured audit event versus only bound, and which rows have no artifact at all — are in [COMPATIBILITY.md](COMPATIBILITY.md), generated from the audit artifacts rather than maintained by hand.
+Per-package version ranges — declared floor and ceiling, what is verified against a captured audit event versus only bound, and which rows have no artifact at all — are in [COMPATIBILITY.md](COMPATIBILITY.md). Its Range evidence column is derived from the runs each row stands on; the Observed cells are updated by hand when the version matrix is re-run.
 
 ---
 
@@ -609,9 +609,9 @@ Governance overhead added by the SDK per governed call, measured against an in-p
 | + 5 rules           | rule eval + NFKC normalization + ruleset hash |           22.5µs |          126µs |
 | + PII scan          | built-in regex PII detection                  |           31.5µs |          144µs |
 | Full stack          | + hooks + multi-turn injection + shadow rules |       **45.1µs** |      **310µs** |
-| Full @ 10 KB prompt | large-payload hashing + scanning              |           ~1.3ms |              — |
+| Full @ 10 KB prompt | large-payload hashing + scanning              |           ~1.3ms |        ~7.2ms² |
 
-¹ Python p50s are bimodal at sub-150µs scale (GIL interplay with the sender thread), so means are published for those cells; means and p95s are stable across passes. Full percentiles, stress tiers (100k+ sustained calls), and methodology in [`BENCHMARKS.md`](BENCHMARKS.md).
+¹ Python p50s are bimodal at sub-150µs scale (GIL interplay with the sender thread), so means are published for those cells; means and p95s are stable across passes. ² The 10 KB row is a p50 in both columns — the bimodality is a small-payload effect and the large-payload cells are stable to <2%. Full percentiles, stress tiers (100k+ sustained calls), and methodology in [`BENCHMARKS.md`](BENCHMARKS.md).
 
 For a real LLM call (hundreds to thousands of ms), a typical config is **well under 0.1%** of the round-trip, and event delivery is off the caller's path entirely.
 
@@ -753,7 +753,7 @@ that line.
   In TypeScript, wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. They end the process **only when nothing else is listening for that signal** — attaching a handler replaces the runtime's default disposition, so a library that attaches one and never exits swallows the signal instead. When your application has its own graceful shutdown, it owns termination: obsvr flushes beside it and never ends the process out from under it, which is the trade — a host that exits before the flush completes drops whatever is still queued. Ownership is decided when the signal arrives rather than when the client was wrapped, so installing your handler after `wrap()` works. **Python differs and installs no signal handlers at all**: it flushes from `atexit`, which a default-disposition `SIGTERM` never reaches, so a container stop drops the queue tail there. Call `await obsvr.flush()` / `obsvr.flush()` in your own shutdown if the tail matters.
 
   </details>
-- **SDK bypass.** Not calling `init()` means no coverage — there is no post-hoc runtime check; assert `obsvr.isInitialized()` at startup. `disabled: true` in production emits a `governance_disabled` event so the bypass is on the record.
+- **SDK bypass.** Not calling `init()` means no coverage — there is no post-hoc runtime check; assert `obsvr.isInitialized()` (TypeScript) / `obsvr.is_initialized()` (Python) at startup. `disabled: true` in production emits a `governance_disabled` event so the bypass is on the record.
 - **A `JSON.parse` defect in some supported Node runtimes.** On **V8 14.1.146.11
   (Node 25.9.0)**, parsing an object can bind a value to a key the document
   never contained, when an earlier parse in the same process used a

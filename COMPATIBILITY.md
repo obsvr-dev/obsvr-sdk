@@ -31,8 +31,8 @@ the `crypto` / `crypto-nacl` extras — install one, not both.
 ### What the evidence column means
 
 The **Declared** column is what the package resolver enforces. It is not a
-statement that anything in the range was run, and until this column existed
-every row presented the same way whether or not it had been.
+statement that anything in the range was run; the **Range evidence** column is
+where that is said, per row.
 
 - **matrix** — the declared range is stood up by a per-version matrix: one
   environment per listed version, the gate driven through each release's own
@@ -84,16 +84,15 @@ every row presented the same way whether or not it had been.
   not wrong, and guessing a tighter one would replace an unmeasured claim with
   a more confident unmeasured claim.
 
-The **Observed** column predates this distinction. Except for `crewai`, those
-figures come from an integration-test matrix run outside this repository which
-is not published, so they cannot be re-derived from this tree — which is why
-they do not by themselves promote a row past `declared`.
+The **Observed** column predates this distinction, which is why an entry there
+does not by itself promote a row past `declared`.
 
 ## TypeScript
 
-Every row is `declared`: no TypeScript range has been stood up by a
-per-version matrix, so none of them has the evidence `crewai` has on the
-Python side.
+No TypeScript range has been stood up by a per-version matrix, so every row is
+`declared`. One row carries live evidence inside that label: the
+`@openai/agents` Observed versions are paired allow/deny legs against a real
+provider, described below the table.
 
 | Package                           | Declared                        | Observed              | Range evidence |
 | --------------------------------- | ------------------------------- | --------------------- | -------------- |

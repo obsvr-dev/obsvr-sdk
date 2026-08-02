@@ -170,11 +170,11 @@ is the one printed here.
 
 1. **Python L3 is dominated by hook execution machinery**: the SDK creates (and abandons via
    `shutdown(wait=False)`) a `ThreadPoolExecutor` per governed call for the pre-call hook and
-   another for the post-call hook (`policy.py:385`, `policy.py:677`) — ~3.4× throughput cost
+   another for the post-call hook (`policy.py:1302`, `policy.py:1796`) — ~3.4× throughput cost
    vs L0. Intentional (bounds hook wall-clock), but the biggest Python optimization target.
 2. **Both SDKs recompute the policy-version hash (SHA-256 over the serialized ruleset) on
-   every call**, uncached (TS `policy/rules.ts` `derivePolicyVersion`; Py `rules.py:529`).
-   Cost grows with rule count; part of the A0→A1 step.
+   every call**, uncached (TS `policy/rules.ts` `derivePolicyVersion`; Py `rules.py`
+   `derive_policy_version`). Cost grows with rule count; part of the A0→A1 step.
 3. At measurement time, TS events stamped `sdk_version: "node/2.0.0"` while the package was
    0.9.0 (stale `SDK_VERSION` constant) — cosmetic, not part of the signature preimage, zero
    perf impact. Fixed to `0.9.0` immediately after these runs; archived result JSONs record
