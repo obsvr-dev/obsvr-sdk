@@ -1536,9 +1536,11 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   construct trap and added an `OpenAI` binding to it. That is module
   substitution over an application module, reachable by anyone who can write an
   import, and it is a security finding rather than the coverage gap it was
-  first filed as. `resolve` now records the URLs it tags and `load` serves a
-  shim only for those; anything else loads exactly as it would with the hook
-  absent. An unrecognised provider id is also refused rather than falling
+  first filed as. **Affected versions: none released** — nothing has been
+  published to npm from this repository, so no installed build served a shim
+  for an unrecognised specifier. `resolve` now records the URLs it tags and
+  `load` serves a shim only for those; anything else loads exactly as it would
+  with the hook absent. An unrecognised provider id is also refused rather than falling
   through to a bare re-export, which would silently drop the module's default
   export. Reproduced in a real child process under `--import`: the substitution
   succeeds before the change and does not after, with the same module imported
@@ -1805,11 +1807,14 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   they checked, with no discriminator. A prompt reading exactly
   `obsvr:audit-gap/1 dropped=999999 reason=queue_overflow` therefore produced a
   legitimately-signed event that verification reported as
-  `{ valid: true, gapMarkers: 1, eventsDeclaredLost: 999999 }` — a user
-  fabricating a million lost events, on a chain that reports valid, by typing a
-  string. The reasoning that put the count in the signed content was right,
-  because metadata is unsigned; it placed the governance claim in the one field a
-  user fully controls and then trusted any event carrying it.
+  `{ valid: true, gapMarkers: 1, eventsDeclaredLost: 999999 }` — a declared loss
+  of a million events, on a chain reporting valid, from a string the user typed.
+  The reasoning that put the count in the signed content was right, because
+  metadata is unsigned; it placed the governance claim in the one field a user
+  fully controls and then trusted any event carrying it.
+
+  **Affected versions: none released.** Nothing has been published to npm or PyPI
+  from this repository, so no installed verifier accepted a forged marker.
 
   All four verification sites (both chain verifiers, both `obsvr-verify` CLIs)
   now require the event to BE a marker — `operation` is `audit.gap`, which the
@@ -1818,12 +1823,11 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   matching string: they are content functions the preimage fixtures depend on.
   What moved is that a matching string is no longer proof of what the event is.
 
-  **Reachability was measured, not assumed, and the first probe was wrong.**
+  **Reachability was measured per surface rather than for the front door alone.**
   Driving `obsvr.wrap()` reads zero forged markers in both directions — its
-  extractor stores `"user: <content>"` and the pattern is anchored — so a probe
-  that stopped there would have cleared a live vulnerability. The LangChain
-  integration stores `prompts.join("\n")`: a bare, user-controlled string, which
-  is the shape that reaches it.
+  extractor stores `"user: <content>"` and the pattern is anchored. The reachable
+  shape is elsewhere: the LangChain integration stores `prompts.join("\n")`, a
+  bare user-controlled string, and the Gemini shorthand stores one unprefixed.
 
   **Residual, stated rather than left implicit:** `operation` is not in the
   signature preimage, so a party who can edit a STORED event can still set it to
