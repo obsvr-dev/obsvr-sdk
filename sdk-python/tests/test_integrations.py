@@ -769,3 +769,22 @@ def test_langchain_on_tool_start_is_not_a_coroutine():
         assert not inspect.iscoroutinefunction(
             getattr(ObsvrCallbackHandler, name)
         ), f"{name} must stay synchronous"
+
+
+def test_langchain_announces_a_named_agent_run_that_calls_no_tool(sent):
+    """The classic executor identifies itself in the `name` keyword and nowhere
+    else: `serialized` is None, tags are empty, and there is no graph metadata.
+
+    Driven with no tool call on purpose. A run that calls one would be announced
+    anyway, lazily, so a leg that calls a tool cannot tell whether reading the
+    name matters — and reading it is the only thing that opens a run record for
+    an agent that answered without reaching for anything.
+    """
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={})
+    from obsvr.integrations.langchain import ObsvrCallbackHandler
+    h = ObsvrCallbackHandler()
+    h.on_chain_start(None, {"input": "go"}, run_id="c1", parent_run_id=None,
+                     tags=[], metadata=None, name="AgentExecutor")
+    h.on_chain_end({"output": "answered without a tool"}, run_id="c1")
+    ops = [e["operation"] for e in sent]
+    assert ops == ["langchain.agent.run.start", "langchain.agent.run.finish"], ops

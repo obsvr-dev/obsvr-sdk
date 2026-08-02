@@ -135,7 +135,7 @@ a vocabulary obsvr invented.
     - `mcp` — **enforces**, unconditionally and including under `flag`: a denied tool's callback does not run, because the SDK gates the request path itself, the actual boundary, rather than hanging a check off a callback near it. Measured live end to end over real JSON-RPC against a real server, on protocol majors 1 and 2, on every client route into `tools/call`. The gate binds at `send_request`, which `call_tool`, the task API and any hand-built frame all converge on; before it did, the latter two reached a denied tool's body and the raw route returned its payload to the caller.
     - `govern_tool` (the framework-agnostic tool governor, twin of TypeScript's `obsvrGovernTool`) — **enforces at the tool's own boundary**: it runs the same pre-call pipeline as MCP, destructive-capability gate included, before the wrapped callable is entered. The taint gate is pinned by the governor's own tests; the governor's dispatch coverage was driven live on CrewAI, both executor paths. A tool wrapped with it carries this control into ANY framework. A governed tool also declines the framework's RESULT CACHE where the framework offers a say (`cache_function`): a cache hit answers a repeat call from the framework's own memory without entering the gated callable, so it escapes the gate *and* leaves no execution for a side-effect instrument to count — measured on CrewAI, where a tool run while allowed and re-requested after the policy denied it handed the caller the cached payload at zero new executions.
     - `autogen` — **enforces**, and now on every call in a message: it used to read only the first, so a denied name in a parallel batch still executed — fixed, and re-probed live on ag2 0.3.2 and 0.14.0 with the batching control showing both calls running unpoliced.
-    - `langchain` — does not enforce THIS control. It has a pre-execution callback its runtimes do deliver (`on_tool_start`, where its agent-policy tool gate enforces — see below), but the taint latch's destructive-tools set is not consulted at that boundary. Wrap the tool with `govern_tool` to carry it there.
+    - `langchain` and `haystack` — do not enforce THIS control at their own gates. Both have a real pre-execution boundary their runtimes do deliver (`on_tool_start` for langchain, the Agent's `before_tool` hook for haystack, where each one's agent-policy tool gate enforces — see below), but the taint latch's destructive-tools set is not consulted at either. Wrap the tool with `govern_tool` to carry it there.
     - `crewai` — its pre-execution hook gate (`install_tool_gate_hook`) enforces the agent-policy allow/deny list before the tool runs, on both executor paths, but does not consult the destructive-tools set either; the step callback is delivered only after the step it reports and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
     - `openai_agents` — its pre-execution guardrail gate (`attach_tool_gate`) enforces the agent-policy allow/deny list before the tool runs — the executor consults tool input guardrails ahead of invocation — but does not consult the destructive-tools set; the tracing processor beneath it runs in `on_span_end`, after the tool has returned, and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
     - `llamaindex` — no tool gate of its own.
@@ -209,7 +209,73 @@ What the SDKs do about it:
     absent. Re-probed live on **both** runtimes with a policy-off control on each, and
     against the previous commit, which still lets the denied tool run. Both pre-tool
     callbacks reach one shared gate, so a runtime delivering both does not charge the
-    tool twice.
+    tool twice, and the credit for the second delivery is spent per call rather than
+    latched for the life of the handler — latched, one run on the classic executor left
+    every later `on_tool_start` returning before the gate, including every tool call of
+    every later graph run, which deliver no other pre-tool callback.
+
+    Three properties of the host decide what a refusal LOOKS like and none of them
+    decides whether it happens. A tool node configured to swallow tool errors, an error
+    middleware, or a retry middleware each convert the refusal into a message for the
+    model and let the run continue; the tool body is not entered in any of them, because
+    the raise happens before it. And the gate is defined synchronously on purpose: the
+    framework's sync callback dispatcher logs and discards whatever a COROUTINE handler
+    raises without consulting `raise_error` — an asymmetry it documents in its own
+    source — and that dispatcher is the one an async agent reaches whenever the tool
+    itself is synchronous.
+
+  - **`langchain`'s step budget — enforces, and did not before, on either runtime.**
+    `max_steps` counts tool calls per agent run, and the run was never created: the
+    helper that recognised one read the `serialized` argument, which the graph runtime
+    passes as a literal `None` at the graph root and at every node, and which the classic
+    executor passes as `None` from `Chain.invoke`. With no run state, the budget saw a
+    count of zero on every call and allowed all of them, while `agent_run_id` was empty
+    on every event and loop detection and the output-topic check never ran either. A run
+    is now recognised from the `name` keyword and the graph metadata the framework does
+    populate, and a tool call walks the recorded chain ancestry to find it, because its
+    immediate parent is the node that dispatched it rather than the run. Driven with a
+    budget of two against a model asking for three, at `langchain-core` 1.0.0 and 1.5.3,
+    on both runtimes: the run stops at two. This budget is not the framework's own
+    `recursion_limit`, which counts graph supersteps rather than tool calls and cannot
+    be substituted for it.
+
+  - **`haystack` — enforces, on two different things.** `ObsvrGuard` is a pipeline
+    `@component` that governs the PROMPT passing through it; a block raises out of
+    `run()` and the pipeline stops, so the downstream generator is never reached —
+    measured on the bytes the generator received, at `haystack-ai` 2.0.0 and 3.0.0.
+    `install_tool_gate_hook()` is the tool gate, registered as the Agent's own
+    `before_tool` hook. The Agent runs it before it resolves the pending tool calls and
+    before it builds the executor that dispatches them in parallel, so a refusal removes
+    the denied call and leaves its siblings pending — there is no sibling already in
+    flight to race, which is why the gate is there rather than inside the tools. It rules
+    on the CALL and not on a tool object, so tools handed to `run(tools=...)`, tools
+    inside a `Toolset` that respawns per run, and tools rebuilt by a serialization
+    round-trip are all covered by one registration. Allow/deny only; `govern_tool`
+    carries the rest of the pre-call net and aborts the run instead of answering the
+    model. Two limits stated rather than implied: the `before_tool` hook point does not
+    exist at 2.0.0, where the installer refuses loudly instead of arming a gate nothing
+    would consult; and a refusal raised out of a component reaches the caller of
+    `pipeline.run()` as the host's own error type with obsvr's demoted to `__cause__`,
+    carrying a snapshot of the pipeline inputs — so a prompt obsvr redacted out of its
+    own record remains reachable on the exception object the caller holds. Match a
+    refusal with `is_obsvr_block(exc)` rather than by catching obsvr's type.
+
+    Two more, both measured rather than reasoned about. **The hook survives being
+    written down and loaded back and a governed tool does not:** an Agent saved with
+    `to_dict` and rebuilt with `from_dict` comes back with the hook and still refuses at
+    zero executions, against a control reload with no mechanism that runs the denied
+    tool and returns its payload — while a `govern_tool`-wrapped tool reloads
+    successfully and ungoverned, because serialization records the tool's own
+    `function` and the governor sits on `invoke`. The cycle does not raise, which is
+    what makes it worth stating; a reload that failed loudly would be safe. Put
+    `obsvr.integrations.haystack` on Haystack's deserialization allowlist for the hook
+    to load back at all. **And a `ComponentTool` keeps the component it wraps as a live
+    attribute**, so the gate covers the tool CALL while the wrapped object stays
+    reachable: driven, a denied `ComponentTool` runs zero times through the Agent, and
+    the same component invoked directly off the tool — or added to a Pipeline of its
+    own — runs once and returns its payload, with nothing claiming to have blocked
+    either route. That is the object-scope limit every tool gate here has, stated for
+    this surface because a component is an unusually easy second reference to hold.
 
   - **`crewai` — enforces, through two independent pre-execution mechanisms**, because
     nothing hung off its step callback ever could: CrewAI delivers that callback only
@@ -321,9 +387,9 @@ What the SDKs do about it:
   callback does fire and the step check with it, but on the same after-the-fact terms as
   everything else that callback carries.
 
-  **On Python, `mcp`, `langchain`, `autogen`, `pydantic_ai`, `crewai` (via its hook gate)
-  and any `govern_tool`-wrapped tool are the surfaces on which a tool-policy decision
-  means what it says.** On TypeScript the equivalent set is `mcp`, `obsvrGovernTool`, the
+  **On Python, `mcp`, `langchain`, `autogen`, `pydantic_ai`, `crewai` (via its hook gate),
+  `haystack` (via its before_tool hook) and any `govern_tool`-wrapped tool are the
+  surfaces on which a tool-policy decision means what it says.** On TypeScript the equivalent set is `mcp`, `obsvrGovernTool`, the
   LangChain handler and a provider tool runner's tools; `govern_tool` is
   `obsvrGovernTool`'s Python twin. No Python surface is known to emit a false `blocked`
   any longer — the tracing processor's and CrewAI's ReAct path were the two found, and

@@ -13,8 +13,8 @@ Which versions of each package the obsvr SDK works with.
 | `cryptography`            | `>=41.0.0`                            | —                                                    | declared       |
 | `google-cloud-aiplatform` | `>=1.38.0`                            | —                                                    | declared       |
 | `google-generativeai`      | any version                           | `0.8.6`                                              | declared       |
-| `haystack-ai`             | `>=2.0.0`                             | `2.0.0` – `3.0.0`                                    | declared       |
-| `langchain-core`          | `>=0.2.0`                             | `0.2.0` – `1.5.2`                                    | declared       |
+| `haystack-ai`             | `>=2.0.0`                             | `2.0.0`, `3.0.0`                                     | **matrix**     |
+| `langchain-core`          | `>=1.0.0,<2.0.0`                      | `1.0.0`, `1.5.3`                                     | **matrix**     |
 | `llama-index-core`        | `>=0.11.23`                           | `0.11.23` – `0.14.23`                                | declared       |
 | `mcp`                     | `>=2.0.0,<3.0.0`                      | `1.29.0`, `2.0.0`                                    | **matrix**     |
 | `openai`                  | `>=1.66.0`                            | `1.0.0` – `2.50.0`                                   | floor located  |
@@ -47,6 +47,18 @@ every row presented the same way whether or not it had been.
   client and a real server exchange real JSON-RPC, so the tool call is made
   directly and every client route into `tools/call` is driven rather than
   waited for. Its listed versions span both protocol majors.
+
+  Two more rows earn it in the same terms. `langchain-core` lists `1.0.0` and
+  `1.5.3`, each driven on BOTH runtimes — the graph runtime and the classic
+  executor, which deliver different pre-tool callbacks — with a denied tool at
+  zero executions, a paired allow control at three, and a step budget of two
+  stopping a run the model asked to take further; the latest is additionally
+  driven against a real provider. `haystack-ai` lists `2.0.0` and `3.0.0`, and
+  the two are not symmetric on purpose: the prompt guard binds and refuses at
+  both, while the Agent, the Tool class and the `before_tool` hook point do not
+  exist at 2.0.0 at all, so what is measured there is that the tool-gate
+  installer refuses loudly instead of arming a gate nothing would consult. That
+  is the same shape as crewai's listed releases below its hook's arrival.
 - **floor located** — the FLOOR is an adjacent tested pair established live
   (at the release below, the audited path is absent; at the floor, it is
   audited on a real call), with the reasoning recorded per extra in

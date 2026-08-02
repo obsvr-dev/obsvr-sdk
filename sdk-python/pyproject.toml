@@ -143,7 +143,20 @@ gemini = ["google-generativeai"]
 # them. A range nobody has driven is a claim rather than a promise, and this one
 # now ends where the evidence does.
 mcp = ["mcp>=2.0.0,<3.0.0"]
-langchain = ["langchain-core>=0.2.0"]
+# The current major, bounded below the next. The previous specifier had a floor
+# of 0.2.0 and no ceiling, so it spanned the 1.0 rewrite — which moved the
+# classic executor into its own distribution and made every agent a graph —
+# without a single run behind it. Raising the floor withdraws no working
+# version: it ends a claim that was never measured.
+#
+# Both ends of this range are driven, on BOTH runtimes each: the graph runtime
+# (langchain.agents.create_agent) and the classic executor
+# (langchain_classic.agents.AgentExecutor), which deliver different pre-tool
+# callbacks. A denied tool executes zero times through either, the per-run step
+# budget stops a run at two calls where the model asked for three, and the
+# latest is additionally driven against a real provider whose model chose to
+# call the denied tool.
+langchain = ["langchain-core>=1.0.0,<2.0.0"]
 # NOTE: this floor rests on WEAKER evidence than the others in this file, and
 # the difference is deliberate. The other floors name the first release that
 # demonstrably works; this one names the lowest release VERIFIED working live
@@ -222,6 +235,14 @@ vertex = ["google-cloud-aiplatform>=1.38.0"]
 # provider whose model chose to call the denied tool. A denied tool executes
 # zero times on both.
 pydantic-ai = ["pydantic-ai-slim>=2.0.0,<3.0.0"]
+# The floor stays at 2.0.0 because it is DRIVEN there: the prompt guard's
+# @component binding is present at 2.0.0 and a blocked prompt reaches the
+# generator zero times against a paired allow control that reaches it once. The
+# tool gate is a different matter and the range does not pretend otherwise —
+# 2.0.0 ships no Agent, no Tool class and no before_tool hook point at all, so
+# `install_tool_gate_hook()` feature-detects the dispatch half and refuses
+# loudly there rather than arming a gate nothing would consult. Capability is
+# probed by attribute presence, never by comparing version strings.
 haystack = ["haystack-ai>=2.0.0"]
 # Ed25519 verification of signed remote policy. Optional because the package
 # ships zero mandatory runtime dependencies and Python has no stdlib Ed25519;

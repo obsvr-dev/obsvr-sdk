@@ -55,6 +55,25 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **Haystack: two limits of the tool gate are now measured and stated rather
+  than left to be inferred.** Neither is a behaviour change and neither is
+  fixable from obsvr's side; both are asserted as PRESENT by live legs so they
+  cannot decay into a silent pass. **A serialization round-trip keeps the hook
+  and drops a governed tool:** an Agent saved with `to_dict` and rebuilt with
+  `from_dict` comes back with the `before_tool` hook and still refuses at zero
+  executions, against a control reload with no mechanism that runs the denied
+  tool and returns its payload — while a `govern_tool`-wrapped tool reloads
+  successfully and ungoverned, because serialization records the tool's own
+  `function` and the governor sits on `invoke`. The cycle does not raise, which
+  is what makes it worth stating. **And a `ComponentTool` keeps the component it
+  wraps as a live attribute:** a denied `ComponentTool` runs zero times through
+  the Agent, and the same component invoked directly off the tool — or added to
+  a Pipeline of its own — runs once and returns its payload, with nothing
+  claiming to have blocked either route. That is the object-scope limit every
+  tool gate in this SDK has; it is stated for this surface because a component
+  is an unusually easy second reference to hold.
+  ([`874bc28`](https://github.com/obsvr-dev/obsvr-sdk/commit/874bc28))
+
 - **The MCP and PydanticAI extras now declare the current major, measured at
   both ends: `mcp>=2.0.0,<3.0.0` (was `>=1.0.0,<2.0.0`) and
   `pydantic-ai-slim>=2.0.0,<3.0.0` (was `>=0.4.4`, uncapped).** The `mcp` cap
@@ -597,6 +616,40 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **`install_tool_gate_hook` — Haystack refuses a denied tool before its Agent
+  dispatches the batch.** Haystack ships a `Tool` abstraction and an `Agent`,
+  and obsvr governed neither: its component gates the prompt flowing through a
+  pipeline, and nothing looked at tool calls at all, so a policy naming a
+  denied tool refused nothing on this framework. The installer registers
+  obsvr's gate as the Agent's own `before_tool` hook, which the Agent runs
+  before it resolves the pending tool calls and before it builds the executor
+  that dispatches them in parallel — so a refusal removes the denied call and
+  leaves its siblings pending, with no sibling already in flight to race.
+  Measured with a denied call and a benign one in a single reply: the denied
+  tool executes zero times, the benign one once. The gate rules on the CALL
+  rather than on a tool object, which is what makes it total here — tools
+  handed to `run(tools=...)`, tools inside a `Toolset` that respawns per run,
+  and tools rebuilt by a serialization round-trip all still arrive as a named
+  call in the Agent's own state. Refusal answers the model and the run
+  continues; `on_denial="abort"` raises instead, and `govern_tool` remains the
+  second mechanism carrying the full pre-call net. Driven live at
+  `haystack-ai` 3.0.0 through `Agent.run` and `Agent.run_async`, with the
+  payload asserted absent from what the caller received; the `before_tool`
+  hook point does not exist at 2.0.0, where the installer feature-detects the
+  dispatch half and refuses loudly rather than arming a gate nothing would
+  consult.
+  ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
+
+- **`is_obsvr_block(exc)` — recognising a Haystack refusal after the pipeline
+  has rewrapped it.** At haystack-ai 3.x a component's exception reaches the
+  caller of `pipeline.run()` as the host's `PipelineRuntimeError` with the
+  original demoted to `__cause__`, and an async pipeline wraps a second time,
+  so `except ObsvrHaystackBlocked` around `pipeline.run()` catches nothing.
+  The refusal is still there and the run still stopped; only the type at the
+  top changed. The helper walks the cause chain so one branch covers both that
+  shape and the unwrapped error an Agent raises directly.
+  ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
+
 - **`attach_tool_gate` / `attachToolGate` — OpenAI Agents now refuses a denied
   tool before it runs, in both languages.** The framework consults each
   function tool's own input guardrails BEFORE invoking it, and the new
@@ -1046,6 +1099,79 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
 
 ### Fixed
+
+- **LangChain (TypeScript): one legacy-callback dispatch disarmed the tool gate
+  for every later run on the same handler.** The Python twin of this was fixed
+  earlier in this section; the TypeScript half was present and wider. Both
+  pre-tool callbacks reach one gate and a runtime delivering both for one tool
+  call has to be discounted, but the discount was a per-handler flag set the
+  first time `handleAgentAction` fired and read forever after — and `copy()`
+  returns the same instance to every child callback manager, so the flag was
+  not even per handler in practice. Driven against a real LangGraph agent with
+  the shipped build: after one `handleAgentAction` dispatch through the
+  framework's own callback manager, a denied tool EXECUTED and only the
+  warm-up's refusal was recorded. The credit is now granted and spent per call,
+  walking the chain ancestry the handler records, because a tool's immediate
+  parent is the node that dispatched it rather than the run. Nothing in the
+  shipped JavaScript agent stack dispatches the legacy callback any more —
+  `langchain` 1.5.3 ships no `AgentExecutor` and its agents are graphs — which
+  is why no published claim depended on this; the core callback manager still
+  exposes the dispatch to any caller.
+  ([`874bc28`](https://github.com/obsvr-dev/obsvr-sdk/commit/874bc28))
+
+- **LangChain (Python): the per-run step budget allowed every call, on both
+  runtimes.** `max_steps` counts tool calls per agent run, and the run it
+  counted against was never created. The helper that recognised an agent chain
+  read the `serialized` argument of `on_chain_start`, and neither runtime fills
+  it in: the graph runtime passes a literal `None` at the graph root and at
+  every node, and the classic executor passes `None` from its own
+  `Chain.invoke`, with the identity carried in a separate `name` keyword. With
+  no run state the budget saw a count of zero on every call and allowed all of
+  them, `agent_run_id` was empty on every event, and loop detection and the
+  output-topic check never ran either. Measured before the repair with a model
+  asking for four calls under a budget of two: four executions and no
+  step-limit record, on the graph runtime AND the classic executor — the
+  published claim named both. A run is now recognised from the `name` keyword
+  and the graph metadata the framework does populate, and a tool call walks the
+  chain ancestry this handler records to reach it, because a callback is handed
+  only its immediate parent and under the graph runtimes that parent is the
+  node that dispatched the tool rather than the run. Driven at `langchain-core`
+  1.0.0 and 1.5.3 on both runtimes: a budget of two against three requested
+  calls now stops at two, and the same run without a budget still goes the
+  distance. The allow/deny tool gate was never affected and is unchanged.
+  ([`1e459a6`](https://github.com/obsvr-dev/obsvr-sdk/commit/1e459a6))
+
+- **LangChain (Python): one run on the classic executor disarmed the tool gate
+  for every later run on the same handler.** The two runtimes deliver different
+  pre-tool callbacks and the classic executor delivers BOTH for one tool call,
+  so the second delivery has to be discounted or the tool is charged two steps
+  and audited twice. That discount was a latch — set the first time the legacy
+  callback arrived and read forever after — so every subsequent `on_tool_start`
+  returned before reaching the gate, including every tool call of every later
+  graph run, which deliver no other pre-tool callback. The credit is now
+  granted and spent per call. Pinned by a test that drives a classic run and
+  then a graph run on one handler, and by a live leg that does the same.
+  ([`1e459a6`](https://github.com/obsvr-dev/obsvr-sdk/commit/1e459a6))
+
+- **`govern_tool`: a framework spelling its async entry point `invoke_async`
+  had that half ungoverned.** The exec-attr table paired `invoke` with
+  `ainvoke` alone, so on Haystack the same governed tool refused under
+  `Agent.run` and executed under `Agent.run_async`, returned its payload to the
+  caller, and recorded no event at all. Resolution now also co-gates a small
+  table of async aliases; it is additive, and a tool carrying none of them
+  resolves to exactly the attributes it did before. Same lesson the `func`
+  co-gate already carries: one logical entry point can have more than one
+  spelling.
+  ([`b36b355`](https://github.com/obsvr-dev/obsvr-sdk/commit/b36b355))
+
+- **LangChain (Python): the tool gate no longer falls back to the RUN name.**
+  The tool's own name arrives in `serialized["name"]`, which both dispatch
+  sites fill in from the tool instance; the `name` keyword is the run name, and
+  under the graph runtimes every tool in a graph arrives as `name="tools"`.
+  Matching that against the policy would have compared the node's name and
+  refused nothing, so it is no longer read. A call that carries no name at all
+  now records `not_evaluated` with the reason instead of passing silently.
+  ([`1e459a6`](https://github.com/obsvr-dev/obsvr-sdk/commit/1e459a6))
 
 - **MCP (Python): two client routes into `tools/call` reached a denied tool's
   body.** `ClientSession.call_tool` is a convenience over `send_request`, and
