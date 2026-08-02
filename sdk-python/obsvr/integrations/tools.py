@@ -54,9 +54,19 @@ A refusal is a RAISE of ``ObsvrPolicyError`` from inside the tool's callable.
 What the framework does with it is the framework's contract — CrewAI converts
 it into a failed-tool observation and the run continues; LangChain propagates
 it out of the tool — but in every case the guarantee is the same: the tool
-body was never entered. An unrecognized tool shape is returned unchanged,
-never broken; a wrapped tool is a shallow COPY where the object permits it,
-so the caller's original is not mutated.
+body was never entered. A tool shape the table does not recognize is returned
+unchanged; a wrapped tool is a shallow COPY where the object permits it, so the
+caller's original is not mutated.
+
+ONE SHAPE IS NEITHER GOVERNED NOR RETURNED UNCHANGED, and it is stated here
+rather than left for a caller to discover. Where the attr the table matches is
+a read-only PROPERTY, the write below raises ``AttributeError`` out of
+``govern_tool`` instead of degrading. Measured on ``ag2``'s ``autogen.tools.Tool``
+(0.9.x), whose only matching attr is ``func``, a property with no setter over a
+private ``_func``; the same would hold for any container exposing its callable
+that way. Wrap the underlying FUNCTION before the framework builds its tool
+object — that is governed normally, and on ag2 the gated callable survives into
+the agent's function map intact.
 """
 
 import contextvars
@@ -130,7 +140,9 @@ _EXEC_ATTR_PAIRS: Tuple[Tuple[str, Optional[str]], ...] = (
 )
 
 
-def _resolve_exec_attrs(tool: Any) -> Tuple[str, ...]:
+def _resolve_exec_attrs(
+    tool: Any, extra: Optional[Tuple[str, ...]] = None
+) -> Tuple[str, ...]:
     """The attrs to gate on this object.
 
     The first present pair, both halves — PLUS ``func`` whenever the object
@@ -143,7 +155,17 @@ def _resolve_exec_attrs(tool: Any) -> Tuple[str, ...]:
     blocked on ReAct and executed on native. The per-call reentrancy guard
     below keeps an entry point that DOES delegate inward from being gated
     and audited twice.
+
+    ``extra`` names further attrs a CALLER knows this framework's dispatch can
+    reach, appended to whatever the table resolved. It exists because the table
+    is framework-agnostic by design and some shapes hide a second, equally
+    dispatchable reference behind a private name — LlamaIndex's ``FunctionTool``
+    keeps ``_fn``/``_async_fn``/``_real_fn`` beside the public ``call``/``acall``
+    pair, and its CodeAct agent reads ``real_fn`` and never calls the tool at
+    all. Names absent from the object are skipped, so passing a shape's attrs to
+    a tool that is not that shape is a no-op rather than an error.
     """
+    resolved: Tuple[str, ...] = ()
     for sync_attr, async_attr in _EXEC_ATTR_PAIRS:
         if callable(getattr(tool, sync_attr, None)):
             attrs = [sync_attr]
@@ -151,8 +173,16 @@ def _resolve_exec_attrs(tool: Any) -> Tuple[str, ...]:
                 attrs.append(async_attr)
             if sync_attr != "func" and callable(getattr(tool, "func", None)):
                 attrs.append("func")
-            return tuple(attrs)
-    return ()
+            resolved = tuple(attrs)
+            break
+    if extra:
+        seen = set(resolved)
+        for name in extra:
+            if name in seen or not callable(getattr(tool, name, None)):
+                continue
+            seen.add(name)
+            resolved = resolved + (name,)
+    return resolved
 
 
 def _resolve_tool_name(tool: Any, explicit: Optional[str]) -> str:
@@ -168,12 +198,21 @@ def _resolve_tool_name(tool: Any, explicit: Optional[str]) -> str:
     return "unknown_tool"
 
 
-def _descriptor_of(tool: Any, tool_name: str) -> Dict[str, Any]:
+def _descriptor_of(
+    tool: Any, tool_name: str, override: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Best-effort descriptor under the evidence contract's wire names.
 
     The schema is included when the tool carries one that can be projected to
     JSON; a tool carrying none contributes no schema rather than a guessed one
     (same posture as the TS twin).
+
+    ``override`` lets a framework-aware caller FILL WHAT THE GENERIC READ MISSES.
+    The reads below look for ``description`` and ``args_schema`` ON THE TOOL; a
+    shape that keeps both behind a metadata object (LlamaIndex) would otherwise
+    seal a name-only digest, which is weaker evidence than the contract is built
+    to carry. It fills only keys the generic read did not produce, so what a
+    recognized shape seals is unchanged whether or not an override is passed.
     """
     descriptor: Dict[str, Any] = {"name": tool_name}
     description = getattr(tool, "description", None)
@@ -187,6 +226,9 @@ def _descriptor_of(tool: Any, tool_name: str) -> Dict[str, Any]:
             descriptor["inputSchema"] = schema
     except Exception:
         pass  # sealed evidence: a missing schema beats a wrong one
+    for key, value in (override or {}).items():
+        if key != "name" and value is not None and key not in descriptor:
+            descriptor[key] = value
     return descriptor
 
 
@@ -237,6 +279,7 @@ def _gate(
     args: tuple,
     kwargs: dict,
     options: Dict[str, Any],
+    descriptor: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Run every check that must precede the tool body. Raises to refuse."""
     config = try_get_config()
@@ -248,7 +291,7 @@ def _gate(
     content_meta = tool_content_metadata(
         safe_tool_content_hash(
             tool_name=tool_name,
-            descriptor=_descriptor_of(tool, tool_name),
+            descriptor=_descriptor_of(tool, tool_name, descriptor),
             args=raw_input,
         )
     )
@@ -373,12 +416,13 @@ def _wrap_callable(
     original: Callable[..., Any],
     options: Dict[str, Any],
     inflight: "contextvars.ContextVar[bool]",
+    descriptor: Optional[Dict[str, Any]] = None,
 ) -> Callable[..., Any]:
     """Gate one callable. ``inflight`` is shared across every gated attr of
     one governed object: an outer entry point that delegates to an inner
-    gated attr (crewai's ``_run`` → ``func``) must be gated ONCE — a second
-    verdict and a second audit event for one invocation is how a step budget
-    silently drifts."""
+    gated attr (crewai's ``_run`` → ``func``, LlamaIndex's ``call`` → ``_fn``)
+    must be gated ONCE — a second verdict and a second audit event for one
+    invocation is how a step budget silently drifts."""
     if inspect.iscoroutinefunction(original):
 
         @functools.wraps(original)
@@ -387,7 +431,7 @@ def _wrap_callable(
                 return await original(*args, **kwargs)
             token = inflight.set(True)
             try:
-                _gate(tool, tool_name, exec_attr, args, kwargs, options)
+                _gate(tool, tool_name, exec_attr, args, kwargs, options, descriptor)
                 return await original(*args, **kwargs)
             finally:
                 inflight.reset(token)
@@ -400,7 +444,7 @@ def _wrap_callable(
             return original(*args, **kwargs)
         token = inflight.set(True)
         try:
-            _gate(tool, tool_name, exec_attr, args, kwargs, options)
+            _gate(tool, tool_name, exec_attr, args, kwargs, options, descriptor)
             return original(*args, **kwargs)
         finally:
             inflight.reset(token)
@@ -457,7 +501,13 @@ def _copy_tool(tool: Any) -> Any:
         return tool
 
 
-def govern_tool(tool: Any, name: Optional[str] = None, **options: Any) -> Any:
+def govern_tool(
+    tool: Any,
+    name: Optional[str] = None,
+    extra_exec_attrs: Optional[Tuple[str, ...]] = None,
+    descriptor: Optional[Dict[str, Any]] = None,
+    **options: Any,
+) -> Any:
     """Wrap a framework tool so its execution is governed by obsvr.
 
     Returns an object of the same type whose execute callable(s) are gated;
@@ -466,11 +516,15 @@ def govern_tool(tool: Any, name: Optional[str] = None, **options: Any) -> Any:
     unless it is itself callable, in which case the callable is wrapped.
 
     ``name=`` pins the audit name for tools that carry none of their own.
-    Remaining keyword options (``user_id=``, ``service_name=``,
-    ``metadata=``) attach the audit principal to every event, the same way
-    the other integrations accept them.
+    ``extra_exec_attrs=`` names further callables this framework's dispatch can
+    reach beyond what the resolution table finds, and ``descriptor=`` fills the
+    descriptor fields the generic read cannot see; both are for framework-aware
+    callers (see :func:`_resolve_exec_attrs` and :func:`_descriptor_of`) and
+    both default to the table's own behaviour. Remaining keyword options
+    (``user_id=``, ``service_name=``, ``metadata=``) attach the audit principal
+    to every event, the same way the other integrations accept them.
     """
-    exec_attrs = _resolve_exec_attrs(tool)
+    exec_attrs = _resolve_exec_attrs(tool, extra_exec_attrs)
     tool_name = _resolve_tool_name(tool, name)
 
     if not exec_attrs:
@@ -481,7 +535,8 @@ def govern_tool(tool: Any, name: Optional[str] = None, **options: Any) -> Any:
             )
             _GOVERNED_TOOL_NAMES.add(tool_name)
             return _wrap_callable(
-                original, tool_name, "__call__", original, options, inflight
+                original, tool_name, "__call__", original, options, inflight,
+                descriptor,
             )
         return tool
 
@@ -491,7 +546,7 @@ def govern_tool(tool: Any, name: Optional[str] = None, **options: Any) -> Any:
     for attr in exec_attrs:
         original = getattr(governed, attr)
         wrapped = _wrap_callable(
-            governed, tool_name, attr, original, options, inflight
+            governed, tool_name, attr, original, options, inflight, descriptor
         )
         # object.__setattr__ so pydantic/frozen containers cannot veto the
         # gate: the instance attribute shadows the class method (or replaces
