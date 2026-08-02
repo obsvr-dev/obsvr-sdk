@@ -103,9 +103,12 @@ injection payload is **blocked**, **sanitized** (offending spans redacted), or
 
 `govern_mcp(session)` is **non-mutating** — the Python analog of the TypeScript
 `obsvrGovernMCP`. It returns a wrapper that delegates every attribute to the real
-session via `__getattr__` and intercepts only `call_tool` / `list_tools`; the
-`ClientSession` class is never patched, so other MCP tooling on the same session
-keeps working.
+session via `__getattr__` and intercepts `send_request`, `call_tool` and
+`list_tools`; the `ClientSession` class is never patched, so other MCP tooling on
+the same session keeps working. `send_request` is the load-bearing one:
+`call_tool` is a convenience over it, and the task API and a hand-built
+`tools/call` frame reach a tool without touching `call_tool` at all — measured,
+each executed a denied tool before the gate bound there.
 
 ```python
 from mcp import ClientSession
@@ -130,7 +133,10 @@ async with ClientSession(read, write) as session:
 
 > The legacy `patch_mcp(ClientSession)` — which monkey-patches the session class
 > in place — is **deprecated** (it warns once and will be removed in the next
-> major release). Migrate to `govern_mcp`.
+> major release). Migrate to `govern_mcp` unless you need the one route only a
+> class-level patch reaches: a `ClientSessionGroup` handed the RAW session from
+> underneath an instance wrapper dispatches through that object, so `govern_mcp`
+> never sees the call. That route is measured and is listed in the table below.
 
 ### Unicode normalization (matching-time only)
 

@@ -178,7 +178,7 @@ What the SDKs do about it:
   gate is not a reachable one, and reachability was measured per integration rather than
   inferred from the code being present. Per surface:
 
-  - **`mcp` — enforces.** Patches `call_tool`, so it sits on the actual boundary.
+  - **`mcp` — enforces.** Binds `send_request`, the request path every client route into `tools/call` converges on, so it sits on the actual boundary rather than on the `call_tool` convenience above it.
 
   - **`autogen` — enforces** on its pre-send hook, re-probed live on two ag2 releases.
     It inspected only the first tool call in a message, so a denied name in a parallel
