@@ -202,3 +202,64 @@ describe('ObsvrCallbackHandler: agent loop detection', () => {
     expect(sentEvents.filter((e) => String(e.operation).includes('loop_detected'))).toEqual([]);
   });
 });
+
+// ── The double-gate credit (twin: sdk-python/tests/test_integrations.py) ─────
+//
+// The classic executor delivers BOTH pre-tool callbacks for one tool call, so
+// the second delivery is discounted. Discounting it with a flag disarmed the
+// gate for everything after the first agent-action dispatch, and `copy()`
+// returns `this`, so one handler instance carries that across every child
+// manager and every later run.
+
+describe('ObsvrCallbackHandler: the double-gate credit is per call', () => {
+  const AGENT_SERIALIZED = { id: ['langchain', 'agents', 'AgentExecutor'] };
+  const TOOL_SER = { id: ['langchain', 'tools', 'DynamicStructuredTool'] };
+  const ACTION = { tool: 'send_money', toolInput: '{}' };
+
+  it('still gates handleToolStart after an agent-action dispatch', async () => {
+    init({ api_key: 'test', sample_rate: 1, agent_policy: { deniedTools: ['send_money'] } });
+    const handler = new ObsvrCallbackHandler();
+
+    // A run that delivers the legacy callback. Nothing in the shipped JS agent
+    // stack dispatches it any more, but the core callback manager still exposes
+    // it, so any caller can — and one call used to be enough.
+    await handler.handleChainStart(AGENT_SERIALIZED, { input: 'go' }, 'run-a');
+    await expect(handler.handleAgentAction(ACTION, 'run-a')).rejects.toThrow(
+      /\[obsvr\] Tool blocked/,
+    );
+    await handler.handleChainError(new Error('blocked'), 'run-a');
+
+    // A LATER run on the SAME handler, delivering only the modern callback.
+    await handler.handleChainStart(AGENT_SERIALIZED, { input: 'go' }, 'run-b');
+    await expect(
+      handler.handleToolStart(TOOL_SER, '{}', 'tool-b', 'run-b', undefined, undefined, 'send_money'),
+    ).rejects.toThrow(/\[obsvr\] Tool blocked/);
+  });
+
+  it('charges one step when both callbacks arrive for one tool call', async () => {
+    init({ api_key: 'test', sample_rate: 1, agent_policy: {} });
+    const handler = new ObsvrCallbackHandler();
+    await handler.handleChainStart(AGENT_SERIALIZED, { input: 'go' }, 'run-c');
+    for (let i = 0; i < 2; i++) {
+      await handler.handleAgentAction({ tool: 'search', toolInput: 'q' }, 'run-c');
+      await handler.handleToolStart(TOOL_SER, 'q', `tool-c${i}`, 'run-c', undefined, undefined, 'search');
+    }
+    await waitForEvents(2);
+    const calls = sentEvents.filter((e) => e.operation === 'langchain.tool.call');
+    expect(calls.map((e) => e.metadata.step_index)).toEqual([0, 1]);
+  });
+
+  it('finds the credit through the node that dispatched the tool', async () => {
+    // The graph runtimes put a node run between the agent run and the tool run,
+    // so a credit granted on the agent run is not on the tool's direct parent.
+    init({ api_key: 'test', sample_rate: 1, agent_policy: {} });
+    const handler = new ObsvrCallbackHandler();
+    await handler.handleChainStart(AGENT_SERIALIZED, { input: 'go' }, 'run-d');
+    await handler.handleChainStart({ id: ['tools'] }, {}, 'node-d', 'run-d');
+    await handler.handleAgentAction({ tool: 'search', toolInput: 'q' }, 'run-d');
+    await handler.handleToolStart(TOOL_SER, 'q', 'tool-d', 'node-d', undefined, undefined, 'search');
+    await waitForEvents(1);
+    const calls = sentEvents.filter((e) => e.operation === 'langchain.tool.call');
+    expect(calls).toHaveLength(1);
+  });
+});

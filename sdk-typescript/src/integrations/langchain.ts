@@ -207,6 +207,12 @@ function extractResolvedModel(
   );
 }
 
+// The ancestry map is fed by chain starts and drained by chain ends. A caller
+// that abandons a stream mid-run leaves ends undelivered, so it is bounded
+// rather than trusted to drain.
+const MAX_TRACKED_CHAINS = 4096;
+const MAX_ANCESTRY_HOPS = 64;
+
 function isAgentChain(
   chain: SerializedLike | undefined,
   tags: string[] | undefined,
@@ -280,10 +286,20 @@ export class ObsvrCallbackHandler {
   private readonly runs = new Map<string, RunState>();
   private readonly _agentRuns = new Map<string, AgentRunState>();
   private readonly _retrievals = new Map<string, RetrievalState>();
-  // True once handleAgentAction has fired (classic AgentExecutor path). Used so
-  // handleToolStart only gates on the modern LangGraph path, where
-  // handleAgentAction never fires — preventing double-gating on AgentExecutor.
-  private _sawAgentAction = false;
+  // Tool calls the legacy agent-action callback has already ruled on, keyed by
+  // the run it arrived on. Both pre-tool callbacks reach one gate and a runtime
+  // delivering BOTH for one tool call must be charged once, so the second
+  // delivery is discounted — but the discount has to be a per-call credit, not
+  // a flag. As a flag it was set the first time handleAgentAction fired and read
+  // forever after, so every later handleToolStart returned before the gate. That
+  // is a fail-open rather than a double-charge, and `copy()` below returns
+  // `this`, so it spread to every child manager and every later run.
+  private readonly _actionGated = new Map<string, number>();
+  // runId -> parentRunId for every chain run seen. A callback is handed its
+  // IMMEDIATE parent only; under the graph runtimes a tool's immediate parent is
+  // the node that dispatched it, so the credit has to be findable further up.
+  // Rebuildable because every node traces its own chain start.
+  private readonly _chainParents = new Map<string, string | undefined>();
 
   constructor(opts: IntegrationOptions = {}) {
     this.opts = opts;
@@ -291,8 +307,56 @@ export class ObsvrCallbackHandler {
     if (config) setupExitHandlers(config);
   }
 
+  /**
+   * Deliberately the same instance, not a clone: the run state this handler
+   * keeps has to survive being handed to every child callback manager, and a
+   * per-manager copy would lose the run a tool call belongs to. That makes
+   * every field above shared across the whole tree, which is why none of them
+   * may be a process-wide flag — they are keyed by run id instead.
+   */
   copy(): ObsvrCallbackHandler {
     return this;
+  }
+
+  // -- run ancestry ---------------------------------------------------------
+
+  /** Record one chain edge, bounded so an abandoned stream cannot grow it. */
+  private rememberParent(runId: string, parentRunId?: string): void {
+    if (this._chainParents.size >= MAX_TRACKED_CHAINS) {
+      let dropped = 0;
+      for (const key of this._chainParents.keys()) {
+        this._chainParents.delete(key);
+        if (++dropped >= MAX_TRACKED_CHAINS / 4) break;
+      }
+    }
+    this._chainParents.set(runId, parentRunId);
+  }
+
+  private forgetRun(runId: string): void {
+    this._chainParents.delete(runId);
+    this._actionGated.delete(runId);
+  }
+
+  /**
+   * Whether the legacy callback already ruled on THIS tool call. Credited per
+   * call and spent per call, walking up the recorded ancestry because the tool
+   * run is not a direct child of the run the credit was granted on.
+   */
+  private consumeActionGate(runId: string, parentRunId?: string): boolean {
+    for (const start of [parentRunId, runId]) {
+      let key: string | undefined = start;
+      let hops = 0;
+      while (key !== undefined && hops < MAX_ANCESTRY_HOPS) {
+        const pending = this._actionGated.get(key) ?? 0;
+        if (pending > 0) {
+          this._actionGated.set(key, pending - 1);
+          return true;
+        }
+        key = this._chainParents.get(key);
+        hops += 1;
+      }
+    }
+    return false;
   }
 
   // -- agent chain start / end / error -------------------------------------
@@ -305,6 +369,9 @@ export class ObsvrCallbackHandler {
     extraParams?: Record<string, unknown>,
     tags?: string[],
   ): Promise<void> {
+    // Recorded for EVERY chain, not only agent chains: the edges between a tool
+    // call and the run it belongs to run through ordinary nodes.
+    this.rememberParent(runId, parentRunId);
     if (!isAgentChain(chain, tags)) return;
     try {
       const config = tryGetConfig();
@@ -345,6 +412,7 @@ export class ObsvrCallbackHandler {
     outputs: Record<string, unknown>,
     runId: string,
   ): Promise<void> {
+    this.forgetRun(runId);
     const agentState = this._agentRuns.get(runId);
     if (!agentState) return;
     this._agentRuns.delete(runId);
@@ -409,6 +477,7 @@ export class ObsvrCallbackHandler {
   }
 
   async handleChainError(error: unknown, runId: string): Promise<void> {
+    this.forgetRun(runId);
     const agentState = this._agentRuns.get(runId);
     if (!agentState) return;
     this._agentRuns.delete(runId);
@@ -578,7 +647,7 @@ export class ObsvrCallbackHandler {
     try {
       const config = tryGetConfig();
       if (!config) return;
-      this._sawAgentAction = true;
+      this._actionGated.set(runId, (this._actionGated.get(runId) ?? 0) + 1);
       const toolName = action.tool ?? "";
       const toolInputText =
         typeof action.toolInput === "string"
@@ -596,8 +665,10 @@ export class ObsvrCallbackHandler {
   /**
    * LangGraph tool-execution hook. handleAgentAction is NOT fired by LangGraph
    * agents (it was AgentExecutor-only, removed in LangChain v1), so this is the
-   * pre-execution gate for modern agents. Skipped when handleAgentAction has
-   * already run (classic AgentExecutor) to avoid double-gating.
+   * pre-execution gate for modern agents. Skipped only for a tool call the
+   * legacy callback has ALREADY ruled on — a credit granted and spent per call,
+   * so a handler that once served an agent-action dispatch does not stop gating
+   * everything after it.
    */
   async handleToolStart(
     toolSer: SerializedLike | undefined,
@@ -609,7 +680,7 @@ export class ObsvrCallbackHandler {
     runName?: string,
   ): Promise<void> {
     try {
-      if (this._sawAgentAction) return;
+      if (this.consumeActionGate(runId, parentRunId)) return;
       const config = tryGetConfig();
       if (!config) return;
       // The reliable tool name is runName (7th arg); the serialized id is the
