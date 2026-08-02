@@ -499,10 +499,11 @@ So a `pii_policy` of `{ssn: "block"}` **blocks** through `obsvr.wrap()`, Bedrock
 Vertex, Vercel AI and MCP, and through LangChain, LlamaIndex or the OpenAI
 Agents tracing processor it does not: the
 call goes out with the SSN in it and the event records the stored copy as
-redacted. That is a real difference between two things this README lists in the
-same table, and it is stated here rather than left to be discovered. These two
-are **observability integrations with a PII scan**, not policy enforcement
-points — put an enforcement decision on `obsvr.wrap()` or on MCP.
+redacted. That is a real difference between things this README lists in the
+same table, and it is stated here rather than left to be discovered. On their
+MODEL-call paths these three are **observability integrations with a PII scan**,
+not policy enforcement points — put an enforcement decision on `obsvr.wrap()` or
+on MCP. Their tool gates are a separate question, graded in the table below.
 
 ### One method, not seventeen: the named compatibility wrappers
 
