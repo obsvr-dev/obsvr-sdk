@@ -138,19 +138,6 @@ cut, when it is renamed to that version.
   of this repository, and that sentence now describes the source without naming a
   file a reader cannot open. The corpus is still 36 files.
 
-- **Decided: the LlamaIndex integration is observability-only and will not get a
-  tool gate.** It was previously described as having none, which reads as pending
-  work; it is now stated as a decision. `agent_policy` has no effect there,
-  nothing is refused, and no policy event is emitted — so its events must not be
-  read as evidence that a gate permitted a tool.
-
-  The reason is the one the rest of this release documents: a callback handler
-  fires *around* an operation, not at its boundary, so a check hung off one either
-  arrives too late to prevent anything or is never delivered. Adding a gate that
-  could not refuse would manufacture exactly the false record this release removes
-  in three places. To refuse a LlamaIndex tool, put the capability behind MCP;
-  TypeScript can also gate the tool itself with `obsvrGovernTool`, which Python
-  has no equivalent of.
 - **Both front doors now carry per-integration, per-language tool-policy
   grading.** It existed in exactly one of three READMEs, and that was the
   least-read of them: a reader arriving at the repository or at the npm package
@@ -166,26 +153,13 @@ cut, when it is renamed to that version.
   including the architecture diagram's alt text, which is the version a screen
   reader gets — now describe the interception boundary instead of promising
   totality that a provider tool runner defeats.
-- **The TypeScript LangChain integration enforces tool policy; the Python one
-  does not.** Measured on both sides rather than assumed to match, and the two
-  genuinely differ: the TypeScript handler implements a pre-execution
-  `handleToolStart` that the Python handler has no equivalent of, and it sets
-  `awaitHandlers` with `raiseError` so a refusal inside a callback aborts the
-  tool instead of being logged and ignored. Verified live against a real
-  LangGraph agent: a denied tool's own callback never ran, and the control with
-  no policy shows the same model calling the same tool. The Python handler gates
-  on `on_agent_action`, which current runtimes do not deliver, and has no
-  `on_tool_start` at all — so it refuses nothing and emits no block event.
-
-  Stated here because the per-integration grading in the READMEs is now
-  per-integration **and per language**, and a reader who assumed the two halves
-  behaved alike would be wrong in both directions.
 - **BREAKING: `action_taken` gains `not_evaluated`.** It means **no gate ran for
   this event's subject** — the absence of a decision, not a permissive one. It
-  is emitted today by the tool events a provider tool runner produces
-  (`chat.completions.runTools`, `beta.messages.toolRunner`), which invoke their
-  tools directly, so obsvr is not on that boundary and no tool-level control —
-  including `sessionTaint.destructiveTools` — is consulted. Those events
+  is emitted where no gate reached the call, and on the tool events a provider
+  tool runner produces (`chat.completions.runTools`,
+  `beta.messages.toolRunner`), whose own per-tool observation is not a second
+  verdict — the gate's verdict is on that tool's own `tool.call` event, and
+  `policy_not_evaluated.gate` says which of the two absences it is. Those events
   previously read `action_taken: "allowed"`, which asserts that a gate evaluated
   the call and permitted it.
 
