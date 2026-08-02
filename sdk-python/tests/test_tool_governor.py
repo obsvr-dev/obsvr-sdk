@@ -341,3 +341,59 @@ def test_declining_the_cache_never_breaks_a_tool_without_one(sent):
     governed = govern_tool(_RunShapedTool())
     assert not hasattr(governed, "cache_function")
     assert governed._run(amount=3) == "sent 3"
+
+
+def test_an_async_invoke_alias_is_gated_alongside_invoke(sent):
+    """One logical entry point, two spellings, and only one of them gated.
+
+    Haystack's ``Tool`` pairs ``invoke`` with ``invoke_async`` rather than
+    ``ainvoke``, and its Agent reaches only ``invoke_async`` on the async path.
+    Measured before this was added: the same governed tool refused under
+    ``Agent.run`` and executed under ``Agent.run_async``, returning its payload
+    with no event recorded at all.
+    """
+    import asyncio
+
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    from obsvr.integrations.tools import govern_tool
+
+    ran = []
+
+    class _Tool:
+        name = "send_money"
+        description = "moves money"
+
+        def invoke(self, **kwargs):
+            ran.append("sync")
+            return "PAYLOAD"
+
+        async def invoke_async(self, **kwargs):
+            ran.append("async")
+            return "PAYLOAD"
+
+    governed = govern_tool(_Tool())
+    for call in (lambda: governed.invoke(amount=1),
+                 lambda: asyncio.run(governed.invoke_async(amount=1))):
+        with pytest.raises(ObsvrPolicyError):
+            call()
+    assert ran == []
+
+
+def test_a_tool_without_an_async_alias_resolves_exactly_as_before(sent):
+    """The alias table is additive: nothing that lacks the spelling changes."""
+    from obsvr.integrations.tools import _resolve_exec_attrs
+
+    class _Invoke:
+        def invoke(self, **kwargs):
+            return None
+
+    class _InvokePair:
+        def invoke(self, **kwargs):
+            return None
+
+        async def ainvoke(self, **kwargs):
+            return None
+
+    assert _resolve_exec_attrs(_Invoke()) == ("invoke",)
+    assert _resolve_exec_attrs(_InvokePair()) == ("invoke", "ainvoke")

@@ -139,6 +139,17 @@ _EXEC_ATTR_PAIRS: Tuple[Tuple[str, Optional[str]], ...] = (
     ("func", None),
 )
 
+#: Extra async spellings for a sync entry point, co-gated whenever present.
+#: Additive to the pairs above: a tool that carries none of these resolves
+#: exactly as it did before. Haystack's ``Tool`` pairs ``invoke`` with
+#: ``invoke_async``, not ``ainvoke``, and its Agent reaches ONLY that one on the
+#: async path — measured: a governed tool refused under ``Agent.run`` and ran
+#: under ``Agent.run_async``, returned its payload, and recorded no event at all.
+#: Same lesson as ``func``: one logical entry point, more than one spelling.
+_ASYNC_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "invoke": ("invoke_async",),
+}
+
 
 def _resolve_exec_attrs(
     tool: Any, extra: Optional[Tuple[str, ...]] = None
@@ -171,6 +182,9 @@ def _resolve_exec_attrs(
             attrs = [sync_attr]
             if async_attr and callable(getattr(tool, async_attr, None)):
                 attrs.append(async_attr)
+            for alias_name in _ASYNC_ALIASES.get(sync_attr, ()):
+                if callable(getattr(tool, alias_name, None)):
+                    attrs.append(alias_name)
             if sync_attr != "func" and callable(getattr(tool, "func", None)):
                 attrs.append("func")
             resolved = tuple(attrs)
