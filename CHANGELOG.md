@@ -40,6 +40,34 @@ cut, when it is renamed to that version.
   behind it.
 
 
+- **The ASGI middleware withdrawn.** The module
+  (`obsvr/integrations/fastapi.py`, holding `ObsvrASGIMiddleware` and
+  `instrument_fastapi`), the `fastapi` extra and its `starlette` pin, its test,
+  and its rows in `README.md`, `sdk-python/README.md`, `COMPATIBILITY.md` and
+  `sdk-python/tests/README.md` are gone in one change.
+  **Not marked BREAKING:** it never shipped in a release, so nothing depended
+  on it.
+
+  **It governed nothing.** It emitted a signed `http.request` execution span
+  per request, which put an inbound request on the same tamper-evident chain as
+  the calls made while handling it — real, but not governance: no policy ran on
+  that path and no call could be refused there. Listing it in the coverage table
+  beside the tool gates implied a gate that was never designed, because an ASGI
+  application has no tool abstraction to gate.
+
+  The span behaviour is not lost. `span()` stays public, so a request still
+  becomes the root of a signed chain for anyone who opens that context manager
+  in their own middleware; what goes is a thin convenience over an API that
+  already ships. An inbound request is in any case a network-level event, and
+  an application author who can delete a call can equally delete a middleware
+  registration — so attesting that boundary is not something a code-level SDK
+  can promise.
+
+  Note the earlier entry recording that this middleware "was measured … under a
+  real server over a real socket" stands as written. What was measured was the
+  span, and it did emit; the span alone was never the coverage the table implied.
+
+
 - **BREAKING: the manual-tracking client is gone.** `ObsvrClient`,
   `trackCompletion`, `trackBatch`, the deprecated `LLMAuditClient` alias, their
   parameter types, and the `@obsvr/sdk/client` subpath export are removed. That

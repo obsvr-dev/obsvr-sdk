@@ -10,9 +10,9 @@ Read this before trusting a green run on an integration surface.
 | everything else | no | hand-written fakes that duck-type the shape each integration reads |
 
 `langchain`, `llamaindex`, `crewai`, `autogen`, `haystack`, `pydantic_ai`,
-`fastapi`, `bedrock`, `vertex` and `openai_agents` are each declared as an
-optional extra for callers, and **none of them is installed when this suite
-runs.** Their tests construct objects that look like the framework's, so they
+`bedrock`, `vertex` and `openai_agents` are each declared as an optional extra
+for callers, and **none of them is installed when this suite runs.** Their
+tests construct objects that look like the framework's, so they
 pin the SDK's own logic and its assumptions about a shape — not that the shape
 is still the framework's.
 

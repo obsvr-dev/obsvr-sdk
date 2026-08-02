@@ -29,7 +29,6 @@ pip install "obsvr-sdk[langchain]"        # LangChain callback handler
 pip install "obsvr-sdk[crewai]"           # CrewAI integration (Python < 3.14)
 pip install "obsvr-sdk[autogen]"          # AutoGen integration
 pip install "obsvr-sdk[llamaindex]"       # LlamaIndex integration
-pip install "obsvr-sdk[fastapi]"          # FastAPI / Starlette middleware
 pip install "obsvr-sdk[bedrock]"          # AWS Bedrock (boto3) governance
 pip install "obsvr-sdk[vertex]"           # Google Vertex AI governance
 pip install "obsvr-sdk[pydantic-ai]"      # PydanticAI toolset governance

@@ -468,7 +468,6 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 | AutoGen                   |     —      |   ✅   |
 | Haystack                  |     —      |   ✅   |
 | Pydantic-AI               |     —      |   ✅   |
-| FastAPI / ASGI middleware |     —      |   ✅   |
 | MCP                       |     ✅     |   ✅   |
 
 A ✅ above means the integration exists and its observability is verified. It does

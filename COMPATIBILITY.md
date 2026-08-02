@@ -22,7 +22,6 @@ Which versions of each package the obsvr SDK works with.
 | `opentelemetry-api`       | `>=1.20.0`                            | —                                                    | declared       |
 | `pydantic-ai-slim`        | `>=2.0.0,<3.0.0`                      | `2.0.0`, `2.22.0`                                    | **matrix**     |
 | `PyNaCl`                  | `>=1.0.0`                             | —                                                    | declared       |
-| `starlette`               | `>=0.30.0`                            | `0.30.0` – `1.3.1`                                   | declared       |
 
 `google-generativeai` is the legacy line, end-of-life 2025-08.
 `cryptography` and `PyNaCl` are the two interchangeable Ed25519 backends behind
