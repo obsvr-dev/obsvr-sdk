@@ -1,9 +1,16 @@
-"""LlamaIndex (Python) integration — observe-only callback handler.
+"""LlamaIndex (Python) integration — LLM audit handler plus a tool gate.
 
-Pairs CBEventType.LLM on_event_start/on_event_end by event_id using
-EventPayload.PROMPT/MESSAGES/RESPONSE/COMPLETION payload keys.
+Two independent pieces, and they sit at different boundaries:
 
-REGISTRATION. ``obsvr.init()`` already adds this handler to
+``ObsvrLlamaIndexHandler`` pairs CBEventType.LLM on_event_start/on_event_end by
+event_id using EventPayload.PROMPT/MESSAGES/RESPONSE/COMPLETION payload keys. It
+OBSERVES: it audits LLM traffic and applies the stored-copy PII policy, and it
+refuses nothing.
+
+``govern_agent(agent)`` is the tool gate, and it ENFORCES — a denied tool's body
+is never entered.
+
+REGISTRATION. ``obsvr.init()`` already adds the handler to
 ``Settings.callback_manager`` whenever ``llama_index`` is importable, so the
 normal setup is init() alone — do not add it a second time. Adding it yourself
 is harmless (the call is recorded once either way, see obsvr/dedupe.py) but
@@ -15,34 +22,34 @@ manually::
 
     Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler())
 
-NO TOOL POLICY, AND THAT IS A DECISION RATHER THAN AN OMISSION. This integration
-carries no tool allow/deny list, no step limit and no destructive-capability
-gate. ``agent_policy`` has no effect here: nothing is refused and no policy event
-is emitted, so an operator must not read this handler's events as evidence that a
-tool was permitted by a gate.
+THE HANDLER CARRIES NO TOOL POLICY, AND CANNOT. ``agent_policy`` has no effect on
+it: it refuses nothing and emits no policy event, so an operator must not read
+its events as evidence that a tool was permitted by a gate.
 
-It is a callback handler, and a callback handler is the wrong place for a gate —
-that is the lesson the rest of this package paid for. Observability callbacks
-fire around an operation, not at its boundary, so a check hung off one either
-arrives too late to prevent anything or is never delivered at all. Adding a gate
-here that could not refuse would produce exactly the false record this SDK now
-goes out of its way not to emit.
+That is not a design preference, it is the framework's shape. A callback fires
+around an operation rather than at its boundary, so a check hung off one arrives
+too late to prevent anything — and on this framework it does not arrive at all:
+``CBEventType.FUNCTION_CALL`` has ZERO dispatch sites at llama-index-core
+0.14.23 (the enum survives in ``callbacks/schema.py``; nothing raises it). The
+newer instrumentation system is no better as a gate: every handler exception is
+swallowed by ``Dispatcher`` (four ``except BaseException: pass`` blocks around
+``handle``, ``span_enter``, ``span_drop`` and ``span_exit``), so a refusal raised
+from a span handler is a no-op. Refusal has to live in the tool.
 
-**To govern LlamaIndex tools, gate the tools themselves.** The TypeScript SDK's
-``obsvrGovernTool`` wraps a tool's own execute function and refuses before
-delegating, which is the shape that works; it is verified enforcing. Python has
-no equivalent yet, so on this side a LlamaIndex tool cannot be gated by obsvr
-at all — put a capability that must be refused behind the MCP integration
-instead, where the gate sits on ``call_tool``.
+**So the gate is on the tools, and ``govern_agent`` is how it reaches all of
+them.** See that function for what it binds to and why the tool LIST is not
+enough.
 
-Pinned by ``tests/test_enforcement_reporting_invariant.py``, which fails if a
-tool-policy helper appears in this module without the grading being updated.
+Pinned by ``tests/test_enforcement_reporting_invariant.py``, which grades this
+surface's gate against a driver modelling the framework's real ordering.
 """
 
-# Interception: LlamaIndex Python BaseCallbackHandler API (non-mutating). Register via Settings.callback_manager.add_handler() — no internals modified.
+# Interception: LlamaIndex Python BaseCallbackHandler API (non-mutating) for the
+# audit handler. The tool gate replaces `get_tools` on one agent instance and the
+# execute callables on the tools it hands back — no class is mutated.
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .. import sender as _sender
 from ..config import try_get_config
@@ -51,6 +58,7 @@ from ..deobfuscate import redact_for_storage
 from ..policy import apply_observe_policy
 from ..token_usage import read_token_usage
 from ..dedupe import claim_emission
+from .tools import govern_tool
 
 try:  # pragma: no cover - exercised only when llama-index-core is installed
     from llama_index.core.callbacks.base_handler import (  # type: ignore
@@ -67,6 +75,25 @@ except ImportError:  # shim base class so import never fails
 
 
 SOURCE = "llamaindex_py"
+
+#: LlamaIndex ``FunctionTool`` keeps the callable THREE times over, beside the
+#: public ``call``/``acall`` pair the resolution table already finds: ``_fn``
+#: (what ``call`` invokes), ``_async_fn`` (what ``acall`` invokes, a separate
+#: closure over the original rather than a read of ``_fn``), and ``_real_fn``
+#: (the undecorated function, which ``CodeActAgent`` hands to the model as a
+#: name to call from generated Python — a route that never touches the tool
+#: object at all). ``fn`` / ``async_fn`` / ``real_fn`` are read-only properties
+#: over these three, so gating the private names gates the public reads too,
+#: including ``to_langchain_tool``'s export. Non-FunctionTool shapes carry none
+#: of them and skip the lot.
+_LLAMAINDEX_FN_ATTRS = ("_fn", "_async_fn", "_real_fn")
+
+#: The two halves this gate needs, probed by attribute presence rather than by
+#: version string. ``get_tools`` is where an agent assembles the tools it will
+#: offer and dispatch; ``_call_tool`` is the dispatch that consumes them. A
+#: build carrying one without the other would take the install and never
+#: consult it — the shape that shipped as a silent no-op on CrewAI.
+_GATE_CAPABILITY_ATTRS = ("get_tools", "_call_tool")
 
 
 def _enum_value(value: Any) -> Any:
@@ -336,3 +363,169 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
         trace_map: Optional[Dict[str, Any]] = None,
     ) -> None:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Tool gate
+# ---------------------------------------------------------------------------
+
+
+def _tool_name_of(tool: Any) -> Optional[str]:
+    """The name this framework dispatches the tool under.
+
+    ``get_tools`` consumers key on ``tool.metadata.name`` and the model is shown
+    the same string, so that is the name a policy has to be written against.
+    """
+    metadata = getattr(tool, "metadata", None)
+    for source in (
+        getattr(metadata, "name", None),
+        getattr(metadata, "get_name", None),
+    ):
+        if callable(source):
+            try:
+                source = source()
+            except Exception:
+                continue
+        if isinstance(source, str) and source:
+            return source
+    return None
+
+
+def _descriptor_fields(tool: Any) -> Dict[str, Any]:
+    """Descriptor fields for the sealed tool-content digest.
+
+    LlamaIndex keeps the description and the argument schema on the tool's
+    ``metadata`` rather than on the tool, so the framework-agnostic reader finds
+    neither and would seal a name-only digest.
+    """
+    metadata = getattr(tool, "metadata", None)
+    descriptor: Dict[str, Any] = {}
+    description = getattr(metadata, "description", None)
+    if isinstance(description, str) and description:
+        descriptor["description"] = description
+    schema = getattr(metadata, "fn_schema", None)
+    try:
+        if schema is not None and hasattr(schema, "model_json_schema"):
+            descriptor["inputSchema"] = schema.model_json_schema()
+    except Exception:
+        pass  # a missing schema beats a wrong one, same posture as the twin
+    return descriptor
+
+
+def _govern_llamaindex_tool(tool: Any, options: Dict[str, Any]) -> Any:
+    """One tool, gated at every callable this framework can reach."""
+    return govern_tool(
+        tool,
+        name=_tool_name_of(tool),
+        extra_exec_attrs=_LLAMAINDEX_FN_ATTRS,
+        descriptor=_descriptor_fields(tool),
+        **options,
+    )
+
+
+def _supports_tool_gate(agent: Any) -> bool:
+    return all(callable(getattr(agent, attr, None)) for attr in _GATE_CAPABILITY_ATTRS)
+
+
+def govern_agent(agent: Any, **options: Any) -> Callable[[], None]:
+    """Govern every tool this agent will dispatch, wherever the tool came from.
+
+    Binds to the agent's ``get_tools`` — the point where a workflow agent
+    ASSEMBLES the tools for a turn, and the only thing every dispatch on this
+    framework crosses. ``BaseWorkflowAgent.get_tools`` and
+    ``AgentWorkflow.get_tools`` are both consulted twice per turn, once to offer
+    the tool list to the model and once to resolve the name the model picked, so
+    a governed list is both what the model is shown and what the executor runs.
+
+    GOVERNING THE TOOL LIST IS NOT ENOUGH, AND THAT IS WHY THIS EXISTS. An
+    agent's tools do not all come from the ``tools=`` argument a caller can wrap
+    by hand. Measured live, denied tool, one policy:
+
+    - ``tool_retriever=`` supplies tools per turn from an object index; a
+      wrapper applied to ``tools=`` never sees them, and the denied tool RAN.
+    - in a multi-agent ``AgentWorkflow``, the handoff target's own tools are
+      read straight off that agent; governing the agent the caller happens to
+      hold left the worker's copy ungoverned, and the denied tool RAN and
+      returned its payload.
+    - a handoff tool is BUILT FRESH inside ``get_tools`` on every call, so it
+      cannot be wrapped before the fact at all.
+
+    Each of those is assembled inside ``get_tools`` and therefore governed here.
+
+    Pass the object you run. For a single agent that is the ``FunctionAgent`` /
+    ``ReActAgent`` / ``CodeActAgent``; for a multi-agent graph it is the
+    ``AgentWorkflow``, whose own ``get_tools`` covers every member — its member
+    agents are bound as well, so running one of them directly is governed too.
+
+    NOT COVERED, stated rather than implied:
+
+    - ``CodeActAgent``'s code path. The agent hands the model the raw functions
+      by name and executes model-written Python through the caller's own
+      ``code_execute_fn``; the tool objects are never invoked. The gate reaches
+      ``real_fn``, so a denied tool called by name from generated code is still
+      refused, but arbitrary generated code is not a tool call and no tool
+      allow/deny list bounds it. Govern that sandbox, not this list.
+    - tools invoked outside an agent — ``llm.predict_and_call(tools=[...])``,
+      ``tools.calling.call_tool`` — which never consult ``get_tools``. Wrap
+      those with ``obsvr.govern_tool`` at the call site; they dispatch on the
+      tool object and the gate holds there (measured live).
+
+    Returns an idempotent detach handle. Raises ``ImportError`` LOUDLY on an
+    object that carries no ``get_tools``/``_call_tool`` pair, rather than
+    installing a gate that is never consulted.
+    """
+    targets: List[Any] = [agent]
+    members = getattr(agent, "agents", None)
+    if isinstance(members, dict):
+        # A multi-agent workflow reads each member's `tools` itself rather than
+        # calling the member's `get_tools`, so the two are separate convergence
+        # points and binding both double-gates nothing.
+        targets.extend(members.values())
+
+    unsupported = [t for t in targets if not _supports_tool_gate(t)]
+    if unsupported:
+        raise ImportError(
+            "[obsvr] this llama-index build exposes no agent tool-assembly "
+            f"seam to gate: {type(unsupported[0]).__name__} carries no "
+            f"{'/'.join(_GATE_CAPABILITY_ATTRS)} pair. Refusing to install a "
+            "gate that would never be consulted — wrap the tools themselves "
+            "with obsvr.govern_tool instead."
+        )
+
+    restore: List[Any] = []
+
+    # Wrapped per assembly rather than memoized. A handoff tool is rebuilt on
+    # every `get_tools` call, so an identity-keyed cache would hold a strong
+    # reference to a new object each turn and grow for the life of the run;
+    # re-wrapping is a shallow copy and a few closures, and the governed-name
+    # registry is a set that takes the repeat without noticing.
+    def _govern_all(tools: Any) -> List[Any]:
+        return [_govern_llamaindex_tool(tool, options) for tool in tools or []]
+
+    for target in targets:
+        original = target.get_tools
+
+        async def _governed_get_tools(
+            *args: Any, _original: Any = original, **kwargs: Any
+        ) -> Any:
+            return _govern_all(await _original(*args, **kwargs))
+
+        object.__setattr__(target, "get_tools", _governed_get_tools)
+        restore.append(target)
+
+    detached = False
+
+    def _detach() -> None:
+        nonlocal detached
+        if detached:
+            return
+        detached = True
+        for target in restore:
+            # Delete the shadowing instance attribute so the class method is
+            # reached again, rather than pinning a bound method in __dict__.
+            try:
+                object.__delattr__(target, "get_tools")
+            except Exception:
+                pass
+
+    return _detach
