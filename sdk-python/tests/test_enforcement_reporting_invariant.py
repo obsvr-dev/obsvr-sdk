@@ -51,6 +51,7 @@ Both directions are pinned.
 """
 
 import asyncio
+import json
 
 import pytest
 
@@ -604,6 +605,130 @@ def _drive_openai_agents_guardrail(spy, sent):
 # different one from the agent integrations, and pinning that here means a
 # rename cannot quietly disarm the gate.
 
+def _drive_llamaindex_gate(spy, sent):
+    """LlamaIndex assembles the tools for a turn, THEN dispatches into one.
+
+    The ordering is what makes this driver unkind, and it is the framework's
+    own: ``get_tools`` runs first and returns the list (the seam
+    ``govern_agent`` binds), the executor picks a tool out of that list by
+    ``metadata.name``, and only then does it ``await tool.acall(...)``. A gate
+    bound to assembly has to survive being handed back through a list to earn
+    this row.
+
+    Modelled after ``BaseWorkflowAgent`` at 0.14.23: the tool object carries
+    ``call``/``acall`` over a private ``_fn``, and — the part that matters —
+    ``_call_tool`` SWALLOWS the refusal into ``ToolOutput(is_error=True)``. So
+    the driver does not treat a raise as the verdict; it records what ran.
+    """
+    from obsvr.integrations.llamaindex import govern_agent
+
+    class _Metadata:
+        name = SPY_TOOL
+        description = "moves money"
+        fn_schema = None
+
+        def get_name(self):
+            return self.name
+
+    class _FunctionTool:
+        """The upstream shape: public call/acall over a private stored fn."""
+
+        def __init__(self):
+            self.metadata = _Metadata()
+            self._fn = lambda amount=0: spy.enter(SPY_TOOL)
+            self._async_fn = None
+            self._real_fn = self._fn
+
+        def call(self, *args, **kwargs):
+            return self._fn(*args, **kwargs)
+
+        async def acall(self, *args, **kwargs):
+            return self._fn(*args, **kwargs)
+
+    class _Agent:
+        """The two halves the gate feature-detects, and nothing else."""
+
+        def __init__(self, tools):
+            self.tools = tools
+
+        async def get_tools(self, _input=None):
+            return list(self.tools)
+
+        async def _call_tool(self, tool, tool_input):
+            try:
+                return await tool.acall(**tool_input)
+            except Exception as exc:  # noqa: BLE001 - upstream swallows here
+                return f"ToolOutput(is_error=True, content={exc!r})"
+
+        async def step(self):
+            tools = await self.get_tools(SPY_TOOL)
+            by_name = {t.metadata.name: t for t in tools}
+            return await self._call_tool(by_name[SPY_TOOL], {"amount": 500})
+
+    agent = _Agent([_FunctionTool()])
+    govern_agent(agent)
+
+    raised = None
+    try:
+        asyncio.run(agent.step())
+    except BaseException as exc:  # noqa: BLE001
+        raised = exc
+    return Outcome(spy, sent, raised)
+
+
+def _drive_autogen_tool_gate(spy, sent):
+    """AutoGen's executor reads the function map FRESH, then calls what it finds.
+
+    That read-at-call-time is the whole reason the gate can govern a map entry
+    at all, so the driver models it exactly: ``execute_function`` looks the name
+    up in ``_function_map`` on every call rather than capturing the callable.
+    It also models the framework CATCHING the refusal and reporting a failed
+    tool, which is why a raise is not the instrument here either — ``spy`` is.
+    """
+    import sys
+    import types
+
+    from obsvr.integrations.autogen import install_tool_gate
+
+    class _ConversableAgent:
+        def __init__(self, function_map):
+            self._function_map = dict(function_map)
+
+        def execute_function(self, func_call, call_id=None, verbose=False):
+            name = func_call.get("name", "")
+            func = self._function_map.get(name)
+            if func is None:
+                return False, {"name": name, "role": "function", "content": "not found"}
+            try:
+                content = func(**json.loads(func_call.get("arguments", "{}")))
+                return True, {"name": name, "role": "function", "content": content}
+            except Exception as exc:  # noqa: BLE001 - upstream swallows here
+                return False, {"name": name, "role": "function", "content": f"Error: {exc}"}
+
+        async def a_execute_function(self, func_call, call_id=None, verbose=False):
+            return self.execute_function(func_call, call_id, verbose)
+
+    stub = types.ModuleType("autogen")
+    stub.ConversableAgent = _ConversableAgent
+    saved = sys.modules.get("autogen")
+    sys.modules["autogen"] = stub
+    try:
+        detach = install_tool_gate()
+        try:
+            agent = _ConversableAgent({SPY_TOOL: lambda amount=0: spy.enter(SPY_TOOL)})
+            agent.execute_function(
+                {"name": SPY_TOOL, "arguments": '{"amount": 500}'}
+            )
+        finally:
+            detach()
+    finally:
+        if saved is None:
+            sys.modules.pop("autogen", None)
+        else:
+            sys.modules["autogen"] = saved
+    return Outcome(spy, sent, None)
+
+
 TABLE = [
     ("mcp", _drive_mcp, "mcp_tool_policy", ENFORCES),
     ("pydantic_ai", _drive_pydantic_ai, "agent_policy", ENFORCES),
@@ -622,6 +747,16 @@ TABLE = [
     # stays RECORDS_ONLY — it is the audit rail; these two are the gates.
     ("openai_agents:guardrail-gate", _drive_openai_agents_guardrail, "agent_policy", ENFORCES),
     ("tools:on-invoke-tool", _drive_govern_tool_on_invoke, "agent_policy", ENFORCES),
+    # LlamaIndex. This surface was graded NO_GATE and structurally pinned as
+    # such until the framework was driven: no callback can fire here, but every
+    # agent dispatches on the tool object, and `get_tools` is where the tools
+    # for a turn are assembled. The regrade is deliberate and measured live.
+    ("llamaindex", _drive_llamaindex_gate, "agent_policy", ENFORCES),
+    # AutoGen's second mechanism. The send-hook row above stays as it is — it
+    # governs the MESSAGE and is graded on a driver that delivers one. This row
+    # is the execution boundary, which is the half the routes that never send a
+    # message have to cross.
+    ("autogen:tool-gate", _drive_autogen_tool_gate, "agent_policy", ENFORCES),
 ]
 
 # Rows this invariant currently CATCHES. Each marker names a live defect and
@@ -897,8 +1032,16 @@ def test_the_table_covers_every_surface_that_has_a_tool_gate():
     driven — the same "we have a check for that" gap that let the two false
     records through. So the table is checked against the tree: every module
     carrying a tool-policy helper must appear above, graded.
+
+    A module counts as gated two ways, because there are two ways to carry a
+    gate. Defining ``_check_tool`` is one. BINDING THE SHARED GOVERNOR is the
+    other — llamaindex refuses nothing of its own and is still an enforcing
+    surface, because it hands the framework's tools to ``govern_tool`` at the
+    seam every dispatch crosses. Counting only the first would have let the
+    whole llamaindex gate ship ungraded.
     """
     import pathlib
+    import re
 
     integrations = pathlib.Path(__file__).resolve().parents[1] / "obsvr" / "integrations"
     gated = set()
@@ -906,8 +1049,16 @@ def test_the_table_covers_every_surface_that_has_a_tool_gate():
         if path.stem.startswith("_"):
             continue
         text = path.read_text(encoding="utf-8")
-        if "def _check_tool(" in text or "def _check_tool_policy(" in text:
+        defines_check = "def _check_tool(" in text or "def _check_tool_policy(" in text
+        # A CALL, not a mention: openai_agents names govern_tool in prose to
+        # point readers at it, which is not the same as binding it.
+        binds_governor = bool(re.search(r"^(?!\s*#).*\bgovern_tool\(", text, re.M))
+        if defines_check or (binds_governor and path.stem != "tools"):
             gated.add(path.stem)
+    # tools.py IS the governor rather than a surface binding it, and it defines
+    # its own _check_tool, so it is picked up by the first rule.
+    if "def _check_tool(" in (integrations / "tools.py").read_text(encoding="utf-8"):
+        gated.add("tools")
 
     # A `surface:variant` row is a second driver for the same module — one
     # gate, another delivery shape — so it grades its base surface.
@@ -927,19 +1078,29 @@ def test_the_table_covers_every_surface_that_has_a_tool_gate():
     )
 
 
-def test_llamaindex_has_no_tool_gate_and_says_so():
-    """NO_GATE, pinned structurally so it cannot become a silent regression.
+def test_the_llamaindex_callback_handler_still_refuses_nothing():
+    """The HANDLER is observe-only, and that half of the grading still holds.
 
-    There is no tool-invocation boundary in this handler to gate on, so there is
-    nothing to drive. What is pinned instead is the absence itself: if a tool
-    policy helper appears in this module, this surface has been regraded and the
-    documentation that calls it observability-only has to move with it.
+    This surface was graded NO_GATE on the strength of the handler, and the
+    handler's own posture has not changed: it audits LLM traffic and refuses
+    nothing, because no tool event is dispatched to it at any current version.
+    What changed is that refusal moved to the tools, where the framework
+    actually dispatches — see the ``llamaindex`` row in the table above.
+
+    Pinned so the two cannot be conflated in the other direction either: a tool
+    policy helper appearing in the HANDLER would mean someone hung a gate off a
+    callback that can never fire, which is the mistake this module documents.
     """
     import obsvr.integrations.llamaindex as llamaindex
 
     assert not hasattr(llamaindex, "_check_tool"), (
-        "a tool gate appeared in the observability-only handler — regrade it "
-        "in the table above, in COMPATIBILITY.md, and in both READMEs"
+        "a tool gate appeared in the observability-only handler — no tool "
+        "callback is dispatched on this framework, so a gate here can never "
+        "fire; govern_agent binds the tools instead"
+    )
+    assert hasattr(llamaindex, "govern_agent"), (
+        "the llamaindex tool gate is gone — regrade the row in the table "
+        "above, in COMPATIBILITY.md, and in both READMEs"
     )
 
 
