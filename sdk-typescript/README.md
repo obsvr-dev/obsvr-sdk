@@ -214,7 +214,7 @@ Three different things sit outside that table, and only the first is a policy de
 
 **The named compatibility wrappers are NOT that table.** `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` consult a one-entry path table (`integrations/openai-compat.ts`) and govern **`chat.completions.create` only**. `wrapWorkersAI` is not one of them and is not described by this paragraph: it proxies `run` on a Workers AI binding and applies the pre-call policy and outbound redaction directly, the same net the other infra integrations run. Counted against real `AzureOpenAI` and `Together` clients: 17 governed paths through `obsvr.wrap()`, 1 through these. The other 26 text-bearing paths on a current client — `responses.create`, `responses.parse`, `responses.stream`, `chat.completions.parse`, `chat.completions.stream`, `chat.completions.runTools`, `completions.create`, and the whole `beta.threads.*` assistants surface — bind straight through with **no gate and no event**. That is not a limitation of the client: `obsvr.wrap()` duck-types the same objects and covers the full table above. These wrappers exist to set a provider label and a source; use `obsvr.wrap()` when you need the coverage.
 
-**The framework integrations are not that table either.** LangChain and LlamaIndex call `applyObservePolicy`, which is the PII scan and the stored redacted copy — not `applyPreCallPolicy`. Measured layer by layer: `policyRules`, `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch integrity gate, the response-side scan and PII **blocking** do not run there, and metering is opt-in. A `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and does not block through LangChain or LlamaIndex — the call goes out and the event records the stored copy as redacted. Treat them as observability integrations with a PII scan.
+**The framework integrations are not that table either.** LangChain, LlamaIndex and the OpenAI Agents tracing processor call `applyObservePolicy` on their model-call paths, which is the PII scan and the stored redacted copy — not `applyPreCallPolicy`. Measured layer by layer: `policyRules`, `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch integrity gate, the response-side scan and PII **blocking** do not run there, and metering is opt-in. A `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and does not block through any of those three — the call goes out and the event records the stored copy as redacted. Treat those paths as observability with a PII scan; their tool gates are graded separately below.
 
 **"Metering is opt-in" means the default is OFF, and that is a decision.** ``meterIntegrationEvents`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
 
@@ -359,9 +359,11 @@ the gate ran and the verdict is on that tool's own `tool.call` event, or
 answer as `callback` or `absent`.
 
 **Do not read Python's grades across, or vice versa.** The two SDKs have separate
-tool-gate implementations and they disagree: this SDK's LangChain integration
-enforces, and the Python one does not wire its gate to a callback current
-runtimes deliver. The per-integration table for Python is in
+tool-gate implementations and they do not cover the same surfaces: Python ships
+AutoGen, CrewAI, Haystack and PydanticAI gates this SDK has no equivalent of,
+and it gates MCP on a different method. Both SDKs' LangChain integrations
+enforce — each in the framework's pre-execution tool callback, with the handler
+flag that lets a refusal escape rather than be logged. The per-integration table for Python is in
 [`../sdk-python/README.md`](../sdk-python/README.md), and the combined view is in
 the [root README](../README.md).
 

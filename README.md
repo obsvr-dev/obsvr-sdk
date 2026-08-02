@@ -479,10 +479,10 @@ integration and per language, and both are graded below.
 ### Does a policy block actually stop the model call?
 
 The framework integrations do not run the same pipeline `obsvr.wrap()` runs.
-Measured layer by layer on LangChain and LlamaIndex in both languages, driven
-rather than read off the code:
+Measured layer by layer on LangChain, LlamaIndex and the OpenAI Agents tracing
+processor in both languages, driven rather than read off the code:
 
-| Layer | `obsvr.wrap()` | LangChain / LlamaIndex |
+| Layer | `obsvr.wrap()` | LangChain / LlamaIndex / OpenAI Agents tracing |
 | --- | --- | --- |
 | PII **detection** and the stored redacted copy | yes | **yes** |
 | Canary token kept out of the stored event | yes | **yes** |
@@ -496,7 +496,8 @@ rather than read off the code:
 | Quota and cost metering | yes | opt-in only (`meterIntegrationEvents`) |
 
 So a `pii_policy` of `{ssn: "block"}` **blocks** through `obsvr.wrap()`, Bedrock,
-Vertex, Vercel AI and MCP, and through LangChain or LlamaIndex it does not: the
+Vertex, Vercel AI and MCP, and through LangChain, LlamaIndex or the OpenAI
+Agents tracing processor it does not: the
 call goes out with the SSN in it and the event records the stored copy as
 redacted. That is a real difference between two things this README lists in the
 same table, and it is stated here rather than left to be discovered. These two
@@ -528,8 +529,8 @@ not agree, so neither column may be read across to the other.
 
 | Surface | TypeScript | Python |
 | --- | --- | --- |
-| MCP (`callTool`) | **enforces** | **enforces** — driven end to end over real JSON-RPC against a real server, on protocol majors 1 and 2. A denied tool at ZERO executions on every client route into `tools/call`, allow controls at exactly one: the documented `call_tool`, a hand-built frame passed to `send_request`, the task API, and a session group holding the governed session. The gate binds at `send_request`, which all of them converge on. One route stays uncovered and is measured rather than described: a session group handed the RAW session underneath an instance wrapper dispatches through that object, and only the class-level `patch_mcp` reaches it |
-| tool governor (`obsvrGovernTool` / `govern_tool`) | **enforces** | **enforces** — CrewAI dispatch driven live on both executor paths and per version across the supported range; other framework shapes pinned offline. A governed tool also declines the framework's result cache (Python), because a cache hit answers from the framework's memory without entering the gated callable |
+| MCP | **enforces on `callTool`** — the binding is `callTool` and `listTools`. The two columns are not the same boundary and neither may be read across: the routes Python covers at `send_request` have not been driven here | **enforces** — driven end to end over real JSON-RPC against a real server, on protocol majors 1 and 2. A denied tool at ZERO executions on every client route into `tools/call`, allow controls at exactly one: the documented `call_tool`, a hand-built frame passed to `send_request`, the task API, and a session group holding the governed session. The gate binds at `send_request`, which all of them converge on. One route stays uncovered and is measured rather than described: a session group handed the RAW session underneath an instance wrapper dispatches through that object, and only the class-level `patch_mcp` reaches it |
+| tool governor (`obsvrGovernTool` / `govern_tool`) | **enforces** | **enforces** — CrewAI dispatch driven live on both executor paths and per version across the supported range, and driven live as the second mechanism on openai-agents, LlamaIndex, Haystack and AutoGen's execution gate; the remaining framework shapes are pinned offline. A governed tool also declines the framework's result cache (Python), because a cache hit answers from the framework's memory without entering the gated callable |
 | LangChain | **enforces** | **enforces** — driven live at `langchain-core` 1.0.0 and 1.5.3 on BOTH runtimes, the graph runtime and the classic executor, which deliver different pre-tool callbacks. A denied tool at ZERO executions with its payload absent from what the caller received, allow controls at exactly three, on the plain, streamed, async, batched and `as_tool` routes and through a tool node configured to swallow tool errors — which changes what the caller sees and not whether the tool ran. The per-run STEP BUDGET is enforced here too and was not before: it stops a run at two calls where the model asked for three, on both runtimes, where it previously allowed every call on both because the run it counted against was never created |
 | Haystack | *no integration* | **enforces** on Agent tools via a `before_tool` hook, and separately refuses PROMPTS at a pipeline `@component`. The hook is consulted before the Agent resolves its pending tool calls and before it builds the executor that dispatches them in parallel, so a denied call is removed while a benign sibling in the same reply still runs — measured. Driven live at `haystack-ai` 3.0.0: denied tool at ZERO executions with the payload absent, allow control at one, through `Agent.run` and `Agent.run_async`, with tools handed to `run()` and with tools inside a `Toolset`. `govern_tool` is the second mechanism and aborts instead. At 2.0.0 the Agent does not exist and the installer refuses loudly rather than arming a gate nothing would consult |
 | AutoGen | *no integration* | **enforces** via two independent mechanisms sitting at opposite ends of the same call, driven live at ag2 0.3.2 and 0.9.9 — the `process_message_before_send` hook, which inspects the outgoing tool-call message and raises out of `send` so the chat stops, and/or `install_tool_gate()`, which governs the `_function_map` entry the executor is about to invoke and refuses by the framework's own failed-tool contract so the run continues. The second exists because the first governs the MESSAGE: `_process_message_before_send` has exactly two call sites in the framework, and measured live with the hook installed, a tool-call dict handed straight to `generate_reply`, to `receive`, or to `execute_function` executed the denied tool and returned its payload. So does an agent the caller never constructs — `run()` builds a hidden executor holding every callable and no hooks. Its step limit needs the run-level helper |
