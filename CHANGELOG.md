@@ -55,6 +55,22 @@ cut, when it is renamed to that version.
 
 ### Changed
 
+- **The LlamaIndex extra now declares the current major, measured at both ends:
+  `llama-index-core>=0.14.5,<0.15.0` (was `>=0.11.23`, uncapped).** The old
+  range spanned the 0.13.0 release where the framework stopped dispatching tool
+  events altogether, claiming versions on both sides of a behaviour change
+  nothing had measured. **Raising a floor withdraws no working version — it ends
+  a claim that was never measured.** The floor is 0.14.5 rather than 0.14.0
+  because that is the oldest release the gate can be DRIVEN on: the seam is
+  present at 0.14.0, but no current provider adapter pairs with it
+  (`llama-index-llms-openai` from 0.6.5 up requires core `>=0.14.5`, and 0.6.0
+  imports a type core does not define until 0.14.4), and a core with no LLM
+  adapter cannot run an agent. Both ends are driven live. One release inside the
+  range is worth knowing about if you version-gate anything yourself: core
+  0.14.0 ships `llama_index.core.__version__ == "0.13.6"`. obsvr reads no
+  version string on this surface — every capability is probed by attribute
+  presence.
+
 - **The MCP and PydanticAI extras now declare the current major, measured at
   both ends: `mcp>=2.0.0,<3.0.0` (was `>=1.0.0,<2.0.0`) and
   `pydantic-ai-slim>=2.0.0,<3.0.0` (was `>=0.4.4`, uncapped).** The `mcp` cap
@@ -596,6 +612,51 @@ cut, when it is renamed to that version.
   consumption is still reported exactly.
 
 ### Added
+
+- **`govern_agent` — LlamaIndex refuses a denied tool before it runs (Python).**
+  This surface carried no tool gate of any kind, and the documented reason was
+  wrong: it said a callback is the wrong place for a gate, when the operative
+  fact is that no tool callback is dispatched here at all —
+  `CBEventType.FUNCTION_CALL` has zero dispatch sites at any current version,
+  and the instrumentation dispatcher that replaced those events swallows every
+  handler exception, so nothing raised from one reaches the run. The gate
+  therefore lives on the tools. `govern_agent(agent)` binds to `get_tools`,
+  where a workflow agent assembles the tools for a turn, and governs each
+  through `govern_tool` with the full pre-call net. Binding at ASSEMBLY rather
+  than to the caller's list is what makes it complete: measured live with the
+  tool denied, a tool supplied per turn by a `tool_retriever` and a tool whose
+  governed copy was discarded while the agent kept the original both RAN under
+  a hand-applied wrapper and are refused here. Driven live at llama-index-core
+  0.14.5 and 0.14.23 on the plain, ReAct, tool-retriever and
+  multi-agent-handoff routes: zero side-effect writes on every deny leg, the
+  payload absent from the `ToolCallResult` the caller received, paired allow
+  controls at exactly one. The framework converts the refusal into an error
+  tool result rather than raising, so the run continues and the signed record
+  is what reports the refusal — below core 0.14.8 it is the only thing that
+  can, because `ToolOutput` carries no exception there and a refusal is
+  indistinguishable from a crash to the caller. Two routes are out of scope and
+  say so: `CodeActAgent`'s generated code, and tools invoked outside an agent.
+
+- **`install_tool_gate()` — AutoGen refuses a denied tool on the routes that
+  never send a message (Python).** The existing send hook enforces and keeps
+  doing so, but it governs the outgoing MESSAGE, and
+  `_process_message_before_send` has exactly two call sites in the framework.
+  Measured live with the hook installed, three public routes reached the tool
+  without either — a tool-call dict handed to `generate_reply`, to `receive`,
+  or to `execute_function` — and two of them returned the tool's payload to the
+  caller. So does an agent the caller never constructs: `run()` builds a hidden
+  executor holding every callable and no hooks, and group and swarm chats build
+  their own. The new gate wraps `ConversableAgent.execute_function` /
+  `a_execute_function` on the class, which is the only scope that reaches those
+  internal executors, and governs the `_function_map` entry the call is about
+  to run — read fresh at call time at every version in the supported range.
+  Refusal is the framework's own failed-tool contract: the raise happens inside
+  the callable, `execute_function` reports `is_exec_success=False`, and the
+  conversation continues, where the send hook instead stops the chat. Driven
+  live at ag2 0.3.2 and 0.9.9, zero side-effect writes on every deny leg with
+  paired allow controls at one. `RealtimeAgent` (a separate tool registry no
+  executor reads) and code-execution replies (code from message content, not a
+  `tool_calls` array) are out of scope and say so.
 
 - **`attach_tool_gate` / `attachToolGate` — OpenAI Agents now refuses a denied
   tool before it runs, in both languages.** The framework consults each
