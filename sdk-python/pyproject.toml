@@ -144,18 +144,26 @@ gemini = ["google-generativeai"]
 # now ends where the evidence does.
 mcp = ["mcp>=2.0.0,<3.0.0"]
 langchain = ["langchain-core>=0.2.0"]
-# NOTE: this floor rests on WEAKER evidence than the others in this file, and
-# the difference is deliberate. The other floors name the first release that
-# demonstrably works; this one names the lowest release VERIFIED working live
-# (0.11.23: provider attributed, tokens captured, one event per call). Versions
-# below it are excluded because they could not be MEASURED, not because they
-# were proven broken — the 0.10.x line pulls an early-2024 dependency set whose
-# first import downloads an NLTK corpus into a fresh environment and then hangs
-# against a current openai/httpx, so no probe of it completes. What is known:
-# the declared 0.10.0 emits no audit event at all, and the TypeScript twin at
-# the same era (llamaindex 0.5.0/0.5.8) has the identical defect. A conservative
-# floor that states its own basis beats an unverifiable claim left standing.
-llamaindex = ["llama-index-core>=0.11.23"]
+# The current major, bounded below the next, with the floor at the oldest
+# release the tool gate can actually be driven on. The previous range,
+# >=0.11.23 uncapped, spanned the 0.13.0 cliff where the framework stopped
+# dispatching tool events altogether, so it claimed releases on both sides of a
+# behaviour change nobody had measured.
+#
+# The floor is 0.14.5 rather than 0.14.0, and that is a measurement. The gate's
+# seam is present at 0.14.0 — get_tools/_call_tool on both agent bases, and
+# call/acall plus the private _fn/_async_fn/_real_fn on FunctionTool — but core
+# 0.14.0 cannot complete a tool-calling run with any current provider adapter:
+# llama-index-llms-openai from 0.6.5 up requires core>=0.14.5, and 0.6.0, the
+# newest pip will place beside core 0.14.0, imports ThinkingBlock, which core
+# does not define until 0.14.4. A core with no LLM adapter cannot run an agent,
+# so 0.14.5 is the oldest release the gate can be DRIVEN on. 0.14.5 and 0.14.23
+# are both driven live, denied tool at zero executions on each.
+#
+# Nothing in the integration reads a version string, and this framework is why:
+# llama-index-core 0.14.0 ships llama_index.core.__version__ == "0.13.6".
+# Capability is probed by attribute presence.
+llamaindex = ["llama-index-core>=0.14.5,<0.15.0"]
 # No crewai release permits 3.14 — every one of them caps at <3.14 or <=3.13 —
 # while this package requires only >=3.10. Without the marker a 3.14 user
 # backtracks the whole release history before failing on a resolution error
