@@ -397,3 +397,285 @@ def test_a_tool_without_an_async_alias_resolves_exactly_as_before(sent):
 
     assert _resolve_exec_attrs(_Invoke()) == ("invoke",)
     assert _resolve_exec_attrs(_InvokePair()) == ("invoke", "ainvoke")
+
+
+# ── The exec-attr table, pinned per supported framework ──────────────────────
+#
+# Three spellings have been found one at a time — crewai's `func`, `ainvoke`,
+# and Haystack's `invoke_async` — each after a live run where a governed tool
+# executed anyway. The shapes below were read off the REAL tool classes in each
+# framework's own venv (py/integrations/_exec_attr_sweep.py in the harness) and
+# are modelled here so the table is checked against all nine on every commit.
+#
+# Two things are pinned at once, and the second is why the file exists: WHICH
+# attributes each shape resolves to, so an addition to the table cannot quietly
+# move an existing framework onto a different entry point.
+
+
+class _CrewAIBaseTool:
+    """crewai.tools.BaseTool — `_run`/`_arun` plus public `run`/`arun`."""
+
+    name = "t"
+    description = "d"
+
+    def _run(self, **kw): ...
+    async def _arun(self, **kw): ...
+    def run(self, **kw): ...
+    async def arun(self, **kw): ...
+
+
+class _CrewAIStructuredTool:
+    """crewai.tools.structured_tool.CrewStructuredTool — no `_arun`."""
+
+    name = "t"
+    description = "d"
+
+    def _run(self, **kw): ...
+    def invoke(self, **kw): ...
+    async def ainvoke(self, **kw): ...
+    func = staticmethod(lambda **kw: None)
+
+
+class _LangChainStructuredTool:
+    """langchain_core.tools.StructuredTool — the widest shape in the set."""
+
+    name = "t"
+    description = "d"
+
+    def _run(self, **kw): ...
+    async def _arun(self, **kw): ...
+    def invoke(self, **kw): ...
+    async def ainvoke(self, **kw): ...
+    def run(self, **kw): ...
+    async def arun(self, **kw): ...
+    func = staticmethod(lambda **kw: None)
+
+
+class _LlamaIndexFunctionTool:
+    """llama_index FunctionTool — public call/acall over private callables,
+    with `fn`/`async_fn`/`real_fn` exposed as read-only PROPERTIES."""
+
+    def __init__(self):
+        self._fn = lambda **kw: None
+        self._async_fn = lambda **kw: None
+        self._real_fn = lambda **kw: None
+
+    def call(self, **kw): ...
+    async def acall(self, **kw): ...
+
+    @property
+    def fn(self): return self._fn
+
+    @property
+    def async_fn(self): return self._async_fn
+
+    @property
+    def real_fn(self): return self._real_fn
+
+
+class _HaystackTool:
+    """haystack.tools.Tool — pairs `invoke` with `invoke_async`, NOT `ainvoke`."""
+
+    name = "t"
+    description = "d"
+
+    def invoke(self, **kw): ...
+    async def invoke_async(self, **kw): ...
+
+
+class _Ag2Tool:
+    """autogen.tools.Tool — its ONLY match is `func`, a read-only property."""
+
+    def __init__(self):
+        self._func = lambda **kw: None
+
+    @property
+    def func(self): return self._func
+
+    def __call__(self, *a, **kw): return self._func(*a, **kw)
+
+
+class _OpenAIAgentsFunctionTool:
+    """agents.FunctionTool — one async entry point, input at position 1."""
+
+    name = "t"
+    description = "d"
+
+    async def on_invoke_tool(self, ctx, args): ...
+
+
+class _PydanticAITool:
+    """pydantic_ai.tools.Tool — carries NO execute attribute at all."""
+
+    name = "t"
+
+
+@pytest.mark.parametrize(
+    "label,shape,expected",
+    [
+        ("crewai.BaseTool", _CrewAIBaseTool, ("_run", "_arun")),
+        ("crewai.CrewStructuredTool", _CrewAIStructuredTool, ("_run", "func")),
+        ("langchain.StructuredTool", _LangChainStructuredTool, ("_run", "_arun", "func")),
+        ("llamaindex.FunctionTool", _LlamaIndexFunctionTool, ("call", "acall")),
+        ("haystack.Tool", _HaystackTool, ("invoke", "invoke_async")),
+        ("openai_agents.FunctionTool", _OpenAIAgentsFunctionTool, ("on_invoke_tool",)),
+        # Recognized by NOTHING gateable: the only match is a property.
+        ("autogen.tools.Tool", _Ag2Tool, ()),
+        # No execute attribute at all; governed at the toolset boundary instead.
+        ("pydantic_ai.Tool", _PydanticAITool, ()),
+    ],
+)
+def test_the_table_resolves_each_supported_framework_to_these_attrs(label, shape, expected):
+    """ORDER IS THE CONTRACT, so it is asserted rather than trusted."""
+    from obsvr.integrations.tools import _resolve_exec_attrs
+
+    assert _resolve_exec_attrs(shape()) == expected, label
+
+
+def test_a_read_only_property_is_not_an_entry_point_and_does_not_break_the_caller(sent):
+    """F-5-7. ag2's `Tool.func` is a property with no setter, and
+    `object.__setattr__` honours data descriptors — so the write raised
+    `AttributeError` straight out of the caller's program.
+
+    Governing a caller must not damage the caller. The property is not a
+    gateable entry point, so the TOOL ITSELF comes back, unchanged and still
+    usable."""
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    from obsvr.integrations.tools import govern_tool, is_tool_governed
+
+    tool = _Ag2Tool()
+    governed = govern_tool(tool, name="send_money")  # must not raise
+
+    assert governed is tool, "a tool that cannot be gated must come back as it was"
+    assert callable(governed.func), "the caller's tool must still work"
+    assert not is_tool_governed("send_money"), (
+        "the name must NOT be registered — the audit rails on other surfaces "
+        "stand down for a registered name, so claiming one here would turn a "
+        "coverage gap into their silence"
+    )
+
+
+def test_a_read_write_property_installs_nothing_and_is_also_refused(sent):
+    """The quieter half of the same defect. A property WITH a setter accepts
+    the write, runs the setter, and leaves lookup returning the original — a
+    gate the caller believes in and does not have."""
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    from obsvr.integrations.tools import govern_tool
+
+    class _Settable:
+        def __init__(self):
+            self._stored = lambda **kw: "ran"
+
+        @property
+        def invoke(self): return self._stored
+
+        @invoke.setter
+        def invoke(self, value): self._elsewhere = value
+
+    tool = _Settable()
+    governed = govern_tool(tool, name="send_money")
+    assert governed is tool
+    assert governed.invoke() == "ran"
+
+
+def test_a_writable_slot_is_still_gated(sent):
+    """Slots are storage, not behaviour: shadowing one DOES reach dispatch, so
+    the descriptor filter must not sweep them up with properties."""
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    from obsvr.integrations.tools import govern_tool
+
+    class _Slotted:
+        __slots__ = ("invoke", "name")
+
+        def __init__(self):
+            self.name = "send_money"
+            self.invoke = lambda **kw: "ran"
+
+    governed = govern_tool(_Slotted())
+    with pytest.raises(ObsvrPolicyError):
+        governed.invoke(amount=1)
+
+
+def test_a_readonly_c_level_attr_degrades_instead_of_raising(sent):
+    """`functools.partial.func` is the same descriptor TYPE as a slot and
+    refuses the write, which is why the install site verifies rather than
+    trusting resolution."""
+    import functools
+
+    obsvr.init(api_key="test", sample_rate=1, agent_policy={})
+    from obsvr.integrations.tools import govern_tool
+
+    part = functools.partial(lambda x: x, 1)
+    governed = govern_tool(part, name="send_money")  # must not raise
+    assert governed is part
+    assert governed() == 1
+
+
+def test_a_plain_function_is_still_wrapped_directly(sent):
+    """The bare-callable branch is unchanged: a plain function carries none of
+    the table's names, so narrowing that branch to non-tool-objects leaves it
+    exactly where it was."""
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    from obsvr.integrations.tools import govern_tool
+
+    ran = []
+
+    def send_money(amount=0):
+        ran.append(amount)
+        return "PAYLOAD"
+
+    governed = govern_tool(send_money)
+    with pytest.raises(ObsvrPolicyError):
+        governed(amount=1)
+    assert ran == []
+
+
+def test_a_write_that_lands_but_never_reaches_lookup_is_refused(sent):
+    """The install site VERIFIES rather than trusting resolution, and this is
+    the case only the verification can see.
+
+    A lookup-forwarding proxy — what wrapt's C `ObjectProxy` is — accepts
+    `object.__setattr__` into its own instance dict and then never consults it,
+    because `__getattribute__` forwards to the wrapped object. Nothing about the
+    descriptor on the class says so, so the shadowability filter passes it and
+    the write raises nothing: the gate would be reported installed and would
+    never run. Confirming the attribute now RESOLVES to the wrapper is what
+    catches it.
+    """
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": ["send_money"]})
+    from obsvr.integrations.tools import govern_tool, is_tool_governed
+
+    class _Inner:
+        name = "send_money"
+
+        def invoke(self, **kw):
+            return "ran"
+
+    class _Forwarding:
+        def __init__(self, inner):
+            object.__setattr__(self, "_inner", inner)
+
+        def __getattribute__(self, item):
+            if item == "_inner":
+                return object.__getattribute__(self, "_inner")
+            return getattr(object.__getattribute__(self, "_inner"), item)
+
+        def __copy__(self):
+            # Copy to another PROXY. Without this, copy.copy forwards through
+            # the proxy and returns the INNER object, and the leg would be
+            # measuring copy semantics rather than the install verification.
+            return _Forwarding(object.__getattribute__(self, "_inner"))
+
+    tool = _Forwarding(_Inner())
+    governed = govern_tool(tool, name="send_money")
+
+    assert governed is tool, "a gate that cannot be installed must not be claimed"
+    assert governed.invoke() == "ran", "the caller's tool must still work"
+    assert not is_tool_governed("send_money"), (
+        "the name must not be registered for a gate that was never installed"
+    )

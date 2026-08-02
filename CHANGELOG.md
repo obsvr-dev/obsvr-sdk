@@ -73,6 +73,21 @@ cut, when it is renamed to that version.
   tool gate in this SDK has; it is stated for this surface because a component
   is an unusually easy second reference to hold.
   ([`874bc28`](https://github.com/obsvr-dev/obsvr-sdk/commit/874bc28))
+- **The LlamaIndex extra now declares the current major, measured at both ends:
+  `llama-index-core>=0.14.5,<0.15.0` (was `>=0.11.23`, uncapped).** The old
+  range spanned the 0.13.0 release where the framework stopped dispatching tool
+  events altogether, claiming versions on both sides of a behaviour change
+  nothing had measured. **Raising a floor withdraws no working version — it ends
+  a claim that was never measured.** The floor is 0.14.5 rather than 0.14.0
+  because that is the oldest release the gate can be DRIVEN on: the seam is
+  present at 0.14.0, but no current provider adapter pairs with it
+  (`llama-index-llms-openai` from 0.6.5 up requires core `>=0.14.5`, and 0.6.0
+  imports a type core does not define until 0.14.4), and a core with no LLM
+  adapter cannot run an agent. Both ends are driven live. One release inside the
+  range is worth knowing about if you version-gate anything yourself: core
+  0.14.0 ships `llama_index.core.__version__ == "0.13.6"`. obsvr reads no
+  version string on this surface — every capability is probed by attribute
+  presence.
 
 - **The MCP and PydanticAI extras now declare the current major, measured at
   both ends: `mcp>=2.0.0,<3.0.0` (was `>=1.0.0,<2.0.0`) and
@@ -452,8 +467,8 @@ cut, when it is renamed to that version.
   has no capture path for either — no per-call keyword argument, no config
   default — and emits a hardcoded null. That was recorded only in a source
   comment, while `known-divergences.json` is read as the complete
-  machine-readable inventory of accepted divergences, so a reader trusting it
-  was misled by its silence.
+  machine-readable inventory of accepted divergences, so a reader treating it
+  as complete would not have found this one.
 
   It is a **capability** divergence, not a verdict one, which is what makes it
   eligible: the catalog's own policy invalidates an entry whose allowed
@@ -649,6 +664,50 @@ cut, when it is renamed to that version.
   top changed. The helper walks the cause chain so one branch covers both that
   shape and the unwrapped error an Agent raises directly.
   ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
+- **`govern_agent` — LlamaIndex refuses a denied tool before it runs (Python).**
+  This surface carried no tool gate of any kind, and the documented reason was
+  wrong: it said a callback is the wrong place for a gate, when the operative
+  fact is that no tool callback is dispatched here at all —
+  `CBEventType.FUNCTION_CALL` has zero dispatch sites at any current version,
+  and the instrumentation dispatcher that replaced those events swallows every
+  handler exception, so nothing raised from one reaches the run. The gate
+  therefore lives on the tools. `govern_agent(agent)` binds to `get_tools`,
+  where a workflow agent assembles the tools for a turn, and governs each
+  through `govern_tool` with the full pre-call net. Binding at ASSEMBLY rather
+  than to the caller's list is what makes it complete: measured live with the
+  tool denied, a tool supplied per turn by a `tool_retriever` and a tool whose
+  governed copy was discarded while the agent kept the original both RAN under
+  a hand-applied wrapper and are refused here. Driven live at llama-index-core
+  0.14.5 and 0.14.23 on the plain, ReAct, tool-retriever and
+  multi-agent-handoff routes: zero side-effect writes on every deny leg, the
+  payload absent from the `ToolCallResult` the caller received, paired allow
+  controls at exactly one. The framework converts the refusal into an error
+  tool result rather than raising, so the run continues and the signed record
+  is what reports the refusal — below core 0.14.8 it is the only thing that
+  can, because `ToolOutput` carries no exception there and a refusal is
+  indistinguishable from a crash to the caller. Two routes are out of scope and
+  say so: `CodeActAgent`'s generated code, and tools invoked outside an agent.
+
+- **`install_tool_gate()` — AutoGen refuses a denied tool on the routes that
+  never send a message (Python).** The existing send hook enforces and keeps
+  doing so, but it governs the outgoing MESSAGE, and
+  `_process_message_before_send` has exactly two call sites in the framework.
+  Measured live with the hook installed, three public routes reached the tool
+  without either — a tool-call dict handed to `generate_reply`, to `receive`,
+  or to `execute_function` — and two of them returned the tool's payload to the
+  caller. So does an agent the caller never constructs: `run()` builds a hidden
+  executor holding every callable and no hooks, and group and swarm chats build
+  their own. The new gate wraps `ConversableAgent.execute_function` /
+  `a_execute_function` on the class, which is the only scope that reaches those
+  internal executors, and governs the `_function_map` entry the call is about
+  to run — read fresh at call time at every version in the supported range.
+  Refusal is the framework's own failed-tool contract: the raise happens inside
+  the callable, `execute_function` reports `is_exec_success=False`, and the
+  conversation continues, where the send hook instead stops the chat. Driven
+  live at ag2 0.3.2 and 0.9.9, zero side-effect writes on every deny leg with
+  paired allow controls at one. `RealtimeAgent` (a separate tool registry no
+  executor reads) and code-execution replies (code from message content, not a
+  `tool_calls` array) are out of scope and say so.
 
 - **`attach_tool_gate` / `attachToolGate` — OpenAI Agents now refuses a denied
   tool before it runs, in both languages.** The framework consults each
@@ -1172,6 +1231,41 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   refused nothing, so it is no longer read. A call that carries no name at all
   now records `not_evaluated` with the reason instead of passing silently.
   ([`1e459a6`](https://github.com/obsvr-dev/obsvr-sdk/commit/1e459a6))
+- **`govern_tool` raised out of the caller's program on a tool whose callable
+  is exposed as a property (Python).** The gate installs by SHADOWING — an
+  instance attribute that wins at lookup over the class one — and
+  `object.__setattr__` honours data descriptors, so a property could never be
+  shadowed however callable it looked. ag2's `autogen.tools.Tool` exposes its
+  callable as `func`, a property with no setter, and the write raised
+  `AttributeError` at the caller rather than degrading; a property WITH a setter
+  was quieter and worse, accepting the write, running the setter and installing
+  nothing. Such an attribute is no longer treated as an entry point, and a
+  recognized tool whose entry points are all ungateable comes back exactly as it
+  was passed — never converted into a bare function, and never entered in the
+  governed-name registry, since the audit rails on other surfaces stand down for
+  a registered name and would otherwise turn a coverage gap into their silence.
+  Verified live: after the fix the tool registers on a real agent and its side
+  effect still runs. Slots are unaffected and still gated (they are storage, not
+  behaviour), and the install site now confirms the write reached lookup rather
+  than trusting it, which is what catches a read-only C-level attribute such as
+  `functools.partial.func` and a lookup-forwarding proxy.
+
+- **`govern_tool` gated one half of a two-spelling entry point (Python).** The
+  table paired `invoke` with `ainvoke` alone, so a framework spelling the async
+  half `invoke_async` had one entry point governed and the other untouched:
+  measured on a real agent, the same governed tool refused on the synchronous
+  run and executed on the asynchronous one, returned its payload to the caller,
+  and recorded nothing at all. Resolution now co-gates a small table of async
+  aliases, which is additive — a tool carrying none of them resolves to exactly
+  the attributes it did before.
+
+  Both fixes ship with a sweep behind them rather than a third instance of the
+  same surprise. Every supported framework's real tool object was resolved
+  through the table and the result pinned per framework, so an addition that
+  moved an existing shape onto a different entry point now fails a test instead
+  of reaching a customer. Measured against the table as it previously stood, six
+  of the eight tool shapes resolve identically and the only two that move are
+  the two above.
 
 - **MCP (Python): two client routes into `tools/call` reached a denied tool's
   body.** `ClientSession.call_tool` is a convenience over `send_request`, and

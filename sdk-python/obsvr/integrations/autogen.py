@@ -1,4 +1,4 @@
-"""AutoGen integration — hook-based audit with real pre-send enforcement.
+"""AutoGen integration — a pre-send message gate and a pre-execution tool gate.
 
 TARGETS THE ag2 DISTRIBUTION, not the older one the extra used to name. This
 code binds `ConversableAgent.register_hook`, the AutoGen 0.2.x API whose
@@ -19,9 +19,15 @@ patch_initiate_chat(agent) wraps agent.initiate_chat to add run-level
 tracing (start/finish events) and agent_policy enforcement (tool checks,
 step limits, strict PII).
 
-TOOL POLICY ENFORCES HERE, AND IT IS THE HOOK'S TIMING THAT EARNS THAT. The
-send hook runs before the message leaves, so refusing it stops the recipient
-from ever seeing the tool call. Two conditions on that:
+install_tool_gate() gates the OTHER END — the point where a registered function
+is actually invoked. See its docstring; the short version is that the send hook
+governs the message and this governs the execution, and only the second one is
+on every route.
+
+THE SEND HOOK ENFORCES, AND IT IS THE HOOK'S TIMING THAT EARNS THAT. It runs
+before the message leaves, so refusing it stops the recipient from ever seeing
+the tool call, and the framework wraps the hook loop in no try/except — the
+refusal propagates and the delivery never happens. Three conditions on that:
 
 - Register on every agent that can EMIT a tool call, not just the initiator.
   The hook fires on the sender; tool calls come from the assistant. Registering
@@ -31,6 +37,15 @@ from ever seeing the tool call. Two conditions on that:
   per call. Both used to read only `tool_calls[0]`, which made enforcement
   depend on position: a denied tool second in a batch was delivered and run
   with no event and no exception.
+- IT GOVERNS THE MESSAGE, SO IT ONLY GOVERNS ROUTES THAT SEND ONE.
+  `_process_message_before_send` has exactly two call sites in the framework,
+  `send` and `a_send`. A caller that hands a tool-call dict straight to
+  `generate_reply`, `receive` or `execute_function` reaches the tool without
+  passing either — measured live, denied tool, side effect written. So can an
+  agent the caller never constructs: `run()` builds a hidden executor holding
+  every callable and no hooks, and group and swarm chats build their own tool
+  executors the same way. `install_tool_gate()` exists for that whole class,
+  and it is the mechanism to install if you only install one.
 
 A tool call whose name cannot be read is refused rather than skipped.
 
@@ -47,7 +62,7 @@ scope.
 
 import threading
 import uuid
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import sender as _sender
 from ..agent_policy import check_steps, unrecognized_step_action_meta
@@ -65,8 +80,21 @@ from ..policy import (
     blocked_prompt_for_storage,
     redact_builtin_pii,
 )
+from .tools import govern_tool
 
 SOURCE = "autogen"
+
+#: Set on the callables :func:`install_tool_gate` puts into a function map, so a
+#: map entry is governed once rather than re-wrapped on every dispatch. Without
+#: it the gate would add a layer per call and the audit would grow a record per
+#: layer.
+_GATED_MARKER = "_obsvr_autogen_gated"
+
+#: The three halves this gate needs, probed by attribute presence rather than by
+#: version string. Both executors must exist AND the map they read must be
+#: reachable; a build carrying the methods without the map would take the
+#: install and govern nothing.
+_TOOL_GATE_CAPABILITY_ATTRS = ("execute_function", "a_execute_function")
 
 # Thread-local storage for per-conversation run context (thread-safe).
 #
@@ -649,3 +677,176 @@ def patch_initiate_chat(agent: Any, **options: Any) -> None:
         return result
 
     agent.initiate_chat = _patched_initiate_chat
+
+
+# ---------------------------------------------------------------------------
+# Pre-execution tool gate
+# ---------------------------------------------------------------------------
+
+
+def _conversable_agent_class() -> Any:
+    """The class every tool-executing agent on this framework inherits from."""
+    try:
+        from autogen import ConversableAgent  # type: ignore
+    except Exception as exc:  # pragma: no cover - exercised only without ag2
+        raise ImportError(
+            "[obsvr] install_tool_gate() needs the ag2 distribution "
+            "(`pip install \"ag2>=0.3.2,<1.0\"`). ag2 1.0 removed "
+            "ConversableAgent and renamed the import package, and the classic "
+            "line now also publishes as ag2-classic."
+        ) from exc
+    return ConversableAgent
+
+
+def _govern_map_entry(agent: Any, func_name: str) -> Optional[Tuple[Dict[str, Any], str, Any]]:
+    """Replace one function-map entry with a governed one. Returns the undo."""
+    function_map = getattr(agent, "_function_map", None)
+    if not isinstance(function_map, dict):
+        return None
+    original = function_map.get(func_name)
+    if original is None or getattr(original, _GATED_MARKER, False):
+        return None
+    gated = govern_tool(original, name=func_name)
+    if gated is original:
+        return None
+    try:
+        setattr(gated, _GATED_MARKER, True)
+    except Exception:
+        # A callable that will not carry the marker is still gated; it is only
+        # re-wrapped on the next dispatch, which costs a duplicate audit record
+        # rather than a missed verdict. Never refuse the gate over bookkeeping.
+        pass
+    function_map[func_name] = gated
+    return (function_map, func_name, original)
+
+
+def install_tool_gate() -> Callable[[], None]:
+    """Gate every registered function at the point AutoGen invokes it.
+
+    Wraps ``ConversableAgent.execute_function`` and ``a_execute_function`` on the
+    CLASS, and governs the ``_function_map`` entry the call is about to run —
+    with the full pre-call net ``obsvr.govern_tool`` carries: allow/deny,
+    ``policy_rules``, the floor, PII, ``on_pre_call``, canary, the session-taint
+    destructive gate, and a signed ``tool.call`` event with the sealed
+    tool-content digest.
+
+    WHY THE CLASS AND NOT AN INSTANCE. The agent that executes a tool is
+    routinely one the caller never constructs and cannot reach to register:
+    ``run()`` builds a hidden executor in a background thread and registers
+    every callable on it, and group and swarm chats each build their own tool
+    executor the same way. Every one of them is a ``ConversableAgent``, so the
+    class is the only place a gate reaches all of them. This is process-global
+    and deliberate, the same posture as the CrewAI hook gate.
+
+    WHY IT IS THE MECHANISM THAT COVERS THE ROUTES. ``_function_map`` is read
+    fresh at call time by both executors at every version in the supported
+    range, and every route that runs a registered function goes through one of
+    them — including the ones the send hook cannot see, because they never send
+    a message: a hand-built ``receive``, a direct ``generate_reply``, a direct
+    ``execute_function``, and ``GPTAssistantAgent``, whose tool calls arrive
+    inside an OpenAI Assistants run object rather than a chat message.
+
+    REFUSAL IS THE FRAMEWORK'S OWN FAILED-TOOL CONTRACT, not an abort. The gate
+    raises ``ObsvrPolicyError`` from inside the callable; ``execute_function``
+    catches it, reports ``is_exec_success=False`` and hands the model
+    ``Error: [obsvr] ...`` as the tool result, so the conversation continues and
+    the tool body was never entered. The send hook answers the same question the
+    other way — it raises out of ``send`` and the chat stops — so choose by what
+    a denial should do to the run, and note that the ``run()`` family catches
+    that raise and demotes it to an ``ErrorEvent`` on the response stream.
+
+    NOT COVERED, stated rather than implied:
+
+    - ``RealtimeAgent``. Its tools live in a separate registry
+      (``_registered_realtime_tools``) that no executor reads, and its observer
+      awaits the callable directly. Gate those functions with
+      ``obsvr.govern_tool`` before registering them.
+    - Code execution. ``generate_code_execution_reply`` runs code blocks out of
+      message CONTENT, not a ``tool_calls`` array. It is not a tool call, so no
+      tool allow/deny list bounds it — govern the executor, not this list.
+
+    Idempotent: a second call returns a handle for the install already in place.
+    Returns a handle that restores both class methods and every function-map
+    entry this gate replaced. Raises ``ImportError`` LOUDLY on a build missing
+    either executor rather than installing a gate that is never consulted.
+    """
+    conversable = _conversable_agent_class()
+    missing = [
+        attr
+        for attr in _TOOL_GATE_CAPABILITY_ATTRS
+        if not callable(getattr(conversable, attr, None))
+    ]
+    if missing:
+        raise ImportError(
+            "[obsvr] this ag2 build exposes no tool-execution boundary to "
+            f"gate: ConversableAgent carries no {', '.join(missing)}. Refusing "
+            "to install a gate that would never be consulted — gate the "
+            "functions themselves with obsvr.govern_tool before registering "
+            "them."
+        )
+
+    existing = getattr(conversable, "_obsvr_tool_gate_detach", None)
+    if callable(existing):
+        return existing
+
+    undo: List[Tuple[Dict[str, Any], str, Any]] = []
+    originals = {
+        attr: getattr(conversable, attr) for attr in _TOOL_GATE_CAPABILITY_ATTRS
+    }
+
+    def _prepare(agent: Any, func_call: Any) -> None:
+        try:
+            name = func_call.get("name", "") if isinstance(func_call, dict) else ""
+            if not name:
+                return
+            entry = _govern_map_entry(agent, name)
+            if entry is not None:
+                undo.append(entry)
+        except Exception:
+            # Never let bookkeeping break a dispatch. A failure here leaves the
+            # call ungoverned by THIS mechanism, which is a coverage gap and not
+            # a false record: nothing has claimed to refuse it.
+            pass
+
+    sync_original = originals["execute_function"]
+    async_original = originals["a_execute_function"]
+
+    def _execute_function(self: Any, func_call: Any, *args: Any, **kwargs: Any) -> Any:
+        _prepare(self, func_call)
+        return sync_original(self, func_call, *args, **kwargs)
+
+    async def _a_execute_function(
+        self: Any, func_call: Any, *args: Any, **kwargs: Any
+    ) -> Any:
+        _prepare(self, func_call)
+        return await async_original(self, func_call, *args, **kwargs)
+
+    conversable.execute_function = _execute_function
+    conversable.a_execute_function = _a_execute_function
+
+    removed = False
+
+    def _uninstall() -> None:
+        nonlocal removed
+        if removed:
+            return
+        removed = True
+        for attr, original in originals.items():
+            try:
+                setattr(conversable, attr, original)
+            except Exception:
+                pass
+        for function_map, name, original in undo:
+            try:
+                if getattr(function_map.get(name), _GATED_MARKER, False):
+                    function_map[name] = original
+            except Exception:
+                pass
+        undo.clear()
+        try:
+            delattr(conversable, "_obsvr_tool_gate_detach")
+        except Exception:
+            pass
+
+    conversable._obsvr_tool_gate_detach = _uninstall
+    return _uninstall

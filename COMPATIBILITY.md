@@ -6,7 +6,7 @@ Which versions of each package the obsvr SDK works with.
 
 | Package                   | Declared                              | Observed                                            | Range evidence |
 | ------------------------- | ------------------------------------- | --------------------------------------------------- | -------------- |
-| `ag2`                     | `>=0.3.2,<1.0`                        | `0.3.2` – `0.14.0`                                   | declared       |
+| `ag2`                     | `>=0.3.2,<1.0`                        | `0.3.2`, `0.9.9`                                     | **matrix**     |
 | `anthropic`               | `>=0.16.0`                            | `0.8.0` – `0.120.2`                                  | floor located  |
 | `boto3`                   | `>=1.34.0`                            | —                                                    | declared       |
 | `crewai`                  | `>=1.0.0,<2.0.0; python_version < '3.14'` | `1.0.0`, `1.8.0`, `1.15.2`, `1.15.3`, `1.15.10` | **matrix**     |
@@ -15,7 +15,7 @@ Which versions of each package the obsvr SDK works with.
 | `google-generativeai`      | any version                           | `0.8.6`                                              | declared       |
 | `haystack-ai`             | `>=2.0.0`                             | `2.0.0`, `3.0.0`                                     | **matrix**     |
 | `langchain-core`          | `>=1.0.0,<2.0.0`                      | `1.0.0`, `1.5.3`                                     | **matrix**     |
-| `llama-index-core`        | `>=0.11.23`                           | `0.11.23` – `0.14.23`                                | declared       |
+| `llama-index-core`        | `>=0.14.5,<0.15.0`                    | `0.14.5`, `0.14.23`                                  | **matrix**     |
 | `mcp`                     | `>=2.0.0,<3.0.0`                      | `1.29.0`, `2.0.0`                                    | **matrix**     |
 | `openai`                  | `>=1.66.0`                            | `1.0.0` – `2.50.0`                                   | floor located  |
 | `openai-agents`           | `>=0.19.0,<1.0.0`                     | `0.19.0`, `0.19.2`                                   | floor located  |
@@ -161,7 +161,7 @@ porting the three reads it named rather than by relaxing a cap.
 
 | Range | Latest upstream | The question |
 | --- | --- | --- |
-| `ag2>=0.3.2,<1.0` (Python) | `1.0.1` | The cap EXCLUDES the current major, so the declared range tracks only the pre-1.0 line. The cap itself is correct and load-bearing — 1.0 renamed the import package and removed the class the integration binds, both re-confirmed — so the question is whether to support 1.x at all, not whether to widen the cap. Separately, the 0.x line was forked and now publishes under the `autogen` distribution, so this range currently follows the abandoned half of a fork. |
+| `ag2>=0.3.2,<1.0` (Python) | `1.0.1` | The cap EXCLUDES the current major, so the declared range tracks only the pre-1.0 line. The cap itself is correct and load-bearing — 1.0 renamed the import package and removed the class the integration binds, both re-confirmed — so the question is whether to support 1.x at all, not whether to widen the cap. What 1.x IS has now been read rather than inferred: a from-scratch framework under the same distribution name, with no `ConversableAgent`, no `register_hook`, no `initiate_chat` and no function map, whose tools are invoked at a single point behind a first-class around-hook — `BaseMiddleware.on_tool_execution`, which takes a `call_next` and whose refusal contract is demonstrated by the project's own human-approval middleware. Nothing of the 0.x integration transfers, and the framework-agnostic `govern_tool` does not reach 1.x tools either. Its similarly-named siblings are not substitutes: `ag2/policies/` is LLM-context assembly with no veto channel, and `ag2/observers/` swallows every exception on its documented path. Separately, the 0.x line was forked and now publishes under the `autogen` distribution, and upstream tells 0.x users to install `ag2-classic`, which this extra does not name — so this range currently follows one half of a fork under a name the other half kept. |
 | `ai>=3.3.28` (TypeScript) | `7.0.47` | Four majors of unbounded floor. The declared range promises every release from 3.3.28 onward, across four breaking majors, with no top. Nothing here says it is wrong — it says nothing has bounded it. |
 
 `ag2` is now the only range in either manifest that excludes its package's

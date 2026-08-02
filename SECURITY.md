@@ -138,7 +138,8 @@ a vocabulary obsvr invented.
     - `langchain` and `haystack` — do not enforce THIS control at their own gates. Both have a real pre-execution boundary their runtimes do deliver (`on_tool_start` for langchain, the Agent's `before_tool` hook for haystack, where each one's agent-policy tool gate enforces — see below), but the taint latch's destructive-tools set is not consulted at either. Wrap the tool with `govern_tool` to carry it there.
     - `crewai` — its pre-execution hook gate (`install_tool_gate_hook`) enforces the agent-policy allow/deny list before the tool runs, on both executor paths, but does not consult the destructive-tools set either; the step callback is delivered only after the step it reports and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
     - `openai_agents` — its pre-execution guardrail gate (`attach_tool_gate`) enforces the agent-policy allow/deny list before the tool runs — the executor consults tool input guardrails ahead of invocation — but does not consult the destructive-tools set; the tracing processor beneath it runs in `on_span_end`, after the tool has returned, and can refuse nothing. For THIS control, wrap the tool with `govern_tool`.
-    - `llamaindex` — no tool gate of its own.
+    - `llamaindex` — **enforces THIS control too**, and it is the only agent surface that does. Its gate (`govern_agent`) governs each assembled tool through `govern_tool` rather than through a framework callback, so it inherits the full pre-call net including the destructive-tools set, not the allow/deny subset the rows above carry.
+    - `autogen` — its execution gate (`install_tool_gate`) governs the function-map entry through `govern_tool`, so it carries this control on every route that reaches the executor. The pre-send hook does not: it checks the allow/deny list against the outgoing message and consults no destructive-tools set. Install the execution gate for THIS control.
 
     The non-enforcing rows stay listed under "Bypass surface". **Put a destructive capability behind `mcp`, or behind a `govern_tool`-wrapped tool.** Detection quality is still not the lever here and reachability still is — a missed or borderline injection is harmless if it cannot reach a destructive capability, which is why this composition matters more than adding detector patterns — but a reachability argument is only worth what the enforcement points under it are worth, and those are named above rather than assumed.
   - **TypeScript, measured the same way — and it does not read across from Python.** `obsvrGovernTool` **enforces** (it wraps the tool's own execute and gates before delegating), the LangChain handler **enforces** — it gates in the pre-execution `handleToolStart` and sets `awaitHandlers`/`raiseError` so a refusal inside a callback aborts the tool, where Python's `on_tool_start` gate covers agent policy but not this control — and MCP enforces on the same `callTool` boundary as its Python twin. On openai-agents, `attachToolGate`'s guardrail enforces the agent-policy allow/deny list before invocation but, like its Python twin, does not consult the destructive-tools set — wrap the tool with `obsvrGovernTool` for this control; the tracing-processor surface beneath it **records only**, for the same structural reason as Python's, and it was emitting a false `blocked` until this was measured. `llamaindex` and `vercel-ai` carry no gate of their own and are governed per tool through `obsvrGovernTool`. The LangChain row still differs between the SDKs, so neither column may be read across to the other.
@@ -381,7 +382,17 @@ What the SDKs do about it:
     about. Beside either gate the processor defers: no `not_evaluated` beside the
     gate's own verdict.
 
-  - **`llamaindex` — no tool gate of any kind.**
+  - **`llamaindex` — enforces on the TOOLS, and could not enforce anywhere else.**
+    `govern_agent` binds to `get_tools`, where a workflow agent assembles the tools
+    for a turn, and governs each through `govern_tool`; a denied tool's body is never
+    entered. The callback handler is not and cannot be the gate: no tool event is
+    dispatched to it at any current version, and the instrumentation dispatcher that
+    replaced those events swallows every handler exception, so a refusal raised from
+    one is a no-op. The framework then converts the gate's raise into an error tool
+    result, so **the run continues and the signed record is what says a refusal
+    happened** — below core 0.14.8 it is the ONLY thing that says so, because the
+    framework discards the exception object there and a refusal and a crash are
+    identical to the caller. No step limit is implemented on this surface.
 
   The step limit is unreachable wherever the gate's callback never fires. On `crewai` the
   callback does fire and the step check with it, but on the same after-the-fact terms as
@@ -390,6 +401,9 @@ What the SDKs do about it:
   **On Python, `mcp`, `langchain`, `autogen`, `pydantic_ai`, `crewai` (via its hook gate),
   `haystack` (via its before_tool hook) and any `govern_tool`-wrapped tool are the
   surfaces on which a tool-policy decision means what it says.** On TypeScript the equivalent set is `mcp`, `obsvrGovernTool`, the
+  `llamaindex` (via `govern_agent`)
+  and any `govern_tool`-wrapped tool are the surfaces on which a tool-policy decision
+  means what it says.** On TypeScript the equivalent set is `mcp`, `obsvrGovernTool`, the
   LangChain handler and a provider tool runner's tools; `govern_tool` is
   `obsvrGovernTool`'s Python twin. No Python surface is known to emit a false `blocked`
   any longer — the tracing processor's and CrewAI's ReAct path were the two found, and

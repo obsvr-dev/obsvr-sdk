@@ -143,32 +143,8 @@ gemini = ["google-generativeai"]
 # them. A range nobody has driven is a claim rather than a promise, and this one
 # now ends where the evidence does.
 mcp = ["mcp>=2.0.0,<3.0.0"]
-# The current major, bounded below the next. The previous specifier had a floor
-# of 0.2.0 and no ceiling, so it spanned the 1.0 rewrite — which moved the
-# classic executor into its own distribution and made every agent a graph —
-# without a single run behind it. Raising the floor withdraws no working
-# version: it ends a claim that was never measured.
-#
-# Both ends of this range are driven, on BOTH runtimes each: the graph runtime
-# (langchain.agents.create_agent) and the classic executor
-# (langchain_classic.agents.AgentExecutor), which deliver different pre-tool
-# callbacks. A denied tool executes zero times through either, the per-run step
-# budget stops a run at two calls where the model asked for three, and the
-# latest is additionally driven against a real provider whose model chose to
-# call the denied tool.
 langchain = ["langchain-core>=1.0.0,<2.0.0"]
-# NOTE: this floor rests on WEAKER evidence than the others in this file, and
-# the difference is deliberate. The other floors name the first release that
-# demonstrably works; this one names the lowest release VERIFIED working live
-# (0.11.23: provider attributed, tokens captured, one event per call). Versions
-# below it are excluded because they could not be MEASURED, not because they
-# were proven broken — the 0.10.x line pulls an early-2024 dependency set whose
-# first import downloads an NLTK corpus into a fresh environment and then hangs
-# against a current openai/httpx, so no probe of it completes. What is known:
-# the declared 0.10.0 emits no audit event at all, and the TypeScript twin at
-# the same era (llamaindex 0.5.0/0.5.8) has the identical defect. A conservative
-# floor that states its own basis beats an unverifiable claim left standing.
-llamaindex = ["llama-index-core>=0.11.23"]
+llamaindex = ["llama-index-core>=0.14.5,<0.15.0"]
 # No crewai release permits 3.14 — every one of them caps at <3.14 or <=3.13 —
 # while this package requires only >=3.10. Without the marker a 3.14 user
 # backtracks the whole release history before failing on a resolution error
