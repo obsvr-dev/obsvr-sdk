@@ -179,20 +179,20 @@ is the one printed here.
    0.9.0 (stale `SDK_VERSION` constant) — cosmetic, not part of the signature preimage, zero
    perf impact. Fixed to `0.9.0` immediately after these runs; archived result JSONs record
    the old stamp in `meta.sdk_version_stamped`.
-4. Python `sender.py:3` docstring says the queue bound is 100; the real bound is 1,000
-   (`MAX_QUEUE_SIZE`, `sender.py:35`).
-5. The optional **external policy backend** (OPA/Cedar, off by default) adds a network
+4. The optional **external policy backend** (OPA/Cedar, off by default) adds a network
    round-trip per call and is therefore excluded from these zero-network numbers; benchmark
    it against your own endpoint if you enable it.
 
 ## Environment / validity notes
 
-- Interactive desktop machine (browser etc. running); a separate network-bound test suite
-  overlapped part of the window. Cross-checks: the two passes agree within ±3% on all TS
+- **Two independent passes bound these figures.** They agree within ±3% on all TS
   small-payload and stress cells, within ±6% on Python stress cells, and within ±10% on the
-  TS 10 KB Part A cells (the noisiest); both passes are published above, and all match
-  earlier quick smokes from a quieter window. Cells are microbenchmarks — expect
-  machine-to-machine variance; run `bench/run-all.sh` on your own hardware.
+  TS 10 KB Part A cells (the noisiest); both passes are published above, and all of them
+  match earlier quick smokes taken from a quieter window. The run window itself was an
+  interactive desktop machine (browser etc. running) with a separate network-bound test
+  suite overlapping part of it, which is what those cross-checks are there to bound. Cells
+  are microbenchmarks — expect machine-to-machine variance; run `bench/run-all.sh` on your
+  own hardware.
 - The TS figures are a conservative **upper bound** on SDK cost: the in-process capture stub
   verifies each event's signature inside the measured window (independently measured at
   ~4.4µs of the 13.6µs A0 p50) — the SDK's true overhead is slightly *lower* than shown.
