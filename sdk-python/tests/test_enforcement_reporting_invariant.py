@@ -50,10 +50,9 @@ that starts enforcing fails its INERT row and has to be regraded deliberately.
 Both directions are pinned.
 """
 
+import contextlib
 import asyncio
 import json
-
-import contextlib
 
 import pytest
 
@@ -607,15 +606,6 @@ def _drive_openai_agents_guardrail(spy, sent):
 # different one from the agent integrations, and pinning that here means a
 # rename cannot quietly disarm the gate.
 
-@contextlib.contextmanager
-def _haystack_message_stubs():
-    """Stand in for the two haystack modules the hook's rewrite reaches for.
-
-    Haystack is not installed in this suite, and the rewrite is the shipping
-    refusal path — grading only the ``abort`` variant would leave the default
-    ungraded here. The stubs carry no behaviour beyond the constructors the
-    rewrite calls, so what is under test stays obsvr's ordering rather than
-    haystack's dataclasses.
 def _drive_llamaindex_gate(spy, sent):
     """LlamaIndex assembles the tools for a turn, THEN dispatches into one.
 
@@ -699,6 +689,79 @@ def _drive_autogen_tool_gate(spy, sent):
     import sys
     import types
 
+    from obsvr.integrations.autogen import install_tool_gate
+
+    class _ConversableAgent:
+        def __init__(self, function_map):
+            self._function_map = dict(function_map)
+
+        def execute_function(self, func_call, call_id=None, verbose=False):
+            name = func_call.get("name", "")
+            func = self._function_map.get(name)
+            if func is None:
+                return False, {"name": name, "role": "function", "content": "not found"}
+            try:
+                content = func(**json.loads(func_call.get("arguments", "{}")))
+                return True, {"name": name, "role": "function", "content": content}
+            except Exception as exc:  # noqa: BLE001 - upstream swallows here
+                return False, {"name": name, "role": "function", "content": f"Error: {exc}"}
+
+        async def a_execute_function(self, func_call, call_id=None, verbose=False):
+            return self.execute_function(func_call, call_id, verbose)
+
+    stub = types.ModuleType("autogen")
+    stub.ConversableAgent = _ConversableAgent
+    saved = sys.modules.get("autogen")
+    sys.modules["autogen"] = stub
+    try:
+        detach = install_tool_gate()
+        try:
+            agent = _ConversableAgent({SPY_TOOL: lambda amount=0: spy.enter(SPY_TOOL)})
+            agent.execute_function(
+                {"name": SPY_TOOL, "arguments": '{"amount": 500}'}
+            )
+        finally:
+            detach()
+    finally:
+        if saved is None:
+            sys.modules.pop("autogen", None)
+        else:
+            sys.modules["autogen"] = saved
+    return Outcome(spy, sent, None)
+
+
+
+
+class _StateStub:
+    """Duck-types the Agent's live State enough for a before_tool hook."""
+
+    def __init__(self, messages):
+        self.data = {"messages": list(messages)}
+
+    def set(self, key, value, handler_override=None):
+        self.data[key] = value
+
+
+class _ToolCallStub:
+    def __init__(self, tool_name):
+        self.tool_name = tool_name
+        self.arguments = {"amount": 500}
+        self.id = f"call_{tool_name}"
+
+
+@contextlib.contextmanager
+def _haystack_message_stubs():
+    """Stand in for the two haystack modules the hook's rewrite reaches for.
+
+    Haystack is not installed in this suite, and the rewrite is the shipping
+    refusal path — grading only the ``abort`` variant would leave the default
+    ungraded here. The stubs carry no behaviour beyond the constructors the
+    rewrite calls, so what is under test stays obsvr's ordering rather than
+    haystack's dataclasses.
+    """
+    import sys
+    import types
+
     class _Msg:
         def __init__(self, tool_calls=None, text=None):
             self.tool_calls = list(tool_calls or [])
@@ -743,23 +806,6 @@ def _drive_autogen_tool_gate(spy, sent):
                 sys.modules[k] = v
 
 
-class _ToolCallStub:
-    def __init__(self, tool_name):
-        self.tool_name = tool_name
-        self.arguments = {"amount": 500}
-        self.id = f"call_{tool_name}"
-
-
-class _StateStub:
-    """Duck-types the Agent's live State enough for a before_tool hook."""
-
-    def __init__(self, messages):
-        self.data = {"messages": list(messages)}
-
-    def set(self, key, value, handler_override=None):
-        self.data[key] = value
-
-
 def _drive_haystack_tool_gate_hook(spy, sent):
     """Haystack's before_tool hook, driven on the Agent's own ordering.
 
@@ -782,46 +828,6 @@ def _drive_haystack_tool_gate_hook(spy, sent):
             for call in getattr(last, "tool_calls", None) or []:
                 spy.enter(call.tool_name)
     return Outcome(spy, sent, raised)
-    from obsvr.integrations.autogen import install_tool_gate
-
-    class _ConversableAgent:
-        def __init__(self, function_map):
-            self._function_map = dict(function_map)
-
-        def execute_function(self, func_call, call_id=None, verbose=False):
-            name = func_call.get("name", "")
-            func = self._function_map.get(name)
-            if func is None:
-                return False, {"name": name, "role": "function", "content": "not found"}
-            try:
-                content = func(**json.loads(func_call.get("arguments", "{}")))
-                return True, {"name": name, "role": "function", "content": content}
-            except Exception as exc:  # noqa: BLE001 - upstream swallows here
-                return False, {"name": name, "role": "function", "content": f"Error: {exc}"}
-
-        async def a_execute_function(self, func_call, call_id=None, verbose=False):
-            return self.execute_function(func_call, call_id, verbose)
-
-    stub = types.ModuleType("autogen")
-    stub.ConversableAgent = _ConversableAgent
-    saved = sys.modules.get("autogen")
-    sys.modules["autogen"] = stub
-    try:
-        detach = install_tool_gate()
-        try:
-            agent = _ConversableAgent({SPY_TOOL: lambda amount=0: spy.enter(SPY_TOOL)})
-            agent.execute_function(
-                {"name": SPY_TOOL, "arguments": '{"amount": 500}'}
-            )
-        finally:
-            detach()
-    finally:
-        if saved is None:
-            sys.modules.pop("autogen", None)
-        else:
-            sys.modules["autogen"] = saved
-    return Outcome(spy, sent, None)
-
 
 TABLE = [
     ("mcp", _drive_mcp, "mcp_tool_policy", ENFORCES),
@@ -841,7 +847,6 @@ TABLE = [
     # stays RECORDS_ONLY — it is the audit rail; these two are the gates.
     ("openai_agents:guardrail-gate", _drive_openai_agents_guardrail, "agent_policy", ENFORCES),
     ("tools:on-invoke-tool", _drive_govern_tool_on_invoke, "agent_policy", ENFORCES),
-    ("haystack", _drive_haystack_tool_gate_hook, "agent_policy", ENFORCES),
     # LlamaIndex. This surface was graded NO_GATE and structurally pinned as
     # such until the framework was driven: no callback can fire here, but every
     # agent dispatches on the tool object, and `get_tools` is where the tools
@@ -852,6 +857,7 @@ TABLE = [
     # is the execution boundary, which is the half the routes that never send a
     # message have to cross.
     ("autogen:tool-gate", _drive_autogen_tool_gate, "agent_policy", ENFORCES),
+    ("haystack", _drive_haystack_tool_gate_hook, "agent_policy", ENFORCES),
 ]
 
 # Rows this invariant currently CATCHES. Each marker names a live defect and
@@ -1173,67 +1179,6 @@ def test_the_table_covers_every_surface_that_has_a_tool_gate():
     )
 
 
-def test_haystack_lets_a_tool_the_policy_does_not_name_through():
-    """The anti-vacuity control: a gate that refused everything would satisfy
-    the ENFORCES row completely."""
-    from obsvr.integrations.haystack import ObsvrToolGateHook
-
-    obsvr.init(api_key="test", sample_rate=1,
-               agent_policy={"denied_tools": [SPY_TOOL]})
-    spy = Spy()
-    with _haystack_message_stubs() as msg_cls:
-        state = _StateStub([msg_cls(tool_calls=[_ToolCallStub(BENIGN_TOOL)])])
-        ObsvrToolGateHook().run(state)
-        for call in state.data["messages"][-1].tool_calls:
-            spy.enter(call.tool_name)
-    assert spy.entries == [BENIGN_TOOL]
-
-
-def test_haystack_refuses_one_call_of_a_batch_and_keeps_the_rest():
-    """Haystack dispatches a whole batch of tool calls at once, in parallel.
-
-    The hook runs before the batch is built, so a refusal takes one call out
-    and leaves its siblings pending — there is no sibling already in flight to
-    race, which is the reason this gate sits at the hook rather than inside the
-    tools.
-    """
-    from obsvr.integrations.haystack import ObsvrToolGateHook
-
-    obsvr.init(api_key="test", sample_rate=1,
-               agent_policy={"denied_tools": [SPY_TOOL]})
-    spy = Spy()
-    with _haystack_message_stubs() as msg_cls:
-        state = _StateStub([msg_cls(
-            tool_calls=[_ToolCallStub(SPY_TOOL), _ToolCallStub(BENIGN_TOOL)]
-        )])
-        ObsvrToolGateHook().run(state)
-        for call in state.data["messages"][-1].tool_calls:
-            spy.enter(call.tool_name)
-    assert spy.entries == [BENIGN_TOOL]
-
-
-def test_haystack_abort_mode_raises_instead_of_answering_the_model():
-    from obsvr.integrations.haystack import (
-        ObsvrHaystackBlocked,
-        ObsvrToolGateHook,
-        is_obsvr_block,
-    )
-
-    obsvr.init(api_key="test", sample_rate=1,
-               agent_policy={"denied_tools": [SPY_TOOL]})
-    with _haystack_message_stubs() as msg_cls:
-        state = _StateStub([msg_cls(tool_calls=[_ToolCallStub(SPY_TOOL)])])
-        with pytest.raises(ObsvrHaystackBlocked):
-            ObsvrToolGateHook(on_denial="abort").run(state)
-    # and the same refusal is still recognisable once a pipeline has rewrapped it
-    wrapped = RuntimeError("pipeline failed")
-    wrapped.__cause__ = ObsvrHaystackBlocked("[obsvr] blocked")
-    assert is_obsvr_block(wrapped)
-    assert not is_obsvr_block(RuntimeError("unrelated"))
-
-
-def test_llamaindex_has_no_tool_gate_and_says_so():
-    """NO_GATE, pinned structurally so it cannot become a silent regression.
 def test_the_llamaindex_callback_handler_still_refuses_nothing():
     """The HANDLER is observe-only, and that half of the grading still holds.
 
@@ -1308,3 +1253,63 @@ def test_invariant_catches_a_silent_refusal():
     silent = Outcome(Spy(), [])
     with pytest.raises(AssertionError, match="no record claims blocked"):
         assert_invariant(ENFORCES, silent)
+
+
+
+def test_haystack_abort_mode_raises_instead_of_answering_the_model():
+    from obsvr.integrations.haystack import (
+        ObsvrHaystackBlocked,
+        ObsvrToolGateHook,
+        is_obsvr_block,
+    )
+
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": [SPY_TOOL]})
+    with _haystack_message_stubs() as msg_cls:
+        state = _StateStub([msg_cls(tool_calls=[_ToolCallStub(SPY_TOOL)])])
+        with pytest.raises(ObsvrHaystackBlocked):
+            ObsvrToolGateHook(on_denial="abort").run(state)
+    # and the same refusal is still recognisable once a pipeline has rewrapped it
+    wrapped = RuntimeError("pipeline failed")
+    wrapped.__cause__ = ObsvrHaystackBlocked("[obsvr] blocked")
+    assert is_obsvr_block(wrapped)
+    assert not is_obsvr_block(RuntimeError("unrelated"))
+
+
+def test_haystack_lets_a_tool_the_policy_does_not_name_through():
+    """The anti-vacuity control: a gate that refused everything would satisfy
+    the ENFORCES row completely."""
+    from obsvr.integrations.haystack import ObsvrToolGateHook
+
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": [SPY_TOOL]})
+    spy = Spy()
+    with _haystack_message_stubs() as msg_cls:
+        state = _StateStub([msg_cls(tool_calls=[_ToolCallStub(BENIGN_TOOL)])])
+        ObsvrToolGateHook().run(state)
+        for call in state.data["messages"][-1].tool_calls:
+            spy.enter(call.tool_name)
+    assert spy.entries == [BENIGN_TOOL]
+
+
+def test_haystack_refuses_one_call_of_a_batch_and_keeps_the_rest():
+    """Haystack dispatches a whole batch of tool calls at once, in parallel.
+
+    The hook runs before the batch is built, so a refusal takes one call out
+    and leaves its siblings pending — there is no sibling already in flight to
+    race, which is the reason this gate sits at the hook rather than inside the
+    tools.
+    """
+    from obsvr.integrations.haystack import ObsvrToolGateHook
+
+    obsvr.init(api_key="test", sample_rate=1,
+               agent_policy={"denied_tools": [SPY_TOOL]})
+    spy = Spy()
+    with _haystack_message_stubs() as msg_cls:
+        state = _StateStub([msg_cls(
+            tool_calls=[_ToolCallStub(SPY_TOOL), _ToolCallStub(BENIGN_TOOL)]
+        )])
+        ObsvrToolGateHook().run(state)
+        for call in state.data["messages"][-1].tool_calls:
+            spy.enter(call.tool_name)
+    assert spy.entries == [BENIGN_TOOL]
