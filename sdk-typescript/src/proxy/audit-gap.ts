@@ -121,9 +121,7 @@ export const AUDIT_GAP_SOURCE = "obsvr_sdk";
  * `wrapper.ts:698` routes provider `google` straight to it, so that prompt is
  * stored unprefixed and does parse as a marker. **The LangChain integration is
  * likewise not immune** — `handleLLMStart` stores `prompts.join("\n")`, a bare
- * user-controlled string. The first probe of this defect drove `wrap()` through
- * OpenAI, read zero forged markers, and would have cleared a live vulnerability
- * if the surface had not been checked.
+ * user-controlled string.
  *
  * None of these are exploitable end-to-end, because the discriminator below
  * rejects them on `operation` — but the reachability reasoning was wrong, and a

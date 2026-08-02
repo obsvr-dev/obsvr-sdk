@@ -38,12 +38,9 @@ regression in this SDK's own logic. Those are real and the suite catches them �
 measured, not assumed. Replacing the MCP deny check with
 `return {"allowed": True}` turns **six** existing tests red: four in
 `test_mcp.py`, the `[mcp]` row of the enforcement-reporting invariant, and the
-blocked-tool-call row of `test_tool_content_hash_wiring.py`.
-
-Worth knowing, because it is the opposite of what the fakes-everywhere framing
-suggests: the same mutation in the TypeScript tree turns only **three** red, and
-that language's main MCP test file — which reimplements the policy check instead
-of calling it — notices nothing at all. Python's fakes drive the real gate.
+blocked-tool-call row of `test_tool_content_hash_wiring.py`. That is the
+opposite of what the fakes-everywhere framing suggests: these fakes drive the
+real gate rather than a copy of it.
 
 It **cannot** catch: an upstream release that renames the method being wrapped,
 changes when a callback fires, or stops delivering one at all. Every finding of

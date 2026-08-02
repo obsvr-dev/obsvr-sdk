@@ -110,9 +110,9 @@ export function mirrorToOtel(config: ResolvedConfig, event: AuditEvent): void {
         "gen_ai.request.model": event.model ?? "unknown",
         // The two token attributes are OMITTED when the count is unknown, and
         // that is the whole point: a span reporting 0 for a measurement that
-        // never happened is the same lie the extractors were fixed to stop
-        // telling, just in a different sink. An absent attribute is how the
-        // GenAI semantic conventions say "not recorded"; a zero is a claim.
+        // never happened is the same false record the extractors were changed
+        // to stop producing, in a different sink. An absent attribute is how
+        // the GenAI semantic conventions say "not recorded"; a zero is a claim.
         //
         // This makes the key set conditional, which is a change to a contract
         // pinned in both languages — conformance/fixtures/otel_attributes.json

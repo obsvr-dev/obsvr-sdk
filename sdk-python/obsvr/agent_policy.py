@@ -69,20 +69,21 @@ def check_steps(count: int, policy: Dict[str, Any]) -> Tuple[str, Optional[str]]
     ``action`` is always one of ``allow`` / ``block`` / ``escalate``, so a
     caller's ``if action == "block"`` cannot be quietly bypassed.
 
-    FAILS CLOSED, WHICH IT DID NOT. This returned ``policy["step_limit_action"]``
-    verbatim, so a value the callers do not implement — a typo like ``"warn"``,
-    or a disposition from a newer config than the installed SDK — matched
-    neither branch at the call site and the limit did nothing at all. Nothing was
-    recorded either, so a run that blew straight through its budget looked
-    identical to one that stayed inside it. Measured live: with
-    ``max_steps: 2`` and an unrecognised action, a chain ran five tools.
+    FAILS CLOSED on a disposition it does not recognise. It previously returned
+    ``policy["step_limit_action"]`` verbatim, so a value the callers do not
+    implement — a typo like ``"warn"``, or a disposition from a newer config
+    than the installed SDK — matched neither branch at the call site and the
+    limit did nothing at all, with nothing recorded either, so a run that blew
+    straight through its budget looked identical to one that stayed inside it.
+    Measured live: with ``max_steps: 2`` and an unrecognised action, a chain ran
+    five tools.
 
     ``unrecognised`` carries the offending value so the caller can name it on the
     event. Blocking without saying why the configuration was ignored would trade
     a silent failure for a mysterious one.
 
-    One definition, imported by every integration. There were four identical
-    copies, which is four places for the next fix to be applied to three of.
+    One definition, imported by every integration, replacing four identical
+    copies that had to be kept in step by hand.
     """
     limit = policy.get("max_steps")
     if limit is None:

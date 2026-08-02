@@ -9,10 +9,11 @@
  *
  * Every field is optional, and that is the point: a count obsvr could not read
  * must be able to be ABSENT. When these were required, an extractor handed a
- * payload it did not understand had no way to say so — it had to invent a
- * number, and `|| 0` was the number it invented. A fabricated zero is
+ * payload it did not understand had no way to say so — it had to supply a
+ * number, and `|| 0` was the number it supplied. A fabricated zero is
  * indistinguishable in the audit trail from a call that genuinely consumed
- * nothing, so the type itself was the reason the evidence could lie.
+ * nothing, so a required field was itself the mechanism that produced a false
+ * count.
  *
  * Produced by {@link ./token-usage.normalizeTokenUsage}; do not build one by
  * hand.

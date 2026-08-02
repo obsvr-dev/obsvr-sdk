@@ -23,24 +23,26 @@ are not installed when this suite runs.
 
 `SECURITY.md` names the MCP tool gate as the surface to put a destructive
 capability behind, so it is the surface least able to afford a test that cannot
-fail for the right reason — and `tests/unit/mcp-integration.test.ts` was one.
-It carries its own copy of the policy check, annotated *"mirrors mcp.ts logic"*,
-and drives that copy rather than the module.
+fail for the right reason. **A real-package test covers it, and is what makes
+the coverage on this surface hold.** It drives the upstream
+`@modelcontextprotocol/sdk` client through the gate, so a release that renames
+or moves the method obsvr binds turns it red.
 
-Measured rather than argued. With the real deny check replaced by
-`return { allowed: true }`, that file still passes **18 of 18** — it cannot see
-the gate it appears to cover. Across the whole suite exactly **three**
-pre-existing tests go red:
+That test exists because of what the mutation numbers showed. With the real deny
+check replaced by `return { allowed: true }`, `tests/unit/mcp-integration.test.ts`
+still passes **18 of 18** — it carries its own copy of the policy check,
+annotated *"mirrors mcp.ts logic"*, and drives that copy rather than the module,
+so it does not see the gate it appears to cover. Across the rest of the suite
+exactly **three** pre-existing tests go red:
 
 - the enforcement-reporting invariant's `mcp` row (`blocked implies not executed`)
 - `emits MCP_TOOL_DENIED when the tool policy refuses a call`
 - `stamps blocked tool calls too - what was refused is the record`
 
-Three is more than the one this was first written as, and the correction is the
-point: the invariant does cover this surface. What none of the three could show
-is that the gate still sits on the method the current package actually calls.
-The real-package test adds four more red rows and costs nothing new — the
-package was already a devDependency and no test imported it.
+So the invariant does cover this surface. What none of the three could show is
+that the gate still sits on the method the current package actually calls. The
+real-package test adds four more red rows and cost nothing new — the package was
+already a devDependency and no test imported it.
 
 ## What a fake-driven test can and cannot tell you
 
@@ -62,4 +64,5 @@ and real providers, and the surfaces which have never had it are named in
 `tests/unit/optional-dependency-resolution.test.ts` walks every non-relative
 import specifier in `src/` and asserts each one resolves. It has caught real
 defects — including an MCP specifier that was wrong in both branches, so the
-integration was not degraded to a fallback, it was off. Leave it alone.
+integration was not degraded to a fallback, it was off. Keep it in the suite and
+keep it strict.

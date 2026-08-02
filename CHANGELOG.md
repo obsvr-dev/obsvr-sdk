@@ -145,8 +145,8 @@ cut, when it is renamed to that version.
   — with the two languages graded separately, because they disagree.
 
   The `destructiveTools` "even in flag mode" claim is qualified to the surfaces
-  where it holds. It was true on MCP alone while reading as SDK-wide, which by
-  this project's severity axis is a lie rather than an omission. The
+  where it holds. It held on MCP alone while reading as SDK-wide, which on this
+  project's severity axis grades as a false claim rather than an omission. The
   "intercept/govern **every** model and tool call" claims in the root README —
   including the architecture diagram's alt text, which is the version a screen
   reader gets — now describe the interception boundary instead of promising
@@ -361,8 +361,7 @@ cut, when it is renamed to that version.
   **Not marked BREAKING**, but read it if you relied on the old behaviour: a host
   with no shutdown of its own is unaffected and still exits 143 / 130, and a host
   with one now completes it. Nothing in this repository documented the old
-  behaviour — no document mentioned signal handling at all, which is part of why
-  it shipped.
+  behaviour — no document mentioned signal handling at all.
 - **A second `init()` now reaches clients wrapped before it (TypeScript).** The
   wrapper held the config object it was handed at wrap time, so an already-
   wrapped client stayed on the policy that was current when it was wrapped.
@@ -824,8 +823,8 @@ cut, when it is renamed to that version.
   a declaration that advertises a release the integration cannot bind on is
   obsvr's to correct either way. **Migration:** none, unless you pinned a
   version inside one of the removed ranges — in which case the integration was
-  not working there, silently, and the resolver error is the first honest
-  signal you have had.
+  not working there, silently, and the resolver now refuses the install rather
+  than resolving to a version nothing binds on.
   ([`5342720`](https://github.com/obsvr-dev/obsvr-sdk/commit/5342720))
 
 - **The two direct-provider floors now name releases that carry an auditable
@@ -863,8 +862,7 @@ cut, when it is renamed to that version.
   **Not marked BREAKING, and the reason is that nothing has been published
   from this repository yet** — no installed consumer can be depending on the
   old floors. **Migration:** none, unless you pinned a version inside a removed
-  range, in which case the extra was advertising governance you were not
-  receiving.
+  range, where the extra declared a client on which no auditable path exists.
 
 - **`content_provenance` on audit events: where inside the payload the content
   came from.** `source` names the integration that emitted an event ("mcp",
@@ -1764,8 +1762,8 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   - A honeytoken planted where `canary.ts` says to plant it — a system prompt —
     was stored **verbatim**, against that module's own "the raw secret never
     lives at rest, never rides an event". The integration front door redacted
-    the same token correctly, so the two entry points the README sells as
-    equivalent disagreed, and the flagship was the unsafe one.
+    the same token correctly, so two entry points documented as equivalent
+    behaved differently, and the difference fell on the `wrap()` path.
   - Both READMEs promised non-last-turn content is "still stored (and redacted
     if configured)". Measured across `block` x `redact` x `flag` x four roles,
     no configuration redacted it. The "still stored" half was true.
@@ -1790,10 +1788,10 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   said it never overwrites, so any evidence an earlier step had put there was
   discarded.
 
-  The test that should have caught the canary half was vacuous and disguised:
+  The test that covered the canary half could not fail for the right reason:
   every plant used `role: "user"` — the one surface the gate already scans and
   the one surface the module's do-NOT-plant list names — while minting with the
-  label `'system-prompt'`. Both languages now drive every endorsed plant site
+  label `'system-prompt'`, so the label described a site the test never drove. Both languages now drive every endorsed plant site
   through both front doors, behind a shape guard that fails when a case is
   removed rather than only when one breaks.
 
