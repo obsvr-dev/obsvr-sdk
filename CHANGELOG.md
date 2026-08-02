@@ -1725,7 +1725,7 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   read off the code:
 
   - **The named compatibility wrappers govern one method.** `wrapAzureOpenAI`,
-    `wrapTogether`, `wrapCloudflare` and `wrapOpenAICompatible` consult a
+    `wrapTogether` and `wrapOpenAICompatible` consult a
     one-entry path table. Counted against real `AzureOpenAI` and `Together`
     clients: `obsvr.wrap()` governs 17 paths on the same client and these
     govern 1. The other 26 text-bearing paths — `responses.*`, `.parse`,

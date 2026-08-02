@@ -120,7 +120,7 @@ A release can be installable and governed on one method while another does not
 exist on the client yet. These are the releases each method first works at.
 
 **This table describes `obsvr.wrap()` and the module interceptor.** The named
-compatibility wrappers — `wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare`,
+compatibility wrappers — `wrapAzureOpenAI`, `wrapTogether`,
 `wrapOpenAICompatible` — govern `chat.completions.create` and nothing else, so
 every other row below is ungoverned and unaudited through them however new the
 installed client is. Wrap with `obsvr.wrap()` if you need the rest; it accepts

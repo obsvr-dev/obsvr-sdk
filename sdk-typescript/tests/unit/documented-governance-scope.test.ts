@@ -8,7 +8,7 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
  * The documented scope of the named compatibility wrappers, pinned against
  * behaviour.
  *
- * `wrapAzureOpenAI` / `wrapTogether` / `wrapCloudflare` / `wrapOpenAICompatible`
+ * `wrapAzureOpenAI` / `wrapTogether` / `wrapOpenAICompatible`
  * consult a ONE-ENTRY path table and govern `chat.completions.create` alone,
  * while `obsvr.wrap()` governs seventeen paths on the same client. Every public
  * document now says so. Nothing enforced that, so the documents could drift back

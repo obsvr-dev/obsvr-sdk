@@ -505,7 +505,7 @@ points — put an enforcement decision on `obsvr.wrap()` or on MCP.
 
 ### One method, not seventeen: the named compatibility wrappers
 
-`wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare` and `wrapOpenAICompatible`
+`wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible`
 govern **`chat.completions.create` and nothing else**. Counted against real
 `AzureOpenAI` and `Together` clients: `obsvr.wrap()` governs 17 method paths on
 the same client; these wrappers govern 1. Everything else binds straight through
@@ -661,7 +661,7 @@ is marked on each.
    [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only).
 
 3. **The named compatibility wrappers govern one method out of twenty-seven.**
-   *(TypeScript only)* `wrapAzureOpenAI`, `wrapTogether`, `wrapCloudflare` and
+   *(TypeScript only)* `wrapAzureOpenAI`, `wrapTogether` and
    `wrapOpenAICompatible` gate `chat.completions.create` and nothing else; the
    other twenty-six text-bearing paths bind through with no gate and no event.
    `obsvr.wrap()` accepts the same clients and covers seventeen paths — use it
