@@ -252,6 +252,23 @@ mode, and under `deny_wins` **every quota rule meters every evaluated call**
 — order-insensitive evaluation means a call that ends blocked can still
 consume quota, where first-match stopped metering at its first match.
 
+**Global monitor mode.** `enforcementMode: 'monitor'`
+(`enforcement_mode="monitor"` in Python) is one flip meaning "keep deciding
+and recording, stop enforcing": every layer still evaluates, every event
+still emits, and a final block is converted to an allow whose
+`shadow_outcome` carries the would-be verdict with the same `rule_id` and
+`reason_code` an enforcing run records — a staged rollout or rollback that
+keeps the evidence stream intact. Two classes enforce in **both** modes: the
+enforcement-integrity gate (kill switch / fail-closed staleness), whose
+verdict is re-derived at the moment of conversion so a stale snapshot cannot
+extend monitor mode to a paused project or revoked key, and canary-leak
+blocks — an exfiltration in flight is stopped in any mode. A converted event
+is enforcement evidence, not a plain allowed call, so it is exempt from
+allowed-call sampling and survives even `sampleRate: 0`. `explain()` keeps
+predicting **enforce**-mode behaviour, so the pre-flight check still
+describes what turning enforcement on would do rather than echoing the
+current mode back.
+
 **Catching a block.** A blocked call throws `ObsvrPolicyError` (both SDKs), carrying a stable `type`, the `reason_code`, the deciding `rule_id`, and the decision metadata — so "refused on purpose" is distinguishable from a provider outage without matching on a message. A reason category the SDK doesn't recognize (a newer control plane) yields `ObsvrUnknownPolicyError` rather than an untyped throw. The Python class subclasses `RuntimeError`, and the message string is unchanged from earlier versions, so existing `except` blocks and string matches keep working.
 
 ```typescript
