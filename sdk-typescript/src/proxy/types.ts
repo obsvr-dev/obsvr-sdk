@@ -113,6 +113,39 @@ export interface ObsvrConfig {
   failMode?: 'open' | 'closed';
 
   /**
+   * Blocking human approval. When > 0, a require_approval block HOLDS the
+   * governed call for up to this many milliseconds while the grant channel
+   * is polled, and proceeds only if a covering grant lands and is still live
+   * when the call goes out. 0 (default) keeps the fire-and-forget behavior:
+   * the call is refused, an approval request is filed, and a retry passes
+   * once granted. Strictly opt-in — a library that starts blocking for
+   * minutes on upgrade is a production incident.
+   * @default 0
+   */
+  approvalWaitMs?: number;
+
+  /**
+   * Grant-channel poll cadence (ms) while an approval wait is in progress.
+   * Each poll re-drives the /policies refresh (signature verification and
+   * grant-shape validation included), so keep it coarse: this is a
+   * human-timescale wait, not a busy loop.
+   * @default 5000
+   */
+  approvalPollMs?: number;
+
+  /**
+   * Global enforcement mode. "enforce" (default) applies blocks. "monitor"
+   * evaluates every layer, emits every event, and converts a final block
+   * into an allow whose `shadow_outcome` carries the would-be verdict — one
+   * flip for a staged rollout or rollback that keeps the evidence stream
+   * intact. The enforcement-integrity gate (kill switch / fail-closed
+   * staleness) is never converted: monitor mode must not become a way to
+   * defeat a revoked key.
+   * @default "enforce"
+   */
+  enforcementMode?: 'enforce' | 'monitor';
+
+  /**
    * Built-in PII scan policy (opt-in).
    * Runs before the LLM call using the built-in pattern set (PII,
    * secrets, and prompt-injection detectors; see policy/hook.ts).
@@ -432,6 +465,15 @@ export interface LLMAuditInitConfig {
   /** Enforcement fail mode when the pre-call hook times out or throws. @default 'open' */
   fail_mode?: 'open' | 'closed';
 
+  /** Blocking approval hold budget in ms (see ObsvrConfig.approvalWaitMs). @default 0 */
+  approval_wait_ms?: number;
+
+  /** Grant-channel poll cadence (ms) during an approval wait. @default 5000 */
+  approval_poll_ms?: number;
+
+  /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
+  enforcement_mode?: 'enforce' | 'monitor';
+
   /**
    * Built-in PII scan policy (opt-in, snake_case alias)
    */
@@ -642,6 +684,15 @@ export interface ResolvedConfig {
 
   /** Enforcement fail mode when the pre-call hook times out or throws. @default 'open' */
   failMode?: 'open' | 'closed';
+
+  /** Blocking approval hold budget in ms (see ObsvrConfig.approvalWaitMs). @default 0 */
+  approvalWaitMs?: number;
+
+  /** Grant-channel poll cadence (ms) during an approval wait. @default 5000 */
+  approvalPollMs?: number;
+
+  /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
+  enforcementMode?: 'enforce' | 'monitor';
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool

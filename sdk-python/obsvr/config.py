@@ -125,9 +125,32 @@ class ResolvedConfig:
     on_post_call: Optional[Callable] = None
     hook_timeout_ms: int = 2000
     post_call_timeout_ms: int = 2000
+    # Blocking human approval. When > 0, a require_approval block HOLDS the
+    # governed call in the calling thread for up to this many milliseconds,
+    # polling the grant channel, and proceeds only if a covering grant lands
+    # AND is still live at the end of the pipeline (revalidate_approval).
+    # 0 (default) keeps the fire-and-forget behavior exactly: the call is
+    # refused, an approval request is filed, and a retry passes once granted.
+    # Strictly opt-in — a library that starts blocking for minutes on upgrade
+    # is a production incident, so the default must stay 0.
+    approval_wait_ms: int = 0
+    # Grant-channel poll cadence while an approval wait is in progress. Each
+    # poll re-drives the same /policies refresh the daemon uses (signature
+    # verification and grant-shape validation included), so keep it coarse:
+    # this is a human-timescale wait, not a busy loop.
+    approval_poll_ms: int = 5000
     # Enforcement fail mode when the pre-call hook times out or throws.
     # "open" (default): allow the call. "closed": block it. Parity with TS.
     fail_mode: str = "open"
+    # Global enforcement mode. "enforce" (default) applies blocks. "monitor"
+    # evaluates every layer, emits every event, and converts a final block
+    # into an allow whose shadow_outcome carries the would-be verdict — one
+    # flip for a staged rollout or rollback that keeps the evidence stream
+    # intact. Two classes are NEVER converted: the enforcement-integrity gate
+    # (kill switch / fail-closed staleness — monitor mode must not become a
+    # way to defeat a revoked key) and canary-leak blocks (an exfiltration in
+    # flight is stopped in any mode).
+    enforcement_mode: str = "enforce"
     policy_rules: Optional[List[Any]] = None
     # Anti-tamper policy floor: rules that cannot be silently disabled/
     # downgraded (see TS ObsvrConfig.policyFloor). Its own field so a remote
@@ -237,7 +260,10 @@ def init(
     on_post_call: Optional[Callable] = None,
     hook_timeout_ms: Optional[int] = None,
     post_call_timeout_ms: Optional[int] = None,
+    approval_wait_ms: Optional[int] = None,
+    approval_poll_ms: Optional[int] = None,
     fail_mode: Optional[str] = None,
+    enforcement_mode: Optional[str] = None,
     policy_rules: Optional[List[Any]] = None,
     policy_floor: Optional[List[Any]] = None,
     default_source: Optional[str] = None,
@@ -271,6 +297,14 @@ def init(
         raise ValueError(
             f'obsvr.init(): fail_mode must be "open" or "closed", got {fail_mode!r}'
         )
+    # A typo'd mode must never silently monitor a deployment the operator
+    # meant to enforce — the same reasoning the rule validator states for a
+    # rule-level mode (remote.py).
+    if enforcement_mode is not None and enforcement_mode not in ("enforce", "monitor"):
+        raise ValueError(
+            'obsvr.init(): enforcement_mode must be "enforce" or "monitor", got '
+            f"{enforcement_mode!r}"
+        )
     if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError(
             f"obsvr.init(): timeout must be a positive number of seconds, got {timeout!r}"
@@ -294,6 +328,24 @@ def init(
     if sample_rate is not None and not isinstance(sample_rate, (int, float)):
         raise ValueError(
             f"obsvr.init(): sample_rate must be a number in [0, 1], got {sample_rate!r}"
+        )
+    if approval_wait_ms is not None and (
+        isinstance(approval_wait_ms, bool)
+        or not isinstance(approval_wait_ms, (int, float))
+        or approval_wait_ms < 0
+    ):
+        raise ValueError(
+            "obsvr.init(): approval_wait_ms must be a number of ms >= 0, got "
+            f"{approval_wait_ms!r}"
+        )
+    if approval_poll_ms is not None and (
+        isinstance(approval_poll_ms, bool)
+        or not isinstance(approval_poll_ms, (int, float))
+        or approval_poll_ms <= 0
+    ):
+        raise ValueError(
+            "obsvr.init(): approval_poll_ms must be a positive number of ms, got "
+            f"{approval_poll_ms!r}"
         )
 
     # External policy backend (ADR-4): validate the shape and run the STATIC
@@ -396,7 +448,12 @@ def init(
         on_post_call=on_post_call,
         hook_timeout_ms=hook_timeout_ms if hook_timeout_ms is not None else 2000,
         post_call_timeout_ms=post_call_timeout_ms if post_call_timeout_ms is not None else 2000,
+        approval_wait_ms=int(approval_wait_ms) if approval_wait_ms is not None else 0,
+        approval_poll_ms=int(approval_poll_ms) if approval_poll_ms is not None else 5000,
         fail_mode=fail_mode if fail_mode in ("open", "closed") else "open",
+        enforcement_mode=(
+            enforcement_mode if enforcement_mode in ("enforce", "monitor") else "enforce"
+        ),
         policy_rules=policy_rules,
         policy_floor=policy_floor,
         default_source=default_source,

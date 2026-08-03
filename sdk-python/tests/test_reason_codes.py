@@ -139,6 +139,7 @@ def test_shadow_outcome_emits_shadow_would_block():
 # conformance/known-divergences.md).
 
 _PINNED_ELSEWHERE = {
+    "APPROVAL_TIMEOUT": "test_approval_blocking.py (blocking wait expired without a grant)",
     "TOOL_DENIED": "test_pydantic_ai.py (governed toolset, denied by agent policy)",
     "MCP_TOOL_DENIED": "test_mcp.py (governed MCP session, denied tool)",
     "MCP_RESULT_BLOCKED": "test_mcp_response_scan.py (withheld tool result)",

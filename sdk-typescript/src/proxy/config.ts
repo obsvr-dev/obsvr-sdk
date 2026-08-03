@@ -73,6 +73,9 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   hookTimeoutMs: "hook_timeout_ms",
   hookTrigger: "hook_trigger",
   failMode: "fail_mode",
+  approvalWaitMs: "approval_wait_ms",
+  approvalPollMs: "approval_poll_ms",
+  enforcementMode: "enforcement_mode",
   piiPolicy: "pii_policy",
   policyRules: "policy_rules",
   policyFloor: "policyFloor",
@@ -291,6 +294,34 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
   if (config.timeout !== undefined && (typeof config.timeout !== "number" || config.timeout <= 0)) {
     throw new Error(`obsvr.init(): timeout must be a positive number of ms, got ${String(config.timeout)}`);
   }
+  if (
+    config.approval_wait_ms !== undefined &&
+    (typeof config.approval_wait_ms !== "number" || !Number.isFinite(config.approval_wait_ms) || config.approval_wait_ms < 0)
+  ) {
+    throw new Error(
+      `obsvr.init(): approvalWaitMs must be a number of ms >= 0, got ${String(config.approval_wait_ms)}`,
+    );
+  }
+  if (
+    config.approval_poll_ms !== undefined &&
+    (typeof config.approval_poll_ms !== "number" || !Number.isFinite(config.approval_poll_ms) || config.approval_poll_ms <= 0)
+  ) {
+    throw new Error(
+      `obsvr.init(): approvalPollMs must be a positive number of ms, got ${String(config.approval_poll_ms)}`,
+    );
+  }
+  // A typo'd mode must never silently monitor a deployment the operator
+  // meant to enforce — the same reasoning the rule validator applies to a
+  // rule-level mode.
+  if (
+    config.enforcement_mode !== undefined &&
+    config.enforcement_mode !== "enforce" &&
+    config.enforcement_mode !== "monitor"
+  ) {
+    throw new Error(
+      `obsvr.init(): enforcementMode must be "enforce" or "monitor", got "${String(config.enforcement_mode)}"`,
+    );
+  }
   const refreshMs = config.policy_refresh_interval_ms;
   if (refreshMs !== undefined && (typeof refreshMs !== "number" || refreshMs < 0)) {
     throw new Error(`obsvr.init(): policyRefreshIntervalMs must be >= 0, got ${String(refreshMs)}`);
@@ -390,6 +421,10 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     hookTimeoutMs: config.hook_timeout_ms,
     hookTrigger: config.hook_trigger,
     failMode: config.fail_mode ?? 'open',
+    // Strictly opt-in: the default 0 keeps the fire-and-forget approval path.
+    approvalWaitMs: config.approval_wait_ms ?? 0,
+    approvalPollMs: config.approval_poll_ms ?? 5000,
+    enforcementMode: config.enforcement_mode ?? 'enforce',
     pii_policy: (() => {
       const p = config.pii_policy as any;
       if (!p) return undefined;
@@ -846,8 +881,13 @@ export function isPolicyEnforcementDegraded(
  * One policy refresh from the ingest service. Updates sync-health state:
  * success resets failures and clears remoteDisabled; 401/403 sets
  * remoteDisabled (kill switch); other failures count toward staleness.
+ *
+ * Exported for the blocking approval wait (policy/approvals.ts
+ * `awaitApproval`), which re-drives this same refresh so a pinned
+ * deployment's signature verification and the grant-shape validation both
+ * still stand between the network and the grant store during a wait.
  */
-async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
+export async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
   // M-4: AbortController timeout prevents a hung endpoint from blocking indefinitely
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeout);

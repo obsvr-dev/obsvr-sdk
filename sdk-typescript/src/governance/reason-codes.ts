@@ -48,6 +48,15 @@ export enum ReasonCode {
   LOOP_DETECTED = 'LOOP_DETECTED',
   APPROVAL_REQUIRED = 'APPROVAL_REQUIRED',
   APPROVAL_GRANTED = 'APPROVAL_GRANTED',
+  /**
+   * A require_approval block whose configured blocking wait (approvalWaitMs)
+   * expired with no covering grant. Distinct from APPROVAL_REQUIRED on
+   * purpose: that code means "refused; ask and retry", while this one means a
+   * real-time hold was offered and no human decided within the budget.
+   * Conflating them would hide how many calls actually waited out their
+   * window.
+   */
+  APPROVAL_TIMEOUT = 'APPROVAL_TIMEOUT',
   SHADOW_WOULD_BLOCK = 'SHADOW_WOULD_BLOCK',
   INJECTION_DETECTED = 'INJECTION_DETECTED',
   EXTERNAL_BACKEND_DENY = 'EXTERNAL_BACKEND_DENY',
