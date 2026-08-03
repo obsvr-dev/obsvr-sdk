@@ -288,6 +288,14 @@ class TestRegistryGate:
         # unset scope, which resolves to the pre-existing behaviour (wrap-time
         # identity, or none).
         "subject.py",
+        # An optional signing IDENTITY, not a detector: it loads an operator's
+        # Ed25519 key and produces a second signature over the same preimage
+        # the HMAC covers. It decides nothing about a call, so there is no
+        # failure that could resolve open or closed — a key it cannot read
+        # refuses loudly at init (a config error, before any call is
+        # governed), and at verify time a missing or foreign seal is a chain
+        # break the verifier reports, not a disposition this module holds.
+        "device_identity.py",
         # Evidence producer, decides nothing: it hashes what a tool call saw
         # and its callers omit the field on failure. Matches the TS twin's
         # exemption for tool-content-hash.ts.
