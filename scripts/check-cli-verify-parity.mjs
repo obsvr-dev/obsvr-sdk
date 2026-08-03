@@ -57,6 +57,12 @@ const gapChain = gapFixture.signing.events.map((e) => ({
   sdk_session_id: gapFixture.signing.session_id,
 }));
 
+/** A dual-sealed chain: the fixture's format-3 events, each also carrying an
+ *  Ed25519 device_sig, plus the public key the verifier pins. The device
+ *  tier's cross-language parity is checked over this, keyed and device-only. */
+const deviceChain = vectors.device_chain.events;
+const DEVICE_PUBKEY = vectors.device_chain.public_key_b64;
+
 const workdir = mkdtempSync(join(tmpdir(), "obsvr-cli-parity-"));
 const write = (name, value) => {
   const path = join(workdir, name);
@@ -156,6 +162,39 @@ const CASES = [
   {
     name: "declared audit gap, --json --allow-gaps maps the document to 0",
     args: [write("audit-gap.json", gapChain), "--api-key", gapFixture.signing.api_key, "--json", "--allow-gaps"],
+  },
+  {
+    name: "device chain, --api-key + --device-pubkey (both seals)",
+    args: [write("device.json", deviceChain), "--api-key", API_KEY, "--device-pubkey", DEVICE_PUBKEY],
+  },
+  {
+    name: "device chain, --device-pubkey alone (no api key, no shared secret)",
+    args: [write("device.json", deviceChain), "--device-pubkey", DEVICE_PUBKEY],
+  },
+  {
+    name: "device chain, both seals --json",
+    args: [write("device.json", deviceChain), "--api-key", API_KEY, "--device-pubkey", DEVICE_PUBKEY, "--json"],
+  },
+  {
+    name: "device chain, device-only --json",
+    args: [write("device.json", deviceChain), "--device-pubkey", DEVICE_PUBKEY, "--json"],
+  },
+  {
+    name: "device seal stripped is a break (pinning asserts the expectation)",
+    args: [
+      write("device-stripped.json", [
+        deviceChain[0],
+        Object.fromEntries(
+          Object.entries(deviceChain[1]).filter(([k]) => k !== "device_sig" && k !== "device_key_id"),
+        ),
+      ]),
+      "--device-pubkey",
+      DEVICE_PUBKEY,
+    ],
+  },
+  {
+    name: "unpinned device key is foreign, not trusted on first use",
+    args: [write("device.json", deviceChain), "--device-pubkey", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="],
   },
   { name: "wrong key", args: [write("valid.json", chain), "--api-key", "not-the-key"] },
   { name: "unrecognized shape", args: [write("weird.json", { nope: true })] },

@@ -1058,9 +1058,77 @@
           "ts": "required",
           "py": "required"
         },
-        "raw": 1e16,
+        "raw": 1e+16,
         "canonical": "10000000000000000",
         "digest": "0d10e249f2993884909ef9d4e8326a29580a81c2287d7d58ee6de6261053a46b"
+      }
+    ]
+  },
+  "device_signatures": {
+    "description": "The optional client-held device seal (Ed25519, deterministic per RFC 8032): sha256(raw public key)[:16] is the key id, and the signature is over 'obsvr-device/1' 0x00 key_id 0x00 signature_payload, all UTF-8. The seed is RFC 8032 test vector 1 - publicly known, test-only key material; it must never sign anything but fixtures. Both SDK suites (sdk-python/tests/test_device_identity.py, sdk-typescript/tests/unit/device-identity.test.ts) reproduce every pinned signature byte-for-byte, so the two signers cannot drift on the preimage, the key-id derivation, or the signature encoding.",
+    "claimable": true,
+    "sdk_support": {
+      "ts": "required",
+      "py": "required"
+    },
+    "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_b64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "key_id": "21fe31dfa154a261",
+    "cases": [
+      {
+        "name": "format3_plain",
+        "signature_payload": "3|sess-fixture|1|1700000000000|aaaa|bbbb|",
+        "device_sig": "ac055d232ccdaf47ecda48b2e86a512832b22e99d24c4ede4030974b58cd338fee9064fc61ca95bd7c6d13cb32551c6ba69c6f137c5c381c2739ff77eca25303"
+      },
+      {
+        "name": "format3_linked_multibyte",
+        "signature_payload": "3|sess-fixture|2|1700000000500|café—🔒|dddd|prevsig0123",
+        "device_sig": "1d5d731b51af7997705c2ade3e41a346eaaa55d34ac5c2c8bd0fd54e27c7c54bc6d017afd84aae63421a06796e4be22b382973ec29b0ed271b63f27e3b341401"
+      }
+    ]
+  },
+  "device_chain": {
+    "description": "A dual-sealed chain: the same format-3 events as `events`, each also carrying an Ed25519 `device_sig` / `device_key_id` (see `device_signatures` for the key). The CLI parity harness drives both obsvr-verify binaries over it with --device-pubkey, keyed and device-only, so the non-repudiation tier is compared cross-language byte for byte rather than each CLI agreeing only with itself.",
+    "public_key_b64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "key_id": "21fe31dfa154a261",
+    "events": [
+      {
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000000,
+        "chain_format": 3,
+        "prompt": "hello",
+        "response": "world",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "policy_version": "cafebabecafebabe",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "user_id": "user-1",
+        "prev_sig": "",
+        "sdk_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9",
+        "sdk_session_id": "11111111-1111-1111-1111-111111111111",
+        "device_sig": "70f83b713a91368d1423fb98c2111302833dafbff8bfce9ac21ace196984611effe3777a3cae3869b37e33a0e7bf4717ef5314f1f5ab61ea4a83756b7fb5db03",
+        "device_key_id": "21fe31dfa154a261"
+      },
+      {
+        "seq_no": 2,
+        "timestamp_sdk": 1700000000001,
+        "chain_format": 3,
+        "prompt": "foo",
+        "response": "bar",
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "reason_code": "obsvr:policy_rule_matched",
+        "rule_id": "rule-1",
+        "policy_version": "cafebabecafebabe",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "user_id": "user-1",
+        "prev_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9",
+        "sdk_sig": "7e1cd94d667a82aa3f571010323b44982fbf2c346cdc459728281245fef8749b",
+        "sdk_session_id": "11111111-1111-1111-1111-111111111111",
+        "device_sig": "6c63c3df059224c6acb0fc0d23b01b228b10dc1d8a0585737ccc05daf8c33519aeed1ea47525882b38014c8b7c1a72f20af55484c658970c99e3b0ba280b8008",
+        "device_key_id": "21fe31dfa154a261"
       }
     ]
   }
