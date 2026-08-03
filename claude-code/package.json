@@ -4,13 +4,13 @@
   "description": "Govern a coding agent's NATIVE tool calls on the same signed audit chain as the rest of obsvr — a PreToolUse hook that refuses by policy.",
   "type": "module",
   "license": "Apache-2.0",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
   "exports": {
     ".": {
       "import": {
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
+        "types": "./dist/src/index.d.ts",
+        "default": "./dist/src/index.js"
       }
     }
   },
@@ -18,7 +18,8 @@
     "obsvr-claude-code-pretooluse": "dist/bin/pretooluse.js"
   },
   "files": [
-    "dist",
+    "dist/src",
+    "dist/bin",
     "README.md"
   ],
   "scripts": {
