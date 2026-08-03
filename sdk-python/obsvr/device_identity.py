@@ -41,7 +41,7 @@ import base64
 import binascii
 import hashlib
 import os
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional
 
 #: Leads the device preimage. A version bump here is a new label, verified
 #: side by side with this one — never a silent semantic change.
