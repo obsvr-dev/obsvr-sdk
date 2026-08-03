@@ -77,9 +77,10 @@ function getBuffer(key: string): PolicySnapshot[] {
 export function snapshotPolicy(
   rules: PolicyRule[],
   tenantId?: string,
+  resolution?: 'first_match' | 'deny_wins',
 ): PolicySnapshot {
   const snapshot: PolicySnapshot = {
-    version: derivePolicyVersion(rules),
+    version: derivePolicyVersion(rules, resolution),
     timestamp: new Date().toISOString(),
     rules_snapshot: JSON.stringify(rules),
   };
@@ -163,9 +164,12 @@ export function emitPolicyChangedEvent(
   nextRules: PolicyRule[],
   tenantId?: string,
   changedBy?: string,
+  resolution?: 'first_match' | 'deny_wins',
 ): PolicyChangedEvent {
-  const previous_version = derivePolicyVersion(prevRules);
-  const new_version = derivePolicyVersion(nextRules);
+  // The declared mode applies to both versions: it is a property of the
+  // deployment's declaration, not of either rule list.
+  const previous_version = derivePolicyVersion(prevRules, resolution);
+  const new_version = derivePolicyVersion(nextRules, resolution);
   const diff = computeDiff(prevRules, nextRules);
   const event: PolicyChangedEvent = {
     event_type: 'policy_changed',

@@ -95,6 +95,9 @@ class TestValidChains:
             # verifier is too old to report loss".
             "gapMarkers": 0,
             "eventsDeclaredLost": 0,
+            # Same reasoning: an empty list states "no breaks", where an
+            # absent key would only state "no reporting".
+            "breaks": [],
             "chainFormat": 3,
         }
 
@@ -218,6 +221,95 @@ class TestTamperDetection:
         api_key, events = _chain()
         result = verify_chain(list(reversed(events)), api_key)
         assert result.valid is False
+
+
+class TestEveryBreakReported:
+    """One run, the full damage report: `breaks` lists every independent break,
+    while `broken_at` / `reason` / `events_verified` keep their first-break
+    meaning for existing readers."""
+
+    def test_three_independent_breaks_reported_in_one_run(self):
+        api_key, events = _signed_chain(7)
+        events[1]["prompt"] = "tampered"          # content edit -> bad signature
+        del events[3]                             # deletion -> seq gap
+        events[-1]["sdk_sig"] = "0" * 64          # forged signature
+        result = verify_chain(events, api_key)
+        assert result.valid is False
+        assert [b["reason"] for b in result.breaks] == [
+            "Signature mismatch at event 1",
+            "seq_no gap at event 3: expected 4, got 5",
+            "Signature mismatch at event 5",
+        ]
+        assert [b["index"] for b in result.breaks] == [1, 3, 5]
+
+    def test_first_break_still_names_broken_at_and_reason(self):
+        api_key, events = _signed_chain(7)
+        events[1]["prompt"] = "tampered"
+        del events[3]
+        result = verify_chain(events, api_key)
+        assert result.broken_at == result.breaks[0]["index"] == 1
+        assert result.reason == result.breaks[0]["reason"]
+        # Backward-compatible meaning: events verified before the FIRST break.
+        assert result.events_verified == 1
+
+    def test_single_break_yields_a_single_entry_list(self):
+        api_key, events = _chain()
+        events[1]["prompt"] = events[1]["prompt"] + " (edited)"
+        result = verify_chain(events, api_key)
+        assert result.breaks == [{"index": 1, "reason": "Signature mismatch at event 1"}]
+
+    def test_forged_sdk_sig_severs_the_link_to_its_successor(self):
+        """An edited sdk_sig is two facts, and both are reported: the event's
+        own signature no longer verifies, and its successor's prev_sig was
+        minted against the value that is no longer there. Re-anchoring on the
+        stored sdk_sig is what keeps the report at those two facts instead of
+        failing every event downstream."""
+        api_key, events = _signed_chain(4)
+        events[1]["sdk_sig"] = "0" * 64
+        result = verify_chain(events, api_key)
+        assert [b["reason"] for b in result.breaks] == [
+            "Signature mismatch at event 1",
+            "Chain break at event 2: prev_sig does not match prior event's sdk_sig",
+        ]
+
+    def test_foreign_session_event_does_not_derail_the_chain(self):
+        """A foreign-session event is reported and skipped: the events around
+        it still link to each other, so the one insertion is the one break."""
+        api_key, events = _signed_chain(3)
+        foreign = dict(events[1], sdk_session_id="99999999-9999-9999-9999-999999999999")
+        result = verify_chain([events[0], foreign, events[1], events[2]], api_key)
+        assert result.valid is False
+        assert len(result.breaks) == 1
+        assert "Session ID mismatch at event 1" in result.breaks[0]["reason"]
+
+    def test_gap_tally_still_covers_only_the_prefix_before_the_first_break(self):
+        """Scanning past a break must not change the loss tally a caller acts
+        on: markers are counted only while nothing has broken yet, exactly the
+        prefix rule that held when scanning stopped at the first break."""
+        from obsvr import sender
+        from obsvr.audit_gap import AUDIT_GAP_OPERATION
+
+        sender._reset_sender()
+        api_key = "test-api-key"
+        events = [
+            {"prompt": "prompt-0", "response": "r0"},
+            {"prompt": "prompt-1", "response": "r1"},
+            {"prompt": "obsvr:audit-gap/1 dropped=7 reason=queue_overflow", "response": ""},
+        ]
+        for event in events:
+            sender.sign_event(event, api_key)
+        # `operation` is outside the signature preimage, so stamping it after
+        # signing leaves a marker whose own signature verifies.
+        events[2]["operation"] = AUDIT_GAP_OPERATION
+        assert verify_chain(events, api_key).events_declared_lost == 7
+
+        events[0]["prompt"] = "tampered"
+        result = verify_chain(events, api_key)
+        assert result.valid is False
+        # The marker's own signature still verified, but it sits past the
+        # first break, so it is outside the tally - as it always was.
+        assert result.gap_markers == 0
+        assert result.events_declared_lost == 0
 
 
 def _apply(mutations, events, api_key):

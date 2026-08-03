@@ -136,14 +136,21 @@ obsvr.init({
     },
   ],
 
-  // Custom pre-call hook: allow | block | redact (supports human-in-the-loop)
+  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
+  // and resolved by failMode on expiry — for human approval, use
+  // approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) => {
     if (event.provider === 'openai' && isHighRisk(event.prompt)) {
-      return await waitForHumanApproval(event); // pause until a human decides
+      return 'block';
     }
     return 'allow';
   },
   hookTimeoutMs: 2000,
+
+  // Human-in-the-loop: hold a require_approval block while the grant
+  // channel is polled. 0 (default) = refuse now, pass on a retry once granted.
+  approvalWaitMs: 300_000,
+  approvalPollMs: 5_000,
 
   // Enforcement fail mode when a hook times out or throws:
   // 'open' (default) allows the call; 'closed' blocks it.
@@ -153,11 +160,44 @@ obsvr.init({
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy.
 
-**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+
+**Rule ordering, and opting out of it.** Rules evaluate **first-match in
+document order** by default, and a matched `topic_allow` short-circuits — an
+allow rule's list position can decide the verdict. `ruleResolution:
+'deny_wins'` opts a deployment out: every enforcing rule is evaluated and the
+strongest action prevails regardless of position (refusal over redaction over
+flag over permit, smallest rule id breaking ties), decisions carry engine
+version `obsvr-rules/2`, and the stamped `policy_version` commits to the
+declared semantics — under a declared `first_match` it commits to evaluation
+order, while undeclared rulesets keep their existing hash bytes. An unknown
+declaration throws at `init()`. Two deliberate, pinned edges: shadow rules
+evaluate first-match regardless of the declared mode, and under `deny_wins`
+every quota rule meters every evaluated call — a call that ends blocked can
+still consume quota, where first-match stopped metering at its first match.
+
+**Blocking human approval.** A rule with `require_approval: true` refuses
+when no grant covers the call and files a request for the approvals queue; a
+retry passes once a human grants it. That is the default, and
+`approvalWaitMs: 0` means exactly that — no waiting. Set it above zero and
+the SDK **holds the call in-process** instead, polling the grant channel
+(`approvalPollMs`, default 5000) until a covering grant lands or the budget
+expires. Only an explicit, still-live grant lifts the hold — it is
+re-validated after the wait, so a grant that expires mid-hold authorizes
+nothing — and an expired hold blocks with its own registry code,
+`APPROVAL_TIMEOUT`, distinct from `APPROVAL_REQUIRED` so a run-out hold is
+never conflated with a plain refusal. Degradation mid-wait aborts the hold
+and the block stands. One stated limit: **a denial is currently
+indistinguishable from indecision client-side** — the grant channel carries
+grants, not verdicts, so an explicitly denied request surfaces as the same
+`APPROVAL_TIMEOUT` as one nobody looked at. Do not build this out of
+`onPreCall`: the hook is budgeted by `hookTimeoutMs` and resolves by
+`failMode` on expiry, which at shipped defaults means a hook that waits for a
+human times out and allows.
 
 ### Verdict reason codes
 
-Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (the `ReasonCode` enum, exported from the package) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the thrown `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the TypeScript and Python SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `failMode: 'closed'`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
+Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (the `ReasonCode` enum, exported from the package) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the thrown `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, `APPROVAL_TIMEOUT`, `PRINCIPAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the TypeScript and Python SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `failMode: 'closed'`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
 
 ```typescript
 import { ReasonCode, REASON_CODES } from '@obsvr/sdk';
@@ -379,6 +419,46 @@ await obsvr.agentRun('support-agent', () => agent.run(userMessage), {
 
 Use it for frameworks governed at the tool level (LlamaIndex, Vercel AI) so their executions form runs. LangChain and the OpenAI Agents SDK integrations form runs on their own and do not need it. The run boundary is this explicit scope — deterministic and developer-declared, never inferred. (Python: `with obsvr.agent_run("support-agent", source="llamaindex_py"): ...`.)
 
+## Per-request identity
+
+Every governed call resolves a principal — the `user_id` that user-scoped
+quota rules meter, the session-taint latch keys on, approval grants bind to,
+and the signed event carries inside the decision preimage. Resolution is one
+fixed precedence — per-call audit fields / `metadata`, then the wrap-time or
+integration `user_id` option, then the ambient subject — and one resolution
+feeds both enforcement and the record.
+
+`useSubject()` binds that identity to the current execution context
+(`AsyncLocalStorage`), so one wrapped client or governed tool attributes per
+request rather than per process:
+
+```typescript
+import { useSubject } from '@obsvr/sdk';
+
+const wrapped = obsvr.wrap(new OpenAI());     // wrap once...
+
+await useSubject('user:alice;tenant:acme', async () => {
+  await wrapped.chat.completions.create({ ... }); // ...signed and metered as alice
+});
+```
+
+An explicit `user_id` always beats the ambient subject, and with no scope
+active behavior is unchanged. The scope now reaches every identity the wrap
+path resolves: its **signed audit events** previously read only per-call audit
+fields and wrap-time options — no ambient fallback — so a `useSubject()`
+caller was attributed on the integration surfaces and the session-taint key
+but not on the proxy's own events. All five wrap-path resolutions (completed,
+streamed and blocked events, the external-backend input, and the
+decision-input document) now fall back to the ambient subject.
+
+**`requirePrincipal: true`** (off by default) refuses a governed call whose
+enforcing channel carries no `user_id` at all — `PRINCIPAL_REQUIRED`, after
+the enforcement-integrity gate, before any scanning layer. An empty string is
+a supplied principal; only an absent one refuses. It is enforced on the proxy
+wrapper, the integration pipeline, the generic tool governor, and the
+governance `evaluate()` endpoint, and it arms the MCP pre-call net by itself,
+so a config whose only policy is this flag still refuses there.
+
 ## Known Limitations & Architecture Notes
 
 We document enforcement limits honestly — what the signature chain does and does not prove, streaming semantics, fail-open/closed behavior, and the inherent bypass surface of any in-process library. The key ones:
@@ -392,10 +472,11 @@ The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
-   Only the MCP surface runs against the real upstream package in CI. A green
-   integration suite says the shape is right, not that the framework behaves the
-   way the test models it. [`tests/README.md`](tests/README.md) says which
-   surfaces are which.
+   Four surfaces run against the real upstream package in CI — MCP, OpenAI,
+   Google Generative AI and OpenAI Agents; every other integration is
+   fake-driven. A green integration suite says the shape is right, not that the
+   framework behaves the way the test models it.
+   [`tests/README.md`](tests/README.md) says which surfaces are which.
 
 2. **This package is ESM-only, and the zero-code path cannot reach `require()`.**
    A CommonJS service cannot consume it at all, and even where it loads,

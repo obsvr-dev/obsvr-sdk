@@ -723,7 +723,10 @@ def safe_policy_version(config: ResolvedConfig) -> str:
     try:
         from .rules import derive_policy_version
 
-        return derive_policy_version(getattr(config, "policy_rules", None) or [])
+        return derive_policy_version(
+            getattr(config, "policy_rules", None) or [],
+            getattr(config, "rule_resolution", None),
+        )
     except Exception:  # noqa: BLE001 - the failure path must not fail
         return "unknown"
 
@@ -771,7 +774,7 @@ def _resolve_post_call_detector_failure(
     replaced with a marker that cannot be confused with a real redaction.
     """
     record_detector_failure(layer, exc, config)
-    from .decision_record import ENGINE_VERSION
+    from .decision_record import engine_version_for
 
     return {
         # "flag", never "redact_response": the caller's value is untouched.
@@ -792,7 +795,7 @@ def _resolve_post_call_detector_failure(
             )[:256],
             "shadow_outcome": None,
             "decision_input_hash": None,
-            "engine_version": ENGINE_VERSION,
+            "engine_version": engine_version_for(getattr(config, "rule_resolution", None)),
             "external_backend": None,
             "detector_failure": {
                 "layer": layer or "unknown",
@@ -835,7 +838,7 @@ def _resolve_detector_failure(
         )
     )
 
-    from .decision_record import ENGINE_VERSION
+    from .decision_record import engine_version_for
 
     compliance: Dict[str, Any] = {
         "event_type": "blocked_call" if fail_closed else "policy_flag",
@@ -850,7 +853,7 @@ def _resolve_detector_failure(
         "policy_reason": reason[:256],
         "shadow_outcome": None,
         "decision_input_hash": None,
-        "engine_version": ENGINE_VERSION,
+        "engine_version": engine_version_for(getattr(config, "rule_resolution", None)),
         "external_backend": None,
         # Mirrored onto metadata.obsvr_telemetry by the event builder, the
         # same route the external-backend provenance takes.
@@ -875,6 +878,41 @@ def _resolve_detector_failure(
         "compliance": compliance,
         "redacted_prompt": redacted_prompt,
     }
+
+
+def _monitor_conversion_applies(
+    config: ResolvedConfig,
+    degraded: Dict[str, Any],
+    canary_floor: bool,
+) -> bool:
+    """Whether monitor mode may convert THIS final block into an allow.
+
+    Monitor mode is one conversion point after the decision is final: the
+    whole pipeline still runs, every event still emits, and the would-be
+    verdict rides ``shadow_outcome``. Two classes are carved out and enforce
+    in both modes:
+
+    - **Layer 0** (enforcement-integrity gate: kill switch / fail-closed
+      staleness). A monitor mode that suppressed it would be a one-flag
+      defeat of a revoked key. The carve-out is re-derived HERE, from the
+      gate itself, rather than trusted from the caller's snapshot — so even
+      a stale or tampered ``degraded`` argument cannot extend monitor mode
+      to a paused project.
+    - **Canary leaks** (the unsuppressible 0.75 layer). A planted honeytoken
+      in outbound content is an exfiltration in flight; observing it out the
+      door is not monitoring, it is the leak.
+    """
+    if getattr(config, "enforcement_mode", "enforce") != "monitor":
+        return False
+    if canary_floor:
+        return False
+    if degraded.get("degraded"):
+        return False
+    # Re-derive the layer-0 verdict at the moment of conversion.
+    from .remote import is_enforcement_degraded
+    if is_enforcement_degraded(config)["degraded"]:
+        return False
+    return True
 
 
 def destructive_source_label(source: Optional[str]) -> str:
@@ -963,6 +1001,30 @@ def apply_pre_call_policy(
         # codes: when a detector blocked, floor/rules never ran and a hook
         # block clears it (TS parity).
         detector_reason_code: Optional[str] = None
+        # 0.4 Required principal (opt-in): an unattributed call is refused
+        #     before any scanning layer runs — the refusal is about
+        #     attribution, not content. Runs after the enforcement-integrity
+        #     gate so a paused project keeps its own verdict and rule id, and
+        #     reads the enforcing channel (metadata) that every user-scoped
+        #     control keys on. An empty string is a supplied principal; only
+        #     an absent one (None) refuses — the decision digest's presence
+        #     byte draws the same absent-vs-empty line. Monitor mode converts
+        #     this block like any non-integrity block: rolling the flag out
+        #     in monitor first is the intended adoption path.
+        if (
+            action_taken != "blocked"
+            and getattr(config, "require_principal", False)
+            and (metadata or {}).get("user_id") is None
+        ):
+            action_taken = "blocked"
+            action_reason = "policy_violation"
+            action_source = "policy_rules"
+            gate_rule_id = "sdk:principal_required"
+            gate_reason = (
+                "require_principal is set and the call carries no user_id "
+                "on the enforcing metadata"
+            )
+            detector_reason_code = ReasonCode.PRINCIPAL_REQUIRED.value
         _layer = "session_taint"
         # 0.5 Session taint latch: a session compromised on an earlier turn has its
         #     later egress escalated. ENFORCE runs on PRIOR taint; SET happens at
@@ -1230,6 +1292,7 @@ def apply_pre_call_policy(
                     "current_environment": getattr(config, "environment", None),
                 },
                 fail_mode=getattr(config, "fail_mode", None),
+                resolution=getattr(config, "rule_resolution", None),
             )
             rules_decision = rules_result.get("decision", "allow")
             rules_rule_id = rules_result.get("rule_id")
@@ -1246,6 +1309,10 @@ def apply_pre_call_policy(
             quota_unmetered = rules_result.get("quota_unmetered")
             approval_claim = rules_result.get("approval_granted")
             if rules_decision == "block" and action_taken != "blocked":
+                # Saved so the blocking approval wait below can lift the block
+                # without inventing a state: on approval the pipeline resumes
+                # exactly where it stood before this rule fired.
+                pre_block_state = (action_taken, action_reason, action_source)
                 action_taken = "blocked"
                 action_reason = "policy_violation"
                 # Parity with TS (EV-15): structured-rule outcomes are labeled
@@ -1268,6 +1335,65 @@ def apply_pre_call_policy(
                         # than to "anything that trips this rule".
                         action_hash=rules_result.get("action_hash"),
                     )
+                    # Blocking wait (opt-in, approval_wait_ms > 0): HOLD this
+                    # call while the grant channel is polled, instead of
+                    # refusing and passing on a retry. The wait runs in the
+                    # calling thread on human timescales; the pre-call hook's
+                    # hook_timeout_ms budget is untouched. Skipped in monitor
+                    # mode — a verdict there is recorded, not enforced, so
+                    # there is nothing to hold the call for. Only an explicit
+                    # "approved" lifts the block: timeout, degradation, and
+                    # any wait-internal failure all leave it standing.
+                    wait_ms = getattr(config, "approval_wait_ms", 0) or 0
+                    if (
+                        wait_ms > 0
+                        and getattr(config, "enforcement_mode", "enforce") != "monitor"
+                    ):
+                        wait_claim = {
+                            "rule_id": rules_result.get("rule_id"),
+                            "user_id": (metadata or {}).get("user_id"),
+                            "rule_hash": rules_result.get("rule_hash"),
+                            "action_hash": rules_result.get("action_hash"),
+                        }
+                        try:
+                            from .remote import await_approval
+                            poll_ms = getattr(config, "approval_poll_ms", 5000) or 5000
+                            wait_verdict = await_approval(
+                                config,
+                                wait_claim,
+                                timeout_s=wait_ms / 1000.0,
+                                poll_s=poll_ms / 1000.0,
+                            )
+                        except Exception:  # noqa: BLE001 - the block must stand
+                            wait_verdict = "unavailable"
+                        if wait_verdict == "approved":
+                            # The grant landed while the call was held. Lift
+                            # the block and hand the claim to the end-of-
+                            # pipeline re-validation below, so a grant that
+                            # expires or is revoked between here and the
+                            # outbound request is caught before it is spent.
+                            action_taken, action_reason, action_source = pre_block_state
+                            approval_claim = wait_claim
+                            rules_reason_code = ReasonCode.APPROVAL_GRANTED.value
+                            rules_reason = "approval_granted_after_wait: %s" % (
+                                rules_result.get("rule_id")
+                            )
+                        elif wait_verdict == "timeout":
+                            # Its own registry code: a hold that expired is a
+                            # different fact from "refused; ask and retry".
+                            rules_reason_code = ReasonCode.APPROVAL_TIMEOUT.value
+                            rules_reason = (
+                                "approval_wait_timeout: no grant within %dms (%s)"
+                                % (wait_ms, rules_result.get("reason"))
+                            )
+                        else:
+                            # Degraded mid-wait (kill switch / staleness) or a
+                            # wait-internal failure: the APPROVAL_REQUIRED
+                            # block stands, with the abort on the record.
+                            rules_reason = "%s (approval_wait_aborted: %s)" % (
+                                rules_result.get("reason"),
+                                wait_verdict,
+                            )
             elif rules_decision == "redact" and action_taken != "redacted":
                 action_taken = "redacted"
                 action_reason = "policy_violation"
@@ -1421,7 +1547,10 @@ def apply_pre_call_policy(
                     redacted_types = ["all"]  # customer-driven; exact types unknown
 
     from .rules import derive_policy_version
-    policy_ver = derive_policy_version(getattr(config, 'policy_rules', None) or [])
+    policy_ver = derive_policy_version(
+        getattr(config, 'policy_rules', None) or [],
+        getattr(config, "rule_resolution", None),
+    )
 
     # 2.5. Inbound external policy backend (ADR-4): consult the customer's
     #      OPA/Cedar engine and merge DENY-WINS with the local decision (a deny
@@ -1529,10 +1658,11 @@ def apply_pre_call_policy(
     # Canonical decision record (ADR-2): commit exactly what this decision ran
     # over. ``scan`` is the text the pipeline evaluated (pre-redaction).
     from .decision_record import (
-        ENGINE_VERSION,
         build_decision_input,
         compute_decision_input_hash,
+        engine_version_for,
     )
+    engine_ver = engine_version_for(getattr(config, "rule_resolution", None))
     meta = metadata or {}
     decision_doc = build_decision_input(
         rules_hash=policy_ver,
@@ -1548,6 +1678,7 @@ def apply_pre_call_policy(
         ),
         tenant_id=tenant_id if isinstance(tenant_id, str) else None,
         hook=hook_disposition,
+        engine_version=engine_ver,
     )
 
     # Same precedence as rule_id below; anything still unresolved derives in
@@ -1561,6 +1692,35 @@ def apply_pre_call_policy(
         else _resolve_reason_code(action_reason, action_source, None)
     )
 
+    # Canary wins (unsuppressible), then the rest; taint is the escalation
+    # reason when nothing more specific fired.
+    resolved_rule_id = (
+        canary_rule_id or backend_rule_id or hook_rule_id or rules_rule_id or taint_rule_id
+    )
+    resolved_policy_reason = (
+        canary_reason or backend_reason or hook_reason or rules_reason or taint_reason
+    )
+
+    # Monitor mode: the single conversion point, after the decision is final
+    # and before it is returned. A block becomes an allow while
+    # shadow_outcome — the field documented as never decision-affecting —
+    # carries the would-be verdict with the same rule_id and reason_code an
+    # enforcing run would put on the blocked event. Everything else on the
+    # record keeps the deciding layer's classification (action_reason,
+    # action_source, blocked_types), which is also what exempts the event
+    # from allowed-call sampling: the evidence is never dropped. Layer 0 and
+    # canary leaks are carved out in _monitor_conversion_applies.
+    if action_taken == "blocked" and _monitor_conversion_applies(
+        config, degraded, canary_floor
+    ):
+        shadow_outcome = {
+            "rule_id": resolved_rule_id,
+            "would": "block",
+            "reason_code": resolved_reason_code,
+            "reason": resolved_policy_reason or "",
+        }
+        action_taken = "allowed"
+
     compliance = {
         "event_type": "blocked_call" if action_taken == "blocked" else "llm_call",
         "policy_version": policy_ver,
@@ -1570,14 +1730,12 @@ def apply_pre_call_policy(
         "action_source": action_source,
         "redacted_types": redacted_types,
         "blocked_types": blocked_types,
-        # Canary wins (unsuppressible), then the rest; taint is the escalation
-        # reason when nothing more specific fired.
-        "rule_id": canary_rule_id or backend_rule_id or hook_rule_id or rules_rule_id or taint_rule_id,
-        "policy_reason": canary_reason or backend_reason or hook_reason or rules_reason or taint_reason,
+        "rule_id": resolved_rule_id,
+        "policy_reason": resolved_policy_reason,
         "shadow_outcome": shadow_outcome,
         # Additive decision-record fields (never part of the chain preimage)
         "decision_input_hash": compute_decision_input_hash(decision_doc),
-        "engine_version": ENGINE_VERSION,
+        "engine_version": engine_ver,
         # External policy backend provenance (ADR-4, additive)
         "external_backend": external_backend_record,
     }
@@ -1678,7 +1836,8 @@ def _observe_compliance(config: ResolvedConfig) -> Dict[str, Any]:
     from .rules import derive_policy_version
     compliance = dict(DEFAULT_COMPLIANCE)
     compliance["policy_version"] = derive_policy_version(
-        getattr(config, "policy_rules", None) or []
+        getattr(config, "policy_rules", None) or [],
+        getattr(config, "rule_resolution", None),
     )
     return compliance
 
@@ -1778,17 +1937,25 @@ def apply_post_call_policy(
         # 1. Evaluate policy rules against response
         if getattr(config, 'policy_rules', None):
             from .rules import evaluate_policy_rules
-            rules_result = evaluate_policy_rules(config.policy_rules, response_text, "response")
+            rules_result = evaluate_policy_rules(
+                config.policy_rules,
+                response_text,
+                "response",
+                resolution=getattr(config, "rule_resolution", None),
+            )
             rules_decision = rules_result.get("decision", "allow")
             if rules_decision in ("block", "redact"):
                 decision = "redact_response"
             rule_id = rules_result.get("rule_id")
             reason = rules_result.get("reason")
 
-        # 2. onPostCall hook (timeout + error handling)
+        # 2. onPostCall hook (timeout + error handling). Budgeted from
+        #    post_call_timeout_ms, its own declared key — the pre-call hook's
+        #    hook_timeout_ms budgets the pre-call hook only (parity with the
+        #    TS integrations core, which reads postCallTimeoutMs here).
         on_post_call = getattr(config, 'on_post_call', None)
         if on_post_call is not None:
-            timeout_s = getattr(config, 'hook_timeout_ms', 2000) / 1000.0
+            timeout_s = getattr(config, 'post_call_timeout_ms', 2000) / 1000.0
             # No `with` block: same rationale as the pre-call hook above — the
             # context manager would JOIN a hung hook thread and void the timeout;
             # shutdown(wait=False) abandons the (non-daemon) worker thread, which
@@ -1971,7 +2138,14 @@ def explain(
             result["reason"] = "PII would be redacted: " + ", ".join(scan["detected_types"])
 
     if result["decision"] != "block" and rules:
-        rr = evaluate_policy_rules(rules, prompt_text, target, ctx, check_only=True)
+        rr = evaluate_policy_rules(
+            rules,
+            prompt_text,
+            target,
+            ctx,
+            check_only=True,
+            resolution=getattr(cfg, "rule_resolution", None),
+        )
         if rr.get("decision") in ("block", "redact"):
             result["decision"] = rr["decision"]
             result["rule_id"] = rr.get("rule_id")

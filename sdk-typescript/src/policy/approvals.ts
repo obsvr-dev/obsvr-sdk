@@ -40,6 +40,8 @@
 
 import { sha256Hex } from "./decision-record.js";
 import { canonicalJsonForHash } from "./tool-pinning.js";
+import { ReasonCode } from "../governance/reason-codes.js";
+import type { ResolvedConfig } from "../proxy/types.js";
 
 export interface ApprovalGrant {
   id: string;
@@ -285,6 +287,105 @@ export function requestApproval(
   })
     .catch(() => { /* best-effort */ })
     .finally(() => clearTimeout(t));
+}
+
+/** How a blocking approval wait resolved. Only "approved" lifts a block. */
+export type ApprovalWaitVerdict = "approved" | "timeout" | "unavailable";
+
+/**
+ * Registry code for a blocking wait that expired without a covering grant.
+ * Its own code on purpose: APPROVAL_REQUIRED means "refused; ask and retry",
+ * while this means a real-time hold was offered and no human decided within
+ * the budget. The pipeline wiring stamps this on the blocked event when
+ * `awaitApproval` answers "timeout".
+ */
+export const APPROVAL_WAIT_TIMEOUT_REASON_CODE = ReasonCode.APPROVAL_TIMEOUT;
+
+/** Injectable seams for {@link awaitApproval}; production callers pass only
+ * the budgets and take the defaults (the real /policies poll and the real
+ * enforcement-integrity gate). */
+export interface AwaitApprovalOptions {
+  /** Total hold budget in ms (config approvalWaitMs). */
+  timeoutMs: number;
+  /** Grant-channel poll cadence in ms (config approvalPollMs). */
+  pollMs: number;
+  /** Refreshes the grant channel. Defaults to the /policies poll
+   * (pollPoliciesOnce), imported dynamically so this module and the poll's
+   * module keep their one-way static dependency. */
+  refresh?: () => Promise<void>;
+  /** Whether enforcement is degraded (kill switch / fail-closed staleness);
+   * consulted between polls so a mid-wait revocation aborts the hold.
+   * Defaults to the real gate. */
+  isUnavailable?: () => boolean;
+  /** Injected for tests; defaults to a real unref'd setTimeout sleep. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Block until a grant covering `claim` appears, or the wait resolves against
+ * the caller. Twin of the Python `await_approval`; the verdict vocabulary and
+ * the failure posture are identical:
+ *
+ * - "approved"    — an unexpired grant covering the claim is in the store.
+ * - "timeout"     — the deadline passed with no covering grant.
+ * - "unavailable" — enforcement degraded mid-wait; waiting longer cannot
+ *                   produce a grant this SDK would be entitled to spend.
+ *
+ * The wait happens in the agent process, which can afford human timescales —
+ * it is unrelated to the pre-call hook and spends none of its hookTimeoutMs
+ * budget. Never rejects, and never answers "approved" on anything but a live
+ * grant: the caller holds a block that only an explicit approval may lift.
+ * Callers must still re-validate the grant after the wait
+ * ({@link revalidateApproval}) — a grant that expires between this return and
+ * the outbound request must not be spent.
+ */
+export async function awaitApproval(
+  config: ResolvedConfig,
+  claim: ApprovalClaim,
+  opts: AwaitApprovalOptions,
+): Promise<ApprovalWaitVerdict> {
+  const sleep =
+    opts.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, ms);
+        if (typeof t === "object" && (t as unknown as { unref?: () => void }).unref) {
+          (t as unknown as { unref: () => void }).unref();
+        }
+      }));
+  try {
+    const refresh =
+      opts.refresh ??
+      (async () => {
+        const mod = await import("../proxy/config.js");
+        await mod.pollPoliciesOnce(config);
+      });
+    let unavailable = opts.isUnavailable;
+    if (!unavailable) {
+      const mod = await import("../proxy/config.js");
+      unavailable = () => mod.isPolicyEnforcementDegraded(config).degraded;
+    }
+    const deadline = Date.now() + Math.max(opts.timeoutMs, 0);
+    for (;;) {
+      // The daemon poll may already have applied the grant; check the store
+      // before spending a poll interval.
+      if (revalidateApproval(claim)) return "approved";
+      if (unavailable()) return "unavailable";
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return "timeout";
+      await sleep(Math.min(Math.max(opts.pollMs, 50), remaining));
+      try {
+        await refresh();
+      } catch {
+        // A failed refresh is a missed poll, not a verdict; the deadline
+        // still bounds the wait.
+      }
+    }
+  } catch {
+    // The wait must resolve, never throw: its caller holds a block that only
+    // an explicit approval may lift.
+    return "timeout";
+  }
 }
 
 /** @internal test hook */

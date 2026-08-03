@@ -139,6 +139,7 @@ def test_shadow_outcome_emits_shadow_would_block():
 # conformance/known-divergences.md).
 
 _PINNED_ELSEWHERE = {
+    "APPROVAL_TIMEOUT": "test_approval_blocking.py (blocking wait expired without a grant)",
     "TOOL_DENIED": "test_pydantic_ai.py (governed toolset, denied by agent policy)",
     "MCP_TOOL_DENIED": "test_mcp.py (governed MCP session, denied tool)",
     "MCP_RESULT_BLOCKED": "test_mcp_response_scan.py (withheld tool result)",
@@ -252,6 +253,13 @@ def test_every_registry_code_is_reachable():
     )
     if injected["compliance"].get("reason_code"):
         reachable.add(injected["compliance"]["reason_code"])
+
+    # An unattributed call under require_principal: the attribution
+    # refusal's own classification.
+    cfg_principal = ResolvedConfig(api_key="k", sample_rate=1, require_principal=True)
+    refused = apply_pre_call_policy("hello", cfg_principal)
+    if refused["compliance"].get("reason_code"):
+        reachable.add(refused["compliance"]["reason_code"])
 
     import time as _time
     hang = lambda e: _time.sleep(5)  # noqa: E731

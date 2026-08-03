@@ -16,6 +16,177 @@ Each entry links the commit that made the change.
 Changes landed since 0.10.0. This section accumulates until the next release
 cut, when it is renamed to that version.
 
+### Added
+
+- **BREAKING: two new reason codes in the closed registry.** `APPROVAL_TIMEOUT`
+  (a blocking approval hold expired with no covering grant — a different fact
+  from `APPROVAL_REQUIRED`'s "refused; ask and retry") and `PRINCIPAL_REQUIRED`
+  (an unattributed call refused under the new opt-in below). Consumer code with
+  an exhaustive switch over the registry gains two arms; everything else is
+  unaffected.
+  ([`ec4067b`](https://github.com/obsvr-dev/obsvr-sdk/commit/ec4067b),
+  [`8f933bc`](https://github.com/obsvr-dev/obsvr-sdk/commit/8f933bc))
+
+- **Blocking human approval.** `approval_wait_ms` / `approvalWaitMs` (default 0,
+  strictly opt-in) holds a `require_approval` block in the calling process while
+  the grant channel is polled, and lifts it only on an explicit grant that is
+  still live when the call goes out — the existing end-of-pipeline revalidation
+  backstops a grant that expires mid-wait. Timeout, denial-by-silence,
+  degradation and any wait-internal failure all leave the block standing. Wired
+  through the shared Python pipeline and all three TypeScript pre-call paths.
+  ([`ec4067b`](https://github.com/obsvr-dev/obsvr-sdk/commit/ec4067b),
+  [`d8012e4`](https://github.com/obsvr-dev/obsvr-sdk/commit/d8012e4))
+
+- **Global monitor mode.** `enforcement_mode="monitor"` / `enforcementMode:
+  "monitor"` evaluates every layer, emits every event, and converts a final
+  block into an allow whose `shadow_outcome` carries the would-be verdict with
+  the same `rule_id` and `reason_code` an enforcing run records — one flip for
+  a staged rollout that keeps the evidence stream intact. Two classes enforce
+  in both modes: the enforcement-integrity gate (kill switch / fail-closed
+  staleness, re-derived at the moment of conversion) and canary-leak blocks.
+  Converted events are exempt from allowed-call sampling, and `explain()`
+  keeps predicting enforce-mode behaviour.
+  ([`df792b7`](https://github.com/obsvr-dev/obsvr-sdk/commit/df792b7),
+  [`d8012e4`](https://github.com/obsvr-dev/obsvr-sdk/commit/d8012e4))
+
+- **Refuse unattributed calls, opt-in.** `require_principal=True` /
+  `requirePrincipal: true` blocks a governed call whose enforcing channel
+  carries no `user_id` at all, with `PRINCIPAL_REQUIRED`, before any scanning
+  layer runs. An empty string is a supplied principal; only an absent one
+  refuses — the decision digest's presence byte draws the same absent-vs-empty
+  line. The flag arms the pre-call net by itself at the tool and MCP
+  boundaries, the integrity gate still wins outright, and monitor mode
+  converts the refusal like any non-integrity block.
+  ([`8f933bc`](https://github.com/obsvr-dev/obsvr-sdk/commit/8f933bc),
+  [`c5a1f4a`](https://github.com/obsvr-dev/obsvr-sdk/commit/c5a1f4a))
+
+- **An ambient per-request principal in Python.** `obsvr.use_subject()` binds
+  an identity to the current execution context, so one governed client or tool
+  attributes and meters per request; explicit identity always wins, and the
+  docstring pins the propagation boundaries (survives `await`, `create_task`,
+  `to_thread`; lost across executors and raw threads). The TypeScript proxy's
+  own audit events now resolve the ambient `useSubject()` identity too —
+  previously only the integration surfaces and the session-taint key did.
+  ([`14289ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/14289ef),
+  [`6bb062a`](https://github.com/obsvr-dev/obsvr-sdk/commit/6bb062a))
+
+- **Deny-wins conflict resolution, behind a declared opt-in.** A deployment
+  that declares `rule_resolution="deny_wins"` / `ruleResolution: 'deny_wins'`
+  has every enforcing rule evaluated and the strongest action prevail
+  regardless of list position — refusal over redaction over flag over permit,
+  smallest rule id breaking ties — with engine version `obsvr-rules/2` on its
+  decisions. The declared mode is committed into `policy_version`: under
+  `first_match` the hash commits to evaluation order, so two orderings that
+  can decide differently stamp distinct versions. Undeclared rulesets keep the
+  original first-match contract and their existing hash bytes; an unknown
+  declaration is refused at init.
+  ([`ed5f873`](https://github.com/obsvr-dev/obsvr-sdk/commit/ed5f873),
+  [`e3672ea`](https://github.com/obsvr-dev/obsvr-sdk/commit/e3672ea),
+  [`62931e4`](https://github.com/obsvr-dev/obsvr-sdk/commit/62931e4))
+
+- **Binding reports on every guarded integration import.** Every optional
+  upstream import under `integrations/` now records why it bound or failed,
+  uniformly queryable via `obsvr.integration_bindings()` /
+  `integrationBindings()`; TypeScript gains the report surface, and a
+  completeness scan fails if a new guarded import ships recording nothing.
+  Loud `ImportError` paths stay loud — the report is in addition to the
+  refusal, never instead of it.
+  ([`f060850`](https://github.com/obsvr-dev/obsvr-sdk/commit/f060850),
+  [`d5b4c03`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5b4c03))
+
+- **`obsvr-verify` reports every break, with `--json`.** A broken keyed run
+  now lists every break the verifier found — one line per break, re-anchoring
+  after each — and a new `--json` flag emits one machine-readable document,
+  byte-identical across the two CLIs. `verify_chain` / `verifyAuditChain`
+  results gain a `breaks` list; `broken_at`, exit codes, gap accounting and
+  `--allow-gaps` are unchanged.
+  ([`3ce0c4e`](https://github.com/obsvr-dev/obsvr-sdk/commit/3ce0c4e))
+
+- **Real-library integration suites and a scheduled stress run.** The
+  installed `openai`, `@google/generative-ai` and `@openai/agents` packages
+  are now driven by real-object suites graded at the transport or tool-body
+  side effect, and the nightly workflow runs the stress suite under a
+  thirty-minute cap. COMPATIBILITY.md now states the dependency-floor location
+  method — auditable-path floors, adjacent tested pairs, named in-range
+  counter-examples — citing `sdk-python/pyproject.toml` as the primary record.
+  ([`603fcc8`](https://github.com/obsvr-dev/obsvr-sdk/commit/603fcc8),
+  [`9dd50f1`](https://github.com/obsvr-dev/obsvr-sdk/commit/9dd50f1),
+  [`5fbcc02`](https://github.com/obsvr-dev/obsvr-sdk/commit/5fbcc02))
+
+### Fixed
+
+- **`govern_tool`'s identity kwargs now scope enforcement.** The `user_id=` /
+  `service_name=` wrap-time kwargs reach the enforcing metadata channel, so
+  user-scoped quota buckets, the session-taint key, approval binding and the
+  decision-input hash resolve the same principal the signed event carries.
+  Previously the kwargs reached only the signed record while enforcement
+  metered shared buckets — a signed principal with none of the enforcement
+  bound to it. A tree scan now requires every pre-call surface to thread the
+  fold.
+  ([`9947431`](https://github.com/obsvr-dev/obsvr-sdk/commit/9947431))
+
+- **A non-string `user_id` signs identically in both SDKs.** Both event
+  boundaries coerce booleans and finite numbers to one canonical scalar string
+  under the shared canonical-JSON rules, so an export signed by either SDK
+  reaches the same verdict under both offline verifiers; a Python export
+  carrying a float or boolean `user_id` previously verified under the Python
+  CLI and failed under the TypeScript CLI. Non-scalars record as absent, and
+  `None` stays absent — never a rendered string. Exports signed before this
+  change with a raw non-string value verify only under the emitting language's
+  CLI; that residual is stated in the fixture, since re-normalising the digest
+  layer would break verification of existing evidence.
+  ([`e178486`](https://github.com/obsvr-dev/obsvr-sdk/commit/e178486))
+
+- **Governing a tool twice yields one gate.** `govern_tool` /
+  `obsvrGovernTool` answer an idempotence marker from the governed object, set
+  only when a gate verifiably installed, so double-wrapping no longer
+  evaluates and audits every invocation twice — and a tool where nothing was
+  gateable stays unmarked, so a later legitimate attempt still installs.
+  ([`36d972e`](https://github.com/obsvr-dev/obsvr-sdk/commit/36d972e))
+
+- **The `obsvr-verify` success banner states the format-3 preimage boundary.**
+  Content, order, and the eight decision/attribution fields are covered by the
+  client signature; `tenant_id`, token counts, `metadata`, `operation` and
+  `content_provenance` are sealed by the server countersignature; chains
+  signed under formats 1 and 2 bind content and order only, and the banner
+  says so. This aligns the CLI with SECURITY.md's statement of the same
+  position, in both languages, and the TypeScript verifier docs carry the
+  format vocabulary already corrected in Python.
+  ([`d1d1ffe`](https://github.com/obsvr-dev/obsvr-sdk/commit/d1d1ffe),
+  [`f945577`](https://github.com/obsvr-dev/obsvr-sdk/commit/f945577))
+
+- **The keyless structural tier requires `prev_sig` linkage.** Every event
+  after the first must carry its predecessor link, so an unsigned insertion
+  with a plausible `seq_no` and a well-formed `sdk_sig` no longer passes the
+  structural check by omitting the field, in either language.
+  ([`6698b0b`](https://github.com/obsvr-dev/obsvr-sdk/commit/6698b0b))
+
+- **Constant-time signature comparison in the TypeScript verifier.**
+  `verifyAuditChain` compares recomputed signatures with `timingSafeEqual`
+  behind a length guard, matching the Python verifier's posture for library
+  use against caller-supplied chains.
+  ([`740c8f8`](https://github.com/obsvr-dev/obsvr-sdk/commit/740c8f8))
+
+- **The post-call hook is budgeted from `post_call_timeout_ms`.** The Python
+  path previously accepted the key and read `hook_timeout_ms` instead, so the
+  declared budget was never in force and the SDKs diverged on timing-visible
+  behaviour; TypeScript already honoured its twin. The failure-disposition
+  registry also now describes the response-phase hook in its own row —
+  timeout and error keep the already-rendered decision, since the provider
+  has already answered — while the request-phase row keeps its
+  operator-chosen `fail_mode`.
+  ([`14f1930`](https://github.com/obsvr-dev/obsvr-sdk/commit/14f1930),
+  [`e1dae22`](https://github.com/obsvr-dev/obsvr-sdk/commit/e1dae22))
+
+- **Both ReDoS guards refuse the fixed-brace multiplication shape.** A fixed
+  `{n}` repetition applied to a group carrying its own growth quantifier or
+  alternation multiplies that group's backtracking states — `(.*a){20}b`
+  stalled evaluation for minutes in both languages while neighbouring hostile
+  shapes were contained in microseconds. Both structural scans now refuse
+  `{n>=2}` over a rep- or alternation-bearing group; `{1}` and a fixed brace
+  on a plain group stay allowed.
+  ([`33a4e98`](https://github.com/obsvr-dev/obsvr-sdk/commit/33a4e98))
+
 ### Removed
 
 - **Four framework integrations withdrawn before first publish.** The modules

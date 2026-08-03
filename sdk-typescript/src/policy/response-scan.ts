@@ -109,7 +109,7 @@ export function resolveResponseScanFailure(
     action_taken: failClosed ? "blocked" : "allowed",
     action_reason: failClosed ? "policy_violation" : "none",
     action_source: "builtin",
-    policy_version: safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+    policy_version: safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
     redacted_types: [],
     blocked_types: [],
     detected_types: [],
@@ -127,7 +127,7 @@ export function scanMcpToolResult(
   config: ResolvedConfig,
   principal?: McpPrincipal,
 ): McpResponseScan {
-  const policyVersion = derivePolicyVersion(config.policyRules ?? []);
+  const policyVersion = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
   let action: McpResponseScan["action"] = "allow";
   let actionReason: McpResponseScan["action_reason"] = "none";
@@ -154,7 +154,9 @@ export function scanMcpToolResult(
     // telemetry on. Only a rule explicitly scoped applies_to:"response" meters
     // here, so an unmeterable one goes undeclared on this path alone. The
     // Python twin does the same, deliberately, so the two stay in parity.
-    const rulesResult = evaluatePolicyRules(config.policyRules, responseText, "response", evalContext);
+    const rulesResult = evaluatePolicyRules(config.policyRules, responseText, "response", evalContext, {
+      resolution: config.ruleResolution,
+    });
     if (rulesResult.decision === "block") {
       action = "block";
       actionReason = "policy_violation";

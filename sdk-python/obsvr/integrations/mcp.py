@@ -662,6 +662,11 @@ def _build_governed_mcp_callables(
             cfg.policy_floor
             or cfg.pii_policy is not None
             or cfg.on_pre_call is not None
+            # require_principal arms the net by itself, for the same reason as
+            # the floor entry above: the refusal it configures is enforced
+            # INSIDE apply_pre_call_policy, so a deployment that sets only
+            # this flag must still reach the pipeline (same list as tools.py).
+            or getattr(cfg, "require_principal", False)
             or canary_registry_size() > 0
             or session_taint_size() > 0
         ):

@@ -35,11 +35,22 @@ class TestValidateRegexPattern:
         assert validate_regex_pattern(r"((a+)b?)+$")[1] == "nested_quantifier"  # nested deeper
         assert validate_regex_pattern(r"(?:a+)+")[1] == "nested_quantifier"
 
+    def test_rejects_a_fixed_brace_multiplying_an_inner_quantifier(self):
+        # A fixed {n} never grows the match, but applied to a group carrying
+        # its own growth quantifier it multiplies that group's backtracking
+        # states n times over: (.*a){20}b stacks twenty independent .*
+        # engines against one impossible suffix and stalls for minutes.
+        assert validate_regex_pattern(r"(.*a){20}b")[1] == "nested_quantifier"
+        assert validate_regex_pattern(r"(a+b){8}c")[1] == "nested_quantifier"
+        assert validate_regex_pattern(r"((\d*)x){4}y")[1] == "nested_quantifier"
+
     def test_does_not_over_reject_fixed_or_unnested(self):
         assert validate_regex_pattern(r"(a{3})+")[0] is True  # fixed inner {n}
         assert validate_regex_pattern(r"(abc)+")[0] is True
         assert validate_regex_pattern(r"[+*]{1,5}")[0] is True  # + and * are literals
         assert validate_regex_pattern(r"\d{3}-\d{2}-\d{4}")[0] is True
+        assert validate_regex_pattern(r"(abc){20}")[0] is True  # fixed on a plain group
+        assert validate_regex_pattern(r"(.*a){1}b")[0] is True  # {1} multiplies nothing
 
     def test_polynomial_pattern_completes_bounded(self):
         # Deep nesting is now rejected; verify a rejected pattern is no-match and

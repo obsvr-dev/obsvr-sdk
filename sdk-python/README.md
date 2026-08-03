@@ -277,6 +277,50 @@ with obsvr.agent_run("support-agent", source="llamaindex_py"):
 The run boundary is this explicit scope — deterministic and developer-declared,
 never inferred. (TypeScript: `await obsvr.agentRun("support-agent", () => agent.run(msg), { source: "llamaindex_ts" })`.)
 
+## Per-request identity
+
+Every governed call resolves a principal — the `user_id` that user-scoped quota
+buckets meter, the session-taint latch keys on, approval grants bind to, and the
+signed event carries inside the decision preimage. One resolution feeds both
+enforcement and the record: per-call `metadata` first, then the wrap-time
+`user_id=` option, then the ambient subject below. This used to be two channels
+on the generic tool governor — the wrap-time kwarg reached the **signed record
+only** while quota, taint, approvals and the decision-input hash read metadata
+it never touched, so `govern_tool(tool, user_id="mallory")` produced a signed
+principal with none of the user-scoped enforcement bound to it. The fold is now
+shared, and a tree-scan test fails any pre-call surface that ships without it.
+
+A wrap-time option binds one identity for the object's lifetime. A process
+serving many end users binds per request instead:
+
+```python
+from obsvr import use_subject
+
+governed = obsvr.govern_tool(tool)          # govern once...
+
+with use_subject("user:alice;tenant:acme"): # ...attribute per request
+    governed.run("...")                     # metered, latched, signed as alice
+with use_subject({"user_id": "bob"}):
+    governed.run("...")                     # a different bucket, a different record
+```
+
+An explicit `user_id=` or `metadata` identity always beats the ambient one, and
+with no scope active behavior is exactly as before. **The propagation boundary
+is pinned in tests, not inferred:** the subject survives `await`,
+`asyncio.create_task` and `asyncio.to_thread`, and is **silently lost** across
+`loop.run_in_executor`, `ThreadPoolExecutor.submit` and `threading.Thread` — a
+worker-thread tool call inside a scope runs as if no scope were active, with
+nothing on the record to say so. If a tool body hops to a worker thread, pass
+`user_id` explicitly on that path.
+
+**`require_principal=True`** (off by default) refuses a governed call whose
+enforcing channel carries no `user_id` at all — `PRINCIPAL_REQUIRED`, after the
+enforcement-integrity gate, before any scanning layer. An empty string is a
+supplied principal; only an absent one refuses. It is enforced in the shared
+pre-call pipeline (`wrap()`, the integrations, `govern_tool`, MCP) and arms the
+tool and MCP pre-call nets by itself, so a config whose only policy is this
+flag still refuses there.
+
 ## Policy Enforcement
 
 Policies run before the call proceeds. Deterministic code only; no LLM in the decision path.
@@ -304,11 +348,44 @@ obsvr.init(
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS access keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration (set `presidio_analyzer_url`) adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy. Detection parity with the TypeScript SDK is enforced by shared test vectors.
 
-**Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; **`require_principal=True`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+
+**Rule ordering, and opting out of it.** Rules evaluate **first-match in
+document order** by default, and a matched `topic_allow` short-circuits — an
+allow rule's list position can decide the verdict. `rule_resolution=
+"deny_wins"` opts a deployment out: every enforcing rule is evaluated and the
+strongest action prevails regardless of position (refusal over redaction over
+flag over permit, smallest rule id breaking ties), decisions carry engine
+version `obsvr-rules/2`, and the stamped `policy_version` commits to the
+declared semantics — under a declared `first_match` it commits to evaluation
+order, while undeclared rulesets keep their existing hash bytes. An unknown
+declaration raises at `init()`. Two deliberate, pinned edges: shadow rules
+evaluate first-match regardless of the declared mode, and under `deny_wins`
+every quota rule meters every evaluated call — a call that ends blocked can
+still consume quota, where first-match stopped metering at its first match.
+
+**Blocking human approval.** A rule with `"require_approval": True` refuses
+when no grant covers the call and files a request for the approvals queue; a
+retry passes once a human grants it. That is the default, and
+`approval_wait_ms=0` means exactly that — no waiting. Set it above zero and
+the SDK **holds the call in the calling thread** instead, polling the grant
+channel (`approval_poll_ms`, default 5000) until a covering grant lands or
+the budget expires. Only an explicit, still-live grant lifts the hold — it is
+re-validated after the wait, so a grant that expires mid-hold authorizes
+nothing — and an expired hold blocks with its own registry code,
+`APPROVAL_TIMEOUT`, distinct from `APPROVAL_REQUIRED` so a run-out hold is
+never conflated with a plain refusal. Degradation mid-wait aborts the hold and
+the block stands. One stated limit: **a denial is currently indistinguishable
+from indecision client-side** — the grant channel carries grants, not
+verdicts, so an explicitly denied request surfaces as the same
+`APPROVAL_TIMEOUT` as one nobody looked at. Do not build this out of
+`on_pre_call`: the hook is budgeted by `hook_timeout_ms` and resolves by
+`fail_mode` on expiry, which at shipped defaults means a hook that waits for a
+human times out and allows.
 
 ### Verdict reason codes
 
-Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (`obsvr.ReasonCode`) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the raised `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the Python and TypeScript SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `fail_mode="closed"`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
+Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (`obsvr.ReasonCode`) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the raised `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, `APPROVAL_TIMEOUT`, `PRINCIPAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the Python and TypeScript SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `fail_mode="closed"`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
 
 ```python
 from obsvr import ReasonCode, REASON_CODES

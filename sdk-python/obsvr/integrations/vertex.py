@@ -51,12 +51,17 @@ from ..policy import (
     redact_builtin_pii,
 )
 
+from ..binding_report import record_binding
+
 try:  # real binding when the Vertex SDK is installed; interception works regardless
     from vertexai.generative_models import (  # type: ignore  # noqa: F401
         GenerativeModel as _RealGenerativeModel,
     )
-except Exception:  # pragma: no cover - vertex SDK not installed
+
+    record_binding("vertex", "vertexai.generative_models.GenerativeModel")
+except Exception as _bind_exc:  # pragma: no cover - vertex SDK not installed
     _RealGenerativeModel = None  # type: ignore
+    record_binding("vertex", "vertexai.generative_models.GenerativeModel", _bind_exc)
 
 SOURCE = "vertex_py"
 PROVIDER = "vertex_ai"

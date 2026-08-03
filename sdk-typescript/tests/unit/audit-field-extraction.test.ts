@@ -67,13 +67,35 @@ describe('audit field extraction', () => {
     expect(audit_fields.metadata).toEqual({ tenant_id: 't1' });
   });
 
-  it('drops a non-string audit field rather than forwarding it', () => {
-    // Consistent with how request_id/region/source already behaved: an audit
-    // field of the wrong type is not a provider parameter, so forwarding it
-    // would send the provider something it will reject.
+  it('coerces a scalar user_id and never forwards it', () => {
+    // user_id is the signed principal (it sits inside the format-3 decision
+    // digest), so a scalar of the wrong type is coerced to the canonical
+    // string both offline verifiers recompute identically — the exact
+    // strings are pinned cross-language by the user_id_coercion section of
+    // conformance/fixtures/signing_vectors.json. H1 still holds: nothing
+    // reaches the provider either way.
     const { cleaned_args, audit_fields } = filterArgs([{ model: 'm', user_id: 42 }]);
     expect(cleaned_args[0]).not.toHaveProperty('user_id');
-    expect(audit_fields.user_id).toBeUndefined();
+    expect(audit_fields.user_id).toBe('42');
+  });
+
+  it('treats an uncoercible user_id as absent, not a rendering', () => {
+    // Containers and non-finite numbers have no rendering both languages can
+    // recompute, so they stay off the record entirely (absent, never "NaN"
+    // or "[object Object]") — and still never reach the provider.
+    for (const raw of [{ id: 1 }, ['a'], NaN, Infinity]) {
+      const { cleaned_args, audit_fields } = filterArgs([{ model: 'm', user_id: raw }]);
+      expect(cleaned_args[0]).not.toHaveProperty('user_id');
+      expect(audit_fields.user_id).toBeUndefined();
+    }
+  });
+
+  it('still drops a non-string value of the OTHER audit fields', () => {
+    // The coercion is the signed principal's alone: request_id/region/source
+    // and the network fields keep the drop behaviour they always had.
+    const { cleaned_args, audit_fields } = filterArgs([{ model: 'm', region: 7 }]);
+    expect(cleaned_args[0]).not.toHaveProperty('region');
+    expect(audit_fields.region).toBeUndefined();
   });
 
   it('leaves a provider parameter with a similar name alone', () => {

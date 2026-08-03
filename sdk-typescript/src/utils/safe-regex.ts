@@ -101,6 +101,15 @@ function hasNestedRepetition(pattern: string): boolean {
       const rlen = repAt(i + 1);
       // Growth quantifier on a group that contains a quantifier OR an alternation.
       if (rlen > 0 && (frame.rep || frame.alt)) return true;
+      // A FIXED {n} does not grow the match, but applied to a group that
+      // contains its own growth quantifier or alternation it multiplies that
+      // group's backtracking states n times over — `(.*a){20}b` stacks twenty
+      // independent `.*` engines against one impossible suffix and stalls for
+      // minutes. `{1}` and a fixed brace on a plain group stay allowed.
+      if (frame.rep || frame.alt) {
+        const fixed = /^\{(\d+)\}/.exec(pattern.slice(i + 1));
+        if (fixed && parseInt(fixed[1], 10) >= 2) return true;
+      }
       const parent = stack[stack.length - 1];
       parent.rep = parent.rep || frame.rep || rlen > 0;
       parent.alt = parent.alt || frame.alt;

@@ -66,6 +66,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .. import sender as _sender
 from ..agent_policy import check_steps, unrecognized_step_action_meta
+from ..binding_report import record_binding
 from ..config import try_get_config
 from ..events import (
     blocked_call_error,
@@ -688,7 +689,10 @@ def _conversable_agent_class() -> Any:
     """The class every tool-executing agent on this framework inherits from."""
     try:
         from autogen import ConversableAgent  # type: ignore
-    except Exception as exc:  # pragma: no cover - exercised only without ag2
+
+        record_binding("autogen", "autogen.ConversableAgent")
+    except Exception as exc:
+        record_binding("autogen", "autogen.ConversableAgent", exc)
         raise ImportError(
             "[obsvr] install_tool_gate() needs the ag2 distribution "
             "(`pip install \"ag2>=0.3.2,<1.0\"`). ag2 1.0 removed "

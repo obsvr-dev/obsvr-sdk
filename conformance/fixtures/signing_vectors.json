@@ -998,5 +998,70 @@
         "digest": "3ced7e4802a8173cad2e27fbe6d2c2b4340a802508eb621f1c5d6dbffab95dc0"
       }
     ]
+  },
+  "user_id_coercion": {
+    "description": "A non-string user_id is coerced to ONE canonical string at each SDK's event boundary, BEFORE anything stores or signs it, because the two runtimes do not stringify scalars alike (str(1.0) is '1.0' where String(1.0) is '1'; str(True) is 'True' where JS prints 'true') and a JSON export destroys the information the other runtime would need to reproduce the emitter's rendering (the literal 1.0 parses to the number 1). The canonical form is the ECMAScript scalar rendering the canonical-JSON machinery already uses: booleans as the JSON literals, integers exact, finite floats in shortest ECMAScript form. Non-scalars and non-finite numbers are treated as ABSENT rather than sealed as a rendering only one language can recompute, and an absent value stays absent (the decision digest's presence byte keeps absent distinct from empty). Each case: `raw` is the caller-supplied value as JSON, `canonical` the one string both boundaries must mint for it, `digest` the format-3 decision digest over {user_id: canonical} with every other field absent. Producers: sdk-python/obsvr/events.py (_principal_string), sdk-typescript/src/proxy/filters/filter.ts. A separate top-level section, not new `events` entries, so the cross-CLI parity harness's export (built from `events`) is unchanged.",
+    "cases": [
+      {
+        "id": "integer_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "raw": 123,
+        "canonical": "123",
+        "digest": "bdbc4871ccc24d8c80c5172248cd2bf8c876062581cd139c8d32fbfcdc60ff94"
+      },
+      {
+        "id": "whole_valued_float_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "raw": 1.0,
+        "canonical": "1",
+        "digest": "e47d0e59ae4eff103289b28d3cf41175013a37552b3e8f5948969f2172167318"
+      },
+      {
+        "id": "fractional_float_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "raw": 1.5,
+        "canonical": "1.5",
+        "digest": "dad5a08a51abc42b3943ceeb65be595c0072c77424852fd9d58affc97e1e8247"
+      },
+      {
+        "id": "boolean_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "raw": true,
+        "canonical": "true",
+        "digest": "ac880be4cda6c2ccc0faf76026ffe5661d3160eeba47860ce58d1c7e8848e2ee"
+      },
+      {
+        "id": "negative_zero_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "raw": -0.0,
+        "canonical": "0",
+        "digest": "6a2ee46b846afbfd204fea7102b2c3dea48b5a2ce935c273fa9b91961638b5a9"
+      },
+      {
+        "id": "exponent_threshold_user_id",
+        "sdk_support": {
+          "ts": "required",
+          "py": "required"
+        },
+        "raw": 1e16,
+        "canonical": "10000000000000000",
+        "digest": "0d10e249f2993884909ef9d4e8326a29580a81c2287d7d58ee6de6261053a46b"
+      }
+    ]
   }
 }

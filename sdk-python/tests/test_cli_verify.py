@@ -77,6 +77,20 @@ def test_valid_chain_with_api_key_exits_0(tmp_path, capsys):
     assert "2 signature(s) recomputed" in out
 
 
+def test_success_banner_states_the_preimage_boundary(tmp_path, capsys):
+    """The banner must say what the format-3 preimage covers (content, order,
+    the eight decision/attribution fields) and what it does not (tenant_id and
+    the other fields sealed only by the server countersignature)."""
+    assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", API_KEY]) == 0
+    out = capsys.readouterr().out
+    assert "does NOT cover the decision" not in out
+    for covered in ("action_taken", "rule_id", "policy_version", "user_id"):
+        assert covered in out
+    assert "does NOT cover tenant_id" in out
+    for uncovered in ("token", "metadata", "operation", "content_provenance"):
+        assert uncovered in out
+
+
 def test_tampered_content_with_api_key_exits_1(tmp_path, capsys):
     chain = _chain()
     chain[1]["prompt"] = "tampered"
@@ -105,6 +119,34 @@ def test_broken_prev_sig_fails_keyless(tmp_path, capsys):
     chain[1]["prev_sig"] = "0" * 64
     assert _run([_write(tmp_path, "p.json", chain)]) == 1
     assert "prev_sig does not link" in capsys.readouterr().err
+
+
+def test_unsigned_insertion_without_prev_sig_fails_keyless(tmp_path, capsys):
+    """An appended event with a plausible seq_no, a well-formed sdk_sig and NO
+    prev_sig is an insertion, and the keyless tier must refuse it: every event
+    after the first has to link to its predecessor."""
+    chain = _chain()
+    chain.append(
+        {
+            "sdk_session_id": VECTORS["session_id"],
+            "seq_no": chain[-1]["seq_no"] + 1,
+            "timestamp_sdk": chain[-1]["timestamp_sdk"] + 1,
+            "prompt": "inserted",
+            "response": "",
+            "sdk_sig": "a" * 64,
+        }
+    )
+    assert _run([_write(tmp_path, "ins.json", chain)]) == 1
+    assert "missing prev_sig" in capsys.readouterr().err
+
+
+def test_first_event_legitimately_carries_no_prev_sig(tmp_path, capsys):
+    """The chain start is the one position with no predecessor to link to, so
+    an absent prev_sig there is legitimate, not an insertion."""
+    chain = _chain()
+    chain[0] = {k: v for k, v in chain[0].items() if k != "prev_sig"}
+    assert _run([_write(tmp_path, "v.json", chain)]) == 0
+    assert "STRUCTURAL verification passed" in capsys.readouterr().out
 
 
 def test_timestamp_regression_fails_keyless(tmp_path, capsys):
@@ -168,6 +210,78 @@ def test_unrecognized_shape_exits_2(tmp_path, capsys):
 def test_unreadable_file_exits_2(tmp_path, capsys):
     assert _run([str(tmp_path / "absent.json")]) == 2
     assert "Cannot read" in capsys.readouterr().err
+
+
+# ── every break in one run, and --json ──────────────────────────────────────
+
+
+def _two_break_chain():
+    """Two independent tampers: a content edit at event 0 and a forged
+    signature at event 1."""
+    chain = _chain()
+    chain[0]["prompt"] = "tampered"
+    chain[1]["sdk_sig"] = "0" * 64
+    return chain
+
+
+def test_every_break_is_rendered_not_just_the_first(tmp_path, capsys):
+    assert _run([_write(tmp_path, "mb.json", _two_break_chain()), "--api-key", API_KEY]) == 1
+    err = capsys.readouterr().err
+    assert "Signature mismatch at event 0 (event index 0)" in err
+    assert "Signature mismatch at event 1 (event index 1)" in err
+    assert err.index("(event index 0)") < err.index("(event index 1)")
+
+
+def test_json_reports_the_full_break_list(tmp_path, capsys):
+    code = _run(
+        [_write(tmp_path, "mb.json", _two_break_chain()), "--api-key", API_KEY, "--json"]
+    )
+    assert code == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "content+chain"
+    assert doc["valid"] is False
+    assert doc["exitCode"] == 1
+    (session,) = doc["sessions"]
+    assert [b["index"] for b in session["breaks"]] == [0, 1]
+    # First-break fields stay what they always were.
+    assert session["brokenAt"] == 0
+    assert session["reason"] == "Signature mismatch at event 0"
+
+
+def test_json_on_a_valid_keyed_chain(tmp_path, capsys):
+    assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", API_KEY, "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "content+chain"
+    assert doc["valid"] is True
+    assert doc["eventsVerified"] == 2
+    assert doc["exitCode"] == 0
+    assert doc["sessions"][0]["breaks"] == []
+
+
+def test_json_keyless_is_the_structural_tier(tmp_path, capsys):
+    assert _run([_write(tmp_path, "v.json", _chain()), "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "structural"
+    assert doc["valid"] is True
+    assert doc["events"] == 2
+    assert doc["exitCode"] == 0
+
+
+def test_json_keeps_the_incomplete_status_and_allow_gaps_mapping(tmp_path, capsys):
+    """Exit 3 (valid but incomplete) and the --allow-gaps 3->0 mapping are the
+    exit-code contract; --json must carry them unchanged."""
+    path = _write(tmp_path, "gap.json", _gap_chain())
+    assert _run([path, "--api-key", GAP_API_KEY, "--json"]) == 3
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["valid"] is True
+    assert doc["exitCode"] == 3
+    assert doc["eventsDeclaredLost"] == 1234
+
+    assert _run([path, "--api-key", GAP_API_KEY, "--json", "--allow-gaps"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["valid"] is True
+    assert doc["allowGaps"] is True
+    assert doc["exitCode"] == 0
 
 
 # ── the bundle shapes the TS CLI accepts, in its order ──────────────────────

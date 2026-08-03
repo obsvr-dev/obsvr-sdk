@@ -52,6 +52,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from .. import sender as _sender
+from ..binding_report import record_binding
 from ..config import try_get_config
 from ..events import emit_event, infer_provider_from_model
 from ..deobfuscate import redact_for_storage
@@ -64,7 +65,16 @@ try:  # pragma: no cover - exercised only when llama-index-core is installed
     from llama_index.core.callbacks.base_handler import (  # type: ignore
         BaseCallbackHandler,
     )
-except ImportError:  # shim base class so import never fails
+
+    record_binding(
+        "llamaindex", "llama_index.core.callbacks.base_handler.BaseCallbackHandler"
+    )
+except ImportError as _exc:  # shim base class so import never fails
+    record_binding(
+        "llamaindex",
+        "llama_index.core.callbacks.base_handler.BaseCallbackHandler",
+        _exc,
+    )
 
     class BaseCallbackHandler:  # type: ignore
         def __init__(

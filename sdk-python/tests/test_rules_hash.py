@@ -103,3 +103,82 @@ def test_derive_floor_version_stamps_the_pinned_hash():
     from obsvr.rules import derive_floor_version
 
     assert derive_floor_version(_ORDERING["rules"]) == _ORDERING["expected"]["floor_hash"]
+
+
+# --- Resolution binding ------------------------------------------------------
+#
+# A ruleset that DECLARES its conflict-resolution mode gets the mode committed
+# into policy_version, and the hash then commits to exactly what can change a
+# decision under that mode: evaluation order under first_match, the sorted set
+# under deny_wins. Undeclared rulesets keep the historical bytes, so nothing
+# already deployed restamps. Pinned cross-language by the fixture's
+# resolution_binding section.
+
+_BINDING = FIXTURE["resolution_binding"]
+
+
+def _binding_rules():
+    return [
+        PolicyRule(
+            id=r["id"], name=r["name"], enabled=r["enabled"], action=r["action"],
+            type=r["type"], conditions=r["conditions"],
+        )
+        for r in _BINDING["rules"]
+    ]
+
+
+def test_undeclared_hash_is_order_insensitive_and_pinned():
+    expected = _BINDING["expected"]["undeclared_hash"]
+    assert derive_policy_version(_binding_rules()) == expected
+    assert derive_policy_version(list(reversed(_binding_rules()))) == expected
+
+
+def test_first_match_hash_commits_to_evaluation_order():
+    listed = derive_policy_version(_binding_rules(), "first_match")
+    reversed_ = derive_policy_version(list(reversed(_binding_rules())), "first_match")
+    assert listed == _BINDING["expected"]["first_match_listed_order"]
+    assert reversed_ == _BINDING["expected"]["first_match_reversed_order"]
+    assert listed != reversed_
+
+
+def test_deny_wins_hash_is_order_insensitive_and_pinned():
+    expected = _BINDING["expected"]["deny_wins_hash"]
+    assert derive_policy_version(_binding_rules(), "deny_wins") == expected
+    assert derive_policy_version(list(reversed(_binding_rules())), "deny_wins") == expected
+
+
+def test_a_declared_mode_never_shares_a_version_with_the_undeclared_set():
+    hashes = {
+        derive_policy_version(_binding_rules()),
+        derive_policy_version(_binding_rules(), "first_match"),
+        derive_policy_version(_binding_rules(), "deny_wins"),
+    }
+    assert len(hashes) == 3
+
+
+def test_unknown_resolution_derives_unknown_never_a_hash():
+    # Provenance stays open: a typo'd declaration must not stamp a hash that
+    # LOOKS like a committed version, and must not raise out of a live path.
+    assert derive_policy_version(_binding_rules(), "deny-wins") == "unknown"
+
+
+def test_order_commitment_disarmed_is_caught(monkeypatch):
+    """Sibling non-vacuity probe: disarm the order-commitment (hash the
+    first_match projections sorted by id, the way the undeclared path does)
+    and the orderings-differ assertion above must go red."""
+    import obsvr.rules as rules_mod
+
+    def sorted_regardless(enabled, resolution):
+        ordered = sorted(enabled, key=lambda r: rules_mod._utf16_order(r.id))
+        return {
+            "resolution": resolution,
+            "rules": [rules_mod._canonical_rule(r) for r in ordered],
+        }
+
+    monkeypatch.setattr(rules_mod, "_version_document", sorted_regardless)
+    listed = derive_policy_version(_binding_rules(), "first_match")
+    reversed_ = derive_policy_version(list(reversed(_binding_rules())), "first_match")
+    import pytest
+
+    with pytest.raises(AssertionError):
+        assert listed != reversed_

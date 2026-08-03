@@ -55,7 +55,7 @@ import { getCurrentSubject } from "./subject.js";
 import { presidioScan, presidioRedactText, presidioRedactArgs } from "../policy/presidio.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
 import {
-  ENGINE_VERSION,
+  engineVersionFor,
   buildDecisionInput,
   computeDecisionInputHash,
   sha256Hex,
@@ -67,7 +67,8 @@ import {
 } from "../policy/external-backend.js";
 import type { ExternalBackendRecord } from "../policy/external-backend.js";
 import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js";
-import { requestApproval, revalidateApproval } from "../policy/approvals.js";
+import { awaitApproval, requestApproval, revalidateApproval } from "../policy/approvals.js";
+import { monitorConversionApplies } from "../governance/evaluate.js";
 import { resolveCallCost, resolveCostPolicy, costMetadata } from "../governance/cost.js";
 import { recordTokenUsageForRules, stampCost } from "../governance/metering.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
@@ -159,8 +160,14 @@ type ComplianceCtx = {
   blockedTypes: string[];
   ruleId?: string;
   policyReason?: string;
-  /** What the shadow rules would have done (EV-21); never affects the decision. */
-  shadowOutcome?: { rule_id: string; would: "block" | "redact" | "flag"; reason: string } | null;
+  /** What the shadow rules would have done (EV-21), or the would-be verdict
+   * of a monitor-mode conversion; never affects the decision. */
+  shadowOutcome?: {
+    rule_id: string;
+    would: "block" | "redact" | "flag";
+    reason_code?: string;
+    reason: string;
+  } | null;
   /** SHA-256 of the canonical decision-input document (ADR-2); additive. */
   decisionInputHash?: string;
   /** Rules-engine semantics version ("obsvr-rules/<N>"); additive. */
@@ -706,7 +713,7 @@ function buildAuditEvent(
   if (compliance === DEFAULT_COMPLIANCE) {
     compliance = {
       ...DEFAULT_COMPLIANCE,
-      policyVersion: derivePolicyVersion(config.policyRules ?? []),
+      policyVersion: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
     };
   }
 
@@ -810,8 +817,10 @@ function buildAuditEvent(
       config.default_region ||
       "unknown",
 
-    // Identity fields
-    user_id: auditFields.user_id || options.user_id || undefined,
+    // Identity fields — per-call audit fields win, then wrap-time options,
+    // then the ambient useSubject() scope (the same resolution the
+    // integration event builder and the session-taint key already use).
+    user_id: auditFields.user_id || options.user_id || getCurrentSubject()?.user_id || undefined,
 
     // Network fields (passed through to server for masking)
     client_ip: auditFields.client_ip || undefined,
@@ -1036,7 +1045,7 @@ function wrapStreamingIterator(
   if (compliance === DEFAULT_COMPLIANCE) {
     compliance = {
       ...DEFAULT_COMPLIANCE,
-      policyVersion: derivePolicyVersion(ctx.config.policyRules ?? []),
+      policyVersion: derivePolicyVersion(ctx.config.policyRules ?? [], ctx.config.ruleResolution),
     };
   }
   return (async function* () {
@@ -1147,7 +1156,7 @@ function wrapStreamingIterator(
             options.region ||
             config.default_region ||
             "unknown",
-          user_id: auditFields.user_id || options.user_id || undefined,
+          user_id: auditFields.user_id || options.user_id || getCurrentSubject()?.user_id || undefined,
           client_ip: auditFields.client_ip || undefined,
           user_agent: auditFields.user_agent || undefined,
           // The destination, not the client's shape — see PathContext.
@@ -1384,7 +1393,7 @@ async function governCall(
     const shouldAudit = shouldSample(config.sample_rate);
 
     // Derive policy version from active rules - stamped on every event emitted for this call.
-    const policyVersion = derivePolicyVersion(config.policyRules ?? []);
+    const policyVersion = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
     // The last user turn is what every builtin gate decides on, and it was
     // being re-walked from the raw request eight times per governed call. The
@@ -1499,6 +1508,29 @@ async function governCall(
         ...(resolvedTaintTenant !== undefined ? { tenant_id: resolvedTaintTenant } : {}),
       };
       taintKey = deriveSessionKey(taintIdentity);
+      // 0.4 Required principal (opt-in): an unattributed call is refused
+      //     before any scanning layer runs — the refusal is about
+      //     attribution, not content. Runs after the enforcement-integrity
+      //     gate so a paused project keeps its own verdict and rule id. The
+      //     identity read is `resolvedTaintUser` — the same per-call
+      //     metadata → wrap-time option → ambient-subject resolution the
+      //     taint key and the signed event use, so the channel that refuses
+      //     is the channel that would have attributed. An empty string is a
+      //     supplied principal; only an absent one refuses (Python parity).
+      if (
+        actionTaken !== "blocked" &&
+        config.requirePrincipal === true &&
+        resolvedTaintUser == null
+      ) {
+        actionTaken = "blocked";
+        actionReason = "policy_violation";
+        actionSource = "policy_rules";
+        ruleIdOverride = "sdk:principal_required";
+        policyReasonOverride =
+          "requirePrincipal is set and the call carries no user_id on the enforcing channel";
+        reasonCode = ReasonCode.PRINCIPAL_REQUIRED;
+        debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
+      }
       if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
         const verdict = evaluateSessionTaint(taintKey, taintCfg);
         if (verdict.enforcement !== "none") {
@@ -1766,6 +1798,7 @@ async function governCall(
         };
         const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx, {
           failMode: config.failMode,
+          resolution: config.ruleResolution,
         });
         approvalClaim = result.approval_granted;
         ruleId = result.rule_id;
@@ -1791,6 +1824,14 @@ async function governCall(
           };
         }
         if (result.decision === "block") {
+          // Saved so the blocking approval wait below can lift the block
+          // without inventing a state: on approval the pipeline resumes
+          // exactly where it stood before this rule fired.
+          const preBlockState = [actionTaken, actionReason, actionSource] as [
+            typeof actionTaken,
+            typeof actionReason,
+            typeof actionSource,
+          ];
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "policy_rules";
@@ -1810,6 +1851,51 @@ async function governCall(
               // "anything that trips this rule".
               action_hash: result.action_hash,
             });
+            // Blocking wait (opt-in, approvalWaitMs > 0): HOLD this call
+            // while the grant channel is polled, instead of refusing and
+            // passing on a retry. Skipped in monitor mode — a verdict there
+            // is recorded, not enforced, so there is nothing to hold the
+            // call for. Only an explicit "approved" lifts the block:
+            // timeout, degradation, and any wait-internal failure all leave
+            // it standing (Python parity).
+            const waitMs = config.approvalWaitMs ?? 0;
+            if (waitMs > 0 && (config.enforcementMode ?? "enforce") !== "monitor") {
+              const waitClaim = {
+                ruleId: result.rule_id ?? "",
+                userId: typeof meta.user_id === "string" ? meta.user_id : undefined,
+                ruleHash: result.rule_hash,
+                actionHash: result.action_hash,
+              };
+              let waitVerdict: "approved" | "timeout" | "unavailable";
+              try {
+                waitVerdict = await awaitApproval(config, waitClaim, {
+                  timeoutMs: waitMs,
+                  pollMs: config.approvalPollMs ?? 5000,
+                });
+              } catch {
+                waitVerdict = "unavailable";
+              }
+              if (waitVerdict === "approved") {
+                // The grant landed while the call was held. Lift the block
+                // and hand the claim to the end-of-pipeline re-validation,
+                // so a grant that expires or is revoked between here and the
+                // outbound request is caught before it is spent.
+                [actionTaken, actionReason, actionSource] = preBlockState;
+                approvalClaim = waitClaim;
+                reasonCode = ReasonCode.APPROVAL_GRANTED;
+                policyReason = `approval_granted_after_wait: ${result.rule_id}`;
+              } else if (waitVerdict === "timeout") {
+                // Its own registry code: a hold that expired is a different
+                // fact from "refused; ask and retry".
+                reasonCode = ReasonCode.APPROVAL_TIMEOUT;
+                policyReason = `approval_wait_timeout: no grant within ${waitMs}ms (${result.reason})`;
+              } else {
+                // Degraded mid-wait (kill switch / staleness) or a
+                // wait-internal failure: the APPROVAL_REQUIRED block stands,
+                // with the abort on the record.
+                policyReason = `${result.reason} (approval_wait_aborted: ${waitVerdict})`;
+              }
+            }
           }
         } else if (result.decision === "redact" && actionTaken !== "redacted") {
           // A rules-engine "redact" verdict used to be dropped here: only the
@@ -2089,7 +2175,7 @@ async function governCall(
             provider,
             model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
             environment: config.environment,
-            userId: audit_fields.user_id || ctx.options.user_id || undefined,
+            userId: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
             serviceName:
               audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
             tenantId:
@@ -2179,10 +2265,11 @@ async function governCall(
       degradedReason: degraded.reason,
       target: "request",
       evaluatedText: decisionEvaluatedText,
-      userId: audit_fields.user_id || ctx.options.user_id || undefined,
+      userId: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
       serviceName:
         audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
       hook: hookDisposition,
+      engineVersion: engineVersionFor(config.ruleResolution),
     });
 
     // One reason-code resolution for the event AND the thrown error: the
@@ -2194,6 +2281,26 @@ async function governCall(
       (actionReason === "none" || actionReason === "customer_override"
         ? ReasonCode.PERMITTED
         : resolveReasonCode({ action_reason: actionReason, action_source: actionSource }));
+
+    // Monitor mode: the single conversion point, after the decision is final
+    // and before the compliance context is built. A block becomes an allow
+    // while shadowOutcome — the field documented as never decision-affecting
+    // — carries the would-be verdict with the same rule_id and reason_code an
+    // enforcing run records. The deciding layer's classification
+    // (actionReason, actionSource, blockedTypes) stays on the event. Layer 0
+    // is re-derived inside monitorConversionApplies; canary leaks are carved
+    // out here (the shared evaluate() surface has no canary layer).
+    let monitorConverted = false;
+    if (actionTaken === "blocked" && !canaryFloor && monitorConversionApplies(config, degraded)) {
+      shadowOutcome = {
+        rule_id: ruleId ?? "",
+        would: "block",
+        reason_code: resolvedReasonCode,
+        reason: policyReason ?? "",
+      };
+      actionTaken = "allowed";
+      monitorConverted = true;
+    }
 
     // Build compliance context - shared by all events in this call
     const compliance: ComplianceCtx = {
@@ -2209,7 +2316,7 @@ async function governCall(
       policyReason,
       shadowOutcome,
       decisionInputHash: computeDecisionInputHash(decisionInput),
-      engineVersion: ENGINE_VERSION,
+      engineVersion: engineVersionFor(config.ruleResolution),
       externalBackend,
     };
 
@@ -2217,7 +2324,10 @@ async function governCall(
     // above; sampling only thins the record of *allowed* calls. Blocked/redacted
     // (enforcement actions) and errors are always recorded, so a low sample_rate
     // never hides a policy action.
-    const auditThisCall = shouldAudit || compliance.actionTaken !== "allowed";
+    // A monitor-converted event is enforcement evidence, not a plain allowed
+    // call: it is exempt from allowed-call sampling so the would-be verdict
+    // is never dropped, even at sample_rate=0 (Python parity).
+    const auditThisCall = shouldAudit || compliance.actionTaken !== "allowed" || monitorConverted;
 
     // 3. Block: emit a forensic audit record, then throw.
     //    Prompt is stored in redacted form (typed placeholders, not raw PII).
@@ -2254,7 +2364,7 @@ async function governCall(
           ctx.options.region ||
           config.default_region ||
           "unknown",
-        user_id: audit_fields.user_id || ctx.options.user_id || undefined,
+        user_id: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
         client_ip: audit_fields.client_ip || undefined,
         user_agent: audit_fields.user_agent || undefined,
         // The destination, not the client's shape — see PathContext. A blocked
@@ -2787,7 +2897,7 @@ function createAuditedToolRunnerMethod(
           // `destructiveTools`, and the record called it allowed.
           compliance: {
             event_type: "tool_call",
-            policy_version: derivePolicyVersion(config.policyRules ?? []),
+            policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
             // Omitting the field would not have helped either way: the ingest
             // schema defaults an absent action_taken, so the server would mint
             // "allowed" one layer down.

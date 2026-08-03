@@ -98,5 +98,42 @@
       "set_hash": "f564c404620ec8c9",
       "floor_hash": "f564c404620ec8c9"
     }
+  },
+  "resolution_binding": {
+    "note": "A DECLARED conflict-resolution mode is committed into the hash, and the hash then commits to exactly what can change a decision under that mode: first_match hashes the projections in evaluation order (list position decides there), deny_wins sorts them by id (position cannot decide, so a pure reordering keeps the version). Undeclared rulesets keep the historical order-insensitive bytes pinned above, so a deployed fleet never sees its policy_version move under an unchanged policy and a mixed-language fleet never stamps two versions for one policy. The two rules below decide differently by order under first_match - the topic_allow pre-empts the block when listed first - which is exactly why their two orderings must not share a policy_version.",
+    "rules": [
+      {
+        "id": "rb-allow-support",
+        "name": "Allow support topics",
+        "enabled": true,
+        "action": "flag",
+        "type": "topic_allow",
+        "conditions": {
+          "topics": [
+            "billing"
+          ]
+        }
+      },
+      {
+        "id": "rb-block-billing",
+        "name": "Block billing",
+        "enabled": true,
+        "action": "block",
+        "type": "keyword",
+        "conditions": {
+          "keywords": [
+            "billing"
+          ]
+        }
+      }
+    ],
+    "expected": {
+      "undeclared_hash": "be1e1ad5b44e9fc4",
+      "undeclared_hash_note": "Identical for both orderings: the historical bytes, preserved.",
+      "first_match_listed_order": "46fb921dcaed4612",
+      "first_match_reversed_order": "bced57254d1d46e5",
+      "deny_wins_hash": "0f3a19a3e256dc7a",
+      "deny_wins_hash_note": "Identical for both orderings: under deny_wins a reorder changes no decision, and the version says so."
+    }
   }
 }

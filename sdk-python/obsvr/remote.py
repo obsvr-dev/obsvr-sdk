@@ -174,7 +174,7 @@ def _signal_rejected_rules(config: ResolvedConfig, rules_raw: list, valid: list)
                 applies_to=r.get("applies_to"), mode=r.get("mode"),
             )
             for r in valid
-        ])
+        ], getattr(config, "rule_resolution", None))
         emit_event(
             config,
             provider="unknown",
@@ -234,7 +234,9 @@ def _signal_policy_signature_invalid(config: ResolvedConfig, reason: str) -> Non
             latency_ms=0,
             compliance={
                 "event_type": "policy_flag",
-                "policy_version": derive_policy_version(config.policy_rules or []),
+                "policy_version": derive_policy_version(
+                    config.policy_rules or [], getattr(config, "rule_resolution", None)
+                ),
                 "action_taken": "allowed",
                 "action_reason": "policy_violation",
                 "action_source": "builtin",
@@ -291,8 +293,11 @@ def poll_once(config: ResolvedConfig) -> None:
         "X-Obsvr-Sdk": f"python/{SDK_VERSION}",
         "X-Obsvr-Instance-Id": _SDK_INSTANCE_ID,
         "X-Obsvr-Capabilities": SDK_CAPABILITIES,
+        # The declared-mode hash: what this SDK is actually evaluating under,
+        # so the server compares against the version the decisions stamp.
         "X-Obsvr-Rules-Hash": derive_policy_version(
-            getattr(config, "policy_rules", None) or []
+            getattr(config, "policy_rules", None) or [],
+            getattr(config, "rule_resolution", None),
         ),
         "X-Obsvr-Degraded": "true" if degraded.get("degraded") else "false",
         "X-Obsvr-Counters": counters,
@@ -600,6 +605,60 @@ def request_approval(
             pass  # best-effort
 
     threading.Thread(target=_send, name="obsvr-approval-req", daemon=True).start()
+
+
+def await_approval(
+    config: ResolvedConfig,
+    claim: Dict[str, Any],
+    *,
+    timeout_s: float,
+    poll_s: float,
+) -> str:
+    """Block until a grant covering ``claim`` appears, or the wait resolves
+    against the caller. The claim carries the same keys ``revalidate_approval``
+    reads: ``rule_id``, ``user_id``, ``rule_hash``, ``action_hash``.
+
+    Returns exactly one of:
+
+    - ``"approved"``    - an unexpired grant covering the claim is in the store.
+    - ``"timeout"``     - the deadline passed with no covering grant.
+    - ``"unavailable"`` - enforcement degraded mid-wait (project paused / key
+      revoked, or fail-closed staleness): waiting longer cannot produce a
+      grant this SDK would be entitled to spend.
+
+    The wait happens in the caller's thread, in the agent process, which can
+    afford human timescales — it is unrelated to the pre-call hook and spends
+    none of its ``hook_timeout_ms`` budget. Grants are refreshed by re-driving
+    the same /policies poll the daemon runs, so a pinned deployment's policy
+    signature verification and the grant-shape validation both still stand
+    between the network and the grant store: the wait adds no second, weaker
+    way in. (A dedicated per-request approval-status endpoint would poll
+    cheaper; the ingest API exposes none today, so the grant channel is the
+    channel.)
+
+    Never raises, and never answers ``"approved"`` on anything but a live
+    grant: the caller holds a block that only an explicit approval may lift,
+    so every internal failure resolves to a non-approved verdict. Callers must
+    still re-validate the grant after the wait (``revalidate_approval``) —
+    a grant that expires between this return and the outbound request must
+    not be spent.
+    """
+    try:
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        while True:
+            # The daemon poll may already have applied the grant; check the
+            # store before spending a poll interval.
+            if revalidate_approval(claim):
+                return "approved"
+            if is_enforcement_degraded(config)["degraded"]:
+                return "unavailable"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "timeout"
+            time.sleep(min(max(float(poll_s), 0.05), remaining))
+            poll_once(config)
+    except Exception:  # noqa: BLE001 - the wait must resolve, never raise
+        return "timeout"
 
 
 def _reset_remote() -> None:

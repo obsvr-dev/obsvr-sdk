@@ -43,10 +43,24 @@ import {
   type ToolContentDescriptor,
 } from "../policy/tool-content-hash.js";
 import { declaresDestructive } from "../policy/capability-hints.js";
+import { getCurrentSubject } from "../proxy/subject.js";
 import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "obsvr_tool";
+
+/**
+ * Answered `true` by the Proxy every governed tool IS, and checked before
+ * wrapping, so governing twice yields one gate: without it a second wrap
+ * re-gates the first proxy's gated function and every invocation is
+ * evaluated and audited twice. The marker is served by the proxy's `get`
+ * trap only — it is never written onto the caller's original object, and a
+ * tool whose shape resolved no execute key is returned unchanged and
+ * unmarked, so a later legitimate attempt still runs rather than being
+ * refused by a claim no gate backs. `Symbol.for` so two copies of the SDK
+ * in one process still recognize each other's proxies.
+ */
+const GOVERNED_TOOL_MARKER = Symbol.for("obsvr.governedTool");
 
 /**
  * Names of every tool a pre-execution gate speaks for — the wrapper below, or
@@ -188,6 +202,10 @@ function safeJson(v: unknown): string {
  */
 export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T {
   const t = tool as unknown as AnyTool;
+  // Governing an already-governed proxy is a no-op returning it unchanged:
+  // re-gating the first proxy's gated function would evaluate and audit
+  // every invocation twice.
+  if ((t as Record<PropertyKey, unknown>)[GOVERNED_TOOL_MARKER] === true) return tool;
   const execKey = resolveExecKey(t);
   if (!execKey) return tool;
 
@@ -248,6 +266,47 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             options,
           });
           throw new Error(`[obsvr] Tool blocked by agent policy: ${toolName}`);
+        }
+      }
+
+      // 1.2) Required principal (opt-in): an unattributed tool call is
+      // refused before any scanning layer runs — the refusal is about
+      // attribution, not content. The identity read here is the one the
+      // taint key and the emitted events resolve: per-call metadata, then
+      // the wrap-time option, then the ambient subject. An empty string is
+      // a supplied principal; only an absent one refuses (Python parity:
+      // the same gate inside the shared pre-call pipeline).
+      if (config.requirePrincipal === true) {
+        const identityMeta = (options.metadata ?? {}) as Record<string, unknown>;
+        const principal =
+          identityMeta.user_id ?? options.user_id ?? getCurrentSubject()?.user_id;
+        if (principal == null) {
+          emitIntegrationEvent({
+            config,
+            provider: "unknown",
+            model: "unknown",
+            operation: "tool.policy.tool_blocked",
+            source: SOURCE,
+            prompt: "",
+            response: "",
+            success: false,
+            metadata: {
+              tool_name: toolName,
+              reason: "principal_required",
+              ...toolContentMeta,
+            },
+            compliance: {
+              ...BLOCKED_COMPLIANCE,
+              reason_code: ReasonCode.PRINCIPAL_REQUIRED,
+              rule_id: "sdk:principal_required",
+              policy_reason:
+                "requirePrincipal is set and the call carries no user_id on the enforcing channel",
+            },
+            options,
+          });
+          throw new Error(
+            `[obsvr] Tool blocked: no caller principal supplied (requirePrincipal): ${toolName}`,
+          );
         }
       }
 
@@ -379,6 +438,10 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
 
   return new Proxy(t, {
     get(target, prop, receiver) {
+      // The idempotence marker: answered by the trap, never written onto the
+      // caller's object — the proxy IS the installed gate, so its existence
+      // is the verification the marker claims.
+      if (prop === GOVERNED_TOOL_MARKER) return true;
       if (prop === execKey) return gated;
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;

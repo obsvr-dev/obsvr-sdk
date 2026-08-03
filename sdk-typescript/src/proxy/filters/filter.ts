@@ -86,8 +86,20 @@ function filterObject(
           }
           break;
         case "user_id":
+          // The signed principal: coerce scalars to the one canonical string
+          // both offline verifiers recompute identically (String(1.0) === "1",
+          // String(true) === "true" — the same strings the Python boundary
+          // mints via its ECMAScript-rendering rules). Non-scalars and
+          // non-finite numbers are treated as absent rather than sealed as a
+          // rendering no other consumer can recompute; user_id is inside the
+          // format-3 decision digest, so what is stored here is what is signed.
           if (typeof value === "string") {
             audit.user_id = value;
+          } else if (
+            typeof value === "boolean" ||
+            (typeof value === "number" && Number.isFinite(value))
+          ) {
+            audit.user_id = String(value);
           }
           break;
         case "client_ip":

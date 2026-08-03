@@ -64,9 +64,10 @@ def record_binding(
 def integration_bindings() -> Dict[str, Dict[str, Dict[str, Any]]]:
     """Every recorded bind, keyed by integration then symbol.
 
-    Only integrations whose module has actually been imported appear — recording
-    happens at import time, so an integration nobody imported has nothing to
-    report and saying otherwise would be a guess.
+    Only integrations whose bind path has actually run appear — module-level
+    binds record at import time, and call-time binds (a gate install probing
+    its framework) record when that call runs. An integration nobody touched
+    has nothing to report and saying otherwise would be a guess.
     """
     return {name: dict(symbols) for name, symbols in _BINDINGS.items()}
 

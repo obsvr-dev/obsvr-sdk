@@ -38,6 +38,7 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 - [Policy engine](#policy-engine)
 - [PII & sensitive-data detection](#pii--sensitive-data-detection)
 - [Agentic & MCP controls](#agentic--mcp-controls)
+- [Identity & attribution](#identity--attribution)
 - [Cost & budget controls](#cost--budget-controls)
 - [The record: trust & cryptographic model](#the-record-trust--cryptographic-model)
 - [What's in this repo, what isn't, and why](#whats-in-this-repo-what-isnt-and-why)
@@ -194,16 +195,62 @@ obsvr.init({
     }, // enforce | shadow
   ],
 
-  // Human-in-the-loop: a pre-call hook can pause until a human decides.
+  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
+  // and resolved by failMode on expiry — for human approval, use
+  // approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) =>
-    isHighRisk(event.prompt) ? await waitForHumanApproval(event) : "allow",
+    isHighRisk(event.prompt) ? "block" : "allow",
   hookTimeoutMs: 2000,
   failMode: "open", // 'open' (default) allows on hook/detector failure; 'closed' blocks.
                     // Floors, canary, and a failed redaction block either way.
+
+  // Human-in-the-loop: hold a require_approval block while the grant
+  // channel is polled. 0 (default) = refuse now, pass on a retry once granted.
+  approvalWaitMs: 300_000,
+  approvalPollMs: 5_000,
 });
 ```
 
+**Blocking human approval.** A rule with `require_approval` refuses when no
+grant covers the call and files a request for the dashboard's approvals queue;
+a retry passes once a human grants it. That is the default, and
+`approvalWaitMs: 0` means exactly that — no waiting. Set it above zero and the
+SDK **holds the call in-process** instead, polling the grant channel until a
+covering grant lands or the budget expires. Only an explicit, still-live grant
+lifts the hold — the grant is re-validated after the wait, so one that expires
+or is revoked mid-hold authorizes nothing — and an expired hold blocks with its
+own registry code, **`APPROVAL_TIMEOUT`**, distinct from `APPROVAL_REQUIRED` so
+a run-out hold is never conflated with a plain refusal. Degradation mid-wait
+(kill switch, fail-closed staleness) aborts the hold immediately and the block
+stands. One limitation worth knowing rather than discovering: **a denial is
+currently indistinguishable from indecision client-side.** The grant channel
+carries grants, not verdicts, so a request a human explicitly denied surfaces
+as the same `APPROVAL_TIMEOUT` as a request nobody looked at. And do not build
+this out of the hook: the pre-call hook is budgeted by `hookTimeoutMs` (2000 ms
+default) and resolves by `failMode` on expiry — at shipped defaults a hook that
+waits for a human times out and **allows**.
+
 **Shadow mode** — set `mode: 'shadow'` on any rule to evaluate it against live traffic and record a would-have outcome without altering the response. Every verdict — and every audit **event** — also carries a stable **`reason_code`** from a closed registry (alongside the free-form `reason`): the deciding layer's own fine-grained code, identical on the event and the thrown error, so downstream tooling classifies decisions without string-matching.
+
+**Rule ordering, and opting out of it.** By default rules evaluate
+**first-match in document order**, and a matched `topic_allow`
+short-circuits — so an allow rule's list position can decide the verdict, and
+reordering a ruleset can change what it blocks. That contract stays the
+default because deployed policies may depend on it. Declaring
+`ruleResolution: 'deny_wins'` (`rule_resolution="deny_wins"` in Python) opts a
+deployment out: every enforcing rule is evaluated and the **strongest action
+prevails regardless of position** — refusal over redaction over flag over
+permit, smallest rule id breaking ties — and decisions carry engine version
+`obsvr-rules/2`. The stamped `policy_version` commits to the declared
+semantics: under a declared `first_match` it commits to evaluation order, so
+two orderings that can decide differently stamp distinct versions, while
+undeclared rulesets keep their existing hash bytes. An unknown declaration is
+refused at `init()`, never silently evaluated under semantics the author did
+not choose. Two deliberate edges, both pinned in tests rather than left to be
+discovered: **shadow rules evaluate first-match regardless** of the declared
+mode, and under `deny_wins` **every quota rule meters every evaluated call**
+— order-insensitive evaluation means a call that ends blocked can still
+consume quota, where first-match stopped metering at its first match.
 
 **Catching a block.** A blocked call throws `ObsvrPolicyError` (both SDKs), carrying a stable `type`, the `reason_code`, the deciding `rule_id`, and the decision metadata — so "refused on purpose" is distinguishable from a provider outage without matching on a message. A reason category the SDK doesn't recognize (a newer control plane) yields `ObsvrUnknownPolicyError` rather than an untyped throw. The Python class subclasses `RuntimeError`, and the message string is unchanged from earlier versions, so existing `except` blocks and string matches keep working.
 
@@ -314,6 +361,75 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   for the measured state of every surface in both languages. Put a destructive
   capability behind MCP or `obsvrGovernTool`.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
+
+---
+
+## Identity & attribution
+
+Every governed call resolves a **principal** — the `user_id` that user-scoped
+quota buckets meter, the session-taint latch keys on, approval grants bind to,
+and the signed event carries inside the decision preimage. It can be
+established three ways, in fixed precedence: per-call `metadata`, the
+wrap-time option (`user_id` on `wrap()` / the integration `options`), and the
+ambient subject below — explicit always beats ambient. One resolution feeds
+both enforcement and the record, so the identity that scoped the quota is the
+identity the event names. That property is recent and worth stating as the
+repair it is: the generic tool governor previously threaded the wrap-time
+`user_id` to the **signed record only**, while the enforcing readers — quota
+bucket, taint key, approval binding, decision-input hash — read metadata the
+kwarg never reached, so a caller passing `user_id="mallory"` got a signed
+principal with none of the user-scoped enforcement bound to it. The fold is
+now one shared resolution, and a tree-scan test fails any pre-call surface
+that ships without it.
+
+**Ambient per-request subject.** A wrap-time option binds one identity for the
+client's lifetime, which a process serving many end users cannot use. The
+ambient subject binds per request instead — govern once, attribute per call:
+
+```python
+from obsvr import use_subject
+
+with use_subject("user:alice;tenant:acme"):
+    governed_tool.run(...)   # metered, latched, and signed as alice
+```
+
+```typescript
+import { useSubject } from "@obsvr/sdk";
+
+await useSubject("user:alice;tenant:acme", async () => {
+  await wrapped.chat.completions.create({ ... }); // signed as alice
+});
+```
+
+The ambient subject fills only what is not explicitly set, so an existing
+`user_id=` keeps winning, and no scope active means exactly the old behavior.
+In TypeScript it rides `AsyncLocalStorage` and reaches the proxy wrapper's own
+signed events, the integration pipeline, and the session-taint key — the wrap
+path's event identity is the recent addition; it previously resolved only
+per-call audit fields and wrap-time options, so a `useSubject()` caller was
+attributed on every surface except the proxy's own events.
+
+**What the Python subject survives is pinned in tests, not inferred.** It
+propagates across `await`, `asyncio.create_task` and `asyncio.to_thread`. It
+is **silently lost** across `loop.run_in_executor`,
+`ThreadPoolExecutor.submit` and `threading.Thread` — a worker-thread tool call
+inside a subject scope runs as if no scope were active, with nothing on the
+record to say so. If a tool body hops to a worker thread, pass `user_id`
+explicitly on that path; the loss cases are asserted in the test suite so the
+boundary is a documented fact rather than a discovery.
+
+**Refusing unattributed calls (opt-in).** `require_principal=True`
+(`requirePrincipal: true`) blocks a governed call whose enforcing channel
+carries no `user_id` at all, with the registry code `PRINCIPAL_REQUIRED`,
+after the enforcement-integrity gate and before any scanning layer — the
+refusal is about attribution, not content. An empty string is a supplied
+principal; only an absent one refuses, the same absent-vs-empty line the
+decision digest's presence byte draws. It is enforced in the shared pre-call
+pipeline, so it holds on `wrap()`, the framework integrations, the generic
+tool governor, MCP, and the governance `evaluate()` endpoint — and it arms
+the tool and MCP pre-call nets **by itself**, so a config whose only policy is
+this flag still refuses there. Default off: a single-tenant deployment that
+legitimately passes no `user_id` must not start refusing on upgrade.
 
 ---
 
@@ -648,9 +764,11 @@ sections. **Four of the eight apply to one SDK and not the other**, so the scope
 is marked on each.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
-   *(both SDKs)* Only the MCP surface runs against the real upstream package in
-   CI. A green integration suite is evidence that the shape is right, not that
-   the framework behaves the way the test models it. Each SDK's
+   *(both SDKs)* In Python only the MCP surface runs against the real upstream
+   package in CI; in TypeScript four do — MCP, OpenAI, Google Generative AI and
+   OpenAI Agents. Every other surface is fake-driven in both. A green
+   integration suite is evidence that the shape is right, not that the
+   framework behaves the way the test models it. Each SDK's
    [TypeScript](sdk-typescript/tests/README.md) and
    [Python](sdk-python/tests/README.md) test README says which surfaces are which.
 

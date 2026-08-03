@@ -113,6 +113,61 @@ export interface ObsvrConfig {
   failMode?: 'open' | 'closed';
 
   /**
+   * Blocking human approval. When > 0, a require_approval block HOLDS the
+   * governed call for up to this many milliseconds while the grant channel
+   * is polled, and proceeds only if a covering grant lands and is still live
+   * when the call goes out. 0 (default) keeps the fire-and-forget behavior:
+   * the call is refused, an approval request is filed, and a retry passes
+   * once granted. Strictly opt-in — a library that starts blocking for
+   * minutes on upgrade is a production incident.
+   * @default 0
+   */
+  approvalWaitMs?: number;
+
+  /**
+   * Grant-channel poll cadence (ms) while an approval wait is in progress.
+   * Each poll re-drives the /policies refresh (signature verification and
+   * grant-shape validation included), so keep it coarse: this is a
+   * human-timescale wait, not a busy loop.
+   * @default 5000
+   */
+  approvalPollMs?: number;
+
+  /**
+   * Global enforcement mode. "enforce" (default) applies blocks. "monitor"
+   * evaluates every layer, emits every event, and converts a final block
+   * into an allow whose `shadow_outcome` carries the would-be verdict — one
+   * flip for a staged rollout or rollback that keeps the evidence stream
+   * intact. The enforcement-integrity gate (kill switch / fail-closed
+   * staleness) is never converted: monitor mode must not become a way to
+   * defeat a revoked key.
+   * @default "enforce"
+   */
+  enforcementMode?: 'enforce' | 'monitor';
+
+  /**
+   * Refuse an unattributed call (opt-in). When true, a governed call whose
+   * enforcing channel carries no user_id at all is blocked with
+   * PRINCIPAL_REQUIRED before any scanning layer runs. An empty string is a
+   * supplied principal; only an absent one refuses — the decision digest's
+   * presence byte draws the same absent-vs-empty line. Default false: a
+   * single-tenant deployment that legitimately passes no user_id must not
+   * start refusing on upgrade.
+   * @default false
+   */
+  requirePrincipal?: boolean;
+
+  /**
+   * Declared conflict-resolution mode for the policy rules. Undefined (the
+   * default) is undeclared: the original first-match contract AND the
+   * original policy_version bytes are kept. Declaring a mode opts the
+   * deployment into that mode's evaluation semantics and the
+   * order-committed policy_version that makes them auditable; an unknown
+   * value is refused at init.
+   */
+  ruleResolution?: 'first_match' | 'deny_wins';
+
+  /**
    * Built-in PII scan policy (opt-in).
    * Runs before the LLM call using the built-in pattern set (PII,
    * secrets, and prompt-injection detectors; see policy/hook.ts).
@@ -432,6 +487,21 @@ export interface LLMAuditInitConfig {
   /** Enforcement fail mode when the pre-call hook times out or throws. @default 'open' */
   fail_mode?: 'open' | 'closed';
 
+  /** Blocking approval hold budget in ms (see ObsvrConfig.approvalWaitMs). @default 0 */
+  approval_wait_ms?: number;
+
+  /** Grant-channel poll cadence (ms) during an approval wait. @default 5000 */
+  approval_poll_ms?: number;
+
+  /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
+  enforcement_mode?: 'enforce' | 'monitor';
+
+  /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
+  require_principal?: boolean;
+
+  /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
+  rule_resolution?: 'first_match' | 'deny_wins';
+
   /**
    * Built-in PII scan policy (opt-in, snake_case alias)
    */
@@ -642,6 +712,21 @@ export interface ResolvedConfig {
 
   /** Enforcement fail mode when the pre-call hook times out or throws. @default 'open' */
   failMode?: 'open' | 'closed';
+
+  /** Blocking approval hold budget in ms (see ObsvrConfig.approvalWaitMs). @default 0 */
+  approvalWaitMs?: number;
+
+  /** Grant-channel poll cadence (ms) during an approval wait. @default 5000 */
+  approvalPollMs?: number;
+
+  /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
+  enforcementMode?: 'enforce' | 'monitor';
+
+  /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
+  requirePrincipal?: boolean;
+
+  /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
+  ruleResolution?: 'first_match' | 'deny_wins';
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool
@@ -886,8 +971,15 @@ export interface AuditEvent {
   rule_id?: string;
   policy_reason?: string;
   tenant_id?: string;
-  /** What shadow-mode rules would have done (EV-21); informational only. */
-  shadow_outcome?: { rule_id: string; would: "block" | "redact" | "flag"; reason: string };
+  /** What shadow-mode rules would have done (EV-21), or the would-be verdict
+   * of a monitor-mode conversion; informational only. `reason_code` carries
+   * the registry classification when the producing layer resolved one. */
+  shadow_outcome?: {
+    rule_id: string;
+    would: "block" | "redact" | "flag";
+    reason_code?: string;
+    reason: string;
+  };
   /** SHA-256 hex of the canonical decision-input document the rules engine
    * evaluated (ADR-2 tier-1). ADDITIVE — never part of the HMAC chain
    * preimage; sealed by the ledger's v7 Merkle leaf. */
@@ -915,8 +1007,11 @@ export interface AuditEvent {
   timestamp_sdk?: number;    // Date.now() at capture, before queue entry
   sdk_version?: string;      // "node/<semver>", which SDK build produced this event
   /** Signing format this event verifies under (see proxy/chain-format.ts).
-   * Absent = 1, the legacy concatenation preimage; the current SDK stamps 2.
-   * Routing only — the format number is also inside the signed payload. */
+   * Absent = 1, the legacy concatenation preimage; the current SDK stamps 3
+   * (CHAIN_FORMAT_CURRENT), whose preimage also covers the decision fields;
+   * 2 is the content-framed format signed before the verdict entered the
+   * preimage. Routing only — the format number is also inside the signed
+   * payload. */
   chain_format?: number;
   sdk_sig?: string;          // HMAC-SHA256 hex signature, 64 chars (Phase 2)
   prev_sig?: string;         // sdk_sig of the previous event in this session (Phase 3)

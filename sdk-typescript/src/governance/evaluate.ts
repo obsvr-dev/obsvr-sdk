@@ -11,8 +11,34 @@ import { issueExecutionToken } from './token.js';
 import { getConfig, isInitialized, isPolicyEnforcementDegraded } from '../proxy/config.js';
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from '../policy/rules.js';
 import type { PolicyEvalContext, ShadowOutcome } from '../policy/rules.js';
+
+/**
+ * Whether monitor mode may convert THIS final block into an allow.
+ *
+ * Monitor mode is one conversion point after the decision is final: the whole
+ * pipeline still runs, the audit event still emits, and the would-be verdict
+ * rides `shadow_outcome`. Layer 0 (the enforcement-integrity gate: kill
+ * switch / fail-closed staleness) is carved out and the carve-out is
+ * re-derived HERE from the gate itself rather than trusted from the caller's
+ * snapshot — so even a stale `degraded` argument cannot extend monitor mode
+ * to a paused project or revoked key. Twin: `_monitor_conversion_applies` in
+ * the Python policy pipeline (which additionally carves out canary leaks;
+ * this surface has no canary layer). Exported so the proxy wrapper and the
+ * integrations pipeline apply the identical carve-out — those two surfaces
+ * carve out their canary layer at the call site.
+ */
+export function monitorConversionApplies(
+  cfg: ResolvedConfig,
+  degraded: { degraded: boolean },
+): boolean {
+  if ((cfg.enforcementMode ?? 'enforce') !== 'monitor') return false;
+  if (degraded.degraded) return false;
+  // Re-derive the layer-0 verdict at the moment of conversion.
+  if (isPolicyEnforcementDegraded(cfg).degraded) return false;
+  return true;
+}
 import {
-  ENGINE_VERSION,
+  engineVersionFor,
   buildDecisionInput,
   computeDecisionInputHash,
 } from '../policy/decision-record.js';
@@ -61,6 +87,22 @@ export async function evaluate(
       degraded.reason === 'project_paused_or_key_revoked'
         ? 'Project paused or API key revoked (SDK kill switch)'
         : `Policy sync unavailable with failMode=closed (${degraded.reason})`;
+  }
+
+  // 0.4 Required principal (opt-in): an unattributed evaluation is refused
+  //     before any scanning layer runs — the refusal is about attribution,
+  //     not content. Runs after the enforcement-integrity gate so a paused
+  //     project keeps its own verdict and rule id, and reads the same folded
+  //     identity the rules context receives (`request.user_id`). An empty
+  //     string is a supplied principal; only an absent one refuses — the
+  //     decision digest's presence byte draws the same absent-vs-empty line.
+  //     Monitor mode converts this block like any non-integrity block. Twin:
+  //     the require_principal gate in the Python pre-call pipeline.
+  if (decision === 'PERMITTED' && cfg.requirePrincipal === true && request.user_id == null) {
+    decision = 'BLOCKED';
+    reasonCode = ReasonCode.PRINCIPAL_REQUIRED;
+    ruleId = 'sdk:principal_required';
+    reason = 'requirePrincipal is set and the call carries no user_id on the enforcing channel';
   }
 
   // --- guarded detector section -------------------------------------
@@ -140,7 +182,8 @@ export async function evaluate(
         cfg.policyRules,
         payloadText,
         'prompt',
-        evalContext
+        evalContext,
+        { resolution: cfg.ruleResolution },
       );
 
       if (rulesResult.decision === 'block') {
@@ -195,6 +238,24 @@ export async function evaluate(
       }
     }
 
+    // 3.5. Monitor mode: the single conversion point, after the decision is
+    // final and before it is returned. A BLOCKED verdict becomes PERMITTED
+    // while `shadow_outcome` on the audit event carries the would-be verdict
+    // with the same rule_id and reason_code an enforcing run would record.
+    // The response keeps the classifying reason_code and reason, so a caller
+    // reading a PERMITTED verdict can still see what would have blocked.
+    // Layer 0 is carved out in monitorConversionApplies.
+    let monitorShadow: ShadowOutcome | undefined;
+    if (decision === 'BLOCKED' && monitorConversionApplies(cfg, degraded)) {
+      monitorShadow = {
+        rule_id: ruleId ?? '',
+        would: 'block',
+        reason_code: reasonCode,
+        reason: reason ?? '',
+      };
+      decision = 'PERMITTED';
+    }
+
     // 4. Issue execution token if permitted
     let executionToken: string | undefined;
     if (decision === 'PERMITTED') {
@@ -222,7 +283,7 @@ export async function evaluate(
     // Canonical decision record (ADR-2): commit exactly what this evaluation
     // ran over. `payloadText` is the text the PII scan, rules, and hook saw.
     const decisionInput = buildDecisionInput({
-      rulesHash: derivePolicyVersion(cfg.policyRules ?? []),
+      rulesHash: derivePolicyVersion(cfg.policyRules ?? [], cfg.ruleResolution),
       degraded: degraded.degraded,
       degradedReason: degraded.reason,
       target: 'request',
@@ -231,6 +292,7 @@ export async function evaluate(
       serviceName: request.service_name,
       tenantId: request.tenant_id,
       hook: hookDisposition,
+      engineVersion: engineVersionFor(cfg.ruleResolution),
     });
     const decisionInputHash = computeDecisionInputHash(decisionInput);
 
@@ -250,20 +312,27 @@ export async function evaluate(
         response: JSON.stringify(response),
         event_type: decision === 'PERMITTED' ? 'llm_call' : 'blocked_call',
         action_taken: decision === 'PERMITTED' ? 'allowed' : 'blocked',
+        // A monitor-mode conversion keeps the deciding layer's classification
+        // (Python parity): the event says allowed AND says why it would have
+        // blocked, and the classification exempts it from allowed-call
+        // sampling downstream.
         action_reason: reasonCode === ReasonCode.PII_DETECTED ? 'pii_detected' :
-                       decision === 'BLOCKED' ? 'policy_violation' : 'none',
+                       decision === 'BLOCKED' || monitorShadow ? 'policy_violation' : 'none',
         // The response's own code, not a re-derivation: the event and the
         // returned decision must name the same classification.
         reason_code: reasonCode,
         action_source: ruleId ? 'policy_rules' : 'unknown',
-        policy_version: cfg.policyRules ? derivePolicyVersion(cfg.policyRules) : '',
+        policy_version: cfg.policyRules ? derivePolicyVersion(cfg.policyRules, cfg.ruleResolution) : '',
         redacted_types: [],
         rule_id: ruleId,
         policy_reason: reason,
+        // The would-be verdict of a monitor-mode conversion (never
+        // decision-affecting; absent outside monitor mode).
+        ...(monitorShadow ? { shadow_outcome: monitorShadow } : {}),
         tenant_id: request.tenant_id,
         // Canonical decision record (ADR-2, additive — not in the chain preimage)
         decision_input_hash: decisionInputHash,
-        engine_version: ENGINE_VERSION,
+        engine_version: engineVersionFor(cfg.ruleResolution),
         // Server-side normalizer mirror: seal which view defeated the obfuscation, and (when
         // a floor is active) the sealed floor-definition hash on EVERY event —
         // matching the proxy wrapper — so a change to the floor is auditable
@@ -352,7 +421,7 @@ export function explain(
   const rules = cfg.policyRules ?? [];
   const result: ExplainResult = {
     decision: 'allow',
-    rules_hash: safePolicyVersion(() => derivePolicyVersion(rules)),
+    rules_hash: safePolicyVersion(() => derivePolicyVersion(rules, cfg.ruleResolution)),
     pii: { detected: false, types: [] },
     shadow_outcome: null,
     not_evaluated: ['customer_hook', 'multi_turn_injection'],
@@ -424,7 +493,7 @@ export function explain(
         text,
         options?.target ?? 'prompt',
         evalCtx,
-        { checkOnly: true },
+        { checkOnly: true, resolution: cfg.ruleResolution },
       );
       if (rulesResult.decision === 'block' || rulesResult.decision === 'redact') {
         result.decision = rulesResult.decision;

@@ -1179,6 +1179,42 @@ def test_the_table_covers_every_surface_that_has_a_tool_gate():
     )
 
 
+def test_every_pre_call_evaluation_threads_the_caller_identity():
+    """Every pre-call policy evaluation must carry the caller principal.
+
+    The principal reaches enforcement through the ``metadata`` argument of
+    ``apply_pre_call_policy``: user-scoped quota buckets, the session-taint
+    key, approval-grant binding and the decision-input hash all read it. A
+    surface that evaluates with raw caller metadata instead of the folded
+    identity meters the shared buckets ("default" quota, "global" taint)
+    while the signed record carries the principal — two identities for one
+    call. The generic tool governor shipped exactly that way, so the fold is
+    scanned as a property of the tree: every integration that invokes
+    ``apply_pre_call_policy`` must build its ``metadata=`` through an
+    identity fold (``_identity_meta`` / ``identity_meta``), and a future
+    surface cannot ship without one.
+    """
+    import pathlib
+    import re
+
+    integrations = pathlib.Path(__file__).resolve().parents[1] / "obsvr" / "integrations"
+    offenders = []
+    for path in sorted(integrations.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"apply_pre_call_policy\(", text):
+            window = text[match.end(): match.end() + 600]
+            meta = re.search(r"metadata=([^,\n]+)", window)
+            expression = meta.group(1) if meta else "<no metadata argument>"
+            if "identity_meta" not in expression:
+                offenders.append(f"{path.name}: metadata={expression}")
+    assert not offenders, (
+        f"these pre-call evaluations do not thread the folded caller "
+        f"identity: {offenders} — build the metadata through an "
+        f"_identity_meta-style fold so the enforcing identity and the signed "
+        f"principal are the same identity"
+    )
+
+
 def test_the_llamaindex_callback_handler_still_refuses_nothing():
     """The HANDLER is observe-only, and that half of the grading still holds.
 

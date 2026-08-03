@@ -66,10 +66,11 @@ import { scoreTurn, formatMultiTurnReason } from "../policy/injection-session.js
 import type { PolicyDecisionResult, PostCallDecisionResult, QuotaUnmetered } from "../policy/hook.js";
 import { normalizePostCallDecision } from "../policy/hook.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
-import { requestApproval, revalidateApproval } from "../policy/approvals.js";
+import { awaitApproval, requestApproval, revalidateApproval } from "../policy/approvals.js";
+import { monitorConversionApplies } from "../governance/evaluate.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
 import {
-  ENGINE_VERSION,
+  engineVersionFor,
   buildDecisionInput,
   computeDecisionInputHash,
   sha256Hex,
@@ -145,6 +146,14 @@ export interface ComplianceInfo {
   decision_input_hash?: string;
   /** Rules-engine semantics version the decision ran under ("obsvr-rules/<N>"). */
   engine_version?: string;
+  /** The would-be verdict of a monitor-mode conversion (never
+   * decision-affecting; absent outside monitor mode). */
+  shadow_outcome?: {
+    rule_id: string;
+    would: "block" | "redact" | "flag";
+    reason_code?: string;
+    reason: string;
+  };
   /** Inbound external policy backend provenance (ADR-4); additive. */
   external_backend?: ExternalBackendRecord;
   /**
@@ -561,6 +570,48 @@ export async function applyPreCallPolicy(
     debugLog(config, "warn", `Call blocked: ${gatePolicyReason}`);
   }
 
+  // 0.4 Required principal (opt-in): an unattributed call is refused before
+  //     any scanning layer runs — the refusal is about attribution, not
+  //     content. Runs after the enforcement-integrity gate so a paused
+  //     project keeps its own verdict and rule id. The identity read here is
+  //     the one the taint key and the scoped-quota context resolve below:
+  //     explicit ctx identity, else the ambient subject, else a
+  //     metadata-supplied user_id. An empty string is a supplied principal;
+  //     only an absent one refuses — the decision digest's presence byte
+  //     draws the same absent-vs-empty line (Python parity).
+  // The metadata read happens ONLY when the flag is on, and defensively: this
+  // gate sits outside the guarded detector section, so a caller-supplied
+  // metadata object whose property getter throws must not escape here — with
+  // the flag off it is not read at all (the detector layers read it inside
+  // the guard, where a defect resolves by failMode), and with the flag on an
+  // unreadable principal counts as absent at this gate, never as attributed.
+  // The same unreadable object then fails the taint-key derivation inside
+  // the guard, whose failMode disposition resolves the whole call — so the
+  // end-to-end outcome for a defective metadata object is the guard's,
+  // exactly as it is in the Python pipeline.
+  let principalForGate: unknown = identityUserId;
+  if (principalForGate == null && config.requirePrincipal === true && ctx.metadata) {
+    try {
+      principalForGate = (ctx.metadata as Record<string, unknown>)["user_id"];
+    } catch {
+      principalForGate = undefined;
+    }
+  }
+  if (
+    actionTaken !== "blocked" &&
+    config.requirePrincipal === true &&
+    principalForGate == null
+  ) {
+    actionTaken = "blocked";
+    actionReason = "policy_violation";
+    actionSource = "policy_rules";
+    gateRuleId = "sdk:principal_required";
+    gatePolicyReason =
+      "requirePrincipal is set and the call carries no user_id on the enforcing channel";
+    detectorReasonCode = ReasonCode.PRINCIPAL_REQUIRED;
+    debugLog(config, "warn", `Call blocked: ${gatePolicyReason}`);
+  }
+
   // --- guarded detector section -------------------------------------
   // One enclosing guard over the detector layers AND the decision they
   // feed, so a failure resolves instead of escaping to the host. `layer`
@@ -828,9 +879,17 @@ export async function applyPreCallPolicy(
         model: ctx.model ?? "",
         provider,
         metadata: evalMetadata,
-      }, { failMode: config.failMode });
+      }, { failMode: config.failMode, resolution: config.ruleResolution });
       quotaUnmetered = rulesResult.quota_unmetered;
       approvalClaim = rulesResult.approval_granted;
+      // Saved so the blocking approval wait below can lift the block without
+      // inventing a state: on approval the pipeline resumes exactly where it
+      // stood before this rule fired.
+      const preBlockState = [actionTaken, actionReason, actionSource] as [
+        typeof actionTaken,
+        typeof actionReason,
+        typeof actionSource,
+      ];
       if (rulesResult.decision === 'block') {
         actionTaken = 'blocked';
         actionReason = 'policy_violation';
@@ -861,6 +920,58 @@ export async function applyPreCallPolicy(
       // layer's classification (a detect-only PII finding, a taint flag).
       if (rulesResult.decision !== 'allow' || rulesResult.rule_id) {
         rulesReasonCode = rulesResult.reason_code;
+      }
+
+      // Blocking wait (opt-in, approvalWaitMs > 0): HOLD this call while the
+      // grant channel is polled, instead of refusing and passing on a retry.
+      // Runs after the rules classification above so its own stamps are not
+      // overwritten. Skipped in monitor mode — a verdict there is recorded,
+      // not enforced, so there is nothing to hold the call for. Only an
+      // explicit "approved" lifts the block: timeout, degradation, and any
+      // wait-internal failure all leave it standing (Python parity).
+      const waitMs = config.approvalWaitMs ?? 0;
+      if (
+        actionTaken === "blocked" &&
+        rulesResult.decision === "block" &&
+        rulesResult.approval_required &&
+        waitMs > 0 &&
+        (config.enforcementMode ?? "enforce") !== "monitor"
+      ) {
+        const waitClaim = {
+          ruleId: rulesResult.rule_id ?? "",
+          userId: identityUserId,
+          ruleHash: rulesResult.rule_hash,
+          actionHash: rulesResult.action_hash,
+        };
+        let waitVerdict: "approved" | "timeout" | "unavailable";
+        try {
+          waitVerdict = await awaitApproval(config, waitClaim, {
+            timeoutMs: waitMs,
+            pollMs: config.approvalPollMs ?? 5000,
+          });
+        } catch {
+          waitVerdict = "unavailable";
+        }
+        if (waitVerdict === "approved") {
+          // The grant landed while the call was held. Lift the block and
+          // hand the claim to the end-of-pipeline re-validation, so a grant
+          // that expires or is revoked between here and the outbound request
+          // is caught before it is spent.
+          [actionTaken, actionReason, actionSource] = preBlockState;
+          approvalClaim = waitClaim;
+          rulesReasonCode = ReasonCode.APPROVAL_GRANTED;
+          rulesPolicyReason = `approval_granted_after_wait: ${rulesResult.rule_id}`;
+        } else if (waitVerdict === "timeout") {
+          // Its own registry code: a hold that expired is a different fact
+          // from "refused; ask and retry".
+          rulesReasonCode = ReasonCode.APPROVAL_TIMEOUT;
+          rulesPolicyReason = `approval_wait_timeout: no grant within ${waitMs}ms (${rulesResult.reason})`;
+        } else {
+          // Degraded mid-wait (kill switch / staleness) or a wait-internal
+          // failure: the APPROVAL_REQUIRED block stands, with the abort on
+          // the record.
+          rulesPolicyReason = `${rulesResult.reason} (approval_wait_aborted: ${waitVerdict})`;
+        }
       }
     }
 
@@ -991,7 +1102,7 @@ export async function applyPreCallPolicy(
 
     // Canonical decision record (ADR-2): commit exactly what this decision ran
     // over. `promptText` is the text as presented to the pipeline (pre-redaction).
-    const rulesHash = derivePolicyVersion(config.policyRules ?? []);
+    const rulesHash = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
     // Inbound external policy backend (ADR-4): consult the customer's OPA/Cedar
     // engine and merge DENY-WINS with the local decision. Only when not already
@@ -1064,7 +1175,44 @@ export async function applyPreCallPolicy(
       evaluatedText: promptText,
       tenantId,
       hook: hookDisposition,
+      engineVersion: engineVersionFor(config.ruleResolution),
     });
+
+    // One resolution for the conversion below AND the compliance record, so
+    // a monitor-converted event carries exactly the classification an
+    // enforcing run would have recorded.
+    const resolvedReasonCode =
+      hookReasonCode ??
+      rulesReasonCode ??
+      detectorReasonCode ??
+      (actionReason === "none" || actionReason === "customer_override"
+        ? ReasonCode.PERMITTED
+        : resolveReasonCode({ action_reason: actionReason, action_source: actionSource }));
+    // Canary wins (unsuppressible), then the integrity gate, then the rest;
+    // taint is the escalation reason when nothing more specific fired.
+    const resolvedRuleId =
+      canaryRuleId ?? backendRuleId ?? hookRuleId ?? rulesRuleId ?? taintRuleId ?? gateRuleId;
+    const resolvedPolicyReason =
+      canaryPolicyReason ?? backendPolicyReason ?? hookPolicyReason ?? rulesPolicyReason ?? taintPolicyReason ?? gatePolicyReason;
+
+    // Monitor mode: the single conversion point, after the decision is final
+    // and before the compliance record is built. A block becomes an allow
+    // while shadow_outcome — the field documented as never decision-affecting
+    // — carries the would-be verdict with the same rule_id and reason_code an
+    // enforcing run records. The deciding layer's classification
+    // (action_reason, action_source, blocked_types) stays on the record.
+    // Layer 0 is re-derived inside monitorConversionApplies; canary leaks are
+    // carved out here (the shared evaluate() surface has no canary layer).
+    let monitorShadow: ComplianceInfo["shadow_outcome"];
+    if (actionTaken === "blocked" && !canaryFloor && monitorConversionApplies(config, degraded)) {
+      monitorShadow = {
+        rule_id: resolvedRuleId ?? "",
+        would: "block",
+        reason_code: resolvedReasonCode,
+        reason: resolvedPolicyReason ?? "",
+      };
+      actionTaken = "allowed";
+    }
 
     const compliance: ComplianceInfo = {
       event_type: actionTaken === "blocked" ? "blocked_call" : "llm_call",
@@ -1074,24 +1222,17 @@ export async function applyPreCallPolicy(
       // Same precedence as rule_id below; anything still unresolved derives
       // at event build exactly the way the thrown error derives, so the
       // record and the exception cannot disagree.
-      reason_code:
-        hookReasonCode ??
-        rulesReasonCode ??
-        detectorReasonCode ??
-        (actionReason === "none" || actionReason === "customer_override"
-          ? ReasonCode.PERMITTED
-          : resolveReasonCode({ action_reason: actionReason, action_source: actionSource })),
+      reason_code: resolvedReasonCode,
       action_source: actionSource,
       redacted_types: redactedTypes,
       blocked_types: blockedTypes,
-      // Canary wins (unsuppressible), then the integrity gate, then the rest;
-      // taint is the escalation reason when nothing more specific fired.
-      rule_id: canaryRuleId ?? backendRuleId ?? hookRuleId ?? rulesRuleId ?? taintRuleId ?? gateRuleId,
-      policy_reason: canaryPolicyReason ?? backendPolicyReason ?? hookPolicyReason ?? rulesPolicyReason ?? taintPolicyReason ?? gatePolicyReason,
+      rule_id: resolvedRuleId,
+      policy_reason: resolvedPolicyReason,
       decision_input_hash: computeDecisionInputHash(decisionInput),
-      engine_version: ENGINE_VERSION,
+      engine_version: engineVersionFor(config.ruleResolution),
       external_backend: externalBackend,
       ...(quotaUnmetered !== undefined ? { quota_unmetered: quotaUnmetered } : {}),
+      ...(monitorShadow ? { shadow_outcome: monitorShadow } : {}),
     };
 
     // Presidio anonymizer produces the redacted copy when configured (typed
@@ -1145,7 +1286,7 @@ export async function applyPreCallPolicy(
     return {
       decision: failClosed ? "block" : "allow",
       compliance: preCallFailureCompliance(
-        layer, err, failClosed, safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+        layer, err, failClosed, safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
       ) as unknown as ComplianceInfo,
       redactedPrompt: safeStoredCopy(() => redactForStorage(promptText, undefined)),
     };
@@ -1256,7 +1397,9 @@ export async function applyPostCallPolicy(
           ...(event.tenant_id ? { tenant_id: event.tenant_id } : {}),
         },
       };
-      const rulesResult = evaluatePolicyRules(config.policyRules, responseText, 'response', evalContext);
+      const rulesResult = evaluatePolicyRules(config.policyRules, responseText, 'response', evalContext, {
+        resolution: config.ruleResolution,
+      });
       if (rulesResult.decision === 'block') {
         decision = 'redact_response';
       } else if (rulesResult.decision === 'redact') {
@@ -1406,7 +1549,7 @@ function responsePhaseFailure(
     compliance: responsePhaseFailureCompliance(
       layer,
       err,
-      safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+      safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
     ) as Partial<ComplianceInfo>,
   };
 }
@@ -1508,7 +1651,7 @@ export function blockedUserInputForStorage(
 function observeCompliance(config: ResolvedConfig): ComplianceInfo {
   return {
     ...DEFAULT_COMPLIANCE,
-    policy_version: derivePolicyVersion(config.policyRules ?? []),
+    policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
   };
 }
 
@@ -1580,7 +1723,7 @@ export function applyObservePolicy(
       compliance: responsePhaseFailureCompliance(
         "builtin_pii_scan",
         err,
-        safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+        safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
       ) as ComplianceInfo,
     };
   }
@@ -1843,6 +1986,9 @@ export function buildIntegrationEvent(
     blocked_types: compliance.blocked_types,
     rule_id: compliance.rule_id,
     policy_reason: compliance.policy_reason,
+    // The would-be verdict of a monitor-mode conversion (never
+    // decision-affecting; absent outside monitor mode).
+    ...(compliance.shadow_outcome ? { shadow_outcome: compliance.shadow_outcome } : {}),
     // Canonical decision record (ADR-2, additive — not in the chain preimage)
     decision_input_hash: compliance.decision_input_hash,
     engine_version: compliance.engine_version,

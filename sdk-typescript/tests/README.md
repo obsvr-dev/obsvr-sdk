@@ -10,8 +10,9 @@ installs them, so a test may import any of them:
 | Package | Driven by a test |
 |---|---|
 | `@modelcontextprotocol/sdk` | **yes** — `tests/integration/mcp-real-package.test.ts` connects a real `Client` to a real `McpServer` over the package's own `InMemoryTransport` |
-| `openai` | resolution only — `tests/unit/module-hook-resolution.test.ts` |
-| `@google/generative-ai`, `@openai/agents` | installed, imported by no test |
+| `openai` | **yes** — `tests/integration/openai-real-package.test.ts` drives a real client with the transport injected via the constructor `fetch`, grading a block at zero transport calls; plus resolution in `tests/unit/module-hook-resolution.test.ts` |
+| `@google/generative-ai` | **yes** — `tests/integration/google-genai-real-package.test.ts` drives a real `GenerativeModel`, splitting provider traffic from sender traffic by host |
+| `@openai/agents` | **yes** — `tests/integration/openai-agents-real-package.test.ts` runs a real `Agent` with real `tool()` objects and only the model stubbed; a denied tool's body never runs and the block message reaches the model's next turn |
 
 Every other integration — `langchain`, `llamaindex`, `vercel-ai`, `bedrock`,
 `vertex`, `together`, `azure-openai`, `cloudflare`, `openai-compat` — is tested
@@ -19,7 +20,12 @@ against hand-written fakes. `@langchain/core`, `llamaindex`, `ai`, the AWS and
 Google client libraries and `@anthropic-ai/sdk` are **not** devDependencies and
 are not installed when this suite runs.
 
-## Why the MCP gate got a real-package test and the others did not
+All four real-package suites follow the same non-vacuity convention: every
+deny leg is paired with an allow CONTROL that must reach exactly one side
+effect, so a suite that stopped exercising the gate goes red rather than
+quietly green.
+
+## Why the MCP gate got its real-package test first
 
 `SECURITY.md` names the MCP tool gate as the surface to put a destructive
 capability behind, so it is the surface least able to afford a test that cannot
