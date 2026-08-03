@@ -50,17 +50,11 @@ const actionMatch = actionYml.match(/\n {2}version:\n(?:.*\n)*? {4}default:\s*['
 if (!actionMatch) fail("could not find the version input default in action/action.yml");
 const actionVersion = actionMatch[1];
 
-// The coding-agent hook package ships on the same release train: its events
-// carry the same SDK_VERSION-derived signatures, so a version skew here would
-// stamp records that disagree with the SDK that verifies them.
-const claudeCodePkg = JSON.parse(read("claude-code/package.json")).version;
-
 const sources = {
   "sdk-typescript/package.json": pkg,
   "sdk-typescript/src/constants.ts (SDK_VERSION)": constants,
   "sdk-python/obsvr/_version.py (__version__)": versionPy,
   "action/action.yml (version input default)": actionVersion,
-  "claude-code/package.json": claudeCodePkg,
 };
 
 const distinct = [...new Set(Object.values(sources))];

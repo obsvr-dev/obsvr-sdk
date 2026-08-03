@@ -131,21 +131,6 @@ cut, when it is renamed to that version.
   [`a7333c5`](https://github.com/obsvr-dev/obsvr-sdk/commit/a7333c5),
   [`fb4042d`](https://github.com/obsvr-dev/obsvr-sdk/commit/fb4042d))
 
-- **`@obsvr/claude-code`: govern a coding agent's native tool calls.** A new
-  root package — a `PreToolUse` hook that refuses a coding agent's native tool
-  calls (shell, file edits, search) through the shipped obsvr policy engine and
-  records each on the same signed audit chain. It exists because the SDKs are
-  client-side (they govern an MCP `ClientSession` an application builds in its
-  own process, while a coding agent runs as a separate binary obsvr is not
-  loaded into), so the SDKs govern none of that agent's tool traffic — measured
-  directly. A policy block becomes a `deny` that stops the tool before it runs;
-  the hook only ever adds a refusal, defers to the agent's own permission flow
-  when it cannot sign a record (or denies under `OBSVR_FAIL_CLOSED`), and never
-  emits an allow.
-  ([`6db10e9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6db10e9),
-  [`b1ab30a`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1ab30a),
-  [`74a8feb`](https://github.com/obsvr-dev/obsvr-sdk/commit/74a8feb))
-
 ### Fixed
 
 - **`govern_tool`'s identity kwargs now scope enforcement.** The `user_id=` /
