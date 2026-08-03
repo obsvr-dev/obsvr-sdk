@@ -142,6 +142,15 @@ class ResolvedConfig:
     # Enforcement fail mode when the pre-call hook times out or throws.
     # "open" (default): allow the call. "closed": block it. Parity with TS.
     fail_mode: str = "open"
+    # Global enforcement mode. "enforce" (default) applies blocks. "monitor"
+    # evaluates every layer, emits every event, and converts a final block
+    # into an allow whose shadow_outcome carries the would-be verdict — one
+    # flip for a staged rollout or rollback that keeps the evidence stream
+    # intact. Two classes are NEVER converted: the enforcement-integrity gate
+    # (kill switch / fail-closed staleness — monitor mode must not become a
+    # way to defeat a revoked key) and canary-leak blocks (an exfiltration in
+    # flight is stopped in any mode).
+    enforcement_mode: str = "enforce"
     policy_rules: Optional[List[Any]] = None
     # Anti-tamper policy floor: rules that cannot be silently disabled/
     # downgraded (see TS ObsvrConfig.policyFloor). Its own field so a remote
@@ -254,6 +263,7 @@ def init(
     approval_wait_ms: Optional[int] = None,
     approval_poll_ms: Optional[int] = None,
     fail_mode: Optional[str] = None,
+    enforcement_mode: Optional[str] = None,
     policy_rules: Optional[List[Any]] = None,
     policy_floor: Optional[List[Any]] = None,
     default_source: Optional[str] = None,
@@ -286,6 +296,14 @@ def init(
     if fail_mode is not None and fail_mode not in ("open", "closed"):
         raise ValueError(
             f'obsvr.init(): fail_mode must be "open" or "closed", got {fail_mode!r}'
+        )
+    # A typo'd mode must never silently monitor a deployment the operator
+    # meant to enforce — the same reasoning the rule validator states for a
+    # rule-level mode (remote.py).
+    if enforcement_mode is not None and enforcement_mode not in ("enforce", "monitor"):
+        raise ValueError(
+            'obsvr.init(): enforcement_mode must be "enforce" or "monitor", got '
+            f"{enforcement_mode!r}"
         )
     if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError(
@@ -433,6 +451,9 @@ def init(
         approval_wait_ms=int(approval_wait_ms) if approval_wait_ms is not None else 0,
         approval_poll_ms=int(approval_poll_ms) if approval_poll_ms is not None else 5000,
         fail_mode=fail_mode if fail_mode in ("open", "closed") else "open",
+        enforcement_mode=(
+            enforcement_mode if enforcement_mode in ("enforce", "monitor") else "enforce"
+        ),
         policy_rules=policy_rules,
         policy_floor=policy_floor,
         default_source=default_source,

@@ -134,6 +134,18 @@ export interface ObsvrConfig {
   approvalPollMs?: number;
 
   /**
+   * Global enforcement mode. "enforce" (default) applies blocks. "monitor"
+   * evaluates every layer, emits every event, and converts a final block
+   * into an allow whose `shadow_outcome` carries the would-be verdict — one
+   * flip for a staged rollout or rollback that keeps the evidence stream
+   * intact. The enforcement-integrity gate (kill switch / fail-closed
+   * staleness) is never converted: monitor mode must not become a way to
+   * defeat a revoked key.
+   * @default "enforce"
+   */
+  enforcementMode?: 'enforce' | 'monitor';
+
+  /**
    * Built-in PII scan policy (opt-in).
    * Runs before the LLM call using the built-in pattern set (PII,
    * secrets, and prompt-injection detectors; see policy/hook.ts).
@@ -459,6 +471,9 @@ export interface LLMAuditInitConfig {
   /** Grant-channel poll cadence (ms) during an approval wait. @default 5000 */
   approval_poll_ms?: number;
 
+  /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
+  enforcement_mode?: 'enforce' | 'monitor';
+
   /**
    * Built-in PII scan policy (opt-in, snake_case alias)
    */
@@ -675,6 +690,9 @@ export interface ResolvedConfig {
 
   /** Grant-channel poll cadence (ms) during an approval wait. @default 5000 */
   approvalPollMs?: number;
+
+  /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
+  enforcementMode?: 'enforce' | 'monitor';
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool

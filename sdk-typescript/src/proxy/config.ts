@@ -75,6 +75,7 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   failMode: "fail_mode",
   approvalWaitMs: "approval_wait_ms",
   approvalPollMs: "approval_poll_ms",
+  enforcementMode: "enforcement_mode",
   piiPolicy: "pii_policy",
   policyRules: "policy_rules",
   policyFloor: "policyFloor",
@@ -309,6 +310,18 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): approvalPollMs must be a positive number of ms, got ${String(config.approval_poll_ms)}`,
     );
   }
+  // A typo'd mode must never silently monitor a deployment the operator
+  // meant to enforce — the same reasoning the rule validator applies to a
+  // rule-level mode.
+  if (
+    config.enforcement_mode !== undefined &&
+    config.enforcement_mode !== "enforce" &&
+    config.enforcement_mode !== "monitor"
+  ) {
+    throw new Error(
+      `obsvr.init(): enforcementMode must be "enforce" or "monitor", got "${String(config.enforcement_mode)}"`,
+    );
+  }
   const refreshMs = config.policy_refresh_interval_ms;
   if (refreshMs !== undefined && (typeof refreshMs !== "number" || refreshMs < 0)) {
     throw new Error(`obsvr.init(): policyRefreshIntervalMs must be >= 0, got ${String(refreshMs)}`);
@@ -411,6 +424,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     // Strictly opt-in: the default 0 keeps the fire-and-forget approval path.
     approvalWaitMs: config.approval_wait_ms ?? 0,
     approvalPollMs: config.approval_poll_ms ?? 5000,
+    enforcementMode: config.enforcement_mode ?? 'enforce',
     pii_policy: (() => {
       const p = config.pii_policy as any;
       if (!p) return undefined;

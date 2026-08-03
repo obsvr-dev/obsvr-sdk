@@ -877,6 +877,41 @@ def _resolve_detector_failure(
     }
 
 
+def _monitor_conversion_applies(
+    config: ResolvedConfig,
+    degraded: Dict[str, Any],
+    canary_floor: bool,
+) -> bool:
+    """Whether monitor mode may convert THIS final block into an allow.
+
+    Monitor mode is one conversion point after the decision is final: the
+    whole pipeline still runs, every event still emits, and the would-be
+    verdict rides ``shadow_outcome``. Two classes are carved out and enforce
+    in both modes:
+
+    - **Layer 0** (enforcement-integrity gate: kill switch / fail-closed
+      staleness). A monitor mode that suppressed it would be a one-flag
+      defeat of a revoked key. The carve-out is re-derived HERE, from the
+      gate itself, rather than trusted from the caller's snapshot — so even
+      a stale or tampered ``degraded`` argument cannot extend monitor mode
+      to a paused project.
+    - **Canary leaks** (the unsuppressible 0.75 layer). A planted honeytoken
+      in outbound content is an exfiltration in flight; observing it out the
+      door is not monitoring, it is the leak.
+    """
+    if getattr(config, "enforcement_mode", "enforce") != "monitor":
+        return False
+    if canary_floor:
+        return False
+    if degraded.get("degraded"):
+        return False
+    # Re-derive the layer-0 verdict at the moment of conversion.
+    from .remote import is_enforcement_degraded
+    if is_enforcement_degraded(config)["degraded"]:
+        return False
+    return True
+
+
 def destructive_source_label(source: Optional[str]) -> str:
     """How a denied capability got into the destructive set, in words an
     operator reading the audit trail can act on. "The server told us this about
@@ -1624,6 +1659,35 @@ def apply_pre_call_policy(
         else _resolve_reason_code(action_reason, action_source, None)
     )
 
+    # Canary wins (unsuppressible), then the rest; taint is the escalation
+    # reason when nothing more specific fired.
+    resolved_rule_id = (
+        canary_rule_id or backend_rule_id or hook_rule_id or rules_rule_id or taint_rule_id
+    )
+    resolved_policy_reason = (
+        canary_reason or backend_reason or hook_reason or rules_reason or taint_reason
+    )
+
+    # Monitor mode: the single conversion point, after the decision is final
+    # and before it is returned. A block becomes an allow while
+    # shadow_outcome — the field documented as never decision-affecting —
+    # carries the would-be verdict with the same rule_id and reason_code an
+    # enforcing run would put on the blocked event. Everything else on the
+    # record keeps the deciding layer's classification (action_reason,
+    # action_source, blocked_types), which is also what exempts the event
+    # from allowed-call sampling: the evidence is never dropped. Layer 0 and
+    # canary leaks are carved out in _monitor_conversion_applies.
+    if action_taken == "blocked" and _monitor_conversion_applies(
+        config, degraded, canary_floor
+    ):
+        shadow_outcome = {
+            "rule_id": resolved_rule_id,
+            "would": "block",
+            "reason_code": resolved_reason_code,
+            "reason": resolved_policy_reason or "",
+        }
+        action_taken = "allowed"
+
     compliance = {
         "event_type": "blocked_call" if action_taken == "blocked" else "llm_call",
         "policy_version": policy_ver,
@@ -1633,10 +1697,8 @@ def apply_pre_call_policy(
         "action_source": action_source,
         "redacted_types": redacted_types,
         "blocked_types": blocked_types,
-        # Canary wins (unsuppressible), then the rest; taint is the escalation
-        # reason when nothing more specific fired.
-        "rule_id": canary_rule_id or backend_rule_id or hook_rule_id or rules_rule_id or taint_rule_id,
-        "policy_reason": canary_reason or backend_reason or hook_reason or rules_reason or taint_reason,
+        "rule_id": resolved_rule_id,
+        "policy_reason": resolved_policy_reason,
         "shadow_outcome": shadow_outcome,
         # Additive decision-record fields (never part of the chain preimage)
         "decision_input_hash": compute_decision_input_hash(decision_doc),
