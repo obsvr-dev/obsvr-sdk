@@ -14,8 +14,10 @@ plain JSON array of audit events. Two verification tiers:
 
  - WITHOUT --api-key: structural chain verification. prev_sig linkage, seq_no
    continuity, session consistency, and timestamp monotonicity are checked from
-   the events alone. Detects reordering, insertion, and deletion; cannot detect
-   a re-signed forgery (that needs the key).
+   the events alone; every event after the first must CARRY a prev_sig, or an
+   unsigned insertion with a plausible seq_no and a well-formed sdk_sig would
+   pass this tier by simply omitting the field. Detects reordering, insertion,
+   and deletion; cannot detect a re-signed forgery (that needs the key).
  - WITH --api-key: HMAC re-verification (verify_chain) - every signature is
    recomputed over the content + chain preimage, so any content tamper or
    reorder breaks. Under chain format 3, the current signing format, the
@@ -124,7 +126,17 @@ def verify_structure(events: Sequence[Dict[str, Any]]) -> Tuple[bool, Optional[s
         if _seq(event) != _seq(prev) + 1:
             return False, f"seq_no gap: {prev.get('seq_no')} -> {event.get('seq_no')}"
         prev_sig = event.get("prev_sig")
-        if prev_sig is not None and prev_sig != prev.get("sdk_sig"):
+        if prev_sig is None:
+            # Linkage is required, not optional: an event that OMITS prev_sig
+            # is not exempt from the check, or an unsigned insertion would
+            # pass this tier by leaving the field out.
+            return (
+                False,
+                "missing prev_sig at seq "
+                f"{event.get('seq_no')}: every event after the first must "
+                "link to its predecessor",
+            )
+        if prev_sig != prev.get("sdk_sig"):
             return (
                 False,
                 "prev_sig does not link to the prior event's sdk_sig at seq "

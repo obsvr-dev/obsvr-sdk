@@ -102,6 +102,37 @@ describe("exit codes, one per documented outcome", () => {
   });
 });
 
+describe("the keyless tier requires linkage after the first event", () => {
+  test("unsigned insertion without prev_sig is detected", () => {
+    // An appended event with a plausible seq_no, a well-formed sdk_sig and NO
+    // prev_sig is an insertion, and the keyless tier must refuse it: every
+    // event after the first has to link to its predecessor.
+    const c = chain();
+    const last = c[c.length - 1];
+    c.push({
+      sdk_session_id: vectors.session_id,
+      seq_no: (last.seq_no as number) + 1,
+      timestamp_sdk: (last.timestamp_sdk as number) + 1,
+      prompt: "inserted",
+      response: "",
+      sdk_sig: "a".repeat(64),
+    });
+    const r = run([write(c)]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("missing prev_sig");
+  });
+
+  test("first event legitimately carries no prev_sig", () => {
+    // The chain start is the one position with no predecessor to link to, so
+    // an absent prev_sig there is legitimate, not an insertion.
+    const c = chain();
+    delete c[0].prev_sig;
+    const r = run([write(c)]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("STRUCTURAL verification passed");
+  });
+});
+
 describe("the success banner states the preimage boundary", () => {
   // The banner must say what the format-3 preimage covers (content, order,
   // the eight decision/attribution fields) and what it does not (tenant_id

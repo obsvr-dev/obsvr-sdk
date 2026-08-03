@@ -10,8 +10,11 @@
  *
  *  - WITHOUT --api-key: structural chain verification. prev_sig linkage,
  *    seq_no continuity, session consistency, and timestamp monotonicity are
- *    checked from the events alone. Detects reordering, insertion, and
- *    deletion; cannot detect a re-signed forgery (that needs the key).
+ *    checked from the events alone; every event after the first must CARRY a
+ *    prev_sig, or an unsigned insertion with a plausible seq_no and a
+ *    well-formed sdk_sig would pass this tier by simply omitting the field.
+ *    Detects reordering, insertion, and deletion; cannot detect a re-signed
+ *    forgery (that needs the key).
  *  - WITH --api-key: HMAC re-verification (verifyAuditChain) — every signature
  *    is recomputed over the content + chain preimage, so any content tamper or
  *    reorder breaks. Under chain format 3, the current signing format, the
@@ -89,7 +92,13 @@ function verifyStructure(events: AuditEvent[]): { valid: boolean; reason?: strin
     if ((e.seq_no ?? 0) !== (prev.seq_no ?? 0) + 1) {
       return { valid: false, reason: `seq_no gap: ${prev.seq_no} -> ${e.seq_no}`, at: i };
     }
-    if (e.prev_sig != null && e.prev_sig !== prev.sdk_sig) {
+    if (e.prev_sig == null) {
+      // Linkage is required, not optional: an event that OMITS prev_sig is
+      // not exempt from the check, or an unsigned insertion would pass this
+      // tier by leaving the field out.
+      return { valid: false, reason: `missing prev_sig at seq ${e.seq_no}: every event after the first must link to its predecessor`, at: i };
+    }
+    if (e.prev_sig !== prev.sdk_sig) {
       return { valid: false, reason: `prev_sig does not link to the prior event's sdk_sig at seq ${e.seq_no}`, at: i };
     }
     if ((e.timestamp_sdk ?? 0) < (prev.timestamp_sdk ?? 0)) {

@@ -89,6 +89,35 @@ const CASES = [
   },
   { name: "tampered content, keyless (undetectable by design)", args: [write("tampered.json", tampered)] },
   { name: "seq_no gap, keyless", args: [write("gapped.json", gapped)] },
+  {
+    // A plausible seq_no and a well-formed sdk_sig with NO prev_sig is an
+    // unsigned insertion; the keyless tier refuses it in both languages.
+    name: "unsigned insertion without prev_sig, keyless",
+    args: [
+      write("inserted.json", [
+        ...chain,
+        {
+          sdk_session_id: vectors.session_id,
+          seq_no: chain[chain.length - 1].seq_no + 1,
+          timestamp_sdk: chain[chain.length - 1].timestamp_sdk + 1,
+          prompt: "inserted",
+          response: "",
+          sdk_sig: "a".repeat(64),
+        },
+      ]),
+    ],
+  },
+  {
+    // The chain start has no predecessor, so an absent prev_sig there is
+    // legitimate.
+    name: "first event without prev_sig, keyless",
+    args: [
+      write("no-first-prev.json", [
+        Object.fromEntries(Object.entries(chain[0]).filter(([k]) => k !== "prev_sig")),
+        ...chain.slice(1),
+      ]),
+    ],
+  },
   // Exit 3 (valid but incomplete) is the contract these pin: a chain that
   // declares dropped events must not pass a `verify && deploy` gate, and both
   // CLIs must agree on that status, not just on the printed finding.

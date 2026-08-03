@@ -121,6 +121,34 @@ def test_broken_prev_sig_fails_keyless(tmp_path, capsys):
     assert "prev_sig does not link" in capsys.readouterr().err
 
 
+def test_unsigned_insertion_without_prev_sig_fails_keyless(tmp_path, capsys):
+    """An appended event with a plausible seq_no, a well-formed sdk_sig and NO
+    prev_sig is an insertion, and the keyless tier must refuse it: every event
+    after the first has to link to its predecessor."""
+    chain = _chain()
+    chain.append(
+        {
+            "sdk_session_id": VECTORS["session_id"],
+            "seq_no": chain[-1]["seq_no"] + 1,
+            "timestamp_sdk": chain[-1]["timestamp_sdk"] + 1,
+            "prompt": "inserted",
+            "response": "",
+            "sdk_sig": "a" * 64,
+        }
+    )
+    assert _run([_write(tmp_path, "ins.json", chain)]) == 1
+    assert "missing prev_sig" in capsys.readouterr().err
+
+
+def test_first_event_legitimately_carries_no_prev_sig(tmp_path, capsys):
+    """The chain start is the one position with no predecessor to link to, so
+    an absent prev_sig there is legitimate, not an insertion."""
+    chain = _chain()
+    chain[0] = {k: v for k, v in chain[0].items() if k != "prev_sig"}
+    assert _run([_write(tmp_path, "v.json", chain)]) == 0
+    assert "STRUCTURAL verification passed" in capsys.readouterr().out
+
+
 def test_timestamp_regression_fails_keyless(tmp_path, capsys):
     chain = _chain()
     chain[1]["timestamp_sdk"] = chain[0]["timestamp_sdk"] - 1
