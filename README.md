@@ -252,6 +252,23 @@ mode, and under `deny_wins` **every quota rule meters every evaluated call**
 — order-insensitive evaluation means a call that ends blocked can still
 consume quota, where first-match stopped metering at its first match.
 
+**Global monitor mode.** `enforcementMode: 'monitor'`
+(`enforcement_mode="monitor"` in Python) is one flip meaning "keep deciding
+and recording, stop enforcing": every layer still evaluates, every event
+still emits, and a final block is converted to an allow whose
+`shadow_outcome` carries the would-be verdict with the same `rule_id` and
+`reason_code` an enforcing run records — a staged rollout or rollback that
+keeps the evidence stream intact. Two classes enforce in **both** modes: the
+enforcement-integrity gate (kill switch / fail-closed staleness), whose
+verdict is re-derived at the moment of conversion so a stale snapshot cannot
+extend monitor mode to a paused project or revoked key, and canary-leak
+blocks — an exfiltration in flight is stopped in any mode. A converted event
+is enforcement evidence, not a plain allowed call, so it is exempt from
+allowed-call sampling and survives even `sampleRate: 0`. `explain()` keeps
+predicting **enforce**-mode behaviour, so the pre-flight check still
+describes what turning enforcement on would do rather than echoing the
+current mode back.
+
 **Catching a block.** A blocked call throws `ObsvrPolicyError` (both SDKs), carrying a stable `type`, the `reason_code`, the deciding `rule_id`, and the decision metadata — so "refused on purpose" is distinguishable from a provider outage without matching on a message. A reason category the SDK doesn't recognize (a newer control plane) yields `ObsvrUnknownPolicyError` rather than an untyped throw. The Python class subclasses `RuntimeError`, and the message string is unchanged from earlier versions, so existing `except` blocks and string matches keep working.
 
 ```typescript
@@ -473,6 +490,8 @@ flowchart LR
 ### What this guarantees, and what it does not
 
 **Guaranteed (cryptographic).** Once a day is sealed and anchored by the service, the record cannot be **altered, deleted, reordered, or backdated** without breaking the Ed25519-signed root, which anyone can detect with the published public key. This defeats after-the-fact revision — the actual attack in a compliance dispute.
+
+**Optional local non-repudiation (client-held key).** The client HMAC chain proves integrity, not non-repudiation — it is keyed from your API key, so any key holder can mint a valid chain. Point `deviceSigningKeyFile` (`device_signing_key_file`) at an operator-generated Ed25519 key and every event also carries a `device_sig` over the same preimage the HMAC covers, verified offline with `obsvr-verify --device-pubkey <pinned key>` — which works with **or without** the API key, so a third party can check content, order and the decision fields under the public key alone. Pinned keys are trusted; an unpinned key id is reported foreign, never trusted on first use; a missing seal on a pinned chain is a break. It is what catches an API-key holder re-forging the whole chain (that passes HMAC and fails the device tier). The SDK never generates the key — a key it cannot read refuses at init. Full boundary, and how it composes with the server countersignature, in [`SECURITY.md`](SECURITY.md).
 
 **Not guaranteed (client-attested).** The client chain does **not** prove an event corresponds to a real LLM call rather than one fabricated at capture by a party holding the API key. HMAC is symmetric and providers don't sign their responses, so no in-process tool can prove non-fabrication at capture. Treat the client chain as **integrity, not non-repudiation against a key-holder**, and protect the API key like the signing credential it is. External, public verifiability comes from the service's Ed25519-signed, off-host-anchored root — not the symmetric HMAC layer.
 

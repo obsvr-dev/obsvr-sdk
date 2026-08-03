@@ -166,6 +166,14 @@ class ResolvedConfig:
     # deny-wins evaluation and the order-committed policy_version that makes
     # it auditable. Validated at init; an unknown value is refused loudly.
     rule_resolution: Optional[str] = None
+    # Optional client-held device signing identity (Ed25519). Path to an
+    # operator-generated private key (PKCS8 PEM, or a raw 32-byte seed as
+    # hex/base64). When set, every signed event ALSO carries device_sig /
+    # device_key_id over the same payload the HMAC signs — non-repudiation
+    # against everyone who does not hold this key, with the HMAC chain
+    # untouched. The SDK NEVER generates this key; a configured key that
+    # cannot sign refuses at init. See obsvr/device_identity.py.
+    device_signing_key_file: Optional[str] = None
     policy_rules: Optional[List[Any]] = None
     # Anti-tamper policy floor: rules that cannot be silently disabled/
     # downgraded (see TS ObsvrConfig.policyFloor). Its own field so a remote
@@ -281,6 +289,7 @@ def init(
     enforcement_mode: Optional[str] = None,
     require_principal: Optional[bool] = None,
     rule_resolution: Optional[str] = None,
+    device_signing_key_file: Optional[str] = None,
     policy_rules: Optional[List[Any]] = None,
     policy_floor: Optional[List[Any]] = None,
     default_source: Optional[str] = None,
@@ -339,6 +348,21 @@ def init(
             ensure_rule_resolution(rule_resolution)
         except ValueError as exc:
             raise ValueError(f"obsvr.init(): {exc}") from None
+    _device_signer = None
+    if device_signing_key_file is not None:
+        # Loud at init: the operator asked for non-repudiation, so a key that
+        # cannot be read or cannot sign must refuse now — shipping unsigned
+        # events under a config that promised signing is the silent no-op
+        # this control exists to rule out. The loaded signer is installed on
+        # the sender further down, so the key is read exactly once.
+        from .device_identity import DeviceIdentityError, load_device_signer
+
+        try:
+            _device_signer = load_device_signer(device_signing_key_file)
+        except DeviceIdentityError as exc:
+            raise ValueError(
+                f"obsvr.init(): device_signing_key_file: {exc}"
+            ) from None
     if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError(
             f"obsvr.init(): timeout must be a positive number of seconds, got {timeout!r}"
@@ -490,6 +514,7 @@ def init(
         ),
         require_principal=require_principal if require_principal is True else False,
         rule_resolution=rule_resolution,
+        device_signing_key_file=device_signing_key_file,
         policy_rules=policy_rules,
         policy_floor=policy_floor,
         default_source=default_source,
@@ -555,6 +580,14 @@ def init(
     if not claim["governing"]:
         logging.getLogger("obsvr").warning(duplicate_instance_message(claim))
         return
+
+    # Device signing identity (optional): validated and loaded once above,
+    # installed on the sender so every signed event also carries the device
+    # seal. Cleared when the config carries no key, so a re-init without one
+    # stops sealing rather than inheriting the previous identity.
+    from .sender import configure_device_signer
+
+    configure_device_signer(_device_signer)
 
     # Remote policy sync: fetch server rules + approval grants, detect the
     # dashboard kill switch, and (with fail_mode="closed") enforce staleness.

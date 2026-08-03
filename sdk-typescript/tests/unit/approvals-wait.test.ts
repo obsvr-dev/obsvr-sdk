@@ -112,8 +112,20 @@ describe('awaitApproval', () => {
 
 describe('config opt-in', () => {
   it('defaults approvalWaitMs to 0 - the wait is strictly opt-in', () => {
-    // Mutation guard: this fails if the default ever moves off 0, the change
-    // that would make a library upgrade start blocking production calls.
+    // The wait is opt-in BY DECISION, and this pin carries the reasoning.
+    // At the shipped default a require_approval rule refuses immediately and
+    // files the request - fail-closed - so the zero default is not the
+    // failure the wait was built to replace (a hook that pauses for a human
+    // resolves by failMode at hookTimeoutMs, which at shipped defaults
+    // allows). A non-zero default would turn that fast refusal into a slow
+    // one for every deployment without a staffed approvals channel - the
+    // same verdict after minutes of held calls - and would start blocking
+    // production traffic on upgrade. Holding a call is only useful where a
+    // human is actually watching the queue, an operational prerequisite only
+    // the operator can declare; approvalWaitMs is that declaration. The
+    // refusal-at-default behaviour is pinned end to end in
+    // monitor-wait-wiring.test.ts ("keeps the fire-and-forget refusal at
+    // the default of zero"). Mutation guard: fails if the default moves off 0.
     init({ api_key: 'k' });
     expect(getConfig().approvalWaitMs).toBe(0);
     expect(getConfig().approvalPollMs).toBe(5000);

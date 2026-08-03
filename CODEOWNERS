@@ -4,3 +4,8 @@
 # Cross-language behavior contract: changes here require extra scrutiny —
 # a fixture change must land with matching updates in BOTH SDKs.
 /conformance/ @obsvr-code
+
+# The coding-agent hook package: a third-party refusal contract (Claude Code's
+# PreToolUse hook) that is not a versioned API, so a change to how it refuses
+# or registers wants a deliberate look.
+/claude-code/ @obsvr-code

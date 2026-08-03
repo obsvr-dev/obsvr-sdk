@@ -350,6 +350,18 @@ Built-in regex detection covers 13 PII types including SSN, credit cards, API ke
 
 **Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; **`require_principal=True`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
+**Global monitor mode.** `enforcement_mode="monitor"` is one flip meaning
+"keep deciding and recording, stop enforcing": every layer still evaluates,
+every event still emits, and a final block is converted to an allow whose
+`shadow_outcome` carries the would-be verdict with the same `rule_id` and
+`reason_code` an enforcing run records. Two classes enforce in **both**
+modes: the enforcement-integrity gate (kill switch / fail-closed staleness),
+re-derived at the moment of conversion so a stale snapshot cannot extend
+monitor mode to a revoked key, and canary-leak blocks. A converted event is
+enforcement evidence, exempt from allowed-call sampling even at
+`sample_rate=0`, and `explain()` keeps predicting **enforce**-mode behaviour
+so the pre-flight check still describes what turning enforcement on would do.
+
 **Rule ordering, and opting out of it.** Rules evaluate **first-match in
 document order** by default, and a matched `topic_allow` short-circuits — an
 allow rule's list position can decide the verdict. `rule_resolution=
@@ -490,7 +502,7 @@ combined list for both, with the scope marked on each entry, is in the
    2025. `google-genai` has no adapter and is not intercepted.
 
 - **Transport**: `init()` raises when a non-localhost `ingest_url` uses plaintext `http` (localhost, `127.0.0.1`, and `[::1]` are exempt for local development — compared as the parsed hostname, never as a substring). Set the environment variable `OBSVR_ALLOW_HTTP=1` to explicitly allow http, e.g. behind a TLS-terminating proxy on a private network. `ingest_url` also runs the SSRF guard at `init()`: the scheme must be `http(s)`, so `file:`, `gopher:` and `ftp:` are refused, and the cloud-metadata address is refused in every spelling — including over `https`, and regardless of `OBSVR_ALLOW_HTTP`, which relaxes the TLS posture only. The guard is static, so a hostname that *resolves* to a private address is not refused; see `SECURITY.md`.
-- **Signing model**: signatures are derived from your API key inside the SDK. They prove capture order and detect after-the-fact modification, but a party holding the API key could construct validly-signed events. Server-side countersigning at ingest binds accepted events to a key that never leaves the server.
+- **Signing model**: signatures are derived from your API key inside the SDK. They prove capture order and detect after-the-fact modification, but a party holding the API key could construct validly-signed events. Server-side countersigning at ingest binds accepted events to a key that never leaves the server. For local non-repudiation without trusting ingest, set `device_signing_key_file` to an operator-generated Ed25519 key: every event also carries a `device_sig` over the same preimage the HMAC covers, verified offline with `obsvr-verify --device-pubkey <pinned key>` (with or without the API key). Pinned keys are trusted; an unpinned key id is foreign, never trusted on first use; a missing seal on a pinned chain is a break. The SDK never generates the key (a key it cannot read refuses at init; signing needs an Ed25519 backend — `pip install "obsvr-sdk[crypto]"` or PyNaCl). See [`SECURITY.md`](../SECURITY.md).
 - **Fail mode**: default is fail-open — a hook or a detector layer that fails while deciding loses that layer's enforcement for the call, which is counted and recorded on the event. Set `fail_mode="closed"` for policies that must never fail open. `fail_mode` deliberately cannot move three things: `policy_floor` and `canary` always fail **closed** (a floor that cannot run must not wave a call through), a `redact` decision whose redactor then throws **blocks** rather than forwarding the content it was told to strip, and after the provider has answered nothing is withheld from your application — a response-side failure falls closed only on the stored audit copy.
 - **NLP PII types** (`name`, `address`, `person`, `location`, `medical`, `national_id`) are not detected by the built-in regex scanner; they require the Presidio integration.
 - **Serverless**: each cold start begins a fresh integrity session; multiple sessions starting at `seq_no=1` are expected and verify correctly. Call `obsvr.flush()` before shutdown.

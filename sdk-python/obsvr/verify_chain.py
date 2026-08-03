@@ -16,6 +16,16 @@ The checks, in the order a break is reported:
 4. ``timestamp_sdk`` never decreases
 5. ``prev_sig`` links to the prior event's ``sdk_sig``
 6. the recomputed HMAC matches ``sdk_sig``, under the declared format
+7. with device public keys pinned (``device_public_keys``): every event
+   carries a ``device_sig`` by a pinned key that verifies over the same
+   payload — the optional non-repudiation tier (see device_identity.py).
+   An event signed by an UNPINNED key is reported as foreign
+   ("Device key unknown"), never trusted on first use; a missing device
+   signature is a break, because pinning keys asserts the expectation and a
+   stripped seal must not read as a clean chain. ``api_key`` may be None
+   when device keys are pinned: the device seal covers the same payload the
+   HMAC covers, so content, order and the decision fields verify under the
+   public key alone — non-repudiation without sharing any secret.
 
 Verification is offline and off the hot path, so it does the thorough thing:
 every event is re-signed from scratch rather than trusting any stored digest.
@@ -106,6 +116,16 @@ class ChainVerificationResult:
     #: format could be established (empty chain, missing session id,
     #: unrecognized format value).
     chain_format: Optional[int] = None
+    #: Events carrying a ``device_sig``, counted in the verified prefix
+    #: whether or not device keys were pinned - so a caller (and the CLI) can
+    #: say "seals present, not verified in this run" instead of silence.
+    device_signed_events: int = 0
+    #: True when device public keys were pinned AND the device tier actually
+    #: ran. False with no keys - and False with keys but no Ed25519 backend,
+    #: in which case ``device_unverified_reason`` says so: "could not check"
+    #: must never fold into valid or tampered.
+    device_checked: bool = False
+    device_unverified_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """JSON-friendly view using the cross-language field names."""
@@ -121,6 +141,10 @@ class ChainVerificationResult:
         out["breaks"] = list(self.breaks)
         if self.chain_format is not None:
             out["chainFormat"] = self.chain_format
+        out["deviceSignedEvents"] = self.device_signed_events
+        out["deviceChecked"] = self.device_checked
+        if self.device_unverified_reason is not None:
+            out["deviceUnverifiedReason"] = self.device_unverified_reason
         return out
 
 
@@ -148,24 +172,11 @@ def _declared_format(event: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-def _compute_signature(
-    signing_key: bytes,
-    fmt: int,
-    session_id: str,
-    seq_no: int,
-    timestamp_sdk: int,
-    prompt: str,
-    response: str,
-    prev_sig: Optional[str],
-    decision: Optional[Dict[str, Any]] = None,
-) -> str:
-    payload = signature_payload(
-        fmt, session_id, seq_no, timestamp_sdk, prompt, response, prev_sig, decision
-    )
-    return hmac_mod.new(signing_key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerificationResult:
+def verify_chain(
+    events: Sequence[Dict[str, Any]],
+    api_key: Optional[str],
+    device_public_keys: Optional[Sequence[Any]] = None,
+) -> ChainVerificationResult:
     """Verify the integrity of an audit event chain.
 
     Args:
@@ -183,10 +194,40 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
         ``events_verified`` counts the events that verified before the first
         break (all of them when valid).
 
+    ``device_public_keys`` pins the optional device tier: each entry is a raw
+    32-byte public key (bytes), or a string the device-identity loader reads
+    (base64, hex, or a PEM path). ``api_key=None`` with device keys pinned
+    runs the device-only tier over the same recomputed payloads; with
+    neither, there is nothing to verify and a usage error is raised.
+
     An empty chain is vacuously valid: there is nothing to contradict.
     """
+    pinned: Dict[str, bytes] = {}
+    device_checked = False
+    device_unverified_reason: Optional[str] = None
+    if device_public_keys:
+        from .device_identity import derive_device_key_id, load_device_public_key
+
+        for supplied in device_public_keys:
+            raw = supplied if isinstance(supplied, bytes) else load_device_public_key(str(supplied))
+            pinned[derive_device_key_id(raw)] = raw
+        from .policy_verify import _resolve_backend
+
+        if _resolve_backend() is None:
+            device_unverified_reason = (
+                "device keys pinned but no Ed25519 backend is importable; "
+                'install one: pip install "obsvr-sdk[crypto]"'
+            )
+        else:
+            device_checked = True
+    if api_key is None and not device_checked:
+        raise ValueError(
+            "verify_chain needs an api_key, pinned device_public_keys, or both"
+        )
+
     gap_markers = 0
     events_declared_lost = 0
+    device_signed_events = 0
     chain_format: Optional[int] = None
     breaks: List[Dict[str, Any]] = []
 
@@ -203,12 +244,20 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             events_declared_lost=events_declared_lost,
             chain_format=chain_format,
             breaks=breaks,
+            device_signed_events=device_signed_events,
+            device_checked=device_checked,
+            device_unverified_reason=device_unverified_reason,
         )
 
     if not events:
-        return ChainVerificationResult(valid=True, events_verified=0)
+        return ChainVerificationResult(
+            valid=True,
+            events_verified=0,
+            device_checked=device_checked,
+            device_unverified_reason=device_unverified_reason,
+        )
 
-    signing_key = derive_signing_key(api_key)
+    signing_key = derive_signing_key(api_key) if api_key is not None else None
     session_id = events[0].get("sdk_session_id")
 
     if not session_id:
@@ -316,8 +365,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
                 )
                 continue
 
-        expected_sig = _compute_signature(
-            signing_key,
+        payload = signature_payload(
             chain_format,
             session_id,
             seq_no,
@@ -333,14 +381,52 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             decision_fields_of(event),
         )
 
-        # Constant-time compare: verification runs against attacker-supplied
-        # signatures, and a timing oracle on the comparison is free to give
-        # away otherwise.
-        if not hmac_mod.compare_digest(str(event.get("sdk_sig") or ""), expected_sig):
-            record_break(i, f"Signature mismatch at event {i}", event)
-            continue
+        if signing_key is not None:
+            expected_sig = hmac_mod.new(
+                signing_key, payload.encode("utf-8"), hashlib.sha256
+            ).hexdigest()
+            # Constant-time compare: verification runs against
+            # attacker-supplied signatures, and a timing oracle on the
+            # comparison is free to give away otherwise.
+            if not hmac_mod.compare_digest(
+                str(event.get("sdk_sig") or ""), expected_sig
+            ):
+                record_break(i, f"Signature mismatch at event {i}", event)
+                continue
 
         last_sig = event.get("sdk_sig")
+
+        if isinstance(event.get("device_sig"), str):
+            device_signed_events += 1
+        if device_checked:
+            # The non-repudiation tier: the device seal must be present, by a
+            # pinned key, and valid over the SAME payload. These breaks do
+            # not re-anchor - the chain state above already advanced on the
+            # (HMAC-consistent) stored fields.
+            device_sig = event.get("device_sig")
+            key_id = event.get("device_key_id")
+            if not isinstance(device_sig, str):
+                breaks.append(
+                    {"index": i, "reason": f"Device signature missing at event {i}"}
+                )
+                continue
+            if not isinstance(key_id, str) or key_id not in pinned:
+                shown = key_id if isinstance(key_id, str) else "no usable device_key_id"
+                breaks.append(
+                    {
+                        "index": i,
+                        "reason": f"Device key unknown at event {i}: {shown} "
+                        "is not among the pinned keys",
+                    }
+                )
+                continue
+            from .device_identity import verify_device_sig
+
+            if verify_device_sig(pinned[key_id], key_id, payload, device_sig) is not True:
+                breaks.append(
+                    {"index": i, "reason": f"Device signature mismatch at event {i}"}
+                )
+                continue
 
         # Counted only after the event's own signature verified, and only in
         # the prefix before the first break - the tally a caller acts on must
@@ -363,6 +449,9 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             events_declared_lost=events_declared_lost,
             chain_format=chain_format,
             breaks=breaks,
+            device_signed_events=device_signed_events,
+            device_checked=device_checked,
+            device_unverified_reason=device_unverified_reason,
         )
 
     return ChainVerificationResult(
@@ -371,4 +460,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
         gap_markers=gap_markers,
         events_declared_lost=events_declared_lost,
         chain_format=chain_format,
+        device_signed_events=device_signed_events,
+        device_checked=device_checked,
+        device_unverified_reason=device_unverified_reason,
     )

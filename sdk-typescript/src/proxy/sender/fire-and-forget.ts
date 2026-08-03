@@ -138,6 +138,20 @@ let isProcessing = false;
 let droppedCount = 0;
 
 /**
+ * Optional client-held device signing identity (proxy/device-identity.ts).
+ * Installed by init() when deviceSigningKeyFile is configured; null means
+ * exactly the pre-existing behaviour — HMAC only.
+ */
+let deviceSigner: import("../device-identity.js").DeviceSigner | null = null;
+
+/** Install (or clear) the device signing identity for this process. */
+export function setDeviceSigner(
+  signer: import("../device-identity.js").DeviceSigner | null,
+): void {
+  deviceSigner = signer;
+}
+
+/**
  * Overflow drops that no gap marker has declared yet. Incremented at the drop
  * point, zeroed when a marker carrying them is signed into the chain.
  */
@@ -697,6 +711,19 @@ function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
     .update(sigPayload)
     .digest("hex");
 
+  if (deviceSigner !== null) {
+    // The optional second seal: the SAME payload, signed by the
+    // operator-held Ed25519 key. Additive by construction — the HMAC
+    // preimage above is byte-identical with or without it, so every
+    // existing chain and verifier is untouched, while a verifier that pins
+    // this key gets non-repudiation against every party that does not hold
+    // it (an API-key holder included). The key id is inside the device
+    // preimage, so neither it nor the version label can be swapped without
+    // breaking the signature.
+    event.device_key_id = deviceSigner.keyId;
+    event.device_sig = deviceSigner.signPayload(sigPayload);
+  }
+
   // Update chain state for the next event
   lastSig = event.sdk_sig;
 
@@ -738,6 +765,20 @@ export function sendAuditAsync(
   event: AuditEvent
 ): void {
   enqueueAuditEvent(config, event);
+}
+
+/**
+ * Sign an event in place and advance the chain, WITHOUT enqueuing or
+ * delivering it. Test-only: the delivery path samples and can drop, which
+ * makes it the wrong tool for a test that needs to inspect the signed event
+ * itself. Twin of the way sdk-python's tests call sender.sign_event.
+ * @internal
+ */
+export function signAndEnqueueForTest(
+  config: ResolvedConfig,
+  event: AuditEvent,
+): void {
+  signAndEnqueue(config, event);
 }
 
 /**
@@ -894,6 +935,7 @@ export function _resetSender(): void {
   }
   seqNo = 0;
   lastSig = null;
+  deviceSigner = null;
   signingKey = null;
   signingKeySource = null;
   handlersRegistered = false;

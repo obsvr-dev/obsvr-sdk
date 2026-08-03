@@ -1,6 +1,7 @@
 """obsvr-verify: offline evidence verification for auditors, in Python.
 
-    obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]
+    obsvr-verify <bundle.json> [--api-key <key>] [--device-pubkey <key>]...
+                 [--allow-gaps] [--json]
 
 Behavioral twin of the TypeScript CLI (sdk-typescript/src/cli-verify.ts): same input
 shapes, same two tiers, same exit codes, same verdicts. It exists so a
@@ -27,6 +28,16 @@ plain JSON array of audit events. Two verification tiers:
    The client signature does NOT cover tenant_id, token counts, metadata,
    operation, or content_provenance; those are sealed by the server
    countersignature at ingest, not by this offline check.
+ - WITH --device-pubkey (repeatable; base64/hex raw key or a PEM path): the
+   optional non-repudiation tier. Every event must carry a device_sig by a
+   pinned key that verifies over the same payload the HMAC covers; an event
+   signed by an unpinned key is reported as foreign, never trusted on first
+   use, and a missing seal is a break - pinning asserts the expectation, so
+   a stripped seal cannot read as clean. Works WITH --api-key (both seals
+   checked) or ALONE (--device-pubkey without --api-key verifies content,
+   order and the decision fields under the public key, no secret shared).
+   The key id on an event is a selection hint only; trust comes from what
+   you pinned. This CLI never generates or persists key material.
 
 Either tier also reports GAP MARKERS: events the SDK signed to record that its
 bounded queue dropped events it never got to chain. A chain carrying markers is
@@ -177,29 +188,40 @@ def _report_gaps(markers: int, lost: int, allow_gaps: bool) -> int:
     return 0 if allow_gaps else EXIT_INCOMPLETE
 
 
-def _parse_args(argv: Sequence[str]) -> Tuple[str, Optional[str], bool, bool]:
+def _parse_args(
+    argv: Sequence[str],
+) -> Tuple[str, Optional[str], List[str], bool, bool]:
     """Mirror the TS CLI's argument handling, including its tolerance: flags in
-    any order, and the value after --api-key is never mistaken for the file."""
+    any order, and a value that follows --api-key or --device-pubkey is never
+    mistaken for the file."""
     args = list(argv)
     api_key: Optional[str] = None
+    value_indices = set()
     key_index = args.index("--api-key") if "--api-key" in args else -1
     if key_index >= 0 and key_index + 1 < len(args):
         api_key = args[key_index + 1]
+        value_indices.add(key_index + 1)
+    device_keys: List[str] = []
+    for i, arg in enumerate(args):
+        if arg == "--device-pubkey" and i + 1 < len(args):
+            device_keys.append(args[i + 1])
+            value_indices.add(i + 1)
     path: Optional[str] = None
     for i, arg in enumerate(args):
         if arg.startswith("--"):
             continue
-        if key_index >= 0 and i == key_index + 1:
+        if i in value_indices:
             continue
         path = arg
         break
     if not path:
         print(
-            "Usage: obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]",
+            "Usage: obsvr-verify <bundle.json> [--api-key <key>] "
+            "[--device-pubkey <key>]... [--allow-gaps] [--json]",
             file=sys.stderr,
         )
         raise SystemExit(2)
-    return path, api_key, "--allow-gaps" in args, "--json" in args
+    return path, api_key, device_keys, "--allow-gaps" in args, "--json" in args
 
 
 def _json_line(doc: Dict[str, Any]) -> str:
@@ -210,9 +232,34 @@ def _json_line(doc: Dict[str, Any]) -> str:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    path, api_key, allow_gaps, as_json = _parse_args(
+    path, api_key, device_key_args, allow_gaps, as_json = _parse_args(
         sys.argv[1:] if argv is None else argv
     )
+
+    device_keys: List[bytes] = []
+    pinned_ids: List[str] = []
+    if device_key_args:
+        from .device_identity import (
+            DeviceIdentityError,
+            derive_device_key_id,
+            load_device_public_key,
+        )
+
+        try:
+            for value in device_key_args:
+                raw = load_device_public_key(value)
+                device_keys.append(raw)
+                pinned_ids.append(derive_device_key_id(raw))
+        except DeviceIdentityError as err:
+            _fail(f"--device-pubkey: {err}", 2)
+        from .policy_verify import _resolve_backend
+
+        if _resolve_backend() is None:
+            _fail(
+                "--device-pubkey needs an Ed25519 backend; install one: "
+                'pip install "obsvr-sdk[crypto]"',
+                2,
+            )
 
     try:
         with open(path, encoding="utf-8") as handle:
@@ -224,7 +271,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not as_json:
         print(f"Loaded {len(events)} event(s) from {path}")
 
-    if api_key:
+    if api_key or device_keys:
         # Group per session: the HMAC chain is per sdk_session_id.
         sessions: Dict[str, List[Dict[str, Any]]] = {}
         for event in events:
@@ -235,21 +282,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         verified = 0
         gap_markers = 0
         events_lost = 0
+        device_signed = 0
         for sid, session_events in sessions.items():
-            result = verify_chain(sorted(session_events, key=_seq), api_key)
+            result = verify_chain(
+                sorted(session_events, key=_seq),
+                api_key or None,
+                device_public_keys=device_keys or None,
+            )
             reports.append((sid, result))
             any_invalid = any_invalid or not result.valid
             verified += result.events_verified
             gap_markers += result.gap_markers
             events_lost += result.events_declared_lost
+            device_signed += result.device_signed_events
         code = (
             1
             if any_invalid
             else (0 if gap_markers == 0 or allow_gaps else EXIT_INCOMPLETE)
         )
+        mode = "content+chain" if api_key else "content+device"
         if as_json:
             doc: Dict[str, Any] = {
-                "mode": "content+chain",
+                "mode": mode,
                 "valid": not any_invalid,
                 "sessions": [
                     dict({"sessionId": sid}, **result.to_dict())
@@ -258,6 +312,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "eventsVerified": verified,
                 "gapMarkers": gap_markers,
                 "eventsDeclaredLost": events_lost,
+                "deviceSignedEvents": device_signed,
+                "deviceChecked": bool(device_keys),
                 "allowGaps": allow_gaps,
                 "exitCode": code,
             }
@@ -274,17 +330,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         file=sys.stderr,
                     )
             return 1
-        print(
-            f"✓ CONTENT + CHAIN verification passed: {verified} signature(s) "
-            f"recomputed and chain-linked across {len(sessions)} session(s).\n"
-            "  This attests prompt/response CONTENT integrity, event ORDER, and — under\n"
-            "  chain format 3, the current signing format — the decision/attribution\n"
-            "  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n"
-            "  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n"
-            "  and order only. The client signature does NOT cover tenant_id, token\n"
-            "  counts, metadata, operation, or content_provenance — those are sealed by\n"
-            "  the server countersignature at ingest."
-        )
+        if api_key:
+            print(
+                f"✓ CONTENT + CHAIN verification passed: {verified} signature(s) "
+                f"recomputed and chain-linked across {len(sessions)} session(s).\n"
+                "  This attests prompt/response CONTENT integrity, event ORDER, and — under\n"
+                "  chain format 3, the current signing format — the decision/attribution\n"
+                "  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n"
+                "  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n"
+                "  and order only. The client signature does NOT cover tenant_id, token\n"
+                "  counts, metadata, operation, or content_provenance — those are sealed by\n"
+                "  the server countersignature at ingest."
+            )
+        else:
+            print(
+                f"✓ CONTENT + DEVICE verification passed: {verified} device "
+                f"signature(s) recomputed and chain-linked across {len(sessions)} session(s).\n"
+                "  Each event's Ed25519 device seal was verified under the pinned public\n"
+                "  key(s) over the same payload the HMAC covers — content, order, and (under\n"
+                "  chain format 3) the decision/attribution fields — so this run needed no\n"
+                "  API key and shared no secret. It does NOT check the HMAC chain: run with\n"
+                "  --api-key as well to attest both seals."
+            )
+        if device_keys:
+            print(
+                f"✓ device signatures verified: {verified} event(s) under "
+                f"pinned key(s) {', '.join(sorted(pinned_ids))}"
+            )
+        elif device_signed > 0:
+            print(
+                f"note: {device_signed} event(s) carry device signatures not "
+                "verified in this run (no --device-pubkey supplied)"
+            )
         return _report_gaps(gap_markers, events_lost, allow_gaps)
     else:
         valid, reason = verify_structure(events)
@@ -325,6 +402,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "  full HMAC re-verification, and check the daily Merkle root (git anchor /\n"
             "  RFC 3161 token) for the no-insert/no-delete guarantee across days."
         )
+        device_signed = sum(
+            1 for event in events if isinstance(event.get("device_sig"), str)
+        )
+        if device_signed > 0:
+            print(
+                f"note: {device_signed} event(s) carry device signatures not "
+                "verified in this run (no --device-pubkey supplied)"
+            )
         return _report_gaps(gap_markers, events_lost, allow_gaps)
 
 

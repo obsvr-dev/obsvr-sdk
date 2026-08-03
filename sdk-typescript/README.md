@@ -162,6 +162,18 @@ Built-in regex detection covers 13 PII types including SSN, credit cards, API ke
 
 **Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
+**Global monitor mode.** `enforcementMode: 'monitor'` is one flip meaning
+"keep deciding and recording, stop enforcing": every layer still evaluates,
+every event still emits, and a final block is converted to an allow whose
+`shadow_outcome` carries the would-be verdict with the same `rule_id` and
+`reason_code` an enforcing run records. Two classes enforce in **both**
+modes: the enforcement-integrity gate (kill switch / fail-closed staleness),
+re-derived at the moment of conversion so a stale snapshot cannot extend
+monitor mode to a revoked key, and canary-leak blocks. A converted event is
+enforcement evidence, exempt from allowed-call sampling even at
+`sampleRate: 0`, and `explain()` keeps predicting **enforce**-mode behaviour
+so the pre-flight check still describes what turning enforcement on would do.
+
 **Rule ordering, and opting out of it.** Rules evaluate **first-match in
 document order** by default, and a matched `topic_allow` short-circuits — an
 allow rule's list position can decide the verdict. `ruleResolution:
@@ -525,6 +537,8 @@ With `stream: true`, PII scanning and policy hooks run **before** the LLM is con
 ### Signing model
 
 Event signatures are derived from your API key inside the SDK. They prove capture order and detect after-the-fact modification, but a party holding the API key could construct validly-signed events. Server-side countersigning at ingest binds each accepted event to a key that never leaves the server. Treat the client chain as integrity, not as non-repudiation against a key-holder.
+
+For local non-repudiation without trusting ingest, set `deviceSigningKeyFile` to an operator-generated Ed25519 key: every event then also carries a `device_sig` over the same preimage the HMAC covers, and `obsvr-verify --device-pubkey <pinned key>` verifies it — with or without the API key. Pinned keys are trusted, an unpinned key id is reported foreign (never trusted on first use), and a missing seal on a pinned chain is a break. It catches an API-key holder re-forging the chain, which the HMAC cannot. The SDK never generates the key (uses `node:crypto` to sign; a key it cannot read refuses at init). Full boundary in [`SECURITY.md`](../SECURITY.md).
 
 ### Fail mode
 

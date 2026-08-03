@@ -99,6 +99,10 @@ class TestValidChains:
             # absent key would only state "no reporting".
             "breaks": [],
             "chainFormat": 3,
+            # Device-tier facts are always present for the same reason: zero
+            # seals and an unchecked tier are statements, not omissions.
+            "deviceSignedEvents": 0,
+            "deviceChecked": False,
         }
 
     def test_legacy_chain_verifies_and_reports_format_1(self):
