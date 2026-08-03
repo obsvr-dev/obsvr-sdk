@@ -116,17 +116,21 @@ class TestRecording:
 class TestRealIntegrationsReport:
     def test_every_guarded_integration_reports_its_binds(self):
         # Importing the modules is what records; assert each names itself.
+        import obsvr.integrations.bedrock  # noqa: F401
         import obsvr.integrations.haystack  # noqa: F401
         import obsvr.integrations.langchain  # noqa: F401
         import obsvr.integrations.llamaindex  # noqa: F401
         import obsvr.integrations.pydantic_ai  # noqa: F401
+        import obsvr.integrations.vertex  # noqa: F401
 
         reported = integration_bindings()
         for name in (
+            "bedrock",
             "haystack",
             "langchain",
             "llamaindex",
             "pydantic_ai",
+            "vertex",
         ):
             assert name in reported, f"{name} records no binding at all"
             assert reported[name], f"{name} reports an empty symbol set"
@@ -197,6 +201,46 @@ class TestEveryIntegrationRecordsItsBindFailures:
         ]
         assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
 
+    def test_bedrock_records_why_the_exception_types_did_not_bind(
+        self, isolated_registry
+    ):
+        import obsvr.integrations.bedrock as bedrock_module
+
+        try:
+            with _blocked("botocore"):
+                importlib.reload(bedrock_module)
+        finally:
+            importlib.reload(bedrock_module)
+        entry = self._unbound_for("bedrock")["botocore.exceptions"]
+        assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
+        assert entry["error"]
+
+    def test_vertex_records_why_the_model_class_did_not_bind(self, isolated_registry):
+        import obsvr.integrations.vertex as vertex_module
+
+        try:
+            with _blocked("vertexai"):
+                importlib.reload(vertex_module)
+        finally:
+            importlib.reload(vertex_module)
+        entry = self._unbound_for("vertex")[
+            "vertexai.generative_models.GenerativeModel"
+        ]
+        assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
+        assert entry["error"]
+
+    def test_haystack_records_why_the_hook_dispatch_probe_did_not_bind(
+        self, isolated_registry
+    ):
+        from obsvr.integrations import haystack as haystack_module
+
+        with _blocked("haystack"):
+            # The probe's verdict still reaches the caller directly - the
+            # report adds why, it does not replace the returned False.
+            assert haystack_module._hook_dispatch_present() is False
+        entry = self._unbound_for("haystack")["haystack.hooks.protocol"]
+        assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
+
     def test_autogen_records_why_the_agent_class_did_not_bind(self, isolated_registry):
         from obsvr.integrations import autogen as autogen_module
 
@@ -244,19 +288,10 @@ class TestCompleteness:
     fails both when a new unrecorded block appears and when an allowlisted
     one starts recording (a stale allowlist is itself a finding)."""
 
-    #: Pre-existing guarded imports that record nothing, with why they stay:
-    #: - bedrock: resolves botocore's exception types for retry-shaping; the
-    #:   integration itself binds to the client object the caller passes in.
-    #: - haystack: a capability probe inside install_tool_gate(); the module's
-    #:   import-time bind is recorded, the probe's outcome is returned to the
-    #:   caller directly.
-    #: - vertex: resolves the real GenerativeModel for isinstance-style
-    #:   checks; interception works regardless, as the block's comment says.
-    KNOWN_UNRECORDED = {
-        ("bedrock.py", "botocore.exceptions"),
-        ("haystack.py", "haystack.hooks.protocol"),
-        ("vertex.py", "vertexai.generative_models"),
-    }
+    #: Every guarded third-party import under obsvr/integrations records a
+    #: binding as of the bedrock/haystack-probe/vertex wiring; an entry here
+    #: names a block that records nothing and says why it may.
+    KNOWN_UNRECORDED: set = set()
 
     @staticmethod
     def _third_party_imports(try_node):

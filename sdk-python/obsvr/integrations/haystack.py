@@ -220,8 +220,13 @@ def _hook_dispatch_present() -> bool:
         from haystack.hooks.protocol import BEFORE_TOOL  # type: ignore # noqa: F401
         from haystack.hooks.invocation import _run_hooks  # type: ignore
         from haystack.components.agents.agent import Agent  # type: ignore
-    except Exception:
+    except Exception as exc:
+        # The probe's verdict goes back to the caller; the bind outcome ALSO
+        # lands on the report, so "this build has no hook dispatch" is
+        # programmatically visible and not only a returned False.
+        record_binding("haystack", "haystack.hooks.protocol", exc)
         return False
+    record_binding("haystack", "haystack.hooks.protocol")
     if not callable(_run_hooks):
         return False
     try:

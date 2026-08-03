@@ -58,13 +58,17 @@ from ..policy import (
     redact_builtin_pii,
 )
 
+from ..binding_report import record_binding
+
 try:  # real binding when botocore is installed; interception works regardless
     import botocore.exceptions as _botocore_exc  # type: ignore
 
     _BOTO_ERRORS: tuple = (_botocore_exc.BotoCoreError, _botocore_exc.ClientError)
-except Exception:  # pragma: no cover - botocore not installed
+    record_binding("bedrock", "botocore.exceptions")
+except Exception as _bind_exc:  # pragma: no cover - botocore not installed
     _botocore_exc = None  # type: ignore
     _BOTO_ERRORS = ()
+    record_binding("bedrock", "botocore.exceptions", _bind_exc)
 
 SOURCE = "bedrock_py"
 PROVIDER = "bedrock"
