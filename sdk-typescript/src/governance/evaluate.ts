@@ -23,9 +23,11 @@ import type { PolicyEvalContext, ShadowOutcome } from '../policy/rules.js';
  * snapshot — so even a stale `degraded` argument cannot extend monitor mode
  * to a paused project or revoked key. Twin: `_monitor_conversion_applies` in
  * the Python policy pipeline (which additionally carves out canary leaks;
- * this surface has no canary layer).
+ * this surface has no canary layer). Exported so the proxy wrapper and the
+ * integrations pipeline apply the identical carve-out — those two surfaces
+ * carve out their canary layer at the call site.
  */
-function monitorConversionApplies(
+export function monitorConversionApplies(
   cfg: ResolvedConfig,
   degraded: { degraded: boolean },
 ): boolean {

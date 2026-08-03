@@ -955,8 +955,15 @@ export interface AuditEvent {
   rule_id?: string;
   policy_reason?: string;
   tenant_id?: string;
-  /** What shadow-mode rules would have done (EV-21); informational only. */
-  shadow_outcome?: { rule_id: string; would: "block" | "redact" | "flag"; reason: string };
+  /** What shadow-mode rules would have done (EV-21), or the would-be verdict
+   * of a monitor-mode conversion; informational only. `reason_code` carries
+   * the registry classification when the producing layer resolved one. */
+  shadow_outcome?: {
+    rule_id: string;
+    would: "block" | "redact" | "flag";
+    reason_code?: string;
+    reason: string;
+  };
   /** SHA-256 hex of the canonical decision-input document the rules engine
    * evaluated (ADR-2 tier-1). ADDITIVE — never part of the HMAC chain
    * preimage; sealed by the ledger's v7 Merkle leaf. */
