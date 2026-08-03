@@ -80,6 +80,7 @@ def evaluate_policy_rules(
     context: Optional[Dict[str, Any]] = None,
     check_only: bool = False,
     fail_mode: Optional[str] = None,
+    resolution: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Evaluate rules against text (+ optional context).
 
@@ -91,14 +92,21 @@ def evaluate_policy_rules(
     fail_mode: the operator's failure posture, for the one case this engine
     can hit an enforcement layer that cannot run -- a quota scope the bounded
     store had no slot for. None behaves as "open", the SDK-wide default.
+    resolution: the ruleset's declared conflict-resolution mode (see
+    RULE_RESOLUTION_MODES). None keeps the original first-match contract;
+    "deny_wins" collects every enforcing outcome and resolves them
+    order-insensitively, strongest action first. An unknown value raises.
     Returns PolicyDecisionResult dict.
     """
+    ensure_rule_resolution(resolution)
     # The unmetered record is collected here and attached to whatever verdict
     # comes out, including one produced by a LATER rule: the fact "this call's
     # quota rule did not run" is true of the call regardless of what decided
     # it. Parity with TS evaluatePolicyRules.
     unmetered: Dict[str, Any] = {}
-    result = _evaluate_rules(rules, text, target, context, check_only, fail_mode, unmetered)
+    result = _evaluate_rules(
+        rules, text, target, context, check_only, fail_mode, unmetered, resolution
+    )
     if unmetered.get("record") is not None:
         result = {**result, "quota_unmetered": unmetered["record"]}
     return result
@@ -112,247 +120,338 @@ def _evaluate_rules(
     check_only: bool = False,
     fail_mode: Optional[str] = None,
     unmetered: Optional[Dict[str, Any]] = None,
+    resolution: Optional[str] = None,
 ) -> Dict[str, Any]:
     if unmetered is None:
         unmetered = {}
+    deny_wins = resolution == RULE_RESOLUTION_DENY_WINS
     # §6: normalize once, up front, so every text-matching rule sees the same
     # confusable/zero-width-folded copy. Matching-only: the engine returns a
     # decision + rule_id, never modified text, so stored/forwarded content is
     # untouched. Identity on plain ASCII, so existing behavior is unchanged.
     text = normalize_for_matching(text)
+    collected: List[Any] = []
     for rule in rules:
-        if not rule.enabled:
+        outcome = _rule_outcome(
+            rule, text, target, context, check_only, fail_mode, unmetered, deny_wins
+        )
+        if outcome is None:
             continue
-        # Shadow rules are inert in active evaluation (EV-20); they run
-        # only through evaluate_shadow_rules after the active decision.
-        if getattr(rule, "mode", None) == "shadow":
-            continue
+        if not deny_wins:
+            # first_match: the first rule that renders an outcome decides
+            # (EV-6/EV-8), so a matched topic_allow pre-empts every rule
+            # after it. The engine's original contract, unchanged.
+            return outcome
+        collected.append((rule, outcome))
+    if collected:
+        return _resolve_matched(collected)
+    return {"decision": "allow", "reason_code": ReasonCode.PERMITTED.value}
 
-        applies = rule.applies_to
-        if applies and applies != "both" and applies != target:
-            continue
 
-        matched = False
+# Action strength for deny-wins resolution, weakest first: a permit
+# (topic_allow, or a block rule satisfied by a live approval grant) carries no
+# enforcement signal; a flag allows but classifies; redact modifies content;
+# block refuses the call. The prevailing outcome is the strongest anywhere in
+# the set, which is what makes the verdict independent of document order.
+_PERMIT, _FLAG, _REDACT, _REFUSE = range(4)
 
-        if rule.type == "keyword":
-            keywords = rule.conditions.get("keywords", [])
-            lower = text.lower()
-            matched = any(kw.lower() in lower for kw in keywords)
 
-        elif rule.type == "regex":
-            pattern = rule.conditions.get("pattern")
-            if pattern:
-                # ReDoS guard: customer-supplied patterns are validated for
-                # catastrophic-backtracking shapes and run on bounded input.
-                # Rejected patterns are treated as no-match (never raise).
-                matched = safe_regex_search(pattern, text)
+def _outcome_strength(rule: PolicyRule, outcome: Dict[str, Any]) -> int:
+    decision = outcome.get("decision")
+    if decision == "block":
+        return _REFUSE
+    if decision == "redact":
+        return _REDACT
+    if rule.type == "topic_allow" or outcome.get("approval_granted") is not None:
+        return _PERMIT
+    return _FLAG
 
-        elif rule.type == "topic_deny":
-            topics = rule.conditions.get("topics", [])
-            lower = text.lower()
-            matched = any(t.lower() in lower for t in topics)
 
-        elif rule.type == "topic_allow":
-            topics = rule.conditions.get("topics", [])
-            lower = text.lower()
-            matched = any(t.lower() in lower for t in topics)
+def _resolve_matched(collected: List[Any]) -> Dict[str, Any]:
+    """Deny-wins resolution over every rendered outcome: the strongest action
+    prevails; among equals, the smallest rule id in UTF-16 code-unit order
+    (the same order the policy hash sorts in) prevails. Both keys are
+    order-insensitive, so every permutation of the same rule list resolves to
+    the same verdict AND the same recorded rule_id."""
+    _, best = min(
+        collected,
+        key=lambda pair: (-_outcome_strength(pair[0], pair[1]), _utf16_order(pair[0].id)),
+    )
+    return best
 
-        elif rule.type == "action_gate":
-            matched = _evaluate_action_gate(rule, text, context)
 
-        elif rule.type in ("namespace_isolation", "cross_tenant_block"):
-            matched = _evaluate_namespace_mismatch(context)
+def _rule_outcome(
+    rule: PolicyRule,
+    text: str,
+    target: str,
+    context: Optional[Dict[str, Any]],
+    check_only: bool,
+    fail_mode: Optional[str],
+    unmetered: Dict[str, Any],
+    deny_wins: bool,
+) -> Optional[Dict[str, Any]]:
+    """Evaluate ONE rule against already-normalized text. Returns the outcome
+    a first-match engine would return for this rule, or None when the rule
+    renders no outcome (disabled, shadow, out of phase, unmatched, or a quota
+    under its limit). Shared verbatim by both resolution modes so the two can
+    never drift on what a rule MEANS -- they differ only in what happens once
+    an outcome exists."""
+    if not rule.enabled:
+        return None
+    # Shadow rules are inert in active evaluation (EV-20); they run
+    # only through evaluate_shadow_rules after the active decision.
+    if getattr(rule, "mode", None) == "shadow":
+        return None
 
-        elif rule.type == "destructive_op_gate":
-            matched = _evaluate_destructive_op_gate(rule, text, context)
+    applies = rule.applies_to
+    if applies and applies != "both" and applies != target:
+        return None
 
-        elif rule.type == "source_grounding":
-            matched = _evaluate_source_grounding(rule, text, context)
+    matched = False
 
-        elif rule.type == "environment_gate":
-            matched = _evaluate_environment_gate(rule, context)
+    if rule.type == "keyword":
+        keywords = rule.conditions.get("keywords", [])
+        lower = text.lower()
+        matched = any(kw.lower() in lower for kw in keywords)
 
-        elif rule.type == "model_gate":
-            matched = _evaluate_model_gate(rule, context)
-        elif rule.type == "protocol_facet":
-            matched = _evaluate_protocol_facet(rule, text)
+    elif rule.type == "regex":
+        pattern = rule.conditions.get("pattern")
+        if pattern:
+            # ReDoS guard: customer-supplied patterns are validated for
+            # catastrophic-backtracking shapes and run on bounded input.
+            # Rejected patterns are treated as no-match (never raise).
+            matched = safe_regex_search(pattern, text)
 
-        elif rule.type == "quota":
-            limit = rule.conditions.get("quota_limit")
-            window_ms = rule.conditions.get("quota_window_ms")
-            scope = rule.conditions.get("quota_scope")
-            if not limit or not window_ms or not scope:
-                continue
-            # Phase-aware consumption (parity with TS rules.ts): a rule in scope
-            # for both phases meters and enforces on the REQUEST (prompt) phase
-            # only — the response pass of the SAME call must never burn a second
-            # unit AND must never re-block (its allowance was already decided
-            # pre-call). Only rules explicitly scoped to the response act here.
-            if target == "response" and rule.applies_to != "response":
-                continue
-            meta = (context or {}).get("metadata") or {}
-            unit = rule.conditions.get("quota_unit") or "requests"
-            scope_value = quota_scope_value(scope, meta, meta.get("user_id"), context)
-            if unit == "tokens":
-                # Tokens are only known post-call, so the pre-call check never
-                # consumes; wrap.py records usage after the call. Parity with TS.
-                quota = check_token_budget(scope, scope_value, int(limit), int(window_ms))
-            elif has_escrow(rule.id):
-                # Fleet-quota escrow (ADR-7) is in effect for this rule: spend
-                # this instance's server-granted LOCAL share instead of the
-                # per-process meter — zero network on the call path. The
-                # /policies poll refills the share and reports consumption. An
-                # exhausted share blocks with the same quota_exceeded verdict
-                # shape. check_only (shadow/explain, EV-22) peeks without spending.
-                quota = peek_escrow_share(rule.id) if check_only else spend_escrow_share(rule.id)
-            else:
-                # No escrow grant for this rule: fall back to today's
-                # per-process meter (backward compatible with servers that
-                # never send escrow).
-                quota = increment_quota(
-                    scope, scope_value, int(limit), int(window_ms),
-                    record=not check_only,
-                )
-            # The bounded meter had no counter slot for this scope, so this
-            # rule was NOT enforced on this call. Resolve it the way every
-            # other enforcement layer that cannot run resolves -- by fail_mode
-            # (policy.py record_detector_failure: every internal failure
-            # resolves by fail_mode EXCEPT the floor class, and a quota rule is
-            # not floor class). Declaring it is not optional either way: an
-            # allowed call whose quota rule never ran is byte-identical on the
-            # wire to one that was counted and found under limit, and an
-            # auditor replaying it would read a rule that was in force and
-            # never exceeded.
-            #
-            # Why fail_mode rather than always allowing: "closed" means "never
-            # fail open", and an unmeterable scope is precisely a case where
-            # the SDK cannot say whether the limit holds. It does cost
-            # availability -- a caller who can mint scope values can saturate
-            # the store and have new identities refused -- but that is the
-            # trade the operator selected, and under "open" that same flood
-            # buys the flooder UNMETERED quota, which is the worse outcome for
-            # someone who asked for fail-closed. "open" stays the default.
-            if quota.get("metered") is False:
-                fail_closed = fail_mode == "closed"
-                unmetered["record"] = {
-                    "rule_id": rule.id,
-                    "scope": scope,
-                    "unit": unit,
-                    "resolution": "closed" if fail_closed else "open",
-                }
-                if fail_closed:
-                    return {
-                        "decision": "block",
-                        "rule_id": rule.id,
-                        "reason_code": ReasonCode.QUOTA_UNMETERED.value,
-                        "reason": (
-                            f"Quota rule '{rule.id}' could not be metered: the quota store "
-                            f"has no counter slot for scope '{scope}'. Blocked because "
-                            f"fail_mode is 'closed'"
-                        ),
-                    }
-                continue
-            if not quota["allowed"]:
-                decision = "allow" if rule.action == "flag" else rule.action
-                return {
-                    "decision": decision,
-                    "rule_id": rule.id,
-                    "reason_code": ReasonCode.QUOTA_EXCEEDED.value,
-                    "reason": (
-                        f"Quota exceeded: {quota['remaining']} remaining of "
-                        f"{limit} per {window_ms}ms window"
-                    ),
-                }
-            continue
+    elif rule.type == "topic_deny":
+        topics = rule.conditions.get("topics", [])
+        lower = text.lower()
+        matched = any(t.lower() in lower for t in topics)
 
-        if not matched:
-            continue
+    elif rule.type == "topic_allow":
+        topics = rule.conditions.get("topics", [])
+        lower = text.lower()
+        matched = any(t.lower() in lower for t in topics)
 
-        if rule.type == "topic_allow":
-            return {
-                "decision": "allow",
+    elif rule.type == "action_gate":
+        matched = _evaluate_action_gate(rule, text, context)
+
+    elif rule.type in ("namespace_isolation", "cross_tenant_block"):
+        matched = _evaluate_namespace_mismatch(context)
+
+    elif rule.type == "destructive_op_gate":
+        matched = _evaluate_destructive_op_gate(rule, text, context)
+
+    elif rule.type == "source_grounding":
+        matched = _evaluate_source_grounding(rule, text, context)
+
+    elif rule.type == "environment_gate":
+        matched = _evaluate_environment_gate(rule, context)
+
+    elif rule.type == "model_gate":
+        matched = _evaluate_model_gate(rule, context)
+    elif rule.type == "protocol_facet":
+        matched = _evaluate_protocol_facet(rule, text)
+
+    elif rule.type == "quota":
+        limit = rule.conditions.get("quota_limit")
+        window_ms = rule.conditions.get("quota_window_ms")
+        scope = rule.conditions.get("quota_scope")
+        if not limit or not window_ms or not scope:
+            return None
+        # Phase-aware consumption (parity with TS rules.ts): a rule in scope
+        # for both phases meters and enforces on the REQUEST (prompt) phase
+        # only — the response pass of the SAME call must never burn a second
+        # unit AND must never re-block (its allowance was already decided
+        # pre-call). Only rules explicitly scoped to the response act here.
+        if target == "response" and rule.applies_to != "response":
+            return None
+        meta = (context or {}).get("metadata") or {}
+        unit = rule.conditions.get("quota_unit") or "requests"
+        scope_value = quota_scope_value(scope, meta, meta.get("user_id"), context)
+        if unit == "tokens":
+            # Tokens are only known post-call, so the pre-call check never
+            # consumes; wrap.py records usage after the call. Parity with TS.
+            quota = check_token_budget(scope, scope_value, int(limit), int(window_ms))
+        elif has_escrow(rule.id):
+            # Fleet-quota escrow (ADR-7) is in effect for this rule: spend
+            # this instance's server-granted LOCAL share instead of the
+            # per-process meter — zero network on the call path. The
+            # /policies poll refills the share and reports consumption. An
+            # exhausted share blocks with the same quota_exceeded verdict
+            # shape. check_only (shadow/explain, EV-22) peeks without spending.
+            quota = peek_escrow_share(rule.id) if check_only else spend_escrow_share(rule.id)
+        else:
+            # No escrow grant for this rule: fall back to today's
+            # per-process meter (backward compatible with servers that
+            # never send escrow).
+            quota = increment_quota(
+                scope, scope_value, int(limit), int(window_ms),
+                record=not check_only,
+            )
+        # The bounded meter had no counter slot for this scope, so this
+        # rule was NOT enforced on this call. Resolve it the way every
+        # other enforcement layer that cannot run resolves -- by fail_mode
+        # (policy.py record_detector_failure: every internal failure
+        # resolves by fail_mode EXCEPT the floor class, and a quota rule is
+        # not floor class). Declaring it is not optional either way: an
+        # allowed call whose quota rule never ran is byte-identical on the
+        # wire to one that was counted and found under limit, and an
+        # auditor replaying it would read a rule that was in force and
+        # never exceeded.
+        #
+        # Why fail_mode rather than always allowing: "closed" means "never
+        # fail open", and an unmeterable scope is precisely a case where
+        # the SDK cannot say whether the limit holds. It does cost
+        # availability -- a caller who can mint scope values can saturate
+        # the store and have new identities refused -- but that is the
+        # trade the operator selected, and under "open" that same flood
+        # buys the flooder UNMETERED quota, which is the worse outcome for
+        # someone who asked for fail-closed. "open" stays the default.
+        if quota.get("metered") is False:
+            fail_closed = fail_mode == "closed"
+            record = {
                 "rule_id": rule.id,
-                "reason_code": ReasonCode.PERMITTED.value,
-                "reason": rule.name,
+                "scope": scope,
+                "unit": unit,
+                "resolution": "closed" if fail_closed else "open",
             }
-
-        if rule.action == "block":
-            # Human-in-the-loop: a require_approval rule passes when an
-            # unexpired grant covers it; otherwise it blocks and marks the
-            # result so the caller files an approval request.
-            if rule.conditions.get("require_approval") is True:
-                from .approval_action import safe_approval_action_hash
-                from .remote import has_approval
-                ctx = context or {}
-                meta = ctx.get("metadata") or {}
-                user_id = meta.get("user_id")
-                # Pin the approval to THIS rule definition: a grant minted
-                # under an older version of the rule (different hash) is void.
-                rule_hash = derive_rule_hash(rule)
-                # ...and to THIS action, so a grant issued for one call cannot
-                # be spent on a different call that trips the same rule.
-                action_hash = safe_approval_action_hash(
-                    rule_id=rule.id,
-                    rule_hash=rule_hash,
-                    action_name=ctx.get("action_name"),
-                    amount=ctx.get("amount"),
-                    caller_namespace=ctx.get("caller_namespace"),
-                    target_namespace=ctx.get("target_namespace"),
-                    user_id=user_id,
-                )
-                claim = {
-                    "rule_id": rule.id,
-                    "user_id": user_id,
-                    "rule_hash": rule_hash,
-                    "action_hash": action_hash,
-                }
-                if has_approval(rule.id, user_id, rule_hash, action_hash):
-                    return {
-                        "decision": "allow",
-                        "rule_id": rule.id,
-                        "reason_code": ReasonCode.APPROVAL_GRANTED.value,
-                        "reason": f"approved: {rule.name}",
-                        "rule_hash": rule_hash,
-                        # Carried so the caller can re-check the grant after
-                        # the layers that can delay the call.
-                        "approval_granted": claim,
-                    }
-                result: Dict[str, Any] = {
+            # deny_wins evaluates every rule, so several scopes can go
+            # unmetered on one call where first-match stops at its verdict.
+            # Keep the declaration deterministic under permutation by
+            # preferring the smallest rule id; first-match keeps its
+            # historical last-write behavior.
+            existing = unmetered.get("record")
+            if (
+                not deny_wins
+                or existing is None
+                or _utf16_order(rule.id) < _utf16_order(existing["rule_id"])
+            ):
+                unmetered["record"] = record
+            if fail_closed:
+                return {
                     "decision": "block",
                     "rule_id": rule.id,
-                    "reason_code": ReasonCode.APPROVAL_REQUIRED.value,
-                    "reason": f"approval_required: {rule.name}",
-                    "approval_required": True,
-                    "rule_hash": rule_hash,
+                    "reason_code": ReasonCode.QUOTA_UNMETERED.value,
+                    "reason": (
+                        f"Quota rule '{rule.id}' could not be metered: the quota store "
+                        f"has no counter slot for scope '{scope}'. Blocked because "
+                        f"fail_mode is 'closed'"
+                    ),
                 }
-                if action_hash is not None:
-                    result["action_hash"] = action_hash
-                return result
+            return None
+        if not quota["allowed"]:
+            decision = "allow" if rule.action == "flag" else rule.action
             return {
-                "decision": "block",
+                "decision": decision,
                 "rule_id": rule.id,
-                "reason_code": rule_type_to_reason_code(rule.type),
-                "reason": rule.name,
+                "reason_code": ReasonCode.QUOTA_EXCEEDED.value,
+                "reason": (
+                    f"Quota exceeded: {quota['remaining']} remaining of "
+                    f"{limit} per {window_ms}ms window"
+                ),
             }
+        return None
 
-        if rule.action == "redact":
-            return {
-                "decision": "redact",
-                "rule_id": rule.id,
-                "reason_code": rule_type_to_reason_code(rule.type),
-                "reason": rule.name,
-            }
+    if not matched:
+        return None
 
-        # flag: reason_code classifies WHY the rule engaged; the decision
-        # field stays authoritative (a flag matches but allows).
+    if rule.type == "topic_allow":
         return {
             "decision": "allow",
+            "rule_id": rule.id,
+            "reason_code": ReasonCode.PERMITTED.value,
+            "reason": rule.name,
+        }
+
+    if rule.action == "block":
+        # Human-in-the-loop: a require_approval rule passes when an
+        # unexpired grant covers it; otherwise it blocks and marks the
+        # result so the caller files an approval request.
+        if rule.conditions.get("require_approval") is True:
+            from .approval_action import safe_approval_action_hash
+            from .remote import has_approval
+            ctx = context or {}
+            meta = ctx.get("metadata") or {}
+            user_id = meta.get("user_id")
+            # Pin the approval to THIS rule definition: a grant minted
+            # under an older version of the rule (different hash) is void.
+            rule_hash = derive_rule_hash(rule)
+            # ...and to THIS action, so a grant issued for one call cannot
+            # be spent on a different call that trips the same rule.
+            action_hash = safe_approval_action_hash(
+                rule_id=rule.id,
+                rule_hash=rule_hash,
+                action_name=ctx.get("action_name"),
+                amount=ctx.get("amount"),
+                caller_namespace=ctx.get("caller_namespace"),
+                target_namespace=ctx.get("target_namespace"),
+                user_id=user_id,
+            )
+            claim = {
+                "rule_id": rule.id,
+                "user_id": user_id,
+                "rule_hash": rule_hash,
+                "action_hash": action_hash,
+            }
+            if has_approval(rule.id, user_id, rule_hash, action_hash):
+                return {
+                    "decision": "allow",
+                    "rule_id": rule.id,
+                    "reason_code": ReasonCode.APPROVAL_GRANTED.value,
+                    "reason": f"approved: {rule.name}",
+                    "rule_hash": rule_hash,
+                    # Carried so the caller can re-check the grant after
+                    # the layers that can delay the call.
+                    "approval_granted": claim,
+                }
+            result: Dict[str, Any] = {
+                "decision": "block",
+                "rule_id": rule.id,
+                "reason_code": ReasonCode.APPROVAL_REQUIRED.value,
+                "reason": f"approval_required: {rule.name}",
+                "approval_required": True,
+                "rule_hash": rule_hash,
+            }
+            if action_hash is not None:
+                result["action_hash"] = action_hash
+            return result
+        return {
+            "decision": "block",
             "rule_id": rule.id,
             "reason_code": rule_type_to_reason_code(rule.type),
             "reason": rule.name,
         }
 
-    return {"decision": "allow", "reason_code": ReasonCode.PERMITTED.value}
+    if rule.action == "redact":
+        return {
+            "decision": "redact",
+            "rule_id": rule.id,
+            "reason_code": rule_type_to_reason_code(rule.type),
+            "reason": rule.name,
+        }
+
+    if deny_wins and rule.action != "flag":
+        # An unrecognized action on an enforcing, matched rule. The parse
+        # boundary rejects unknown actions outright (EV-12), so this arises
+        # only for rules constructed in-process -- and under deny-wins it
+        # resolves to the strongest outcome: a rule the author armed with an
+        # action this engine cannot rank must refuse, never quietly weaken
+        # to a flag.
+        return {
+            "decision": "block",
+            "rule_id": rule.id,
+            "reason_code": rule_type_to_reason_code(rule.type),
+            "reason": rule.name,
+        }
+
+    # flag: reason_code classifies WHY the rule engaged; the decision
+    # field stays authoritative (a flag matches but allows).
+    return {
+        "decision": "allow",
+        "rule_id": rule.id,
+        "reason_code": rule_type_to_reason_code(rule.type),
+        "reason": rule.name,
+    }
 
 
 # ── Context-dependent evaluators (parity with TS) ───────────────────────────
