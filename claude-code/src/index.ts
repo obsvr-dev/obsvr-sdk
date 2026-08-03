@@ -35,12 +35,30 @@ export interface PreToolUseInput {
 }
 
 /** The deny half of the PreToolUse hook contract. Field spellings are exact —
- *  a typo here is silent non-enforcement, so they are pinned by test. */
+ *  a typo here is silent non-enforcement, so they are pinned by test. The
+ *  decision is `"deny"` ONLY, by type: this hook can add a refusal but can
+ *  never emit an `"allow"` that overrides a decision the agent would
+ *  otherwise have made, and narrowing the type here makes that invariant
+ *  impossible to break by a later edit, not merely a convention the current
+ *  code happens to follow. */
 export interface HookDecisionOutput {
   hookSpecificOutput: {
     hookEventName: "PreToolUse";
-    permissionDecision: "deny" | "allow";
+    permissionDecision: "deny";
     permissionDecisionReason: string;
+  };
+}
+
+/** Build the deny half of the contract. The one place a decision output is
+ *  constructed, so the "deny only, never allow" invariant lives in exactly
+ *  one spot. */
+export function denyOutput(reason: string): HookDecisionOutput {
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
   };
 }
 
@@ -103,17 +121,7 @@ export async function governToolCall(input: PreToolUseInput): Promise<GovernResu
     const reason =
       verdict.reason ??
       `Refused by obsvr policy (${verdict.reason_code}${verdict.rule_id ? `, ${verdict.rule_id}` : ""})`;
-    return {
-      output: {
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "deny",
-          permissionDecisionReason: reason,
-        },
-      },
-      verdict,
-      blocked: true,
-    };
+    return { output: denyOutput(reason), verdict, blocked: true };
   }
 
   return { output: null, verdict, blocked: false };

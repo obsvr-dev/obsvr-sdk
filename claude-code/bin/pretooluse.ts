@@ -19,14 +19,45 @@
  *   OBSVR_DEVICE_SIGNING_KEY_FILE  optional device seal (non-repudiation)
  *
  * Fail posture: this hook is enforcement, so a defect in it must not silently
- * open the gate. If obsvr cannot render a decision, the hook writes NOTHING
- * and exits 0 — the agent's own permission flow then decides — because a hook
- * that emitted a bogus "allow" would be worse than one that deferred. It
- * never emits "allow" as an override; obsvr only ever ADDS a refusal.
+ * open the gate. When obsvr cannot render a signed decision (no API key, an
+ * unreadable payload, an engine that threw), the DEFAULT is to DEFER — write
+ * nothing, exit 0 — so the agent's own permission flow decides, exactly as if
+ * this hook were not installed; a bogus "allow" would be worse than a
+ * deferral, and the hook never emits one. Set OBSVR_FAIL_CLOSED=1 to turn
+ * those paths into a hard deny instead, for a deployment that would rather
+ * block a tool obsvr could not evaluate. Either way the hook only ever ADDS a
+ * refusal; it never emits an "allow" that loosens the agent's own decision.
+ *   OBSVR_FAIL_CLOSED           deny (not defer) when obsvr cannot decide
  */
 import { readFileSync } from "node:fs";
 import { obsvr } from "@obsvr/sdk";
-import { governToolCall, type PreToolUseInput } from "../src/index.js";
+import { denyOutput, governToolCall, type PreToolUseInput } from "../src/index.js";
+
+/**
+ * Posture when obsvr cannot render a signed decision (no API key, an
+ * unreadable payload, an engine that threw). Default is DEFER: the hook
+ * writes nothing and the agent's OWN permission settings decide the call,
+ * exactly as if this hook were not installed — obsvr adds no refusal and,
+ * critically, grants no permission (it never emits an allow). Setting
+ * OBSVR_FAIL_CLOSED=1 flips that path to a hard deny, for a high-assurance
+ * deployment that would rather block a tool obsvr could not evaluate than let
+ * the agent's baseline decide it. It is opt-in because a hook that hard-denies
+ * whenever it is misconfigured — an unset OBSVR_API_KEY, say — would brick the
+ * agent, the same production hazard obsvr's own fail_mode defaults away from.
+ */
+function failClosed(): boolean {
+  const v = (process.env.OBSVR_FAIL_CLOSED ?? "").trim().toLowerCase();
+  return v === "1" || v === "true";
+}
+
+/** Resolve an un-signable situation: defer (nothing) by default, or emit a
+ *  deny under the fail-closed posture. Never emits an allow. */
+function resolveUnsignable(reason: string): void {
+  if (failClosed()) {
+    process.stdout.write(JSON.stringify(denyOutput(`obsvr could not evaluate this call: ${reason}`)));
+  }
+  // else: defer — the agent's own permission flow applies.
+}
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -56,7 +87,9 @@ async function main(): Promise<void> {
   try {
     input = JSON.parse(raw) as PreToolUseInput;
   } catch {
-    // Not a hook payload we can read: defer to the agent's own flow.
+    // Not a hook payload we can read: cannot govern it, so defer (or, under
+    // the fail-closed posture, deny) — never silently allow.
+    resolveUnsignable("the PreToolUse payload was not readable JSON");
     return;
   }
 
@@ -66,6 +99,7 @@ async function main(): Promise<void> {
     // record is not what this hook promises, so it defers rather than
     // blocking blind — and says why, on stderr.
     process.stderr.write("[obsvr] OBSVR_API_KEY unset; deferring to the agent's permission flow\n");
+    resolveUnsignable("OBSVR_API_KEY is not set");
     return;
   }
 
@@ -89,7 +123,17 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  // A crash in the hook must not wedge the agent: report and defer.
+  // A crash in the hook must not wedge the agent. Report, then resolve the
+  // un-signable situation by the configured posture: defer by default, deny
+  // under OBSVR_FAIL_CLOSED. Exit 0 either way so the agent proceeds by its
+  // own rules rather than treating the hook as failed — a non-zero exit from
+  // a hook is itself an implicit block on some agents, which would be a
+  // fail-closed we did not choose.
   process.stderr.write(`[obsvr] pretooluse hook error: ${String(err)}\n`);
+  try {
+    resolveUnsignable(`hook error: ${String(err)}`);
+  } catch {
+    /* resolving must not itself throw */
+  }
   process.exit(0);
 });

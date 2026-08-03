@@ -74,6 +74,7 @@ Configure it from the environment:
 | `OBSVR_INGEST_URL` | Where signed events are delivered. |
 | `OBSVR_CLAUDE_CODE_POLICY` | Path to a JSON file `{ "policyRules": [ … ] }` — the obsvr policy that decides a refusal. |
 | `OBSVR_DEVICE_SIGNING_KEY_FILE` | Optional Ed25519 device seal for local non-repudiation (see the SDK's `SECURITY.md`). |
+| `OBSVR_FAIL_CLOSED` | `1`/`true` to DENY when obsvr cannot render a signed decision, instead of deferring (see below). Default off. |
 
 A minimal policy that refuses a destructive shell command:
 
@@ -102,16 +103,39 @@ A minimal policy that refuses a destructive shell command:
   a no-match verdict yields no output and the agent's own permission flow
   decides. A governor that could loosen a restriction would be a downgrade
   channel.
-- **It fails toward the agent's flow, not toward a blind block.** If obsvr
-  cannot render a decision — missing credentials, an unreadable policy, a crash
-  — the hook writes nothing and exits 0, because a bogus `allow` on the record
-  would be worse than a deferral. Enforcement without a signable record is not
-  what this hook promises.
+- **When it cannot decide, it DEFERS by default — it does not auto-approve.**
+  If obsvr cannot render a signed decision (no `OBSVR_API_KEY`, an unreadable
+  payload, an engine that threw), the hook writes nothing and exits 0. This is
+  a genuine deferral, not a fail-open: an empty PreToolUse response leaves the
+  call to **the agent's own permission settings**, exactly as if this hook
+  were not installed. obsvr adds no refusal on that path *and grants no
+  permission* — it can never turn a call the agent would have denied into an
+  allowed one. The effective outcome is therefore whatever the agent's
+  baseline permissions say; if that baseline is permissive (e.g. an
+  accept-all mode), an un-signable call runs. Set **`OBSVR_FAIL_CLOSED=1`** to
+  turn those paths into a hard deny instead — a high-assurance posture that
+  would rather block a tool obsvr could not evaluate than let the agent's
+  baseline decide it. It is opt-in because a hook that hard-denied whenever it
+  was misconfigured (an unset `OBSVR_API_KEY`, say) would brick the agent, the
+  same production hazard obsvr's own `fail_mode` defaults away from.
 - **The record is per-invocation.** The hook is a short-lived process, one per
   tool call, so each invocation is its own chain session — the same property
   the SDK documents for serverless cold starts. Events verify under the shipped
   `obsvr-verify` with the API key (and the device key, if configured); a
   cross-invocation continuous chain is a deliberate non-goal here.
+- **It adds latency per tool call, bounded.** The hook flushes the signed
+  event before exiting so a refusal is never dropped, and the agent waits for
+  the hook to exit — so every governed tool call pays up to the flush budget
+  (2 s) if ingest is slow or unreachable. The *decision* is not what waits: the
+  deny is written to stdout before the flush. If your ingest is remote and
+  latency-sensitive, weigh this against a client-side gate for the surfaces
+  that have one.
+- **Hook timeout is the agent's to enforce, not ours.** If the hook exceeds
+  the `timeout` you configure in `settings.json`, the agent kills it and
+  applies its own timed-out-hook behavior; the hook bounds its own runtime with
+  the flush budget above so it finishes well under a typical timeout, but a
+  wedged ingest plus a very short configured timeout is a combination only you
+  can rule out.
 - **It does not close the MCP gap for the agent.** Governing the agent's MCP
   calls means governing the **server** it talks to, or the agent adopting an
   obsvr-wrapped client — neither is this hook. This package covers the native
