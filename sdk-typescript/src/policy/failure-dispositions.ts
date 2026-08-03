@@ -188,7 +188,17 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     degraded: s("not_applicable"),
     hookOverridable: false,
     notes:
-      "The one layer whose disposition the operator chooses: open by default, closed on opt-in. A timeout or error is recorded as its own hook disposition and can never un-block builtin enforcement - only an explicit allow verdict does that.",
+      "The request-phase hook, and the one layer whose disposition the operator chooses: open by default, closed on opt-in. A timeout or error is recorded as its own hook disposition and can never un-block builtin enforcement - only an explicit allow verdict does that. The response-phase hook is a separate row: its failure states resolve differently.",
+  },
+  {
+    id: "customer_hook_post_call",
+    module: "sdk-typescript/src/integrations/core.ts",
+    timeout: s("open"),
+    error: s("open"),
+    degraded: s("not_applicable"),
+    hookOverridable: false,
+    notes:
+      "The response-phase hook. The provider has already answered when it runs, so a hook that times out or throws leaves standing whatever decision the response layers already rendered; only this hook's own verdict is lost for the call, which is 'open' in both states. fail_mode is not consulted on this path - the request-phase row is the one whose disposition the operator chooses.",
   },
   {
     id: "external_backend",

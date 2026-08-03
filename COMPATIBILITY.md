@@ -86,6 +86,39 @@ where that is said, per row.
 The **Observed** column predates this distinction, which is why an entry there
 does not by itself promote a row past `declared`.
 
+### How a floor is located
+
+The `floor located` rows are produced by a fixed method. Its full record lives
+beside each floor in the `[project.optional-dependencies]` comments of
+[`sdk-python/pyproject.toml`](sdk-python/pyproject.toml) — the build file is
+the primary source; this section states the method so it can be read without
+opening it.
+
+- **A floor is the earliest release with an auditable path, not the earliest
+  release that imports.** A client the package can construct but has no
+  auditable path on is governed by nothing and stays silent while that
+  happens, so "it installs and imports" is not evidence. The `anthropic`
+  extra is the instructive case: its 0.3.x releases expose only the
+  superseded text-completion path, absent from the audited set, so an
+  install resolved against an imports-only floor produces zero audit events
+  with nothing raising — confirmed live, not read off a shape.
+- **Every boundary is an adjacent tested pair, established by an exhaustive
+  walk.** One throwaway environment per published release, no bisect; the
+  boundary is then re-run live and graded on the captured event. The release
+  below the floor reads ABSENT on the audited path; the floor itself reads
+  AUDITED on a real call. `openai` is a located edge in exactly this sense —
+  at 1.65.5 both responses paths read absent, at 1.66.0 both are audited —
+  as is `anthropic`: at 0.15.1 the client carries no `messages` attribute
+  and the provider reads unknown, at 0.16.0 it is detected and audited.
+- **Counter-examples inside the range are named, not averaged away.** The
+  honest reading is per path rather than per range: methods arriving after
+  the floor are listed under "Version needed per method" below rather than
+  folded into a raised floor, because a range narrowed to cover the newest
+  path would misdescribe the many releases on which the older paths work.
+  The one upstream-broken release inside the `openai` range — 1.99.0, whose
+  responses types ship broken and are repaired in 1.99.1 — is recorded
+  rather than excluded, for the same reason.
+
 ## TypeScript
 
 No TypeScript range has been stood up by a per-version matrix, so every row is

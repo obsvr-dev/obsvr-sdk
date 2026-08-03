@@ -16,7 +16,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { init, _reset, getConfig, _getPolicySyncState } from '../../src/proxy/config';
-import { applyPreCallPolicy } from '../../src/integrations/core';
+import { applyPreCallPolicy, applyPostCallPolicy } from '../../src/integrations/core';
 import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import {
   FAILURE_DISPOSITIONS,
@@ -260,6 +260,54 @@ describe('failure-disposition registry: declarations match observed behavior', (
     expect((await applyPreCallPolicy('hello', {
       config: getConfig(), provider: 'openai', operation: 'chat',
     })).decision).toBe('block');
+  });
+
+  it('customer_hook_post_call is declared open, and a failing hook keeps the rendered decision', async () => {
+    // The response-phase hook has its own row because its failure states
+    // resolve differently from the request phase: the provider has already
+    // answered, so timeout and error leave standing whatever decision the
+    // response layers rendered, and fail_mode is not consulted on this path.
+    expect(dispositionFor('customer_hook_post_call', 'timeout')).toEqual({ disposition: 'open' });
+    expect(dispositionFor('customer_hook_post_call', 'error')).toEqual({ disposition: 'open' });
+
+    const responseBlockRule = {
+      id: 'r-resp-block',
+      name: 'Block leaked codenames',
+      enabled: true,
+      action: 'block' as const,
+      type: 'keyword' as const,
+      conditions: { keywords: ['aurora'] },
+      applies_to: 'response' as const,
+    };
+
+    init({
+      api_key: 'test',
+      policy_rules: [responseBlockRule],
+      fail_mode: 'closed',
+      on_post_call: () => { throw new Error('hook exploded'); },
+    });
+    const errored = await applyPostCallPolicy('the codename is aurora', {}, getConfig());
+    expect(errored.decision).toBe('redact_response');
+
+    _reset();
+    init({
+      api_key: 'test',
+      policy_rules: [responseBlockRule],
+      fail_mode: 'closed',
+      post_call_timeout_ms: 50,
+      on_post_call: () => new Promise((resolve) => setTimeout(() => resolve({ decision: 'flag' }), 1000)),
+    });
+    const timedOut = await applyPostCallPolicy('the codename is aurora', {}, getConfig());
+    expect(timedOut.decision).toBe('redact_response');
+
+    _reset();
+    init({
+      api_key: 'test',
+      fail_mode: 'closed',
+      on_post_call: () => { throw new Error('hook exploded'); },
+    });
+    const clean = await applyPostCallPolicy('a clean answer', {}, getConfig());
+    expect(clean.decision).toBe('pass');
   });
 
   it('external_backend is declared closed with a shadow exemption, and behaves that way', async () => {

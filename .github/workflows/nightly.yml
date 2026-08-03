@@ -100,6 +100,36 @@ jobs:
             --cases ${{ inputs.cases || '40000' }} \
             --seed ${{ steps.seed.outputs.value }}
 
+  stress:
+    name: Stress suite (serial, high concurrency)
+    runs-on: ubuntu-latest
+    # A healthy full run is minutes. The suite's failure mode is a stall — a
+    # synchronous loop jest's per-test timer cannot preempt — and without a
+    # job bound a stall occupies the runner for the 6-hour Actions default
+    # while reading as "still running". Bounded, it reads as the failure it
+    # is, on the morning it happens.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: sdk-typescript/package-lock.json
+      - run: npm ci
+        working-directory: sdk-typescript
+
+      - name: Stress suite at full concurrency
+        working-directory: sdk-typescript
+        # tests/stress pushes up to 250k concurrent calls and runs serially
+        # (--runInBand) because it must not share memory with parallel
+        # workers - the same reason it is excluded from the PR gate: a run
+        # that saturates the machine is feedback latency a PR cannot afford,
+        # and contention with parallel suites would make its failures read as
+        # flakes. Here it gets the machine to itself, so a failure is a
+        # genuine limit being hit, not noise.
+        run: npm run test:stress
+
   full-matrix:
     name: Full suite (Node ${{ matrix.node }} / Python ${{ matrix.python }})
     runs-on: ubuntu-latest

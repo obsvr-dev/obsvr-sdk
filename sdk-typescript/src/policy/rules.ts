@@ -136,10 +136,73 @@ export interface PolicyEvalContext {
 }
 
 /**
+ * Conflict-resolution semantics for the enabled rule set.
+ *
+ * 'first_match' is the engine's original contract: rules evaluate in document
+ * order and the first rule that renders an outcome decides, so a matched
+ * topic_allow pre-empts every rule after it (EV-6/EV-8). 'deny_wins' is the
+ * versioned opt-in: every enforcing rule is evaluated, and the collected
+ * outcomes resolve by action strength — a refusal anywhere in the set
+ * prevails over a redaction, a redaction over a flag, a flag over a permit —
+ * with a deterministic tie-break, so the verdict is identical for every
+ * ordering of the same rules. Undeclared evaluates as first_match; a DECLARED
+ * mode is additionally committed into policy_version (see
+ * derivePolicyVersion), which is what makes the opt-in auditable.
+ */
+export type RuleResolution = 'first_match' | 'deny_wins';
+export const RULE_RESOLUTION_MODES: readonly RuleResolution[] = Object.freeze([
+  'first_match',
+  'deny_wins',
+]);
+
+/**
+ * Validate a ruleset's declared conflict-resolution mode. Undefined
+ * (undeclared) and the known modes pass through; anything else throws. Same
+ * posture as the per-rule `mode` validator (EV-12): an unknown value must
+ * invalidate LOUDLY at the boundary that parses it, never silently evaluate
+ * under semantics the author did not choose — a typo'd declaration that
+ * quietly fell back to first-match would reopen the exact ordering hazard the
+ * opt-in exists to close.
+ */
+export function ensureRuleResolution(resolution?: string): RuleResolution | undefined {
+  if (resolution !== undefined && !RULE_RESOLUTION_MODES.includes(resolution as RuleResolution)) {
+    throw new Error(
+      `unknown rule resolution ${JSON.stringify(resolution)}: expected one of ` +
+        `${RULE_RESOLUTION_MODES.join(', ')}, or undefined for the default first_match`,
+    );
+  }
+  return resolution as RuleResolution | undefined;
+}
+
+/** Per-call evaluation options (EV-22 checkOnly, failure posture, resolution). */
+export interface EvaluateRulesOptions {
+  /** Check-only evaluation (EV-22): identical decision logic but no
+   * quota consumption. Used by shadow evaluation and explain(). */
+  checkOnly?: boolean;
+  /**
+   * The operator's failure posture, for the one case the rules engine can
+   * hit an enforcement layer that cannot run: a quota scope the bounded
+   * store had no slot for. Absent behaves as "open", the SDK-wide default.
+   */
+  failMode?: 'open' | 'closed';
+  /**
+   * The ruleset's declared conflict-resolution mode (RULE_RESOLUTION_MODES).
+   * Absent keeps the original first-match contract; 'deny_wins' collects
+   * every enforcing outcome and resolves them order-insensitively, strongest
+   * action first. An unknown value throws (ensureRuleResolution).
+   */
+  resolution?: RuleResolution;
+}
+
+/**
  * Evaluate a list of policy rules against text.
  * - All enabled rules run in order.
- * - 'block' wins over 'redact'; first block short-circuits.
- * - 'topic_allow' short-circuits to allow if matched (nothing else has blocked yet).
+ * - Under the default first_match resolution, the first rule that renders an
+ *   outcome decides: 'block' wins over 'redact'; first block short-circuits;
+ *   'topic_allow' short-circuits to allow if matched (nothing else has
+ *   blocked yet).
+ * - Under the declared 'deny_wins' resolution, every enforcing rule is
+ *   evaluated and the strongest action prevails regardless of list position.
  * - Returns PolicyDecisionResult with rule_id of the fired rule.
  *
  * The optional `context` parameter enables industry-specific rule types
@@ -151,18 +214,9 @@ export function evaluatePolicyRules(
   text: string,
   target: 'prompt' | 'response' = 'prompt',
   context?: PolicyEvalContext,
-  opts?: {
-    /** Check-only evaluation (EV-22): identical decision logic but no
-     * quota consumption. Used by shadow evaluation and explain(). */
-    checkOnly?: boolean;
-    /**
-     * The operator's failure posture, for the one case the rules engine can
-     * hit an enforcement layer that cannot run: a quota scope the bounded
-     * store had no slot for. Absent behaves as "open", the SDK-wide default.
-     */
-    failMode?: 'open' | 'closed';
-  },
+  opts?: EvaluateRulesOptions,
 ): PolicyDecisionResult {
+  ensureRuleResolution(opts?.resolution);
   // The unmetered record is collected here and attached to whatever verdict
   // comes out, including one produced by a LATER rule: the fact "this call's
   // quota rule did not run" is true of the call regardless of what decided it.
@@ -176,26 +230,100 @@ function evaluateRules(
   text: string,
   target: 'prompt' | 'response' = 'prompt',
   context?: PolicyEvalContext,
-  opts?: { checkOnly?: boolean; failMode?: 'open' | 'closed' },
+  opts?: EvaluateRulesOptions,
   unmetered: { record?: QuotaUnmetered } = {},
 ): PolicyDecisionResult {
+  const denyWins = opts?.resolution === 'deny_wins';
   // §6: normalize once, up front, so every text-matching rule (keyword, regex,
   // topic, action_gate, destructive_op, source_grounding) sees the same
   // confusable/zero-width-folded copy. Matching-only: the engine returns a
   // decision + rule_id, never modified text, so the stored/forwarded content is
   // untouched. Identity on plain ASCII, so existing behavior is unchanged.
   text = normalizeForMatching(text);
+  const collected: Array<[PolicyRule, PolicyDecisionResult]> = [];
   for (const rule of rules) {
-    if (!rule.enabled) continue;
+    const outcome = ruleOutcome(rule, text, target, context, opts, unmetered, denyWins);
+    if (outcome === undefined) continue;
+    if (!denyWins) {
+      // first_match: the first rule that renders an outcome decides
+      // (EV-6/EV-8), so a matched topic_allow pre-empts every rule after
+      // it. The engine's original contract, unchanged.
+      return outcome;
+    }
+    collected.push([rule, outcome]);
+  }
+  if (collected.length > 0) return resolveMatched(collected);
+  return { decision: 'allow', reason_code: ReasonCode.PERMITTED };
+}
+
+// Action strength for deny-wins resolution, weakest first: a permit
+// (topic_allow, or a block rule satisfied by a live approval grant) carries no
+// enforcement signal; a flag allows but classifies; redact modifies content;
+// block refuses the call. The prevailing outcome is the strongest anywhere in
+// the set, which is what makes the verdict independent of document order.
+const STRENGTH_PERMIT = 0;
+const STRENGTH_FLAG = 1;
+const STRENGTH_REDACT = 2;
+const STRENGTH_REFUSE = 3;
+
+function outcomeStrength(rule: PolicyRule, outcome: PolicyDecisionResult): number {
+  if (outcome.decision === 'block') return STRENGTH_REFUSE;
+  if (outcome.decision === 'redact') return STRENGTH_REDACT;
+  if (rule.type === 'topic_allow' || outcome.approval_granted !== undefined) return STRENGTH_PERMIT;
+  return STRENGTH_FLAG;
+}
+
+/**
+ * Deny-wins resolution over every rendered outcome: the strongest action
+ * prevails; among equals, the smallest rule id in UTF-16 code-unit order (the
+ * same order the policy hash sorts in) prevails. Both keys are
+ * order-insensitive, so every permutation of the same rule list resolves to
+ * the same verdict AND the same recorded rule_id.
+ */
+function resolveMatched(
+  collected: Array<[PolicyRule, PolicyDecisionResult]>,
+): PolicyDecisionResult {
+  let [bestRule, best] = collected[0];
+  let bestStrength = outcomeStrength(bestRule, best);
+  for (const [rule, outcome] of collected.slice(1)) {
+    const strength = outcomeStrength(rule, outcome);
+    if (strength > bestStrength || (strength === bestStrength && rule.id < bestRule.id)) {
+      bestRule = rule;
+      best = outcome;
+      bestStrength = strength;
+    }
+  }
+  return best;
+}
+
+/**
+ * Evaluate ONE rule against already-normalized text. Returns the outcome a
+ * first-match engine would return for this rule, or undefined when the rule
+ * renders no outcome (disabled, shadow, out of phase, unmatched, or a quota
+ * under its limit). Shared verbatim by both resolution modes so the two can
+ * never drift on what a rule MEANS — they differ only in what happens once an
+ * outcome exists.
+ */
+function ruleOutcome(
+  rule: PolicyRule,
+  text: string,
+  target: 'prompt' | 'response',
+  context: PolicyEvalContext | undefined,
+  opts: EvaluateRulesOptions | undefined,
+  unmetered: { record?: QuotaUnmetered },
+  denyWins: boolean,
+): PolicyDecisionResult | undefined {
+  {
+    if (!rule.enabled) return undefined;
     // Shadow rules are inert in active evaluation (EV-20); they run only
     // through evaluateShadowRules after the active decision is final.
-    if (rule.mode === 'shadow') continue;
+    if (rule.mode === 'shadow') return undefined;
 
     const appliesToTarget =
       !rule.applies_to ||
       rule.applies_to === 'both' ||
       rule.applies_to === target;
-    if (!appliesToTarget) continue;
+    if (!appliesToTarget) return undefined;
 
     let matched = false;
 
@@ -232,13 +360,13 @@ function evaluateRules(
     } else if (rule.type === 'protocol_facet') {
       matched = evaluateProtocolFacet(rule, text);
     } else if (rule.type === 'quota') {
-      if (!rule.conditions.quota_limit || !rule.conditions.quota_window_ms || !rule.conditions.quota_scope) continue;
+      if (!rule.conditions.quota_limit || !rule.conditions.quota_window_ms || !rule.conditions.quota_scope) return undefined;
       // Phase-aware consumption: a rule in scope for both phases meters and
       // enforces on the REQUEST (prompt) phase only — the response pass of
       // the SAME call must never burn a second unit (and its allowance was
       // already decided pre-call), so it is skipped here. Only rules
       // explicitly scoped to the response meter on the response phase.
-      if (target === 'response' && rule.applies_to !== 'response') continue;
+      if (target === 'response' && rule.applies_to !== 'response') return undefined;
       // Bucket selection: callers (e.g. the proxy wrapper) may spread
       // identity fields at the TOP level of the context rather than under
       // metadata; honor both (same fallback the approvals path uses) so a
@@ -296,12 +424,21 @@ function evaluateRules(
       // stays the default, so this only reaches operators who opted in.
       if (result.metered === false) {
         const failClosed = opts?.failMode === 'closed';
-        unmetered.record = {
+        const record: QuotaUnmetered = {
           rule_id: rule.id,
           scope: rule.conditions.quota_scope,
           unit,
           resolution: failClosed ? 'closed' : 'open',
         };
+        // deny_wins evaluates every rule, so several scopes can go unmetered
+        // on one call where first-match stops at its verdict. Keep the
+        // declaration deterministic under permutation by preferring the
+        // smallest rule id; first-match keeps its historical last-write
+        // behavior.
+        const existing = unmetered.record;
+        if (!denyWins || existing === undefined || rule.id < existing.rule_id) {
+          unmetered.record = record;
+        }
         if (failClosed) {
           return {
             decision: 'block',
@@ -312,7 +449,7 @@ function evaluateRules(
               `slot for scope '${rule.conditions.quota_scope}'. Blocked because failMode is 'closed'`,
           };
         }
-        continue;
+        return undefined;
       }
       if (!result.allowed) {
         return {
@@ -322,10 +459,10 @@ function evaluateRules(
           reason: `Quota exceeded: ${result.remaining} remaining of ${rule.conditions.quota_limit} per ${rule.conditions.quota_window_ms}ms window`,
         };
       }
-      continue;
+      return undefined;
     }
 
-    if (!matched) continue;
+    if (!matched) return undefined;
 
     if (rule.type === 'topic_allow') {
       return { decision: 'allow', rule_id: rule.id, reason_code: ReasonCode.PERMITTED, reason: rule.name };
@@ -382,13 +519,23 @@ function evaluateRules(
       return { decision: 'redact', rule_id: rule.id, reason_code: ruleTypeToReasonCode(rule.type), reason: rule.name };
     }
 
+    // The declared type narrows `action` to 'flag' here, but a rule built at
+    // runtime can carry a value the type system never saw; compare as string.
+    if (denyWins && (rule.action as string) !== 'flag') {
+      // An unrecognized action on an enforcing, matched rule. The parse
+      // boundary rejects unknown actions outright (EV-12), so this arises
+      // only for rules constructed in-process — and under deny-wins it
+      // resolves to the strongest outcome: a rule the author armed with an
+      // action this engine cannot rank must refuse, never quietly weaken to
+      // a flag.
+      return { decision: 'block', rule_id: rule.id, reason_code: ruleTypeToReasonCode(rule.type), reason: rule.name };
+    }
+
     // flag: don't block, but note the rule fired. reason_code classifies
     // WHY the rule engaged (the decision field stays authoritative: a flag
     // matches but allows).
     return { decision: 'allow', rule_id: rule.id, reason_code: ruleTypeToReasonCode(rule.type), reason: rule.name };
   }
-
-  return { decision: 'allow', reason_code: ReasonCode.PERMITTED };
 }
 
 // ---------------------------------------------------------------------------
@@ -718,14 +865,50 @@ function canonicalRule(r: PolicyRule): Record<string, unknown> {
 }
 
 /**
+ * Hash document for a ruleset that DECLARES its conflict-resolution mode.
+ * The declaration rides inside the hashed document, so the same rules under
+ * different semantics can never share a policy_version. Projections are kept
+ * in evaluation order under first_match, because there position decides;
+ * under deny_wins they are sorted by id, because resolution is
+ * order-insensitive by construction and a pure reordering keeps the same
+ * version — the truthful signal that no decision changed.
+ */
+function versionDocument(enabled: PolicyRule[], resolution: RuleResolution): Record<string, unknown> {
+  const ordered =
+    resolution === 'deny_wins'
+      ? [...enabled].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      : enabled;
+  return { resolution, rules: ordered.map(canonicalRule) };
+}
+
+/**
  * Derive the canonical rules hash for the enabled rule set: 16-hex-char
  * prefix of SHA-256 over the stableStringify'd canonical projections,
  * sorted by id (codepoint order, NOT locale order, for cross-language
  * determinism). Returns "none" when no rules are enabled. Stamped on
  * every audit event as policy_version; must match the Python SDK's
  * derive_policy_version byte for byte (pinned by the shared fixture).
+ *
+ * `resolution` is the ruleset's DECLARED conflict-resolution mode. A declared
+ * mode is committed INTO the hash, and the hash then commits to exactly what
+ * can change a decision under that mode: first_match hashes the projections
+ * in evaluation order, because list position decides there; deny_wins hashes
+ * them sorted by id, because its resolution is order-insensitive by
+ * construction. Two rulesets that can decide differently therefore stamp
+ * different policy_version values — the same rules under the two modes
+ * differ, and the same rules in two orders differ under first_match.
+ *
+ * Undeclared (undefined) keeps the historical bytes — order-insensitive over
+ * enabled rules, exactly what every deployed fleet, the poll header and the
+ * pinned fixture already stamp — even though first-match evaluation reads
+ * list order. Changing those bytes would restamp every deployed policy on
+ * upgrade: a false policy-change signal fleet-wide, and a cross-SDK hash
+ * mismatch for the whole mixed-fleet rollout window, which the fixture grades
+ * a release blocker. Order-commitment is therefore bound to the declared,
+ * versioned semantics: declaring `resolution` is what buys an order-committed
+ * policy_version.
  */
-export function derivePolicyVersion(rules: PolicyRule[]): string {
+export function derivePolicyVersion(rules: PolicyRule[], resolution?: RuleResolution): string {
   // Guarded at the function, like redactForStorage, because there is one
   // correct answer at all ~20 of its call sites and most of them are on live
   // host paths - the wrapper's per-call stamp, the integrations, MCP, the poll
@@ -737,14 +920,19 @@ export function derivePolicyVersion(rules: PolicyRule[]): string {
   // version that cannot be computed must not block a call. "unknown" is the
   // honest value and is distinguishable from the legitimate "none".
   try {
+    ensureRuleResolution(resolution);
     if (!rules || rules.length === 0) return 'none';
-    const sorted = rules
-      .filter((r) => r.enabled)
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    if (sorted.length === 0) return 'none';
-    const hash = createHash('sha256')
-      .update(stableStringify(sorted.map(canonicalRule)))
-      .digest('hex');
+    const enabled = rules.filter((r) => r.enabled);
+    if (enabled.length === 0) return 'none';
+    const data =
+      resolution === undefined
+        ? stableStringify(
+            [...enabled]
+              .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+              .map(canonicalRule),
+          )
+        : stableStringify(versionDocument(enabled, resolution));
+    const hash = createHash('sha256').update(data).digest('hex');
     return hash.slice(0, 16);
   } catch (err) {
     recordCheckOnlyFailure('policy_rules', err);

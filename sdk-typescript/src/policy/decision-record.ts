@@ -23,6 +23,7 @@
 
 import { createHash } from 'crypto';
 import { stableStringify } from './rules.js';
+import type { RuleResolution } from './rules.js';
 
 /**
  * Cross-language rules-engine semantics version. Bumped when — and only
@@ -35,6 +36,27 @@ export const RULES_ENGINE_SEMANTICS_VERSION = 1;
 
 /** The engine_version string stamped on events: "obsvr-rules/<N>". */
 export const ENGINE_VERSION = `obsvr-rules/${RULES_ENGINE_SEMANTICS_VERSION}`;
+
+/**
+ * Semantics version of the declared deny-wins conflict resolution
+ * (rules.RULE_RESOLUTION_MODES): evaluation collects every enforcing outcome
+ * and resolves strongest-first, order-insensitively. The default first-match
+ * engine stays version 1; a ruleset that declares deny_wins evaluates under
+ * version 2 and its events carry "obsvr-rules/2", so the record alone says
+ * which resolution produced a verdict.
+ */
+export const DENY_WINS_SEMANTICS_VERSION = 2;
+
+/**
+ * The engine_version marker for the conflict-resolution mode in force:
+ * ENGINE_VERSION unless the ruleset declares deny_wins. An explicit
+ * 'first_match' declaration evaluates under the same semantics as an
+ * undeclared ruleset, so both carry version 1.
+ */
+export function engineVersionFor(resolution?: RuleResolution): string {
+  if (resolution === 'deny_wins') return `obsvr-rules/${DENY_WINS_SEMANTICS_VERSION}`;
+  return ENGINE_VERSION;
+}
 
 /** Schema tag of the canonical decision-input document. */
 export const DECISION_INPUT_SCHEMA = 'obsvr-decision-input-v1';
@@ -95,6 +117,11 @@ export interface DecisionInputParams {
   serviceName?: string;
   tenantId?: string;
   hook: HookDisposition;
+  /**
+   * Defaults to ENGINE_VERSION; a pipeline evaluating under a declared
+   * resolution mode passes `engineVersionFor(...)`.
+   */
+  engineVersion?: string;
 }
 
 /**
@@ -106,7 +133,7 @@ export interface DecisionInputParams {
 export function buildDecisionInput(params: DecisionInputParams): DecisionInput {
   const doc: DecisionInput = {
     schema: DECISION_INPUT_SCHEMA,
-    engine_version: ENGINE_VERSION,
+    engine_version: params.engineVersion ?? ENGINE_VERSION,
     rules_hash: params.rulesHash,
     degraded: params.degraded,
     target: params.target,

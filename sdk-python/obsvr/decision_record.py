@@ -21,7 +21,7 @@ sdk-typescript/src/policy/decision-record.ts).
 import hashlib
 from typing import Any, Dict, Optional
 
-from .rules import _canonical_json
+from .rules import RULE_RESOLUTION_DENY_WINS, _canonical_json
 
 # Cross-language rules-engine semantics version. Bumped when -- and only
 # when -- evaluation semantics change (a change that can produce a different
@@ -32,6 +32,24 @@ RULES_ENGINE_SEMANTICS_VERSION = 1
 
 # The engine_version string stamped on events: "obsvr-rules/<N>".
 ENGINE_VERSION = f"obsvr-rules/{RULES_ENGINE_SEMANTICS_VERSION}"
+
+# Semantics version of the declared deny-wins conflict resolution
+# (rules.RULE_RESOLUTION_DENY_WINS): evaluation collects every enforcing
+# outcome and resolves strongest-first, order-insensitively. The default
+# first-match engine stays version 1; a ruleset that declares deny_wins
+# evaluates under version 2 and its events carry "obsvr-rules/2", so the
+# record alone says which resolution produced a verdict.
+DENY_WINS_SEMANTICS_VERSION = 2
+
+
+def engine_version_for(resolution: Optional[str]) -> str:
+    """The engine_version marker for the conflict-resolution mode in force:
+    ENGINE_VERSION unless the ruleset declares deny_wins. An explicit
+    "first_match" declaration evaluates under the same semantics as an
+    undeclared ruleset, so both carry version 1."""
+    if resolution == RULE_RESOLUTION_DENY_WINS:
+        return f"obsvr-rules/{DENY_WINS_SEMANTICS_VERSION}"
+    return ENGINE_VERSION
 
 # Schema tag of the canonical decision-input document.
 DECISION_INPUT_SCHEMA = "obsvr-decision-input-v1"
@@ -64,6 +82,7 @@ def build_decision_input(
     service_name: Optional[str] = None,
     tenant_id: Optional[str] = None,
     hook: str = "not_configured",
+    engine_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the canonical decision-input document (v1).
 
@@ -73,10 +92,12 @@ def build_decision_input(
     Scope identifiers are included only when they are non-empty strings.
     All values are strings or booleans; optionals are omitted when absent
     -- a document never contains a JSON null.
+    ``engine_version`` defaults to ENGINE_VERSION; a pipeline evaluating
+    under a declared resolution mode passes ``engine_version_for(...)``.
     """
     doc: Dict[str, Any] = {
         "schema": DECISION_INPUT_SCHEMA,
-        "engine_version": ENGINE_VERSION,
+        "engine_version": engine_version if engine_version else ENGINE_VERSION,
         "rules_hash": rules_hash,
         "degraded": bool(degraded),
         "target": target,

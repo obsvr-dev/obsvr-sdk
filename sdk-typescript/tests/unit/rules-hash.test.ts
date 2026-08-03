@@ -129,3 +129,60 @@ describe('conformance: rule-id ordering across the two sort implementations', ()
     expect(deriveFloorVersion(ordering.rules)).toBe(ordering.expected.floor_hash);
   });
 });
+
+/**
+ * Resolution binding: a ruleset that DECLARES its conflict-resolution mode
+ * gets the mode committed into policy_version, and the hash then commits to
+ * exactly what can change a decision under that mode — evaluation order under
+ * first_match, the sorted set under deny_wins. Undeclared rulesets keep the
+ * historical bytes, so nothing already deployed restamps. Twin:
+ * sdk-python/tests/test_rules_hash.py.
+ */
+describe('conformance: resolution binding of the policy version', () => {
+  const binding = fixture.resolution_binding as {
+    rules: PolicyRule[];
+    expected: {
+      undeclared_hash: string;
+      first_match_listed_order: string;
+      first_match_reversed_order: string;
+      deny_wins_hash: string;
+    };
+  };
+  const listed = () => [...binding.rules];
+  const reversed = () => [...binding.rules].reverse();
+
+  it('undeclared hash is order-insensitive and keeps the pinned bytes', () => {
+    expect(derivePolicyVersion(listed())).toBe(binding.expected.undeclared_hash);
+    expect(derivePolicyVersion(reversed())).toBe(binding.expected.undeclared_hash);
+  });
+
+  it('first_match hash commits to evaluation order', () => {
+    const a = derivePolicyVersion(listed(), 'first_match');
+    const b = derivePolicyVersion(reversed(), 'first_match');
+    expect(a).toBe(binding.expected.first_match_listed_order);
+    expect(b).toBe(binding.expected.first_match_reversed_order);
+    expect(a).not.toBe(b);
+  });
+
+  it('deny_wins hash is order-insensitive and pinned', () => {
+    expect(derivePolicyVersion(listed(), 'deny_wins')).toBe(binding.expected.deny_wins_hash);
+    expect(derivePolicyVersion(reversed(), 'deny_wins')).toBe(binding.expected.deny_wins_hash);
+  });
+
+  it('a declared mode never shares a version with the undeclared set', () => {
+    const hashes = new Set([
+      derivePolicyVersion(listed()),
+      derivePolicyVersion(listed(), 'first_match'),
+      derivePolicyVersion(listed(), 'deny_wins'),
+    ]);
+    expect(hashes.size).toBe(3);
+  });
+
+  it('an unknown resolution derives "unknown", never a hash', () => {
+    // Provenance stays open: a typo'd declaration must not stamp a hash that
+    // LOOKS like a committed version, and must not throw out of a live path.
+    expect(
+      derivePolicyVersion(listed(), 'deny-wins' as unknown as 'deny_wins'),
+    ).toBe('unknown');
+  });
+});
