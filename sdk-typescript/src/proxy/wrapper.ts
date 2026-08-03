@@ -1461,6 +1461,18 @@ async function governCall(
     let floorActive = false;
     let ruleId: string | undefined;
     let policyReason: string | undefined;
+    // A block that came from a detector FAILING CLOSED (it crashed and could
+    // not evaluate), not from a detector deciding "block". Monitor mode
+    // converts would-be VERDICTS into allows; "we could not evaluate this" is
+    // not a verdict, so a fail-closed block must NOT convert — otherwise a
+    // crashed floor or canary layer is un-blocked by a monitor rollout, which
+    // is the one thing SECURITY.md says the floor class does regardless of
+    // mode. Python resolves a detector crash by returning before its
+    // conversion point; this wrapper's catch continues past it, so the flag
+    // is how the same carve-out is expressed here. The other two TS surfaces
+    // (integrations/core.ts, governance/evaluate.ts) return in their catch,
+    // like Python, and need no flag.
+    let detectorFailedClosed = false;
     // Same reason, one step earlier: the session-taint key and sub-config are
     // set by the first step INSIDE the guard and read by the canary, PII and
     // multi-turn steps further down it. A throw before the key is derived
@@ -1947,6 +1959,9 @@ async function governCall(
         actionSource = "builtin";
         ruleId = "sdk:detector_error";
         policyReason = `Detector layer '${layer || "unknown"}' raised ${describeError(err)}`.slice(0, 256);
+        // Not a verdict — a layer that could not run. Monitor mode must not
+        // convert this to an allow (see the flag's declaration).
+        detectorFailedClosed = true;
       }
       // Record WHICH layer was lost on this call's own event, on the reserved
       // telemetry channel - the same route canary and floor evidence take. An
@@ -2289,9 +2304,16 @@ async function governCall(
     // enforcing run records. The deciding layer's classification
     // (actionReason, actionSource, blockedTypes) stays on the event. Layer 0
     // is re-derived inside monitorConversionApplies; canary leaks are carved
-    // out here (the shared evaluate() surface has no canary layer).
+    // out here (the shared evaluate() surface has no canary layer), and a
+    // block from a detector that FAILED CLOSED is carved out too — monitor
+    // converts would-be verdicts, and "could not evaluate" is not one.
     let monitorConverted = false;
-    if (actionTaken === "blocked" && !canaryFloor && monitorConversionApplies(config, degraded)) {
+    if (
+      actionTaken === "blocked" &&
+      !canaryFloor &&
+      !detectorFailedClosed &&
+      monitorConversionApplies(config, degraded)
+    ) {
       shadowOutcome = {
         rule_id: ruleId ?? "",
         would: "block",

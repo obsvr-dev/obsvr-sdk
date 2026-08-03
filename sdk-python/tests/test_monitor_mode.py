@@ -188,6 +188,71 @@ class TestCarveOuts:
         assert blocked[0]["rule_id"] == "sdk:canary_leak"
 
 
+class TestFloorUnderMonitor:
+    """What monitor mode does to the policy floor, decided deliberately.
+
+    A floor that EVALUATED and said block is a would-be VERDICT, and recording
+    would-be verdicts without enforcing them is exactly monitor mode's job — so
+    the operator's own deliberate enforcement_mode="monitor" flip converts it,
+    with the verdict preserved on shadow_outcome. The floor's guarantee is that
+    no customer rule, hook, or policy sync can weaken it; the operator's own
+    top-level mode is none of those. But a floor that COULD NOT RUN (a crashed
+    floor-class layer) is NOT a verdict — "we could not evaluate the floor" is a
+    different fact from "the floor said block" — so it fails closed and blocks
+    in EVERY mode, monitor included. Exempting a floor verdict entirely would
+    make a floor-bearing deployment unable to stage a monitor rollout at all,
+    defeating the feature for the security-conscious deployments most likely to
+    run both.
+    """
+
+    _FLOOR = PolicyRule(
+        id="floor-secret", name="no secrets", enabled=True, action="block",
+        type="keyword", conditions={"keywords": ["secret"]},
+    )
+
+    def _init_floor_monitor(self):
+        obsvr.init(
+            api_key="k", policy_floor=[self._FLOOR], pii_policy={},
+            enforcement_mode="monitor", policy_refresh_interval_s=0,
+        )
+
+    def test_a_floor_verdict_is_converted_and_recorded_under_monitor(self, sent):
+        self._init_floor_monitor()
+        tool = _SpyTool()
+        governed = govern_tool(tool)
+
+        assert governed._run(note="a secret thing") == "done"
+        assert tool.calls == ["a secret thing"], "the operator flipped to monitor: the call runs"
+        events = [e for e in sent if e.get("operation") == "tool.call"]
+        assert len(events) == 1
+        assert events[0]["action_taken"] == "allowed"
+        shadow = events[0]["shadow_outcome"]
+        assert shadow["would"] == "block", "the would-be floor verdict is kept on the record"
+        assert shadow["rule_id"] == "floor-secret"
+
+    def test_a_crashed_floor_still_blocks_under_monitor(self, sent, monkeypatch):
+        # "Could not evaluate the floor" is not a would-be verdict, so monitor
+        # mode must not convert it: a crashed floor-class layer blocks in every
+        # mode. Python resolves a detector crash before the conversion point.
+        import obsvr.rules as rules_mod
+
+        monkeypatch.setattr(
+            rules_mod, "evaluate_floor",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("floor exploded")),
+        )
+        self._init_floor_monitor()
+        tool = _SpyTool()
+        governed = govern_tool(tool)
+
+        with pytest.raises(ObsvrPolicyError):
+            governed._run(note="anything at all")
+
+        assert tool.calls == [], "a floor that could not run blocks, monitor or not"
+        blocked = [e for e in sent if e.get("action_taken") == "blocked"]
+        assert blocked, "the fail-closed block must reach the record"
+        assert blocked[0]["rule_id"] == "sdk:detector_error"
+
+
 class TestUnaffectedSurfaces:
     def test_explain_keeps_predicting_enforce_mode_behaviour(self):
         _init("monitor")

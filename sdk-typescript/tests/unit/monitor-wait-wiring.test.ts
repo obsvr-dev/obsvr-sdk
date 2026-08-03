@@ -212,6 +212,45 @@ describe('proxy wrapper: monitor mode', () => {
     expect(event.shadow_outcome.reason_code).toBe(ReasonCode.KEYWORD_BLOCKED);
   });
 
+  it('converts a floor VERDICT but keeps the would-be block on shadow_outcome', async () => {
+    // A floor that evaluated and said block is a would-be verdict; recording
+    // would-be verdicts without enforcing them is monitor mode's job, and the
+    // operator's own enforcement_mode flip is not one of the weakening vectors
+    // (customer rule, hook, policy sync) the floor is guaranteed against. So
+    // the floor VERDICT converts, with the verdict preserved. (A floor that
+    // could not RUN is a different case, pinned in monitor-floor-fail-closed.)
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      policyFloor: [
+        {
+          id: 'floor-secret',
+          name: 'no secrets',
+          enabled: true,
+          action: 'block',
+          type: 'keyword',
+          conditions: { keywords: ['secret'] },
+        },
+      ],
+      enforcement_mode: 'monitor',
+      sample_rate: 0,
+    } as never);
+    const wrapped = wrap(fakeClient());
+
+    const response = await wrapped.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'a secret request' }],
+    });
+    expect(response.choices[0].message.content).toBe('Hello!');
+
+    await waitForEvents(1);
+    const event = sentEvents.find((e) => e.shadow_outcome);
+    expect(event).toBeDefined();
+    expect(event.action_taken).toBe('allowed');
+    expect(event.shadow_outcome.would).toBe('block');
+    expect(event.shadow_outcome.rule_id).toBe('floor-secret');
+  });
+
   it('does not disarm the enforcement-integrity gate', async () => {
     init({
       api_key: 'k',
