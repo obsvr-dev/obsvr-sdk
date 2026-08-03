@@ -915,8 +915,11 @@ export interface AuditEvent {
   timestamp_sdk?: number;    // Date.now() at capture, before queue entry
   sdk_version?: string;      // "node/<semver>", which SDK build produced this event
   /** Signing format this event verifies under (see proxy/chain-format.ts).
-   * Absent = 1, the legacy concatenation preimage; the current SDK stamps 2.
-   * Routing only — the format number is also inside the signed payload. */
+   * Absent = 1, the legacy concatenation preimage; the current SDK stamps 3
+   * (CHAIN_FORMAT_CURRENT), whose preimage also covers the decision fields;
+   * 2 is the content-framed format signed before the verdict entered the
+   * preimage. Routing only — the format number is also inside the signed
+   * payload. */
   chain_format?: number;
   sdk_sig?: string;          // HMAC-SHA256 hex signature, 64 chars (Phase 2)
   prev_sig?: string;         // sdk_sig of the previous event in this session (Phase 3)

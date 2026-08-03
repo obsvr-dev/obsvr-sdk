@@ -1,6 +1,6 @@
 """obsvr-verify: offline evidence verification for auditors, in Python.
 
-    obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps]
+    obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]
 
 Behavioral twin of the TypeScript CLI (sdk-typescript/src/cli-verify.ts): same input
 shapes, same two tiers, same exit codes, same verdicts. It exists so a
@@ -14,12 +14,18 @@ plain JSON array of audit events. Two verification tiers:
 
  - WITHOUT --api-key: structural chain verification. prev_sig linkage, seq_no
    continuity, session consistency, and timestamp monotonicity are checked from
-   the events alone. Detects reordering, insertion, and deletion; cannot detect
-   a re-signed forgery (that needs the key).
+   the events alone; every event after the first must CARRY a prev_sig, or an
+   unsigned insertion with a plausible seq_no and a well-formed sdk_sig would
+   pass this tier by simply omitting the field. Detects reordering, insertion,
+   and deletion; cannot detect a re-signed forgery (that needs the key).
  - WITH --api-key: HMAC re-verification (verify_chain) - every signature is
    recomputed over the content + chain preimage, so any content tamper or
-   reorder breaks. The client signature does NOT cover the decision/attribution
-   fields (verdict, rule, tenant); those are sealed by the server
+   reorder breaks. Under chain format 3, the current signing format, the
+   preimage also covers the decision/attribution fields (action_taken,
+   action_reason, reason_code, rule_id, policy_version, model, provider,
+   user_id); chains signed under formats 1 and 2 bind content and order only.
+   The client signature does NOT cover tenant_id, token counts, metadata,
+   operation, or content_provenance; those are sealed by the server
    countersignature at ingest, not by this offline check.
 
 Either tier also reports GAP MARKERS: events the SDK signed to record that its
@@ -44,6 +50,13 @@ old version or stop checking the exit code at all, and an explicit, greppable
 flag in their CI config is a better record of that decision than either. It
 suppresses only the STATUS - the declared loss is still printed, so the
 disclosure survives the opt-out.
+
+A broken keyed run reports EVERY break the verifier found, one line per break
+(verify_chain re-anchors and keeps scanning), so an auditor triaging a
+tampered export gets the full damage report from one run. ``--json`` replaces
+the prose with one machine-readable document on stdout - same verdicts, same
+exit codes, per-session break lists included. Usage and file-read errors
+(exit 2) stay on stderr in either mode.
 
 Dependency-free and offline: an auditor must be able to verify obsvr's evidence
 without trusting obsvr's servers or UI.
@@ -113,7 +126,17 @@ def verify_structure(events: Sequence[Dict[str, Any]]) -> Tuple[bool, Optional[s
         if _seq(event) != _seq(prev) + 1:
             return False, f"seq_no gap: {prev.get('seq_no')} -> {event.get('seq_no')}"
         prev_sig = event.get("prev_sig")
-        if prev_sig is not None and prev_sig != prev.get("sdk_sig"):
+        if prev_sig is None:
+            # Linkage is required, not optional: an event that OMITS prev_sig
+            # is not exempt from the check, or an unsigned insertion would
+            # pass this tier by leaving the field out.
+            return (
+                False,
+                "missing prev_sig at seq "
+                f"{event.get('seq_no')}: every event after the first must "
+                "link to its predecessor",
+            )
+        if prev_sig != prev.get("sdk_sig"):
             return (
                 False,
                 "prev_sig does not link to the prior event's sdk_sig at seq "
@@ -154,7 +177,7 @@ def _report_gaps(markers: int, lost: int, allow_gaps: bool) -> int:
     return 0 if allow_gaps else EXIT_INCOMPLETE
 
 
-def _parse_args(argv: Sequence[str]) -> Tuple[str, Optional[str], bool]:
+def _parse_args(argv: Sequence[str]) -> Tuple[str, Optional[str], bool, bool]:
     """Mirror the TS CLI's argument handling, including its tolerance: flags in
     any order, and the value after --api-key is never mistaken for the file."""
     args = list(argv)
@@ -172,15 +195,24 @@ def _parse_args(argv: Sequence[str]) -> Tuple[str, Optional[str], bool]:
         break
     if not path:
         print(
-            "Usage: obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps]",
+            "Usage: obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]",
             file=sys.stderr,
         )
         raise SystemExit(2)
-    return path, api_key, "--allow-gaps" in args
+    return path, api_key, "--allow-gaps" in args, "--json" in args
+
+
+def _json_line(doc: Dict[str, Any]) -> str:
+    """The --json document, serialized identically in both languages: compact
+    separators and raw (unescaped) non-ASCII, which is what JSON.stringify
+    emits - the parity harness compares the two byte for byte."""
+    return json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    path, api_key, allow_gaps = _parse_args(sys.argv[1:] if argv is None else argv)
+    path, api_key, allow_gaps, as_json = _parse_args(
+        sys.argv[1:] if argv is None else argv
+    )
 
     try:
         with open(path, encoding="utf-8") as handle:
@@ -189,7 +221,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _fail(f"Cannot read {path}: {err}", 2)
 
     events = _extract_events(parsed)
-    print(f"Loaded {len(events)} event(s) from {path}")
+    if not as_json:
+        print(f"Loaded {len(events)} event(s) from {path}")
 
     if api_key:
         # Group per session: the HMAC chain is per sdk_session_id.
@@ -197,39 +230,93 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         for event in events:
             sid = str(event.get("sdk_session_id", "unknown"))
             sessions.setdefault(sid, []).append(event)
+        reports = []
+        any_invalid = False
         verified = 0
         gap_markers = 0
         events_lost = 0
         for sid, session_events in sessions.items():
             result = verify_chain(sorted(session_events, key=_seq), api_key)
-            if not result.valid:
-                _fail(f"session {sid}: {result.reason} (event index {result.broken_at})")
+            reports.append((sid, result))
+            any_invalid = any_invalid or not result.valid
             verified += result.events_verified
             gap_markers += result.gap_markers
             events_lost += result.events_declared_lost
+        code = (
+            1
+            if any_invalid
+            else (0 if gap_markers == 0 or allow_gaps else EXIT_INCOMPLETE)
+        )
+        if as_json:
+            doc: Dict[str, Any] = {
+                "mode": "content+chain",
+                "valid": not any_invalid,
+                "sessions": [
+                    dict({"sessionId": sid}, **result.to_dict())
+                    for sid, result in reports
+                ],
+                "eventsVerified": verified,
+                "gapMarkers": gap_markers,
+                "eventsDeclaredLost": events_lost,
+                "allowGaps": allow_gaps,
+                "exitCode": code,
+            }
+            print(_json_line(doc))
+            return code
+        if any_invalid:
+            # Every break in every session, one line each - the full damage
+            # report from one run, not one index per run.
+            for sid, result in reports:
+                for brk in result.breaks:
+                    print(
+                        f"✗ session {sid}: {brk['reason']} "
+                        f"(event index {brk['index']})",
+                        file=sys.stderr,
+                    )
+            return 1
         print(
             f"✓ CONTENT + CHAIN verification passed: {verified} signature(s) "
             f"recomputed and chain-linked across {len(sessions)} session(s).\n"
-            "  This attests prompt/response CONTENT integrity and event ORDER. The client\n"
-            "  signature does NOT cover the decision/attribution fields (verdict, rule,\n"
-            "  tenant) — those are sealed by the server countersignature at ingest."
+            "  This attests prompt/response CONTENT integrity, event ORDER, and — under\n"
+            "  chain format 3, the current signing format — the decision/attribution\n"
+            "  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n"
+            "  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n"
+            "  and order only. The client signature does NOT cover tenant_id, token\n"
+            "  counts, metadata, operation, or content_provenance — those are sealed by\n"
+            "  the server countersignature at ingest."
         )
         return _report_gaps(gap_markers, events_lost, allow_gaps)
     else:
         valid, reason = verify_structure(events)
-        if not valid:
-            _fail(reason or "chain broken")
         # Keyless, the marker's count is read but not authenticated - same tier
         # as every other field at this level, and stated as such above.
         gap_markers = 0
         events_lost = 0
-        for event in events:
-            # Same discriminator as verify_chain: a marker is an event the
-            # SDK emitted as one, not any event containing the string.
-            gap = read_audit_gap_claim(event)
-            if gap:
-                gap_markers += 1
-                events_lost += gap["dropped"]
+        if valid:
+            for event in events:
+                # Same discriminator as verify_chain: a marker is an event the
+                # SDK emitted as one, not any event containing the string.
+                gap = read_audit_gap_claim(event)
+                if gap:
+                    gap_markers += 1
+                    events_lost += gap["dropped"]
+        if as_json:
+            code = (
+                1
+                if not valid
+                else (0 if gap_markers == 0 or allow_gaps else EXIT_INCOMPLETE)
+            )
+            doc = {"mode": "structural", "valid": valid, "events": len(events)}
+            if reason is not None:
+                doc["reason"] = reason
+            doc["gapMarkers"] = gap_markers
+            doc["eventsDeclaredLost"] = events_lost
+            doc["allowGaps"] = allow_gaps
+            doc["exitCode"] = code
+            print(_json_line(doc))
+            return code
+        if not valid:
+            _fail(reason or "chain broken")
         print(
             "✓ STRUCTURAL verification passed: linkage, continuity, and "
             f"monotonicity hold for {len(events)} event(s).\n"

@@ -69,6 +69,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from .. import sender as _sender
 from ..agent_policy import check_steps, unrecognized_step_action_meta
+from ..binding_report import record_binding
 from ..config import try_get_config
 from ..events import (
     emit_event,
@@ -129,8 +130,15 @@ def _sanitize_tool_name(name: str) -> str:
         try:
             from crewai.utilities.string_utils import sanitize_tool_name
 
+            record_binding("crewai", "crewai.utilities.string_utils.sanitize_tool_name")
             _sanitizer_cell.append(sanitize_tool_name)
-        except Exception:
+        except Exception as _exc:
+            # Recorded, then mirrored: the fallback keeps the gate working,
+            # and the report is what says the authoritative helper did not
+            # bind (renamed upstream vs. not installed vs. broken dependency).
+            record_binding(
+                "crewai", "crewai.utilities.string_utils.sanitize_tool_name", _exc
+            )
             _sanitizer_cell.append(_mirror_sanitize)
     fn = _sanitizer_cell[0]
     try:
@@ -282,7 +290,14 @@ def install_tool_gate_hook(
                 "before_tool_call hooks can be registered but are never "
                 "dispatched by the tool executor on this build"
             )
+        # Recorded only after the consumer-side probe passed: a hook system
+        # that accepts registrations nobody dispatches is exactly the
+        # installed-but-inert state the report exists to name.
+        record_binding("crewai", "crewai.hooks.tool_hooks.register_before_tool_call_hook")
     except ImportError as e:
+        record_binding(
+            "crewai", "crewai.hooks.tool_hooks.register_before_tool_call_hook", e
+        )
         # Feature-detected, not version-compared: forks, backports and
         # vendored builds lie about versions; attribute presence does not.
         # Failing LOUDLY here is the point — a silent no-op install would be

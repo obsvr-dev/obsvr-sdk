@@ -4,7 +4,7 @@
  *
  * @packageDocumentation
  */
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import type { AuditEvent } from '../proxy/types.js';
 import { readAuditGapClaim } from '../proxy/audit-gap.js';
 import {
@@ -34,13 +34,27 @@ export interface ChainVerificationResult {
    */
   eventsDeclaredLost: number;
   /**
+   * Every break found in one pass, in event order. `brokenAt` / `reason`
+   * remain the FIRST entry, so existing readers keep working; this list is
+   * the full damage report — an auditor investigating a tampered export gets
+   * every independent break in one run instead of one index per run. After a
+   * break the verifier re-anchors on the breaking event's own claims
+   * (seq_no, timestamp, stored sdk_sig), so one tampered event yields one
+   * break rather than failing everything downstream of it.
+   */
+  breaks: Array<{ index: number; reason: string }>;
+  /**
    * Signing format the chain was checked under (see proxy/chain-format.ts):
-   * 2 for current chains, 1 for chains signed before length-prefixed content
-   * framing existed. Reported so a legacy chain never passes as silently
-   * equivalent to a current one — format 1 does not bind the prompt/response
-   * boundary, and a consumer weighing the evidence is entitled to know that.
-   * Absent when verification broke before the format could be established
-   * (empty chain, missing session id, unrecognized format value).
+   * 3 for current chains, 2 for content-framed chains signed before the
+   * verdict entered the preimage, and 1 for chains signed before
+   * length-prefixed content framing existed. This list said "2 for current"
+   * and stopped there, so a current chain reported a value the documented
+   * vocabulary did not contain. Reported so a legacy chain never passes as
+   * silently equivalent to a current one — format 1 does not bind the
+   * prompt/response boundary, and a consumer weighing the evidence is
+   * entitled to know that. Absent when verification broke before the format
+   * could be established (empty chain, missing session id, unrecognized
+   * format value).
    */
   chainFormat?: number;
 }
@@ -66,6 +80,23 @@ function declaredFormat(event: AuditEvent): number | null {
     return raw;
   }
   return null;
+}
+
+/**
+ * Constant-time equality over the stored and the recomputed signature.
+ *
+ * `verifyAuditChain` is library surface, run against caller-supplied chains -
+ * not only by the offline CLI - so the comparison must not leak how many
+ * leading bytes matched. The length guard leaks only the lengths, which are
+ * public: a well-formed sdk_sig is 64 hex characters, and the recomputed
+ * digest always is. A non-string stored signature compares as empty and
+ * fails. Twin reasoning: hmac.compare_digest in verify_chain.py.
+ */
+function signatureMatches(stored: unknown, expected: string): boolean {
+  const storedBuf = Buffer.from(typeof stored === 'string' ? stored : '', 'utf8');
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  if (storedBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(storedBuf, expectedBuf);
 }
 
 /** Compute expected signature for an event under the given chain format */
@@ -111,6 +142,10 @@ function computeSignature(
  * number - so the marker is the only evidence they existed, and a verifier
  * that returns `valid: true` without surfacing it reports a lossy run as a
  * complete one.
+ *
+ * One pass reports EVERY break (`breaks`), re-anchoring on each breaking
+ * event's own claims so independent tampers surface as independent breaks;
+ * `brokenAt` / `reason` remain the first of them.
  */
 export function verifyAuditChain(
   events: AuditEvent[],
@@ -119,20 +154,28 @@ export function verifyAuditChain(
   let gapMarkers = 0;
   let eventsDeclaredLost = 0;
   let chainFormat: number | undefined;
+  const breaks: Array<{ index: number; reason: string }> = [];
 
-  /** A break: the gap tally covers only the prefix that verified. */
-  const broken = (i: number, reason: string): ChainVerificationResult => ({
-    valid: false,
-    brokenAt: i,
-    reason,
-    eventsVerified: i,
-    gapMarkers,
-    eventsDeclaredLost,
-    ...(chainFormat !== undefined ? { chainFormat } : {}),
-  });
+  /**
+   * A terminal break, before per-event scanning could even start: the gap
+   * tally covers only the prefix that verified.
+   */
+  const broken = (i: number, reason: string): ChainVerificationResult => {
+    breaks.push({ index: i, reason });
+    return {
+      valid: false,
+      brokenAt: i,
+      reason,
+      eventsVerified: i,
+      gapMarkers,
+      eventsDeclaredLost,
+      breaks,
+      ...(chainFormat !== undefined ? { chainFormat } : {}),
+    };
+  };
 
   if (!events || events.length === 0) {
-    return { valid: true, eventsVerified: 0, gapMarkers: 0, eventsDeclaredLost: 0 };
+    return { valid: true, eventsVerified: 0, gapMarkers: 0, eventsDeclaredLost: 0, breaks: [] };
   }
 
   const signingKey = deriveSigningKey(apiKey);
@@ -157,46 +200,79 @@ export function verifyAuditChain(
   chainFormat = firstFormat;
 
   let lastSig: string | null = null;
-  let lastSeq = 0;
+  // `null` means "unknown": after an event with no usable seq_no, the next
+  // event's sequence is adopted as the new anchor rather than compared
+  // against a stale value, so one missing field is one break, not two.
+  let lastSeq: number | null = 0;
   let lastTimestamp = 0;
+
+  /**
+   * One break per event, then RE-ANCHOR on the event's own claims so scanning
+   * continues: an auditor gets every independent break in one run, and a
+   * single tampered event does not fail everything downstream of it. The
+   * stored sdk_sig anchors the linkage check even when it did not verify —
+   * the next event's prev_sig was minted against the stored value, so a
+   * mismatch there is a further, real inconsistency.
+   */
+  const recordBreak = (i: number, reason: string, event: AuditEvent): void => {
+    breaks.push({ index: i, reason });
+    lastSeq = typeof event.seq_no === "number" ? event.seq_no : null;
+    if (typeof event.timestamp_sdk === "number") {
+      lastTimestamp = event.timestamp_sdk;
+    }
+    lastSig = typeof event.sdk_sig === "string" ? event.sdk_sig : null;
+  };
 
   for (let i = 0; i < events.length; i++) {
     const event = events[i];
 
-    // Check session consistency
+    // Check session consistency. A foreign event is not part of this chain:
+    // it is reported and SKIPPED, neither anchoring nor advancing the state
+    // the rest of the session verifies against.
     if (event.sdk_session_id !== sessionId) {
-      return broken(i, `Session ID mismatch at event ${i}: expected ${sessionId}, got ${event.sdk_session_id}`);
+      breaks.push({
+        index: i,
+        reason: `Session ID mismatch at event ${i}: expected ${sessionId}, got ${event.sdk_session_id}`,
+      });
+      continue;
     }
 
     // Check format consistency
     const format = declaredFormat(event);
     if (format === null) {
-      return broken(
+      recordBreak(
         i,
-        `Unsupported chain_format at event ${i}: ${String((event as { chain_format?: unknown }).chain_format)}`
+        `Unsupported chain_format at event ${i}: ${String((event as { chain_format?: unknown }).chain_format)}`,
+        event
       );
+      continue;
     }
     if (format !== chainFormat) {
-      return broken(i, `Chain format mismatch at event ${i}: expected ${chainFormat}, got ${format}`);
+      recordBreak(i, `Chain format mismatch at event ${i}: expected ${chainFormat}, got ${format}`, event);
+      continue;
     }
 
     // Check seq_no monotonicity
     if (event.seq_no === undefined || event.seq_no === null) {
-      return broken(i, `Missing seq_no at event ${i}`);
+      recordBreak(i, `Missing seq_no at event ${i}`, event);
+      continue;
     }
     if (i === 0) {
       if (event.seq_no < 1) {
-        return broken(i, `Invalid initial seq_no: ${event.seq_no}`);
+        recordBreak(i, `Invalid initial seq_no: ${event.seq_no}`, event);
+        continue;
       }
-    } else if (event.seq_no !== lastSeq + 1) {
-      return broken(i, `seq_no gap at event ${i}: expected ${lastSeq + 1}, got ${event.seq_no}`);
+    } else if (lastSeq !== null && event.seq_no !== lastSeq + 1) {
+      recordBreak(i, `seq_no gap at event ${i}: expected ${lastSeq + 1}, got ${event.seq_no}`, event);
+      continue;
     }
     lastSeq = event.seq_no;
 
     // Check timestamp non-decreasing
     if (event.timestamp_sdk !== undefined) {
       if (event.timestamp_sdk < lastTimestamp) {
-        return broken(i, `Timestamp decreased at event ${i}: ${event.timestamp_sdk} < ${lastTimestamp}`);
+        recordBreak(i, `Timestamp decreased at event ${i}: ${event.timestamp_sdk} < ${lastTimestamp}`, event);
+        continue;
       }
       lastTimestamp = event.timestamp_sdk;
     }
@@ -204,7 +280,8 @@ export function verifyAuditChain(
     // Check prev_sig chain link
     if (i > 0) {
       if (event.prev_sig !== lastSig) {
-        return broken(i, `Chain break at event ${i}: prev_sig does not match prior event's sdk_sig`);
+        recordBreak(i, `Chain break at event ${i}: prev_sig does not match prior event's sdk_sig`, event);
+        continue;
       }
     }
 
@@ -225,21 +302,38 @@ export function verifyAuditChain(
       decisionFieldsOf(event as unknown as Record<string, unknown>)
     );
 
-    if (event.sdk_sig !== expectedSig) {
-      return broken(i, `Signature mismatch at event ${i}`);
+    if (!signatureMatches(event.sdk_sig, expectedSig)) {
+      recordBreak(i, `Signature mismatch at event ${i}`, event);
+      continue;
     }
 
     lastSig = event.sdk_sig ?? null;
 
-    // Counted only after the event's own signature verified: an unverified
-    // marker's count is an unverified claim. And read through
+    // Counted only after the event's own signature verified, and only in the
+    // prefix before the first break — the tally a caller acts on must not
+    // change because scanning now continues past a break. And read through
     // readAuditGapClaim, which requires the event to BE a marker — parsing the
     // prompt of every event let a user forge a loss declaration by typing one.
-    const gap = readAuditGapClaim(event);
-    if (gap) {
-      gapMarkers++;
-      eventsDeclaredLost += gap.dropped;
+    if (breaks.length === 0) {
+      const gap = readAuditGapClaim(event);
+      if (gap) {
+        gapMarkers++;
+        eventsDeclaredLost += gap.dropped;
+      }
     }
+  }
+
+  if (breaks.length > 0) {
+    return {
+      valid: false,
+      brokenAt: breaks[0].index,
+      reason: breaks[0].reason,
+      eventsVerified: breaks[0].index,
+      gapMarkers,
+      eventsDeclaredLost,
+      breaks,
+      ...(chainFormat !== undefined ? { chainFormat } : {}),
+    };
   }
 
   return {
@@ -247,6 +341,7 @@ export function verifyAuditChain(
     eventsVerified: events.length,
     gapMarkers,
     eventsDeclaredLost,
+    breaks,
     chainFormat,
   };
 }

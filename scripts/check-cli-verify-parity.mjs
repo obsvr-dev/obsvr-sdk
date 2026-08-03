@@ -67,6 +67,11 @@ const write = (name, value) => {
 const tampered = JSON.parse(JSON.stringify(chain));
 tampered[1].prompt = "tampered";
 const gapped = [chain[0], { ...chain[1], seq_no: 5 }];
+/** Two independent tampers: a content edit at event 0 AND a forged signature
+ *  at event 1. Both CLIs must report BOTH breaks in one run, identically. */
+const multiBroken = JSON.parse(JSON.stringify(chain));
+multiBroken[0].prompt = "tampered";
+multiBroken[1].sdk_sig = "0".repeat(64);
 
 const CASES = [
   { name: "valid chain, keyless", args: [write("valid.json", chain)] },
@@ -84,6 +89,35 @@ const CASES = [
   },
   { name: "tampered content, keyless (undetectable by design)", args: [write("tampered.json", tampered)] },
   { name: "seq_no gap, keyless", args: [write("gapped.json", gapped)] },
+  {
+    // A plausible seq_no and a well-formed sdk_sig with NO prev_sig is an
+    // unsigned insertion; the keyless tier refuses it in both languages.
+    name: "unsigned insertion without prev_sig, keyless",
+    args: [
+      write("inserted.json", [
+        ...chain,
+        {
+          sdk_session_id: vectors.session_id,
+          seq_no: chain[chain.length - 1].seq_no + 1,
+          timestamp_sdk: chain[chain.length - 1].timestamp_sdk + 1,
+          prompt: "inserted",
+          response: "",
+          sdk_sig: "a".repeat(64),
+        },
+      ]),
+    ],
+  },
+  {
+    // The chain start has no predecessor, so an absent prev_sig there is
+    // legitimate.
+    name: "first event without prev_sig, keyless",
+    args: [
+      write("no-first-prev.json", [
+        Object.fromEntries(Object.entries(chain[0]).filter(([k]) => k !== "prev_sig")),
+        ...chain.slice(1),
+      ]),
+    ],
+  },
   // Exit 3 (valid but incomplete) is the contract these pin: a chain that
   // declares dropped events must not pass a `verify && deploy` gate, and both
   // CLIs must agree on that status, not just on the printed finding.
@@ -103,6 +137,25 @@ const CASES = [
   {
     name: "--allow-gaps does not rescue a broken chain",
     args: [write("tampered.json", tampered), "--api-key", API_KEY, "--allow-gaps"],
+  },
+  {
+    name: "two breaks, --api-key (every break reported, not the first)",
+    args: [write("multi-broken.json", multiBroken), "--api-key", API_KEY],
+  },
+  { name: "valid chain, --api-key --json", args: [write("valid.json", chain), "--api-key", API_KEY, "--json"] },
+  { name: "valid chain, keyless --json", args: [write("valid.json", chain), "--json"] },
+  {
+    name: "two breaks, --api-key --json",
+    args: [write("multi-broken.json", multiBroken), "--api-key", API_KEY, "--json"],
+  },
+  { name: "seq_no gap, keyless --json", args: [write("gapped.json", gapped), "--json"] },
+  {
+    name: "declared audit gap, --api-key --json (exit 3 in the document)",
+    args: [write("audit-gap.json", gapChain), "--api-key", gapFixture.signing.api_key, "--json"],
+  },
+  {
+    name: "declared audit gap, --json --allow-gaps maps the document to 0",
+    args: [write("audit-gap.json", gapChain), "--api-key", gapFixture.signing.api_key, "--json", "--allow-gaps"],
   },
   { name: "wrong key", args: [write("valid.json", chain), "--api-key", "not-the-key"] },
   { name: "unrecognized shape", args: [write("weird.json", { nope: true })] },
