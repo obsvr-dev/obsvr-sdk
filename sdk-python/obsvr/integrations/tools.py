@@ -113,6 +113,27 @@ from ..tool_content_hash import safe_tool_content_hash, tool_content_metadata
 
 SOURCE = "obsvr_tool"
 
+#: Set on an object :func:`govern_tool` verifiably installed a gate on, and
+#: checked before wrapping, so governing twice yields one gate: without it a
+#: second wrap re-gates the first wrapper's callables and every invocation is
+#: evaluated and audited twice (the per-call ``inflight`` guard is allocated
+#: fresh per govern_tool call and cannot see across wraps). The marker lives
+#: on the RETURNED object — govern_tool hands back a copy — never on the
+#: caller's original, and it is set only on the paths that confirmed a
+#: wrapper took: a tool where nothing was gateable stays unmarked, so a later
+#: legitimate attempt still runs rather than being refused by a claim no gate
+#: backs.
+_GOVERNED_MARKER_ATTR = "_obsvr_tool_governed"
+
+
+def _already_governed(tool: Any) -> bool:
+    """Whether this object is one govern_tool returned. Never raises — an
+    exotic __getattr__ must not break the caller's wrap call."""
+    try:
+        return getattr(tool, _GOVERNED_MARKER_ATTR, False) is True
+    except Exception:  # noqa: BLE001 - a getter that raises is not a marker
+        return False
+
 #: Names of every tool a governor wraps, for the audit rails that would
 #: otherwise re-judge a governed call after the fact (CrewAI's step callback
 #: consults this so it never stamps ``not_evaluated`` beside the wrapper's own
@@ -694,7 +715,14 @@ def govern_tool(
     the session-taint key, approval-grant binding and the decision-input hash
     all resolve from the same folded identity (see :func:`_identity_meta`) —
     the same way the other integrations accept them.
+
+    Governing an already-governed object is a no-op returning it unchanged:
+    re-gating the first wrapper's callables would evaluate and audit every
+    invocation twice (see ``_GOVERNED_MARKER_ATTR``).
     """
+    if _already_governed(tool):
+        return tool
+
     exec_attrs = _resolve_exec_attrs(tool, extra_exec_attrs)
     tool_name = _resolve_tool_name(tool, name)
 
@@ -705,10 +733,14 @@ def govern_tool(
                 "obsvr_tool_gate_inflight", default=False
             )
             _GOVERNED_TOOL_NAMES.add(tool_name)
-            return _wrap_callable(
+            gated_callable = _wrap_callable(
                 original, tool_name, "__call__", original, options, inflight,
                 descriptor,
             )
+            # A wrapped bare callable IS the installed gate, so it carries the
+            # marker directly (functions accept attributes).
+            setattr(gated_callable, _GOVERNED_MARKER_ATTR, True)
+            return gated_callable
         return tool
 
     governed = _copy_tool(tool)
@@ -749,6 +781,15 @@ def govern_tool(
         return tool
 
     _GOVERNED_TOOL_NAMES.add(tool_name)
+    # Marked only HERE — after read-back confirmed at least one wrapper took —
+    # and on the returned copy, never the caller's original. A container that
+    # refuses the marker write simply stays re-governable; that costs a
+    # duplicate gate in an exotic shape, where marking a tool no gate backs
+    # would silently disable governance on it.
+    try:
+        object.__setattr__(governed, _GOVERNED_MARKER_ATTR, True)
+    except Exception:  # noqa: BLE001 - marker is best-effort, the gate is not
+        pass
     return governed
 
 

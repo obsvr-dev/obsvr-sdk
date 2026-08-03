@@ -854,3 +854,147 @@ def test_identity_fold_is_actually_threaded(sent, monkeypatch):
     )
     with pytest.raises(AssertionError):
         _probe_kwarg_identity_scopes_enforcement(sent)
+
+
+# ── Idempotence: governing twice yields one gate ─────────────────────────────
+#
+# govern_tool marks the object it verifiably installed a wrapper on and
+# returns an already-marked object unchanged. Without the marker a second
+# wrap re-gates the first wrapper's callables — the per-call `inflight` guard
+# is allocated fresh per govern_tool call and cannot see across wraps — so
+# one invocation is evaluated and audited twice, which is how a step budget
+# silently drifts.
+
+
+def test_governing_twice_evaluates_and_audits_once_per_invocation(sent, monkeypatch):
+    from obsvr.integrations import tools as tools_mod
+    from obsvr.session_taint import (
+        _reset_session_taint,
+        derive_session_key,
+        mark_tainted,
+    )
+
+    evaluations = []
+    real_apply = tools_mod.apply_pre_call_policy
+
+    def counting_apply(*args, **kwargs):
+        evaluations.append(1)
+        return real_apply(*args, **kwargs)
+
+    monkeypatch.setattr(tools_mod, "apply_pre_call_policy", counting_apply)
+
+    _reset_session_taint()
+    try:
+        obsvr.init(
+            api_key="test", sample_rate=1,
+            session_taint={"enabled": True, "action": "block"},
+        )
+        # Arm the pre-call net so the evaluation counter counts something.
+        mark_tainted(
+            derive_session_key({"user_id": "someone-else"}), "prompt_injection", 1.0
+        )
+
+        tool = _RunShapedTool()
+        governed_once = govern_tool(tool)
+        governed_twice = govern_tool(governed_once)
+        assert governed_twice is governed_once, (
+            "governing a governed tool must return it unchanged"
+        )
+
+        assert governed_twice._run(amount=1) == "sent 1"
+        assert tool.calls == [1]
+        assert len(evaluations) == 1, (
+            f"one invocation was evaluated {len(evaluations)} times"
+        )
+        calls = [e for e in sent if e.get("operation") == "tool.call"]
+        assert len(calls) == 1, (
+            f"one invocation emitted {len(calls)} audit events"
+        )
+    finally:
+        _reset_session_taint()
+
+
+def test_governing_a_wrapped_bare_callable_twice_wraps_once(sent):
+    obsvr.init(api_key="test", sample_rate=1)
+
+    def transfer(amount: int = 0):
+        return f"sent {amount}"
+
+    governed_once = govern_tool(transfer, name="transfer")
+    governed_twice = govern_tool(governed_once, name="transfer")
+    assert governed_twice is governed_once
+
+    assert governed_twice(amount=1) == "sent 1"
+    calls = [e for e in sent if e.get("operation") == "tool.call"]
+    assert len(calls) == 1, f"one invocation emitted {len(calls)} audit events"
+
+
+class _PropertyLockedTool:
+    """Recognized shape whose only entry point is a data descriptor, so
+    nothing is gateable — until the test swaps the property for a method."""
+
+    name = "locked_tool"
+
+    def __init__(self):
+        self.calls = []
+
+    @property
+    def run(self):  # a data descriptor: not shadowable, so not gateable
+        return None
+
+
+def _probe_empty_handed_pass_leaves_the_tool_governable(sent):
+    """Proving body: a tool where nothing was gateable is NOT marked, so a
+    later attempt — once the shape has become gateable — still installs a
+    real gate. Factored out so the disarm test can require it to fail."""
+    from obsvr.integrations.tools import _GOVERNED_MARKER_ATTR
+
+    obsvr.init(
+        api_key="test", sample_rate=1,
+        agent_policy={"denied_tools": ["locked_tool"]},
+    )
+    tool = _PropertyLockedTool()
+    ungoverned = govern_tool(tool)
+    assert ungoverned is tool, "an empty-handed pass must return the original"
+    assert getattr(tool, _GOVERNED_MARKER_ATTR, False) is not True, (
+        "a tool where nothing was gateable was marked governed"
+    )
+
+    # The shape becomes gateable (the property is replaced by a method) —
+    # a legitimate re-attempt must install a real gate, not be refused by a
+    # stale claim.
+    del _PropertyLockedTool.run
+    try:
+        _PropertyLockedTool.run = lambda self, amount=0: self.calls.append(amount)
+        governed = govern_tool(tool)
+        with pytest.raises(ObsvrPolicyError):
+            governed.run(amount=500)
+        assert tool.calls == [], "the denied tool body ran"
+    finally:
+        del _PropertyLockedTool.run
+        _PropertyLockedTool.run = property(lambda self: None)
+
+
+def test_an_empty_handed_pass_leaves_the_tool_governable(sent):
+    _probe_empty_handed_pass_leaves_the_tool_governable(sent)
+
+
+def test_idempotence_marker_is_gated_on_the_install(sent, monkeypatch):
+    """Non-vacuity: the mutant that marks UNCONDITIONALLY — including when
+    nothing was gateable — must make the probe above fail, because the stale
+    claim blocks the later legitimate gate. Simulated by marking the object
+    on the empty-handed path exactly as that mutant would."""
+    from obsvr.integrations.tools import _GOVERNED_MARKER_ATTR
+
+    original_govern = govern_tool
+
+    def marking_govern(tool, *args, **kwargs):
+        result = original_govern(tool, *args, **kwargs)
+        if result is tool:
+            # the mutant: claim the object even though no gate was installed
+            object.__setattr__(tool, _GOVERNED_MARKER_ATTR, True)
+        return result
+
+    monkeypatch.setitem(globals(), "govern_tool", marking_govern)
+    with pytest.raises(AssertionError):
+        _probe_empty_handed_pass_leaves_the_tool_governable(sent)
