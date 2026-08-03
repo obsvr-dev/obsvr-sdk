@@ -1785,10 +1785,13 @@ def apply_post_call_policy(
             rule_id = rules_result.get("rule_id")
             reason = rules_result.get("reason")
 
-        # 2. onPostCall hook (timeout + error handling)
+        # 2. onPostCall hook (timeout + error handling). Budgeted from
+        #    post_call_timeout_ms, its own declared key — the pre-call hook's
+        #    hook_timeout_ms budgets the pre-call hook only (parity with the
+        #    TS integrations core, which reads postCallTimeoutMs here).
         on_post_call = getattr(config, 'on_post_call', None)
         if on_post_call is not None:
-            timeout_s = getattr(config, 'hook_timeout_ms', 2000) / 1000.0
+            timeout_s = getattr(config, 'post_call_timeout_ms', 2000) / 1000.0
             # No `with` block: same rationale as the pre-call hook above — the
             # context manager would JOIN a hung hook thread and void the timeout;
             # shutdown(wait=False) abandons the (non-daemon) worker thread, which

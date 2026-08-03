@@ -64,9 +64,56 @@ def test_post_call_hook_timeout_bounds_wall_clock():
         time.sleep(HOOK_SLEEP_S)
         return {"decision": "redact_response"}
 
-    config = ResolvedConfig(api_key="test", on_post_call=slow_post_hook, hook_timeout_ms=50)
+    config = ResolvedConfig(
+        api_key="test", on_post_call=slow_post_hook, post_call_timeout_ms=50
+    )
     start = time.monotonic()
     result = apply_post_call_policy("response text", {}, config)
     elapsed = time.monotonic() - start
     assert elapsed < WALL_CLOCK_CEILING_S
     assert result["decision"] == "pass"  # timeout keeps the existing decision
+
+
+def test_post_call_hook_budget_comes_from_its_own_key():
+    """The post-call budget is post_call_timeout_ms, not hook_timeout_ms.
+
+    A tiny pre-call budget beside a generous post-call one: the hook's verdict
+    must land. Under the wrong key (hook_timeout_ms) the 1ms budget would time
+    the hook out and the decision would stay "pass", so this test fails if the
+    post-call path ever reads the pre-call key again.
+    """
+
+    def flagging_post_hook(resp, event):
+        time.sleep(0.15)
+        return {"decision": "flag"}
+
+    config = ResolvedConfig(
+        api_key="test",
+        on_post_call=flagging_post_hook,
+        hook_timeout_ms=1,
+        post_call_timeout_ms=2000,
+    )
+    result = apply_post_call_policy("response text", {}, config)
+    assert result["decision"] == "flag"
+
+
+def test_post_call_hook_budget_is_not_the_larger_of_the_two():
+    """The inverse direction: a generous pre-call budget must not rescue a
+    post-call hook from its own small budget. Kills the max(a, b) mutant the
+    test above cannot see."""
+
+    def slow_post_hook(resp, event):
+        time.sleep(HOOK_SLEEP_S)
+        return {"decision": "redact_response"}
+
+    config = ResolvedConfig(
+        api_key="test",
+        on_post_call=slow_post_hook,
+        hook_timeout_ms=60000,
+        post_call_timeout_ms=50,
+    )
+    start = time.monotonic()
+    result = apply_post_call_policy("response text", {}, config)
+    elapsed = time.monotonic() - start
+    assert elapsed < WALL_CLOCK_CEILING_S
+    assert result["decision"] == "pass"
