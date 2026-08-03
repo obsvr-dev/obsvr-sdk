@@ -174,7 +174,7 @@ def _signal_rejected_rules(config: ResolvedConfig, rules_raw: list, valid: list)
                 applies_to=r.get("applies_to"), mode=r.get("mode"),
             )
             for r in valid
-        ])
+        ], getattr(config, "rule_resolution", None))
         emit_event(
             config,
             provider="unknown",
@@ -234,7 +234,9 @@ def _signal_policy_signature_invalid(config: ResolvedConfig, reason: str) -> Non
             latency_ms=0,
             compliance={
                 "event_type": "policy_flag",
-                "policy_version": derive_policy_version(config.policy_rules or []),
+                "policy_version": derive_policy_version(
+                    config.policy_rules or [], getattr(config, "rule_resolution", None)
+                ),
                 "action_taken": "allowed",
                 "action_reason": "policy_violation",
                 "action_source": "builtin",
@@ -291,8 +293,11 @@ def poll_once(config: ResolvedConfig) -> None:
         "X-Obsvr-Sdk": f"python/{SDK_VERSION}",
         "X-Obsvr-Instance-Id": _SDK_INSTANCE_ID,
         "X-Obsvr-Capabilities": SDK_CAPABILITIES,
+        # The declared-mode hash: what this SDK is actually evaluating under,
+        # so the server compares against the version the decisions stamp.
         "X-Obsvr-Rules-Hash": derive_policy_version(
-            getattr(config, "policy_rules", None) or []
+            getattr(config, "policy_rules", None) or [],
+            getattr(config, "rule_resolution", None),
         ),
         "X-Obsvr-Degraded": "true" if degraded.get("degraded") else "false",
         "X-Obsvr-Counters": counters,

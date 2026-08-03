@@ -26,7 +26,7 @@ import { PROXY_TIMEOUT_MS, SDK_VERSION } from "../constants.js";
  */
 const SDK_INSTANCE_ID = randomUUID();
 import type { PolicyRule } from "../policy/rules.js";
-import { derivePolicyVersion } from "../policy/rules.js";
+import { derivePolicyVersion, ensureRuleResolution } from "../policy/rules.js";
 import { snapshotPolicy, emitPolicyChangedEvent, sendPolicyEvent } from "../policy/policy-log.js";
 import { validateRegexPattern } from "../utils/safe-regex.js";
 import { updateApprovals, type ApprovalGrant } from "../policy/approvals.js";
@@ -77,6 +77,7 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   approvalPollMs: "approval_poll_ms",
   enforcementMode: "enforcement_mode",
   requirePrincipal: "require_principal",
+  ruleResolution: "rule_resolution",
   piiPolicy: "pii_policy",
   policyRules: "policy_rules",
   policyFloor: "policyFloor",
@@ -331,6 +332,16 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): requirePrincipal must be a boolean, got ${String(config.require_principal)}`,
     );
   }
+  if (config.rule_resolution !== undefined) {
+    // The rules engine's own validator: an unknown declaration must refuse
+    // loudly at init, never silently evaluate under semantics the author did
+    // not choose.
+    try {
+      ensureRuleResolution(config.rule_resolution as string);
+    } catch (err) {
+      throw new Error(`obsvr.init(): ${(err as Error).message}`);
+    }
+  }
   const refreshMs = config.policy_refresh_interval_ms;
   if (refreshMs !== undefined && (typeof refreshMs !== "number" || refreshMs < 0)) {
     throw new Error(`obsvr.init(): policyRefreshIntervalMs must be >= 0, got ${String(refreshMs)}`);
@@ -435,6 +446,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     approvalPollMs: config.approval_poll_ms ?? 5000,
     enforcementMode: config.enforcement_mode ?? 'enforce',
     requirePrincipal: config.require_principal === true,
+    ruleResolution: config.rule_resolution as 'first_match' | 'deny_wins' | undefined,
     pii_policy: (() => {
       const p = config.pii_policy as any;
       if (!p) return undefined;
@@ -563,7 +575,7 @@ export function init(config: LLMAuditInitConfig | ObsvrConfig): void {
   }
 
   if (resolved.policyRules && resolved.policyRules.length > 0) {
-    snapshotPolicy(resolved.policyRules);
+    snapshotPolicy(resolved.policyRules, undefined, resolved.ruleResolution);
   }
 
   debugLog(
@@ -596,7 +608,7 @@ function emitGovernanceDisabledEvent(resolved: ResolvedConfig): void {
         success: true,
         latency_ms: 0,
         event_type: "policy_flag",
-        policy_version: derivePolicyVersion(resolved.policyRules ?? []),
+        policy_version: derivePolicyVersion(resolved.policyRules ?? [], resolved.ruleResolution),
         action_taken: "allowed",
         action_reason: "customer_override",
         action_source: "customer_hook",
@@ -653,8 +665,10 @@ export function setTenantPolicy(tenantId: string, rules: PolicyRule[], changedBy
   const existing = tenantRegistry.get(tenantId);
   const prevRules = existing?.policyRules ?? [];
   tenantRegistry.set(tenantId, { policyRules: rules });
-  snapshotPolicy(rules, tenantId);
-  const event = emitPolicyChangedEvent(prevRules, rules, tenantId, changedBy);
+  snapshotPolicy(rules, tenantId, state.config?.ruleResolution);
+  const event = emitPolicyChangedEvent(
+    prevRules, rules, tenantId, changedBy, state.config?.ruleResolution,
+  );
   // actually record the change in the audit trail (was built + dropped).
   const cfg = state.config;
   if (cfg?.ingest_url) {
@@ -714,7 +728,7 @@ export function updatePolicyRules(rules: PolicyRule[]): void {
   }
   const effective = [...local, ...rules.filter((r) => !localIds.has(r.id))];
   state.config.policyRules = effective;
-  snapshotPolicy(effective);
+  snapshotPolicy(effective, undefined, state.config.ruleResolution);
 }
 
 const VALID_RULE_ACTIONS = new Set(["block", "redact", "flag"]);
@@ -951,7 +965,7 @@ export async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
         "X-Obsvr-Sdk": `node/${SDK_VERSION}`,
         "X-Obsvr-Instance-Id": SDK_INSTANCE_ID,
         "X-Obsvr-Capabilities": SDK_CAPABILITIES,
-        "X-Obsvr-Rules-Hash": derivePolicyVersion(config.policyRules ?? []),
+        "X-Obsvr-Rules-Hash": derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
         "X-Obsvr-Degraded": String(degradedNow.degraded),
         ...(countersHeader ? { "X-Obsvr-Counters": countersHeader } : {}),
         ...(quotaConsumedHeader ? { "X-Obsvr-Quota-Consumed": quotaConsumedHeader } : {}),
@@ -1017,7 +1031,7 @@ export async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
               success: true,
               latency_ms: 0,
               event_type: "policy_flag",
-              policy_version: derivePolicyVersion(validRules),
+              policy_version: derivePolicyVersion(validRules, config.ruleResolution),
               action_taken: "allowed",
               action_reason: "policy_violation",
               action_source: "builtin",
@@ -1068,7 +1082,7 @@ export async function pollPoliciesOnce(config: ResolvedConfig): Promise<void> {
                 success: true,
                 latency_ms: 0,
                 event_type: "policy_flag",
-                policy_version: derivePolicyVersion(config.policyRules ?? []),
+                policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
                 action_taken: "allowed",
                 action_reason: "policy_violation",
                 action_source: "builtin",

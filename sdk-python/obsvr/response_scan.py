@@ -46,7 +46,9 @@ def scan_mcp_tool_result(
     detected_types, rule_id, policy_reason.
     """
     policy_rules = getattr(config, "policy_rules", None) or []
-    policy_version = derive_policy_version(policy_rules)
+    policy_version = derive_policy_version(
+        policy_rules, getattr(config, "rule_resolution", None)
+    )
 
     action = "allow"
     action_reason = "none"
@@ -77,7 +79,11 @@ def scan_mcp_tool_result(
         # undeclared on this path alone. The TS twin does the same,
         # deliberately, so the two stay in parity.
         rules_result = evaluate_policy_rules(
-            policy_rules, response_text, "response", {"metadata": meta}
+            policy_rules,
+            response_text,
+            "response",
+            {"metadata": meta},
+            resolution=getattr(config, "rule_resolution", None),
         )
         decision = rules_result.get("decision", "allow")
         if decision == "block":

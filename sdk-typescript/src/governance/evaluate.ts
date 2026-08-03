@@ -38,7 +38,7 @@ export function monitorConversionApplies(
   return true;
 }
 import {
-  ENGINE_VERSION,
+  engineVersionFor,
   buildDecisionInput,
   computeDecisionInputHash,
 } from '../policy/decision-record.js';
@@ -182,7 +182,8 @@ export async function evaluate(
         cfg.policyRules,
         payloadText,
         'prompt',
-        evalContext
+        evalContext,
+        { resolution: cfg.ruleResolution },
       );
 
       if (rulesResult.decision === 'block') {
@@ -282,7 +283,7 @@ export async function evaluate(
     // Canonical decision record (ADR-2): commit exactly what this evaluation
     // ran over. `payloadText` is the text the PII scan, rules, and hook saw.
     const decisionInput = buildDecisionInput({
-      rulesHash: derivePolicyVersion(cfg.policyRules ?? []),
+      rulesHash: derivePolicyVersion(cfg.policyRules ?? [], cfg.ruleResolution),
       degraded: degraded.degraded,
       degradedReason: degraded.reason,
       target: 'request',
@@ -291,6 +292,7 @@ export async function evaluate(
       serviceName: request.service_name,
       tenantId: request.tenant_id,
       hook: hookDisposition,
+      engineVersion: engineVersionFor(cfg.ruleResolution),
     });
     const decisionInputHash = computeDecisionInputHash(decisionInput);
 
@@ -320,7 +322,7 @@ export async function evaluate(
         // returned decision must name the same classification.
         reason_code: reasonCode,
         action_source: ruleId ? 'policy_rules' : 'unknown',
-        policy_version: cfg.policyRules ? derivePolicyVersion(cfg.policyRules) : '',
+        policy_version: cfg.policyRules ? derivePolicyVersion(cfg.policyRules, cfg.ruleResolution) : '',
         redacted_types: [],
         rule_id: ruleId,
         policy_reason: reason,
@@ -330,7 +332,7 @@ export async function evaluate(
         tenant_id: request.tenant_id,
         // Canonical decision record (ADR-2, additive — not in the chain preimage)
         decision_input_hash: decisionInputHash,
-        engine_version: ENGINE_VERSION,
+        engine_version: engineVersionFor(cfg.ruleResolution),
         // Server-side normalizer mirror: seal which view defeated the obfuscation, and (when
         // a floor is active) the sealed floor-definition hash on EVERY event —
         // matching the proxy wrapper — so a change to the floor is auditable
@@ -419,7 +421,7 @@ export function explain(
   const rules = cfg.policyRules ?? [];
   const result: ExplainResult = {
     decision: 'allow',
-    rules_hash: safePolicyVersion(() => derivePolicyVersion(rules)),
+    rules_hash: safePolicyVersion(() => derivePolicyVersion(rules, cfg.ruleResolution)),
     pii: { detected: false, types: [] },
     shadow_outcome: null,
     not_evaluated: ['customer_hook', 'multi_turn_injection'],
@@ -491,7 +493,7 @@ export function explain(
         text,
         options?.target ?? 'prompt',
         evalCtx,
-        { checkOnly: true },
+        { checkOnly: true, resolution: cfg.ruleResolution },
       );
       if (rulesResult.decision === 'block' || rulesResult.decision === 'redact') {
         result.decision = rulesResult.decision;

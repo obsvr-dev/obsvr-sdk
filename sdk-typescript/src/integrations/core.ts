@@ -70,7 +70,7 @@ import { awaitApproval, requestApproval, revalidateApproval } from "../policy/ap
 import { monitorConversionApplies } from "../governance/evaluate.js";
 import type { PolicyEvalContext } from "../policy/rules.js";
 import {
-  ENGINE_VERSION,
+  engineVersionFor,
   buildDecisionInput,
   computeDecisionInputHash,
   sha256Hex,
@@ -879,7 +879,7 @@ export async function applyPreCallPolicy(
         model: ctx.model ?? "",
         provider,
         metadata: evalMetadata,
-      }, { failMode: config.failMode });
+      }, { failMode: config.failMode, resolution: config.ruleResolution });
       quotaUnmetered = rulesResult.quota_unmetered;
       approvalClaim = rulesResult.approval_granted;
       // Saved so the blocking approval wait below can lift the block without
@@ -1102,7 +1102,7 @@ export async function applyPreCallPolicy(
 
     // Canonical decision record (ADR-2): commit exactly what this decision ran
     // over. `promptText` is the text as presented to the pipeline (pre-redaction).
-    const rulesHash = derivePolicyVersion(config.policyRules ?? []);
+    const rulesHash = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
     // Inbound external policy backend (ADR-4): consult the customer's OPA/Cedar
     // engine and merge DENY-WINS with the local decision. Only when not already
@@ -1175,6 +1175,7 @@ export async function applyPreCallPolicy(
       evaluatedText: promptText,
       tenantId,
       hook: hookDisposition,
+      engineVersion: engineVersionFor(config.ruleResolution),
     });
 
     // One resolution for the conversion below AND the compliance record, so
@@ -1228,7 +1229,7 @@ export async function applyPreCallPolicy(
       rule_id: resolvedRuleId,
       policy_reason: resolvedPolicyReason,
       decision_input_hash: computeDecisionInputHash(decisionInput),
-      engine_version: ENGINE_VERSION,
+      engine_version: engineVersionFor(config.ruleResolution),
       external_backend: externalBackend,
       ...(quotaUnmetered !== undefined ? { quota_unmetered: quotaUnmetered } : {}),
       ...(monitorShadow ? { shadow_outcome: monitorShadow } : {}),
@@ -1285,7 +1286,7 @@ export async function applyPreCallPolicy(
     return {
       decision: failClosed ? "block" : "allow",
       compliance: preCallFailureCompliance(
-        layer, err, failClosed, safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+        layer, err, failClosed, safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
       ) as unknown as ComplianceInfo,
       redactedPrompt: safeStoredCopy(() => redactForStorage(promptText, undefined)),
     };
@@ -1396,7 +1397,9 @@ export async function applyPostCallPolicy(
           ...(event.tenant_id ? { tenant_id: event.tenant_id } : {}),
         },
       };
-      const rulesResult = evaluatePolicyRules(config.policyRules, responseText, 'response', evalContext);
+      const rulesResult = evaluatePolicyRules(config.policyRules, responseText, 'response', evalContext, {
+        resolution: config.ruleResolution,
+      });
       if (rulesResult.decision === 'block') {
         decision = 'redact_response';
       } else if (rulesResult.decision === 'redact') {
@@ -1546,7 +1549,7 @@ function responsePhaseFailure(
     compliance: responsePhaseFailureCompliance(
       layer,
       err,
-      safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+      safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
     ) as Partial<ComplianceInfo>,
   };
 }
@@ -1648,7 +1651,7 @@ export function blockedUserInputForStorage(
 function observeCompliance(config: ResolvedConfig): ComplianceInfo {
   return {
     ...DEFAULT_COMPLIANCE,
-    policy_version: derivePolicyVersion(config.policyRules ?? []),
+    policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
   };
 }
 
@@ -1720,7 +1723,7 @@ export function applyObservePolicy(
       compliance: responsePhaseFailureCompliance(
         "builtin_pii_scan",
         err,
-        safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [])),
+        safePolicyVersion(() => derivePolicyVersion(config.policyRules ?? [], config.ruleResolution)),
       ) as ComplianceInfo,
     };
   }

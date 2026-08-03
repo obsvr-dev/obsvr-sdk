@@ -55,7 +55,7 @@ import { getCurrentSubject } from "./subject.js";
 import { presidioScan, presidioRedactText, presidioRedactArgs } from "../policy/presidio.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
 import {
-  ENGINE_VERSION,
+  engineVersionFor,
   buildDecisionInput,
   computeDecisionInputHash,
   sha256Hex,
@@ -713,7 +713,7 @@ function buildAuditEvent(
   if (compliance === DEFAULT_COMPLIANCE) {
     compliance = {
       ...DEFAULT_COMPLIANCE,
-      policyVersion: derivePolicyVersion(config.policyRules ?? []),
+      policyVersion: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
     };
   }
 
@@ -1045,7 +1045,7 @@ function wrapStreamingIterator(
   if (compliance === DEFAULT_COMPLIANCE) {
     compliance = {
       ...DEFAULT_COMPLIANCE,
-      policyVersion: derivePolicyVersion(ctx.config.policyRules ?? []),
+      policyVersion: derivePolicyVersion(ctx.config.policyRules ?? [], ctx.config.ruleResolution),
     };
   }
   return (async function* () {
@@ -1393,7 +1393,7 @@ async function governCall(
     const shouldAudit = shouldSample(config.sample_rate);
 
     // Derive policy version from active rules - stamped on every event emitted for this call.
-    const policyVersion = derivePolicyVersion(config.policyRules ?? []);
+    const policyVersion = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
     // The last user turn is what every builtin gate decides on, and it was
     // being re-walked from the raw request eight times per governed call. The
@@ -1798,6 +1798,7 @@ async function governCall(
         };
         const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx, {
           failMode: config.failMode,
+          resolution: config.ruleResolution,
         });
         approvalClaim = result.approval_granted;
         ruleId = result.rule_id;
@@ -2268,6 +2269,7 @@ async function governCall(
       serviceName:
         audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
       hook: hookDisposition,
+      engineVersion: engineVersionFor(config.ruleResolution),
     });
 
     // One reason-code resolution for the event AND the thrown error: the
@@ -2314,7 +2316,7 @@ async function governCall(
       policyReason,
       shadowOutcome,
       decisionInputHash: computeDecisionInputHash(decisionInput),
-      engineVersion: ENGINE_VERSION,
+      engineVersion: engineVersionFor(config.ruleResolution),
       externalBackend,
     };
 
@@ -2895,7 +2897,7 @@ function createAuditedToolRunnerMethod(
           // `destructiveTools`, and the record called it allowed.
           compliance: {
             event_type: "tool_call",
-            policy_version: derivePolicyVersion(config.policyRules ?? []),
+            policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
             // Omitting the field would not have helped either way: the ingest
             // schema defaults an absent action_taken, so the server would mint
             // "allowed" one layer down.

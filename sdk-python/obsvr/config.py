@@ -159,6 +159,13 @@ class ResolvedConfig:
     # single-tenant deployment that legitimately passes no user_id must not
     # start refusing on upgrade.
     require_principal: bool = False
+    # Declared conflict-resolution mode for the policy rules ("first_match"
+    # or "deny_wins"). None (the default) is undeclared: the original
+    # first-match contract AND the original policy_version bytes are kept.
+    # Declaring a mode is what opts a deployment into order-insensitive
+    # deny-wins evaluation and the order-committed policy_version that makes
+    # it auditable. Validated at init; an unknown value is refused loudly.
+    rule_resolution: Optional[str] = None
     policy_rules: Optional[List[Any]] = None
     # Anti-tamper policy floor: rules that cannot be silently disabled/
     # downgraded (see TS ObsvrConfig.policyFloor). Its own field so a remote
@@ -273,6 +280,7 @@ def init(
     fail_mode: Optional[str] = None,
     enforcement_mode: Optional[str] = None,
     require_principal: Optional[bool] = None,
+    rule_resolution: Optional[str] = None,
     policy_rules: Optional[List[Any]] = None,
     policy_floor: Optional[List[Any]] = None,
     default_source: Optional[str] = None,
@@ -321,6 +329,16 @@ def init(
         raise ValueError(
             f"obsvr.init(): require_principal must be a boolean, got {require_principal!r}"
         )
+    if rule_resolution is not None:
+        # The rules engine's own validator: an unknown declaration must
+        # refuse loudly at init, never silently evaluate under semantics the
+        # author did not choose.
+        from .rules import ensure_rule_resolution
+
+        try:
+            ensure_rule_resolution(rule_resolution)
+        except ValueError as exc:
+            raise ValueError(f"obsvr.init(): {exc}") from None
     if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError(
             f"obsvr.init(): timeout must be a positive number of seconds, got {timeout!r}"
@@ -471,6 +489,7 @@ def init(
             enforcement_mode if enforcement_mode in ("enforce", "monitor") else "enforce"
         ),
         require_principal=require_principal if require_principal is True else False,
+        rule_resolution=rule_resolution,
         policy_rules=policy_rules,
         policy_floor=policy_floor,
         default_source=default_source,
@@ -602,7 +621,9 @@ def _emit_governance_disabled_event(cfg: ResolvedConfig) -> None:
             "success": True,
             "latency_ms": 0,
             "event_type": "policy_flag",
-            "policy_version": derive_policy_version(cfg.policy_rules or []),
+            "policy_version": derive_policy_version(
+                cfg.policy_rules or [], getattr(cfg, "rule_resolution", None)
+            ),
             "action_taken": "allowed",
             "action_reason": "customer_override",
             "action_source": "customer_hook",
@@ -624,10 +645,13 @@ def set_tenant_policy(tenant_id: str, rules: list, changed_by: Optional[str] = N
     existing = _tenant_registry.get(tenant_id, {})
     prev_rules = existing.get("policy_rules", []) or []
     _tenant_registry[tenant_id] = {"policy_rules": rules}
-    snapshot_policy(rules, tenant_id)
-    event = emit_policy_changed_event(prev_rules, rules, tenant_id, changed_by)
-    # actually record the change in the audit trail (was built + dropped).
     cfg = _state.get("config")
+    resolution = getattr(cfg, "rule_resolution", None) if cfg is not None else None
+    snapshot_policy(rules, tenant_id, resolution=resolution)
+    event = emit_policy_changed_event(
+        prev_rules, rules, tenant_id, changed_by, resolution=resolution
+    )
+    # actually record the change in the audit trail (was built + dropped).
     if cfg is not None and getattr(cfg, "ingest_url", None):
         send_policy_event(event, cfg.ingest_url, cfg.api_key)
 

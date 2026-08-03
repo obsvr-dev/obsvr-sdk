@@ -723,7 +723,10 @@ def safe_policy_version(config: ResolvedConfig) -> str:
     try:
         from .rules import derive_policy_version
 
-        return derive_policy_version(getattr(config, "policy_rules", None) or [])
+        return derive_policy_version(
+            getattr(config, "policy_rules", None) or [],
+            getattr(config, "rule_resolution", None),
+        )
     except Exception:  # noqa: BLE001 - the failure path must not fail
         return "unknown"
 
@@ -771,7 +774,7 @@ def _resolve_post_call_detector_failure(
     replaced with a marker that cannot be confused with a real redaction.
     """
     record_detector_failure(layer, exc, config)
-    from .decision_record import ENGINE_VERSION
+    from .decision_record import engine_version_for
 
     return {
         # "flag", never "redact_response": the caller's value is untouched.
@@ -792,7 +795,7 @@ def _resolve_post_call_detector_failure(
             )[:256],
             "shadow_outcome": None,
             "decision_input_hash": None,
-            "engine_version": ENGINE_VERSION,
+            "engine_version": engine_version_for(getattr(config, "rule_resolution", None)),
             "external_backend": None,
             "detector_failure": {
                 "layer": layer or "unknown",
@@ -835,7 +838,7 @@ def _resolve_detector_failure(
         )
     )
 
-    from .decision_record import ENGINE_VERSION
+    from .decision_record import engine_version_for
 
     compliance: Dict[str, Any] = {
         "event_type": "blocked_call" if fail_closed else "policy_flag",
@@ -850,7 +853,7 @@ def _resolve_detector_failure(
         "policy_reason": reason[:256],
         "shadow_outcome": None,
         "decision_input_hash": None,
-        "engine_version": ENGINE_VERSION,
+        "engine_version": engine_version_for(getattr(config, "rule_resolution", None)),
         "external_backend": None,
         # Mirrored onto metadata.obsvr_telemetry by the event builder, the
         # same route the external-backend provenance takes.
@@ -1289,6 +1292,7 @@ def apply_pre_call_policy(
                     "current_environment": getattr(config, "environment", None),
                 },
                 fail_mode=getattr(config, "fail_mode", None),
+                resolution=getattr(config, "rule_resolution", None),
             )
             rules_decision = rules_result.get("decision", "allow")
             rules_rule_id = rules_result.get("rule_id")
@@ -1543,7 +1547,10 @@ def apply_pre_call_policy(
                     redacted_types = ["all"]  # customer-driven; exact types unknown
 
     from .rules import derive_policy_version
-    policy_ver = derive_policy_version(getattr(config, 'policy_rules', None) or [])
+    policy_ver = derive_policy_version(
+        getattr(config, 'policy_rules', None) or [],
+        getattr(config, "rule_resolution", None),
+    )
 
     # 2.5. Inbound external policy backend (ADR-4): consult the customer's
     #      OPA/Cedar engine and merge DENY-WINS with the local decision (a deny
@@ -1651,10 +1658,11 @@ def apply_pre_call_policy(
     # Canonical decision record (ADR-2): commit exactly what this decision ran
     # over. ``scan`` is the text the pipeline evaluated (pre-redaction).
     from .decision_record import (
-        ENGINE_VERSION,
         build_decision_input,
         compute_decision_input_hash,
+        engine_version_for,
     )
+    engine_ver = engine_version_for(getattr(config, "rule_resolution", None))
     meta = metadata or {}
     decision_doc = build_decision_input(
         rules_hash=policy_ver,
@@ -1670,6 +1678,7 @@ def apply_pre_call_policy(
         ),
         tenant_id=tenant_id if isinstance(tenant_id, str) else None,
         hook=hook_disposition,
+        engine_version=engine_ver,
     )
 
     # Same precedence as rule_id below; anything still unresolved derives in
@@ -1726,7 +1735,7 @@ def apply_pre_call_policy(
         "shadow_outcome": shadow_outcome,
         # Additive decision-record fields (never part of the chain preimage)
         "decision_input_hash": compute_decision_input_hash(decision_doc),
-        "engine_version": ENGINE_VERSION,
+        "engine_version": engine_ver,
         # External policy backend provenance (ADR-4, additive)
         "external_backend": external_backend_record,
     }
@@ -1827,7 +1836,8 @@ def _observe_compliance(config: ResolvedConfig) -> Dict[str, Any]:
     from .rules import derive_policy_version
     compliance = dict(DEFAULT_COMPLIANCE)
     compliance["policy_version"] = derive_policy_version(
-        getattr(config, "policy_rules", None) or []
+        getattr(config, "policy_rules", None) or [],
+        getattr(config, "rule_resolution", None),
     )
     return compliance
 
@@ -1927,7 +1937,12 @@ def apply_post_call_policy(
         # 1. Evaluate policy rules against response
         if getattr(config, 'policy_rules', None):
             from .rules import evaluate_policy_rules
-            rules_result = evaluate_policy_rules(config.policy_rules, response_text, "response")
+            rules_result = evaluate_policy_rules(
+                config.policy_rules,
+                response_text,
+                "response",
+                resolution=getattr(config, "rule_resolution", None),
+            )
             rules_decision = rules_result.get("decision", "allow")
             if rules_decision in ("block", "redact"):
                 decision = "redact_response"
@@ -2123,7 +2138,14 @@ def explain(
             result["reason"] = "PII would be redacted: " + ", ".join(scan["detected_types"])
 
     if result["decision"] != "block" and rules:
-        rr = evaluate_policy_rules(rules, prompt_text, target, ctx, check_only=True)
+        rr = evaluate_policy_rules(
+            rules,
+            prompt_text,
+            target,
+            ctx,
+            check_only=True,
+            resolution=getattr(cfg, "rule_resolution", None),
+        )
         if rr.get("decision") in ("block", "redact"):
             result["decision"] = rr["decision"]
             result["rule_id"] = rr.get("rule_id")

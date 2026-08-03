@@ -46,10 +46,16 @@ def _get_buffer(key: str) -> List[PolicySnapshot]:
     return _snapshot_buffers[key]
 
 
-def snapshot_policy(rules: List[PolicyRule], tenant_id: Optional[str] = None) -> PolicySnapshot:
-    """Store a snapshot of the current policy state."""
+def snapshot_policy(
+    rules: List[PolicyRule],
+    tenant_id: Optional[str] = None,
+    resolution: Optional[str] = None,
+) -> PolicySnapshot:
+    """Store a snapshot of the current policy state. ``resolution`` is the
+    ruleset's declared conflict-resolution mode, so the snapshot's version
+    matches the one stamped on decisions evaluated under it."""
     snap = PolicySnapshot(
-        version=derive_policy_version(rules),
+        version=derive_policy_version(rules, resolution),
         timestamp=datetime.now(timezone.utc).isoformat(),
         rules_snapshot=json.dumps([
             {"id": r.id, "name": r.name, "enabled": r.enabled,
@@ -106,10 +112,14 @@ def emit_policy_changed_event(
     next_rules: List[PolicyRule],
     tenant_id: Optional[str] = None,
     changed_by: Optional[str] = None,
+    resolution: Optional[str] = None,
 ) -> PolicyChangedEvent:
-    """Build and return a well-formed, sendable policy_changed event."""
-    previous_version = derive_policy_version(prev_rules)
-    new_version = derive_policy_version(next_rules)
+    """Build and return a well-formed, sendable policy_changed event.
+    ``resolution`` (the declared conflict-resolution mode) applies to both
+    versions: the mode is a property of the deployment's declaration, not of
+    either rule list."""
+    previous_version = derive_policy_version(prev_rules, resolution)
+    new_version = derive_policy_version(next_rules, resolution)
     diff = _compute_diff(prev_rules, next_rules)
     return PolicyChangedEvent(
         event_type="policy_changed",

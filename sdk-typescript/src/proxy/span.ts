@@ -212,7 +212,7 @@ function emitSpanEvent(
     status_code: ok ? 200 : 500,
     event_type: "span",
     event_class: "execution_span",
-    policy_version: derivePolicyVersion(config.policyRules ?? []),
+    policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
     action_taken: "allowed",
     action_reason: "none",
     action_source: "unknown",

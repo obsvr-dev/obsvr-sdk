@@ -158,6 +158,16 @@ export interface ObsvrConfig {
   requirePrincipal?: boolean;
 
   /**
+   * Declared conflict-resolution mode for the policy rules. Undefined (the
+   * default) is undeclared: the original first-match contract AND the
+   * original policy_version bytes are kept. Declaring a mode opts the
+   * deployment into that mode's evaluation semantics and the
+   * order-committed policy_version that makes them auditable; an unknown
+   * value is refused at init.
+   */
+  ruleResolution?: 'first_match' | 'deny_wins';
+
+  /**
    * Built-in PII scan policy (opt-in).
    * Runs before the LLM call using the built-in pattern set (PII,
    * secrets, and prompt-injection detectors; see policy/hook.ts).
@@ -489,6 +499,9 @@ export interface LLMAuditInitConfig {
   /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
   require_principal?: boolean;
 
+  /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
+  rule_resolution?: 'first_match' | 'deny_wins';
+
   /**
    * Built-in PII scan policy (opt-in, snake_case alias)
    */
@@ -711,6 +724,9 @@ export interface ResolvedConfig {
 
   /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
   requirePrincipal?: boolean;
+
+  /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
+  ruleResolution?: 'first_match' | 'deny_wins';
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool

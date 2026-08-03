@@ -580,7 +580,7 @@ function processListToolsResult(
     reasonParts.length > 0
       ? {
           event_type: "policy_flag",
-          policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
+          policy_version: derivePolicyVersion(currentConfig.policyRules ?? [], currentConfig.ruleResolution),
           action_taken: "allowed",
           action_reason: "policy_violation",
           action_source: "builtin",
@@ -590,7 +590,7 @@ function processListToolsResult(
         }
       : {
           event_type: "tool_call",
-          policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
+          policy_version: derivePolicyVersion(currentConfig.policyRules ?? [], currentConfig.ruleResolution),
           action_taken: "allowed",
           action_reason: "none",
           action_source: "builtin",
@@ -751,7 +751,7 @@ async function runGovernedCallTool(
         options: opts,
         compliance: {
           event_type: "blocked_call",
-          policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
+          policy_version: derivePolicyVersion(currentConfig.policyRules ?? [], currentConfig.ruleResolution),
           action_taken: "blocked",
           action_reason: "policy_violation",
           action_source: "policy_rules",
@@ -818,7 +818,7 @@ async function runGovernedCallTool(
           options: opts,
           compliance: {
             event_type: "blocked_call",
-            policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
+            policy_version: derivePolicyVersion(currentConfig.policyRules ?? [], currentConfig.ruleResolution),
             action_taken: "blocked",
             action_reason: "policy_violation",
             action_source: "builtin",
@@ -838,7 +838,7 @@ async function runGovernedCallTool(
       if (!allowed) {
         const blockedCompliance: ComplianceInfo = {
           event_type: "blocked_call",
-          policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
+          policy_version: derivePolicyVersion(currentConfig.policyRules ?? [], currentConfig.ruleResolution),
           action_taken: "blocked",
           action_reason: "policy_violation",
           reason_code: ReasonCode.MCP_TOOL_DENIED,
@@ -965,7 +965,7 @@ async function runGovernedCallTool(
     // 3. Execute the original callTool
     const defaultToolCompliance = (): ComplianceInfo => ({
       event_type: "tool_call",
-      policy_version: derivePolicyVersion(currentConfig.policyRules ?? []),
+      policy_version: derivePolicyVersion(currentConfig.policyRules ?? [], currentConfig.ruleResolution),
       action_taken: "allowed",
       action_reason: "none",
       action_source: "unknown",
