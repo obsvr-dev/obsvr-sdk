@@ -79,6 +79,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .. import sender as _sender
+from ..binding_report import record_binding
 from ..agent_policy import (
     apply_loop_detection,
     check_steps,
@@ -165,14 +166,31 @@ def _guardrail_dispatch_present() -> bool:
     site — by attribute presence at its two known homes, never by comparing
     version strings (forks, backports and vendored builds lie about
     versions; attribute presence does not).
+
+    The bind is recorded at whichever home answered. Failures are recorded
+    only when BOTH homes miss: on any given build exactly one home is
+    expected to exist, so a per-home failure entry on a healthy install
+    would be noise in ``unbound_symbols()``, and the report's job is to be
+    worth reading when something is actually inert.
     """
+    probe_failures = []
     try:
         from agents.run_internal import tool_execution as _tool_execution
 
         if callable(getattr(_tool_execution, "_execute_tool_input_guardrails", None)):
+            record_binding(
+                "openai_agents",
+                "agents.run_internal.tool_execution._execute_tool_input_guardrails",
+            )
             return True
-    except Exception:
-        pass
+        raise ImportError(
+            "agents.run_internal.tool_execution has no "
+            "_execute_tool_input_guardrails"
+        )
+    except Exception as exc:
+        probe_failures.append(
+            ("agents.run_internal.tool_execution._execute_tool_input_guardrails", exc)
+        )
     try:
         from agents import _run_impl as _run_impl_module
 
@@ -180,9 +198,17 @@ def _guardrail_dispatch_present() -> bool:
         if run_impl is not None and callable(
             getattr(run_impl, "_execute_input_guardrails", None)
         ):
+            record_binding(
+                "openai_agents", "agents._run_impl.RunImpl._execute_input_guardrails"
+            )
             return True
-    except Exception:
-        pass
+        raise ImportError("agents._run_impl.RunImpl has no _execute_input_guardrails")
+    except Exception as exc:
+        probe_failures.append(
+            ("agents._run_impl.RunImpl._execute_input_guardrails", exc)
+        )
+    for symbol, exc in probe_failures:
+        record_binding("openai_agents", symbol, exc)
     return False
 
 
@@ -210,7 +236,10 @@ def make_tool_gate_guardrail(run_context: Optional[Dict[str, Any]] = None) -> An
             ToolGuardrailFunctionOutput,
             ToolInputGuardrail,
         )
+
+        record_binding("openai_agents", "agents.tool_guardrails.ToolInputGuardrail")
     except ImportError as e:
+        record_binding("openai_agents", "agents.tool_guardrails.ToolInputGuardrail", e)
         raise ImportError(
             "[obsvr] this openai-agents build has no tool input guardrails, "
             "so the pre-execution gate cannot install. Gate the tools "

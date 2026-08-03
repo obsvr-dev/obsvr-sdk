@@ -41,6 +41,7 @@ import {
   type McpResponseScan,
 } from "../policy/response-scan.js";
 import { recordDetectorFailure } from "../policy/detector-guard.js";
+import { recordBinding } from "../binding-report.js";
 import { isPolicyEnforcementDegraded } from "../proxy/config.js";
 import { normalizeForMatching } from "../policy/normalize.js";
 import { deobfuscate, stripHtmlComments } from "../policy/deobfuscate.js";
@@ -235,9 +236,20 @@ export function patchMCP(
         "Use obsvrGovernMCP(Client, getConfig()) instead - it is non-mutating (no prototype patching).",
     );
   }
-  // Resolve require - MCP SDK is an optional peer dependency
+  // Resolve require - MCP SDK is an optional peer dependency. Every exit of
+  // this resolve path records a binding: a patch that quietly skipped is the
+  // exact silently-inert state integrationBindings() exists to name.
+  const MCP_CLIENT_SYMBOL = "@modelcontextprotocol/sdk/client.Client";
   let mod: any;
   if (typeof require === "undefined") {
+    recordBinding(
+      "mcp",
+      MCP_CLIENT_SYMBOL,
+      new Error(
+        "require is unavailable under ESM, so patchMCP cannot resolve the " +
+          "optional MCP SDK; use obsvrGovernMCP(Client, config) instead",
+      ),
+    );
     debugLog(config, "info", "[auto] MCP auto-patch requires CJS require - skipping");
     return;
   }
@@ -256,7 +268,8 @@ export function patchMCP(
       // tests/unit/optional-dependency-resolution.test.ts.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       mod = require("@modelcontextprotocol/sdk/client");
-    } catch {
+    } catch (fallbackErr) {
+      recordBinding("mcp", MCP_CLIENT_SYMBOL, fallbackErr);
       debugLog(config, "info", "[auto] @modelcontextprotocol/sdk not installed - skipping");
       return;
     }
@@ -264,10 +277,18 @@ export function patchMCP(
 
   const ClientClass = mod?.Client ?? mod?.default?.Client ?? mod?.default;
   if (!ClientClass?.prototype) {
+    // The middle case of the report's taxonomy: the package resolved, but the
+    // symbol this integration patches is not where it binds.
+    recordBinding(
+      "mcp",
+      MCP_CLIENT_SYMBOL,
+      new Error("@modelcontextprotocol/sdk resolved but exports no Client class"),
+    );
     debugLog(config, "info", "[auto] MCP Client class not found - skipping");
     return;
   }
 
+  recordBinding("mcp", MCP_CLIENT_SYMBOL);
   _applyMCPPatch(ClientClass, config, opts);
 }
 

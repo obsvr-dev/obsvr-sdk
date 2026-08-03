@@ -133,6 +133,7 @@ export { createGovernanceServer } from "./governance/server.js";
 
 // Re-export MCP client governance (also available as `@obsvr/sdk/mcp`)
 export { patchMCP, obsvrGovernMCP } from "./integrations/mcp.js";
+export { integrationBindings, unboundSymbols } from "./binding-report.js";
 
 // Framework-agnostic tool governance: wrap any framework's tool (Vercel AI,
 // LlamaIndex, LangChain, ...) so its execution is allow/deny-gated, PII-scanned,
