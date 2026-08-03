@@ -19,6 +19,9 @@ The checks, in the order a break is reported:
 
 Verification is offline and off the hot path, so it does the thorough thing:
 every event is re-signed from scratch rather than trusting any stored digest.
+One pass reports EVERY break (``breaks``), re-anchoring on each breaking
+event's own claims so independent tampers surface as independent breaks;
+``broken_at`` / ``reason`` remain the first of them.
 
 It also TALLIES what the chain admits it is missing: gap markers the sender
 signed to record events the bounded queue dropped before they could be chained.
@@ -44,8 +47,8 @@ index - what a verification decision rests on - are identical either way.
 
 import hashlib
 import hmac as hmac_mod
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence
 
 from .audit_gap import read_audit_gap_claim
 from .chain_format import (
@@ -82,6 +85,15 @@ class ChainVerificationResult:
     #: separately is the point - a caller that ignores this reads a saturated
     #: burst as a clean run.
     events_declared_lost: int = 0
+    #: Every break found in one pass, in event order, each as
+    #: ``{"index": int, "reason": str}``. ``broken_at`` / ``reason`` remain the
+    #: FIRST entry, so existing readers keep working; this list is the full
+    #: damage report - an auditor investigating a tampered export gets every
+    #: independent break in one run instead of one index per run. After a
+    #: break the verifier re-anchors on the breaking event's own claims
+    #: (seq_no, timestamp, stored sdk_sig), so one tampered event yields one
+    #: break rather than failing everything downstream of it.
+    breaks: List[Dict[str, Any]] = field(default_factory=list)
     #: Signing format the chain was checked under (see chain_format.py): 3 for
     #: current chains, 2 for content-framed chains signed before the verdict
     #: entered the preimage, and 1 for chains signed before length-prefixed
@@ -104,6 +116,9 @@ class ChainVerificationResult:
             out["reason"] = self.reason
         out["gapMarkers"] = self.gap_markers
         out["eventsDeclaredLost"] = self.events_declared_lost
+        # Always present, even empty: a consumer that never sees the key could
+        # not tell "no breaks" from "a verifier too old to report them".
+        out["breaks"] = list(self.breaks)
         if self.chain_format is not None:
             out["chainFormat"] = self.chain_format
         return out
@@ -162,19 +177,23 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             derived from it exactly as the sender derives it.
 
     Returns:
-        A result whose ``valid`` says whether the whole chain verifies, and
-        whose ``broken_at`` / ``reason`` locate and explain the first break.
-        ``events_verified`` counts the events that verified before the break
-        (all of them when valid).
+        A result whose ``valid`` says whether the whole chain verifies, whose
+        ``breaks`` lists EVERY break found in one pass, and whose
+        ``broken_at`` / ``reason`` locate and explain the first of them.
+        ``events_verified`` counts the events that verified before the first
+        break (all of them when valid).
 
     An empty chain is vacuously valid: there is nothing to contradict.
     """
     gap_markers = 0
     events_declared_lost = 0
     chain_format: Optional[int] = None
+    breaks: List[Dict[str, Any]] = []
 
     def broken(index: int, reason: str) -> ChainVerificationResult:
-        """A break: the gap tally covers only the prefix that verified."""
+        """A terminal break, before per-event scanning could even start: the
+        gap tally covers only the prefix that verified."""
+        breaks.append({"index": index, "reason": reason})
         return ChainVerificationResult(
             valid=False,
             broken_at=index,
@@ -183,6 +202,7 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
             gap_markers=gap_markers,
             events_declared_lost=events_declared_lost,
             chain_format=chain_format,
+            breaks=breaks,
         )
 
     if not events:
@@ -207,57 +227,94 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
     chain_format = first_format
 
     last_sig: Optional[str] = None
-    last_seq = 0
+    #: ``None`` means "unknown": after an event with no usable seq_no, the next
+    #: event's sequence is adopted as the new anchor rather than compared
+    #: against a stale value, so one missing field is one break, not two.
+    last_seq: Optional[int] = 0
     last_timestamp = 0
+
+    def record_break(index: int, reason: str, event: Dict[str, Any]) -> None:
+        """One break per event, then RE-ANCHOR on the event's own claims so
+        scanning continues: an auditor gets every independent break in one
+        run, and a single tampered event does not fail everything downstream
+        of it. The stored sdk_sig anchors the linkage check even when it did
+        not verify - the next event's prev_sig was minted against the stored
+        value, so a mismatch there is a further, real inconsistency."""
+        nonlocal last_seq, last_timestamp, last_sig
+        breaks.append({"index": index, "reason": reason})
+        seq = event.get("seq_no")
+        last_seq = seq if isinstance(seq, int) and not isinstance(seq, bool) else None
+        ts = event.get("timestamp_sdk")
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+            last_timestamp = ts
+        sig = event.get("sdk_sig")
+        last_sig = sig if isinstance(sig, str) else None
 
     for i, event in enumerate(events):
         if event.get("sdk_session_id") != session_id:
-            return broken(
-                i,
-                f"Session ID mismatch at event {i}: expected {session_id}, "
-                f"got {event.get('sdk_session_id')}",
+            # A foreign event is not part of this chain: it is reported and
+            # SKIPPED, neither anchoring nor advancing the state the rest of
+            # the session verifies against.
+            breaks.append(
+                {
+                    "index": i,
+                    "reason": f"Session ID mismatch at event {i}: expected "
+                    f"{session_id}, got {event.get('sdk_session_id')}",
+                }
             )
+            continue
 
         fmt = _declared_format(event)
         if fmt is None:
-            return broken(
-                i, f"Unsupported chain_format at event {i}: {event.get('chain_format')}"
+            record_break(
+                i, f"Unsupported chain_format at event {i}: {event.get('chain_format')}", event
             )
+            continue
         if fmt != chain_format:
-            return broken(
+            record_break(
                 i,
                 f"Chain format mismatch at event {i}: expected {chain_format}, got {fmt}",
+                event,
             )
+            continue
 
         seq_no = event.get("seq_no")
         if seq_no is None:
-            return broken(i, f"Missing seq_no at event {i}")
+            record_break(i, f"Missing seq_no at event {i}", event)
+            continue
         if i == 0:
             if seq_no < 1:
-                return broken(i, f"Invalid initial seq_no: {seq_no}")
-        elif seq_no != last_seq + 1:
-            return broken(
-                i, f"seq_no gap at event {i}: expected {last_seq + 1}, got {seq_no}"
+                record_break(i, f"Invalid initial seq_no: {seq_no}", event)
+                continue
+        elif last_seq is not None and seq_no != last_seq + 1:
+            record_break(
+                i, f"seq_no gap at event {i}: expected {last_seq + 1}, got {seq_no}", event
             )
+            continue
         last_seq = seq_no
 
         timestamp_sdk = event.get("timestamp_sdk")
         if timestamp_sdk is not None:
             if timestamp_sdk < last_timestamp:
-                return broken(
-                    i, f"Timestamp decreased at event {i}: {timestamp_sdk} < {last_timestamp}"
+                record_break(
+                    i,
+                    f"Timestamp decreased at event {i}: {timestamp_sdk} < {last_timestamp}",
+                    event,
                 )
+                continue
             last_timestamp = timestamp_sdk
 
         if i > 0:
             # An absent prev_sig and an empty one are the same claim ("no
             # predecessor"), which is a break anywhere but the first event.
             if (event.get("prev_sig") or None) != last_sig:
-                return broken(
+                record_break(
                     i,
                     f"Chain break at event {i}: prev_sig does not match "
                     "prior event's sdk_sig",
+                    event,
                 )
+                continue
 
         expected_sig = _compute_signature(
             signing_key,
@@ -280,18 +337,33 @@ def verify_chain(events: Sequence[Dict[str, Any]], api_key: str) -> ChainVerific
         # signatures, and a timing oracle on the comparison is free to give
         # away otherwise.
         if not hmac_mod.compare_digest(str(event.get("sdk_sig") or ""), expected_sig):
-            return broken(i, f"Signature mismatch at event {i}")
+            record_break(i, f"Signature mismatch at event {i}", event)
+            continue
 
         last_sig = event.get("sdk_sig")
 
-        # Counted only after the event's own signature verified: an unverified
-        # marker's count is an unverified claim.
+        # Counted only after the event's own signature verified, and only in
+        # the prefix before the first break - the tally a caller acts on must
+        # not change because scanning now continues past a break.
         # Must require the event to BE a marker, not merely to contain the
         # string: parsing every prompt let a user forge a loss declaration.
-        gap = read_audit_gap_claim(event)
-        if gap:
-            gap_markers += 1
-            events_declared_lost += gap["dropped"]
+        if not breaks:
+            gap = read_audit_gap_claim(event)
+            if gap:
+                gap_markers += 1
+                events_declared_lost += gap["dropped"]
+
+    if breaks:
+        return ChainVerificationResult(
+            valid=False,
+            broken_at=breaks[0]["index"],
+            reason=breaks[0]["reason"],
+            events_verified=breaks[0]["index"],
+            gap_markers=gap_markers,
+            events_declared_lost=events_declared_lost,
+            chain_format=chain_format,
+            breaks=breaks,
+        )
 
     return ChainVerificationResult(
         valid=True,

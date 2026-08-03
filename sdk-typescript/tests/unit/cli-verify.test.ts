@@ -119,3 +119,90 @@ describe("the success banner states the preimage boundary", () => {
     }
   });
 });
+
+describe("every break in one run, and --json", () => {
+  /** Two independent tampers: a content edit at event 0 and a forged
+   *  signature at event 1. */
+  function twoBreakChain(): Array<Record<string, unknown>> {
+    const c = chain();
+    c[0].prompt = "tampered";
+    c[1].sdk_sig = "0".repeat(64);
+    return c;
+  }
+
+  test("every break is rendered, not just the first", () => {
+    const r = run([write(twoBreakChain()), "--api-key", API_KEY]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("Signature mismatch at event 0 (event index 0)");
+    expect(r.stderr).toContain("Signature mismatch at event 1 (event index 1)");
+    expect(r.stderr.indexOf("(event index 0)")).toBeLessThan(
+      r.stderr.indexOf("(event index 1)"),
+    );
+  });
+
+  test("--json reports the full break list", () => {
+    const r = run([write(twoBreakChain()), "--api-key", API_KEY, "--json"]);
+    expect(r.status).toBe(1);
+    const doc = JSON.parse(r.stdout);
+    expect(doc.mode).toBe("content+chain");
+    expect(doc.valid).toBe(false);
+    expect(doc.exitCode).toBe(1);
+    expect(doc.sessions).toHaveLength(1);
+    expect(doc.sessions[0].breaks.map((b: { index: number }) => b.index)).toEqual([0, 1]);
+    // First-break fields stay what they always were.
+    expect(doc.sessions[0].brokenAt).toBe(0);
+    expect(doc.sessions[0].reason).toBe("Signature mismatch at event 0");
+  });
+
+  test("--json on a valid keyed chain", () => {
+    const r = run([write(chain()), "--api-key", API_KEY, "--json"]);
+    expect(r.status).toBe(0);
+    const doc = JSON.parse(r.stdout);
+    expect(doc.mode).toBe("content+chain");
+    expect(doc.valid).toBe(true);
+    expect(doc.eventsVerified).toBe(2);
+    expect(doc.exitCode).toBe(0);
+    expect(doc.sessions[0].breaks).toEqual([]);
+  });
+
+  test("--json keyless is the structural tier", () => {
+    const r = run([write(chain()), "--json"]);
+    expect(r.status).toBe(0);
+    const doc = JSON.parse(r.stdout);
+    expect(doc.mode).toBe("structural");
+    expect(doc.valid).toBe(true);
+    expect(doc.events).toBe(2);
+    expect(doc.exitCode).toBe(0);
+  });
+
+  test("--json keeps exit 3 and the --allow-gaps 3->0 mapping", () => {
+    // Exit 3 (valid but incomplete) and the --allow-gaps mapping are the
+    // exit-code contract; --json must carry them unchanged.
+    const gapFixture = JSON.parse(
+      readFileSync(findFixture("conformance/fixtures/audit_gap.json"), "utf-8"),
+    );
+    const gapChain = gapFixture.signing.events.map((e: Record<string, unknown>) => ({
+      ...e,
+      sdk_session_id: gapFixture.signing.session_id,
+    }));
+    const p = write(gapChain);
+    const strict = run([p, "--api-key", gapFixture.signing.api_key, "--json"]);
+    expect(strict.status).toBe(3);
+    const strictDoc = JSON.parse(strict.stdout);
+    expect(strictDoc.valid).toBe(true);
+    expect(strictDoc.exitCode).toBe(3);
+
+    const allowed = run([
+      p,
+      "--api-key",
+      gapFixture.signing.api_key,
+      "--json",
+      "--allow-gaps",
+    ]);
+    expect(allowed.status).toBe(0);
+    const allowedDoc = JSON.parse(allowed.stdout);
+    expect(allowedDoc.valid).toBe(true);
+    expect(allowedDoc.allowGaps).toBe(true);
+    expect(allowedDoc.exitCode).toBe(0);
+  });
+});

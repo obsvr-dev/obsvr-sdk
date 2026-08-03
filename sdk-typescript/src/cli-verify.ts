@@ -2,7 +2,7 @@
 /**
  * obsvr-verify: offline evidence verification for auditors.
  *
- *   npx obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps]
+ *   npx obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]
  *
  * Input: an exported obsvr evidence file — an incident evidence bundle
  * (obsvr-incident-evidence-v1, `trace.steps`), a trace evidence bundle, or a
@@ -45,12 +45,19 @@
  * decision than either. It suppresses only the STATUS - the declared loss is
  * still printed, so the disclosure survives the opt-out.
  *
+ * A broken keyed run reports EVERY break the verifier found, one line per
+ * break (verifyAuditChain re-anchors and keeps scanning), so an auditor
+ * triaging a tampered export gets the full damage report from one run.
+ * `--json` replaces the prose with one machine-readable document on stdout -
+ * same verdicts, same exit codes, per-session break lists included. Usage and
+ * file-read errors (exit 2) stay on stderr in either mode.
+ *
  * Deliberately dependency-free and offline: an auditor must be able to
  * verify obsvr's evidence without trusting obsvr's servers or UI.
  */
 
 import { readFileSync } from "node:fs";
-import { verifyAuditChain } from "./governance/verify-chain.js";
+import { verifyAuditChain, type ChainVerificationResult } from "./governance/verify-chain.js";
 import { readAuditGapClaim } from "./proxy/audit-gap.js";
 import type { AuditEvent } from "./proxy/types.js";
 
@@ -116,16 +123,26 @@ function reportGaps(markers: number, lost: number): number {
   return allowGaps ? 0 : EXIT_INCOMPLETE;
 }
 
+/**
+ * The --json document, serialized identically in both languages: compact and
+ * with non-ASCII left raw, which is what the Python CLI's serializer emits -
+ * the parity harness compares the two byte for byte.
+ */
+function jsonLine(doc: Record<string, unknown>): string {
+  return JSON.stringify(doc);
+}
+
 const args = process.argv.slice(2);
 const keyFlag = args.indexOf("--api-key");
 const apiKey = keyFlag >= 0 ? args[keyFlag + 1] : undefined;
 const allowGaps = args.includes("--allow-gaps");
+const asJson = args.includes("--json");
 const file = args.find(
   (a, i) => !a.startsWith("--") && (keyFlag < 0 || i !== keyFlag + 1),
 );
 
 if (!file) {
-  console.error("Usage: obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps]");
+  console.error("Usage: obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]");
   process.exit(2);
 }
 
@@ -137,7 +154,28 @@ try {
 }
 
 const events = extractEvents(parsed);
-console.log(`Loaded ${events.length} event(s) from ${file}`);
+if (!asJson) {
+  console.log(`Loaded ${events.length} event(s) from ${file}`);
+}
+
+/**
+ * A per-session entry for the --json document. Key order matches the Python
+ * result's serializer exactly - the two documents are compared byte for byte.
+ */
+function sessionDoc(sid: string, result: ChainVerificationResult): Record<string, unknown> {
+  const doc: Record<string, unknown> = {
+    sessionId: sid,
+    valid: result.valid,
+    eventsVerified: result.eventsVerified,
+  };
+  if (result.brokenAt !== undefined) doc.brokenAt = result.brokenAt;
+  if (result.reason !== undefined) doc.reason = result.reason;
+  doc.gapMarkers = result.gapMarkers;
+  doc.eventsDeclaredLost = result.eventsDeclaredLost;
+  doc.breaks = result.breaks;
+  if (result.chainFormat !== undefined) doc.chainFormat = result.chainFormat;
+  return doc;
+}
 
 if (apiKey) {
   // Group per session: the HMAC chain is per sdk_session_id.
@@ -146,6 +184,8 @@ if (apiKey) {
     const sid = String(e.sdk_session_id ?? "unknown");
     sessions.set(sid, [...(sessions.get(sid) ?? []), e]);
   }
+  const reports: Array<[string, ChainVerificationResult]> = [];
+  let anyInvalid = false;
   let verified = 0;
   let gapMarkers = 0;
   let eventsLost = 0;
@@ -154,12 +194,37 @@ if (apiKey) {
       sessionEvents.sort((a, b) => (a.seq_no ?? 0) - (b.seq_no ?? 0)),
       apiKey,
     );
-    if (!result.valid) {
-      fail(`session ${sid}: ${result.reason} (event index ${result.brokenAt})`);
-    }
+    reports.push([sid, result]);
+    anyInvalid = anyInvalid || !result.valid;
     verified += result.eventsVerified;
     gapMarkers += result.gapMarkers;
     eventsLost += result.eventsDeclaredLost;
+  }
+  const code = anyInvalid ? 1 : gapMarkers === 0 || allowGaps ? 0 : EXIT_INCOMPLETE;
+  if (asJson) {
+    console.log(
+      jsonLine({
+        mode: "content+chain",
+        valid: !anyInvalid,
+        sessions: reports.map(([sid, result]) => sessionDoc(sid, result)),
+        eventsVerified: verified,
+        gapMarkers,
+        eventsDeclaredLost: eventsLost,
+        allowGaps,
+        exitCode: code,
+      }),
+    );
+    process.exit(code);
+  }
+  if (anyInvalid) {
+    // Every break in every session, one line each - the full damage report
+    // from one run, not one index per run.
+    for (const [sid, result] of reports) {
+      for (const brk of result.breaks) {
+        console.error(`✗ session ${sid}: ${brk.reason} (event index ${brk.index})`);
+      }
+    }
+    process.exit(1);
   }
   console.log(
     `✓ CONTENT + CHAIN verification passed: ${verified} signature(s) recomputed and chain-linked across ${sessions.size} session(s).\n` +
@@ -174,20 +239,37 @@ if (apiKey) {
   process.exit(reportGaps(gapMarkers, eventsLost));
 } else {
   const result = verifyStructure(events);
-  if (!result.valid) fail(result.reason ?? "chain broken");
   // Keyless, the marker's count is read but not authenticated - same tier as
   // every other field at this level, and stated as such above.
   let gapMarkers = 0;
   let eventsLost = 0;
-  for (const e of events) {
-    // Must require the event to BE a marker, not merely to contain the
-    // string: parsing every prompt let a user forge a loss declaration.
-    const gap = readAuditGapClaim(e);
-    if (gap) {
-      gapMarkers++;
-      eventsLost += gap.dropped;
+  if (result.valid) {
+    for (const e of events) {
+      // Must require the event to BE a marker, not merely to contain the
+      // string: parsing every prompt let a user forge a loss declaration.
+      const gap = readAuditGapClaim(e);
+      if (gap) {
+        gapMarkers++;
+        eventsLost += gap.dropped;
+      }
     }
   }
+  if (asJson) {
+    const code = !result.valid ? 1 : gapMarkers === 0 || allowGaps ? 0 : EXIT_INCOMPLETE;
+    const doc: Record<string, unknown> = {
+      mode: "structural",
+      valid: result.valid,
+      events: events.length,
+    };
+    if (result.reason !== undefined) doc.reason = result.reason;
+    doc.gapMarkers = gapMarkers;
+    doc.eventsDeclaredLost = eventsLost;
+    doc.allowGaps = allowGaps;
+    doc.exitCode = code;
+    console.log(jsonLine(doc));
+    process.exit(code);
+  }
+  if (!result.valid) fail(result.reason ?? "chain broken");
   console.log(
     `✓ STRUCTURAL verification passed: linkage, continuity, and monotonicity hold for ${events.length} event(s).\n` +
       `  Note: without --api-key, signatures were not recomputed - a holder of the\n` +

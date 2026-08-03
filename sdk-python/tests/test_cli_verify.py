@@ -184,6 +184,78 @@ def test_unreadable_file_exits_2(tmp_path, capsys):
     assert "Cannot read" in capsys.readouterr().err
 
 
+# ── every break in one run, and --json ──────────────────────────────────────
+
+
+def _two_break_chain():
+    """Two independent tampers: a content edit at event 0 and a forged
+    signature at event 1."""
+    chain = _chain()
+    chain[0]["prompt"] = "tampered"
+    chain[1]["sdk_sig"] = "0" * 64
+    return chain
+
+
+def test_every_break_is_rendered_not_just_the_first(tmp_path, capsys):
+    assert _run([_write(tmp_path, "mb.json", _two_break_chain()), "--api-key", API_KEY]) == 1
+    err = capsys.readouterr().err
+    assert "Signature mismatch at event 0 (event index 0)" in err
+    assert "Signature mismatch at event 1 (event index 1)" in err
+    assert err.index("(event index 0)") < err.index("(event index 1)")
+
+
+def test_json_reports_the_full_break_list(tmp_path, capsys):
+    code = _run(
+        [_write(tmp_path, "mb.json", _two_break_chain()), "--api-key", API_KEY, "--json"]
+    )
+    assert code == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "content+chain"
+    assert doc["valid"] is False
+    assert doc["exitCode"] == 1
+    (session,) = doc["sessions"]
+    assert [b["index"] for b in session["breaks"]] == [0, 1]
+    # First-break fields stay what they always were.
+    assert session["brokenAt"] == 0
+    assert session["reason"] == "Signature mismatch at event 0"
+
+
+def test_json_on_a_valid_keyed_chain(tmp_path, capsys):
+    assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", API_KEY, "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "content+chain"
+    assert doc["valid"] is True
+    assert doc["eventsVerified"] == 2
+    assert doc["exitCode"] == 0
+    assert doc["sessions"][0]["breaks"] == []
+
+
+def test_json_keyless_is_the_structural_tier(tmp_path, capsys):
+    assert _run([_write(tmp_path, "v.json", _chain()), "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "structural"
+    assert doc["valid"] is True
+    assert doc["events"] == 2
+    assert doc["exitCode"] == 0
+
+
+def test_json_keeps_the_incomplete_status_and_allow_gaps_mapping(tmp_path, capsys):
+    """Exit 3 (valid but incomplete) and the --allow-gaps 3->0 mapping are the
+    exit-code contract; --json must carry them unchanged."""
+    path = _write(tmp_path, "gap.json", _gap_chain())
+    assert _run([path, "--api-key", GAP_API_KEY, "--json"]) == 3
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["valid"] is True
+    assert doc["exitCode"] == 3
+    assert doc["eventsDeclaredLost"] == 1234
+
+    assert _run([path, "--api-key", GAP_API_KEY, "--json", "--allow-gaps"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["valid"] is True
+    assert doc["allowGaps"] is True
+    assert doc["exitCode"] == 0
+
+
 # ── the bundle shapes the TS CLI accepts, in its order ──────────────────────
 
 
