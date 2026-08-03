@@ -153,7 +153,7 @@ obsvr.init({
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy.
 
-**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
 ### Verdict reason codes
 
@@ -378,6 +378,46 @@ await obsvr.agentRun('support-agent', () => agent.run(userMessage), {
 ```
 
 Use it for frameworks governed at the tool level (LlamaIndex, Vercel AI) so their executions form runs. LangChain and the OpenAI Agents SDK integrations form runs on their own and do not need it. The run boundary is this explicit scope — deterministic and developer-declared, never inferred. (Python: `with obsvr.agent_run("support-agent", source="llamaindex_py"): ...`.)
+
+## Per-request identity
+
+Every governed call resolves a principal — the `user_id` that user-scoped
+quota rules meter, the session-taint latch keys on, approval grants bind to,
+and the signed event carries inside the decision preimage. Resolution is one
+fixed precedence — per-call audit fields / `metadata`, then the wrap-time or
+integration `user_id` option, then the ambient subject — and one resolution
+feeds both enforcement and the record.
+
+`useSubject()` binds that identity to the current execution context
+(`AsyncLocalStorage`), so one wrapped client or governed tool attributes per
+request rather than per process:
+
+```typescript
+import { useSubject } from '@obsvr/sdk';
+
+const wrapped = obsvr.wrap(new OpenAI());     // wrap once...
+
+await useSubject('user:alice;tenant:acme', async () => {
+  await wrapped.chat.completions.create({ ... }); // ...signed and metered as alice
+});
+```
+
+An explicit `user_id` always beats the ambient subject, and with no scope
+active behavior is unchanged. The scope now reaches every identity the wrap
+path resolves: its **signed audit events** previously read only per-call audit
+fields and wrap-time options — no ambient fallback — so a `useSubject()`
+caller was attributed on the integration surfaces and the session-taint key
+but not on the proxy's own events. All five wrap-path resolutions (completed,
+streamed and blocked events, the external-backend input, and the
+decision-input document) now fall back to the ambient subject.
+
+**`requirePrincipal: true`** (off by default) refuses a governed call whose
+enforcing channel carries no `user_id` at all — `PRINCIPAL_REQUIRED`, after
+the enforcement-integrity gate, before any scanning layer. An empty string is
+a supplied principal; only an absent one refuses. It is enforced on the proxy
+wrapper, the integration pipeline, the generic tool governor, and the
+governance `evaluate()` endpoint, and it arms the MCP pre-call net by itself,
+so a config whose only policy is this flag still refuses there.
 
 ## Known Limitations & Architecture Notes
 

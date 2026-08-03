@@ -38,6 +38,7 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 - [Policy engine](#policy-engine)
 - [PII & sensitive-data detection](#pii--sensitive-data-detection)
 - [Agentic & MCP controls](#agentic--mcp-controls)
+- [Identity & attribution](#identity--attribution)
 - [Cost & budget controls](#cost--budget-controls)
 - [The record: trust & cryptographic model](#the-record-trust--cryptographic-model)
 - [What's in this repo, what isn't, and why](#whats-in-this-repo-what-isnt-and-why)
@@ -314,6 +315,75 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   for the measured state of every surface in both languages. Put a destructive
   capability behind MCP or `obsvrGovernTool`.
 - **Canary honeytokens** — `mintCanary()` (Python `mint_canary()`) returns a unique token to plant in a system prompt, retrieved context, or tool output; if it ever resurfaces in a model prompt or response, the SDK raises a CRITICAL leak signal on the signed event and never stores the raw token. A tripwire for prompt-exfiltration and context bleed.
+
+---
+
+## Identity & attribution
+
+Every governed call resolves a **principal** — the `user_id` that user-scoped
+quota buckets meter, the session-taint latch keys on, approval grants bind to,
+and the signed event carries inside the decision preimage. It can be
+established three ways, in fixed precedence: per-call `metadata`, the
+wrap-time option (`user_id` on `wrap()` / the integration `options`), and the
+ambient subject below — explicit always beats ambient. One resolution feeds
+both enforcement and the record, so the identity that scoped the quota is the
+identity the event names. That property is recent and worth stating as the
+repair it is: the generic tool governor previously threaded the wrap-time
+`user_id` to the **signed record only**, while the enforcing readers — quota
+bucket, taint key, approval binding, decision-input hash — read metadata the
+kwarg never reached, so a caller passing `user_id="mallory"` got a signed
+principal with none of the user-scoped enforcement bound to it. The fold is
+now one shared resolution, and a tree-scan test fails any pre-call surface
+that ships without it.
+
+**Ambient per-request subject.** A wrap-time option binds one identity for the
+client's lifetime, which a process serving many end users cannot use. The
+ambient subject binds per request instead — govern once, attribute per call:
+
+```python
+from obsvr import use_subject
+
+with use_subject("user:alice;tenant:acme"):
+    governed_tool.run(...)   # metered, latched, and signed as alice
+```
+
+```typescript
+import { useSubject } from "@obsvr/sdk";
+
+await useSubject("user:alice;tenant:acme", async () => {
+  await wrapped.chat.completions.create({ ... }); // signed as alice
+});
+```
+
+The ambient subject fills only what is not explicitly set, so an existing
+`user_id=` keeps winning, and no scope active means exactly the old behavior.
+In TypeScript it rides `AsyncLocalStorage` and reaches the proxy wrapper's own
+signed events, the integration pipeline, and the session-taint key — the wrap
+path's event identity is the recent addition; it previously resolved only
+per-call audit fields and wrap-time options, so a `useSubject()` caller was
+attributed on every surface except the proxy's own events.
+
+**What the Python subject survives is pinned in tests, not inferred.** It
+propagates across `await`, `asyncio.create_task` and `asyncio.to_thread`. It
+is **silently lost** across `loop.run_in_executor`,
+`ThreadPoolExecutor.submit` and `threading.Thread` — a worker-thread tool call
+inside a subject scope runs as if no scope were active, with nothing on the
+record to say so. If a tool body hops to a worker thread, pass `user_id`
+explicitly on that path; the loss cases are asserted in the test suite so the
+boundary is a documented fact rather than a discovery.
+
+**Refusing unattributed calls (opt-in).** `require_principal=True`
+(`requirePrincipal: true`) blocks a governed call whose enforcing channel
+carries no `user_id` at all, with the registry code `PRINCIPAL_REQUIRED`,
+after the enforcement-integrity gate and before any scanning layer — the
+refusal is about attribution, not content. An empty string is a supplied
+principal; only an absent one refuses, the same absent-vs-empty line the
+decision digest's presence byte draws. It is enforced in the shared pre-call
+pipeline, so it holds on `wrap()`, the framework integrations, the generic
+tool governor, MCP, and the governance `evaluate()` endpoint — and it arms
+the tool and MCP pre-call nets **by itself**, so a config whose only policy is
+this flag still refuses there. Default off: a single-tenant deployment that
+legitimately passes no `user_id` must not start refusing on upgrade.
 
 ---
 
