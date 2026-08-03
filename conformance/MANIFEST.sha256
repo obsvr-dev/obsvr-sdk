@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 674b04a84db34bfd212f4b235f69f98c14c033587f20b6f6cea9646d7b98132d
+# corpus_sha256 = d05e01b192503fb7a687f285429c800e98eb10049d095ab55df5b809f1a59b2a
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -44,7 +44,7 @@ d95e7d3f27cd37d917e45cbc9e52840433733ed11996c548830513ff7e633975  fixtures/polic
 86a1c4494c58a10516e6fed3e0f8fcb05174e3e1b45f0862cc1c4beb15b25c0b  fixtures/quota_escrow.json
 6e866d7970101b67643f73f72e250d3325deed09df6ddc5be5c498d8744a0f1b  fixtures/reason_codes.json
 e8c3e61d76bf4dd1a13c4bebca90cc011e925c5bf7bc7798e14cb7d39750965a  fixtures/regex_dialect.json
-6ff878e8cd07e34e462daf6514b079336f89ecd3702230c0a368fc1d1e8657d8  fixtures/rules_hash.json
+bfb33855bf981e0029aa2cdc766fce1d76a8cf722d2594d8607d655a1d29962e  fixtures/rules_hash.json
 58440346c8a54d19d6b36e5cc90d062983dc40b8d40f92b2f41537ac940c187d  fixtures/session_taint.json
 457832151ba4c28824da326336e9685c0304ebf7803cbcbd1116e7645eba82f9  fixtures/signing_vectors.json
 8e8dd03a54c7e497c1879d8169bd4c2bbf4334edf0d4c035c66ff29b3e809342  fixtures/tool_content_hash.json
