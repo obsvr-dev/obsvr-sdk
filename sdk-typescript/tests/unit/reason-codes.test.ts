@@ -145,6 +145,7 @@ describe('reason-code registry: every code is REACHABLE', () => {
   // code on a genuinely emitted event or engine result, so this map is the
   // reviewable exemption list, not an escape hatch.
   const PINNED_ELSEWHERE: Record<string, string> = {
+    APPROVAL_TIMEOUT: 'approvals-wait.test.ts (blocking wait expired without a grant)',
     TOOL_DENIED: 'tool-content-hash-wiring.test.ts (governed tool, denied by agent policy)',
     MCP_TOOL_DENIED: 'mcp-response-scan.test.ts (governed MCP client, denied tool)',
     MCP_RESULT_BLOCKED: 'mcp-response-scan.test.ts (governed MCP client, withheld result)',

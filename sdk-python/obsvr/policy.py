@@ -1246,6 +1246,10 @@ def apply_pre_call_policy(
             quota_unmetered = rules_result.get("quota_unmetered")
             approval_claim = rules_result.get("approval_granted")
             if rules_decision == "block" and action_taken != "blocked":
+                # Saved so the blocking approval wait below can lift the block
+                # without inventing a state: on approval the pipeline resumes
+                # exactly where it stood before this rule fired.
+                pre_block_state = (action_taken, action_reason, action_source)
                 action_taken = "blocked"
                 action_reason = "policy_violation"
                 # Parity with TS (EV-15): structured-rule outcomes are labeled
@@ -1268,6 +1272,65 @@ def apply_pre_call_policy(
                         # than to "anything that trips this rule".
                         action_hash=rules_result.get("action_hash"),
                     )
+                    # Blocking wait (opt-in, approval_wait_ms > 0): HOLD this
+                    # call while the grant channel is polled, instead of
+                    # refusing and passing on a retry. The wait runs in the
+                    # calling thread on human timescales; the pre-call hook's
+                    # hook_timeout_ms budget is untouched. Skipped in monitor
+                    # mode — a verdict there is recorded, not enforced, so
+                    # there is nothing to hold the call for. Only an explicit
+                    # "approved" lifts the block: timeout, degradation, and
+                    # any wait-internal failure all leave it standing.
+                    wait_ms = getattr(config, "approval_wait_ms", 0) or 0
+                    if (
+                        wait_ms > 0
+                        and getattr(config, "enforcement_mode", "enforce") != "monitor"
+                    ):
+                        wait_claim = {
+                            "rule_id": rules_result.get("rule_id"),
+                            "user_id": (metadata or {}).get("user_id"),
+                            "rule_hash": rules_result.get("rule_hash"),
+                            "action_hash": rules_result.get("action_hash"),
+                        }
+                        try:
+                            from .remote import await_approval
+                            poll_ms = getattr(config, "approval_poll_ms", 5000) or 5000
+                            wait_verdict = await_approval(
+                                config,
+                                wait_claim,
+                                timeout_s=wait_ms / 1000.0,
+                                poll_s=poll_ms / 1000.0,
+                            )
+                        except Exception:  # noqa: BLE001 - the block must stand
+                            wait_verdict = "unavailable"
+                        if wait_verdict == "approved":
+                            # The grant landed while the call was held. Lift
+                            # the block and hand the claim to the end-of-
+                            # pipeline re-validation below, so a grant that
+                            # expires or is revoked between here and the
+                            # outbound request is caught before it is spent.
+                            action_taken, action_reason, action_source = pre_block_state
+                            approval_claim = wait_claim
+                            rules_reason_code = ReasonCode.APPROVAL_GRANTED.value
+                            rules_reason = "approval_granted_after_wait: %s" % (
+                                rules_result.get("rule_id")
+                            )
+                        elif wait_verdict == "timeout":
+                            # Its own registry code: a hold that expired is a
+                            # different fact from "refused; ask and retry".
+                            rules_reason_code = ReasonCode.APPROVAL_TIMEOUT.value
+                            rules_reason = (
+                                "approval_wait_timeout: no grant within %dms (%s)"
+                                % (wait_ms, rules_result.get("reason"))
+                            )
+                        else:
+                            # Degraded mid-wait (kill switch / staleness) or a
+                            # wait-internal failure: the APPROVAL_REQUIRED
+                            # block stands, with the abort on the record.
+                            rules_reason = "%s (approval_wait_aborted: %s)" % (
+                                rules_result.get("reason"),
+                                wait_verdict,
+                            )
             elif rules_decision == "redact" and action_taken != "redacted":
                 action_taken = "redacted"
                 action_reason = "policy_violation"
