@@ -387,6 +387,30 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
+def _identity_meta(options: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Identity metadata for the enforcing channel and the event record.
+
+    The caller principal reaches enforcement THROUGH the metadata dict: the
+    quota meter buckets on ``metadata.user_id``, the session-taint latch keys
+    on it, approval grants bind to it, and the decision-input hash commits to
+    it. The ``user_id=`` / ``service_name=`` wrap-time kwargs therefore have
+    to be folded in here, or a caller who passes them gets a signed principal
+    on the record and none of the user-scoped enforcement.
+
+    Precedence matches every other surface that threads identity
+    (``pydantic_ai.py``, ``bedrock.py``, ``vertex.py``, ``haystack.py``,
+    ``mcp.py``): start from ``metadata``, then the wrap-time kwargs overlay.
+    Consistency across surfaces matters more than either ordering.
+    """
+    opts = options or {}
+    meta = dict(opts.get("metadata") or {})
+    if opts.get("user_id") is not None:
+        meta["user_id"] = opts["user_id"]
+    if opts.get("service_name") is not None:
+        meta["service_name"] = opts["service_name"]
+    return meta or None
+
+
 def _gate(
     tool: Any,
     tool_name: str,
@@ -411,6 +435,11 @@ def _gate(
         )
     )
     event_options = options or None
+    # One resolution feeds the policy evaluation AND the emitted events, so
+    # the identity that scoped enforcement is the identity the record carries.
+    # The record's own facts (tool_name, sealed content digest) merge after
+    # caller identity, so caller metadata can never overwrite them.
+    identity_meta = _identity_meta(options)
 
     # 1) allow/deny — refuse a denied tool before it runs.
     policy = getattr(config, "agent_policy", None) or {}
@@ -426,7 +455,12 @@ def _gate(
             prompt="",
             response="",
             success=False,
-            metadata={"tool_name": tool_name, "reason": reason, **content_meta},
+            metadata={
+                **(identity_meta or {}),
+                "tool_name": tool_name,
+                "reason": reason,
+                **content_meta,
+            },
             compliance=compliance,
             options=event_options,
         )
@@ -455,7 +489,7 @@ def _gate(
                 config,
                 provider="unknown",
                 operation="tool.call",
-                metadata=(options or {}).get("metadata"),
+                metadata=identity_meta,
                 tool_name=tool_name,
                 tool_declared_destructive=declares_destructive(tool),
             )
@@ -474,7 +508,11 @@ def _gate(
                     response="",
                     success=False,
                     status_code=403,
-                    metadata={"tool_name": tool_name, **content_meta},
+                    metadata={
+                        **(identity_meta or {}),
+                        "tool_name": tool_name,
+                        **content_meta,
+                    },
                     compliance=compliance_out,
                     options=event_options,
                 )
@@ -509,7 +547,11 @@ def _gate(
         source=SOURCE,
         prompt=stored_prompt,
         response="",
-        metadata={"tool_name": tool_name, **content_meta},
+        metadata={
+            **(identity_meta or {}),
+            "tool_name": tool_name,
+            **content_meta,
+        },
         compliance=compliance_out
         or {
             "event_type": "tool_call",
@@ -637,7 +679,10 @@ def govern_tool(
     callers (see :func:`_resolve_exec_attrs` and :func:`_descriptor_of`) and
     both default to the table's own behaviour. Remaining keyword options
     (``user_id=``, ``service_name=``, ``metadata=``) attach the audit principal
-    to every event, the same way the other integrations accept them.
+    to every event AND scope the enforcement to it — user-scoped quota buckets,
+    the session-taint key, approval-grant binding and the decision-input hash
+    all resolve from the same folded identity (see :func:`_identity_meta`) —
+    the same way the other integrations accept them.
     """
     exec_attrs = _resolve_exec_attrs(tool, extra_exec_attrs)
     tool_name = _resolve_tool_name(tool, name)

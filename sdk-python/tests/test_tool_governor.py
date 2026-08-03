@@ -679,3 +679,178 @@ def test_a_write_that_lands_but_never_reaches_lookup_is_refused(sent):
     assert not is_tool_governed("send_money"), (
         "the name must not be registered for a gate that was never installed"
     )
+
+
+# ── The caller principal reaches the enforcing channel ───────────────────────
+#
+# The `user_id=` wrap-time kwarg is the documented way to attach the audit
+# principal. The principal reaches ENFORCEMENT through the metadata dict —
+# quota buckets, the session-taint key, approval binding and the decision-input
+# hash all read `metadata.user_id` — so the kwarg must be folded into that dict
+# (see `_identity_meta`), or the caller gets a signed principal on the record
+# and none of the user-scoped enforcement.
+
+
+def _probe_kwarg_identity_scopes_enforcement(sent):
+    """Proving body for the fold, factored out so the disarm test below can
+    require it to fail. Asserts: the quota meters the caller's own bucket and
+    not "default"; the refusal record names the principal at top level AND
+    inside the decision-input hash; and the shared bucket stays unmetered, so
+    an unattributed tool still runs."""
+    from obsvr.decision_record import (
+        build_decision_input,
+        compute_decision_input_hash,
+    )
+    from obsvr.rules import PolicyRule, _quota_store, _reset_quota
+    from obsvr.session_taint import (
+        _reset_session_taint,
+        derive_session_key,
+        mark_tainted,
+    )
+
+    _reset_quota()
+    _reset_session_taint()
+    try:
+        obsvr.init(
+            api_key="test",
+            sample_rate=1,
+            policy_rules=[
+                PolicyRule(
+                    id="q1", name="user-quota", enabled=True, action="block",
+                    type="quota",
+                    conditions={
+                        "quota_limit": 1, "quota_window_ms": 60000,
+                        "quota_scope": "user_id",
+                    },
+                )
+            ],
+            session_taint={"enabled": True, "action": "block"},
+        )
+        # Arm the pre-call net the way a real deployment is armed — the taint
+        # store is non-empty — without touching the principal under test.
+        mark_tainted(
+            derive_session_key({"user_id": "someone-else"}), "prompt_injection", 1.0
+        )
+
+        tool = _RunShapedTool()
+        governed = govern_tool(tool, user_id="mallory")
+        assert governed._run(amount=1) == "sent 1"
+        assert "user_id:mallory" in _quota_store, (
+            f"the wrap-time principal did not reach the quota meter; "
+            f"buckets: {sorted(_quota_store)}"
+        )
+        assert "user_id:default" not in _quota_store, (
+            "the caller's usage was metered into the shared bucket"
+        )
+
+        with pytest.raises(ObsvrPolicyError):
+            governed._run(amount=2)
+        assert tool.calls == [1], "the body ran despite the spent quota"
+
+        blocked = [e for e in sent if e.get("action_taken") == "blocked"]
+        assert blocked, "the refusal emitted no blocked event"
+        ev = blocked[-1]
+        assert ev.get("user_id") == "mallory", (
+            "the record of mallory being refused does not say it was mallory"
+        )
+        assert ev["metadata"].get("user_id") == "mallory"
+        expected = compute_decision_input_hash(
+            build_decision_input(
+                rules_hash=ev["policy_version"],
+                degraded=False,
+                target="request",
+                evaluated_text='{"amount": 2}',
+                user_id="mallory",
+                service_name=None,
+                tenant_id=None,
+                hook="not_configured",
+            )
+        )
+        assert ev.get("decision_input_hash") == expected, (
+            "the decision-input hash does not commit to the caller principal"
+        )
+
+        # The shared bucket was never metered on mallory's behalf: a tool
+        # governed with no principal still runs on its first call.
+        anon = govern_tool(_RunShapedTool())
+        assert anon._run(amount=3) == "sent 3", (
+            "the shared bucket was exhausted by an attributed caller"
+        )
+    finally:
+        _reset_session_taint()
+        _reset_quota()
+
+
+def test_the_wrap_time_principal_scopes_quota_and_the_refusal_record(sent):
+    _probe_kwarg_identity_scopes_enforcement(sent)
+
+
+def test_the_wrap_time_principal_keys_the_taint_latch(sent):
+    """`govern_tool(tool, user_id=...)` engages the session-taint latch under
+    the caller's own key, exactly as the metadata form already does — one
+    principal, one latch key, whichever spelling attached it."""
+    from obsvr.session_taint import (
+        _reset_session_taint,
+        derive_session_key,
+        mark_tainted,
+    )
+
+    _reset_session_taint()
+    try:
+        obsvr.init(
+            api_key="test", sample_rate=1,
+            session_taint={"enabled": True, "action": "block"},
+        )
+        mark_tainted(
+            derive_session_key({"user_id": "mallory"}), "prompt_injection", 1.0
+        )
+
+        tool = _RunShapedTool()
+        governed = govern_tool(tool, user_id="mallory")
+        with pytest.raises(ObsvrPolicyError):
+            governed._run(amount=500)
+        assert tool.calls == [], "a tainted principal executed the tool"
+        blocked = [e for e in sent if e.get("action_taken") == "blocked"]
+        assert blocked and blocked[-1].get("rule_id") == "sdk:session_tainted"
+        assert blocked[-1].get("user_id") == "mallory"
+        assert blocked[-1]["metadata"].get("user_id") == "mallory"
+
+        # An untainted principal keeps the same tool.
+        clean = govern_tool(_RunShapedTool(), user_id="alice")
+        assert clean._run(amount=1) == "sent 1"
+    finally:
+        _reset_session_taint()
+
+
+def test_the_wrap_time_kwarg_overlays_metadata_identity():
+    """Fold precedence, pinned to the other identity-threading surfaces
+    (pydantic_ai, bedrock, vertex, haystack, mcp): start from ``metadata``,
+    the wrap-time kwargs overlay it. One ordering on every surface beats
+    either ordering on some."""
+    from obsvr.integrations.tools import _identity_meta
+
+    assert _identity_meta(
+        {"metadata": {"user_id": "meta"}, "user_id": "kwarg"}
+    ) == {"user_id": "kwarg"}
+    assert _identity_meta(
+        {"metadata": {"user_id": "meta", "tenant_id": "t1"}}
+    ) == {"user_id": "meta", "tenant_id": "t1"}
+    assert _identity_meta({"user_id": "u", "service_name": "s"}) == {
+        "user_id": "u", "service_name": "s",
+    }
+    assert _identity_meta({}) is None
+    assert _identity_meta(None) is None
+
+
+def test_identity_fold_is_actually_threaded(sent, monkeypatch):
+    """Non-vacuity: revert the fold to the raw-metadata passthrough it
+    replaced and the proving body above MUST fail. A green identity proof
+    that cannot go red is not proving the identity is threaded."""
+    from obsvr.integrations import tools as tools_mod
+
+    monkeypatch.setattr(
+        tools_mod, "_identity_meta",
+        lambda options: (options or {}).get("metadata"),
+    )
+    with pytest.raises(AssertionError):
+        _probe_kwarg_identity_scopes_enforcement(sent)
