@@ -4,7 +4,7 @@
  *
  * @packageDocumentation
  */
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import type { AuditEvent } from '../proxy/types.js';
 import { readAuditGapClaim } from '../proxy/audit-gap.js';
 import {
@@ -80,6 +80,23 @@ function declaredFormat(event: AuditEvent): number | null {
     return raw;
   }
   return null;
+}
+
+/**
+ * Constant-time equality over the stored and the recomputed signature.
+ *
+ * `verifyAuditChain` is library surface, run against caller-supplied chains -
+ * not only by the offline CLI - so the comparison must not leak how many
+ * leading bytes matched. The length guard leaks only the lengths, which are
+ * public: a well-formed sdk_sig is 64 hex characters, and the recomputed
+ * digest always is. A non-string stored signature compares as empty and
+ * fails. Twin reasoning: hmac.compare_digest in verify_chain.py.
+ */
+function signatureMatches(stored: unknown, expected: string): boolean {
+  const storedBuf = Buffer.from(typeof stored === 'string' ? stored : '', 'utf8');
+  const expectedBuf = Buffer.from(expected, 'utf8');
+  if (storedBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(storedBuf, expectedBuf);
 }
 
 /** Compute expected signature for an event under the given chain format */
@@ -285,7 +302,7 @@ export function verifyAuditChain(
       decisionFieldsOf(event as unknown as Record<string, unknown>)
     );
 
-    if (event.sdk_sig !== expectedSig) {
+    if (!signatureMatches(event.sdk_sig, expectedSig)) {
       recordBreak(i, `Signature mismatch at event ${i}`, event);
       continue;
     }
