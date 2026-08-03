@@ -14,6 +14,7 @@ conformance/fixtures/signing_vectors.json.
 import base64
 import copy
 import json
+import time
 
 import pytest
 
@@ -143,20 +144,33 @@ class TestInitWiring:
 
 
 class TestSealAndVerify:
-    def test_the_seal_is_additive_to_the_hmac_chain(self, tmp_path):
+    def test_the_seal_is_additive_to_the_hmac_chain(self, tmp_path, monkeypatch):
         """Byte-for-byte: the HMAC fields of a sealed chain are identical to
         an unsealed chain over the same inputs — existing chains and
-        verifiers are untouched by construction."""
+        verifiers are untouched by construction.
+
+        timestamp_sdk is part of the signature payload, so "the same inputs"
+        has to include the clock: freeze it, or the sealed and plain chains
+        are signed at different milliseconds and every sdk_sig — and thus
+        every following prev_sig — diverges for a reason that has nothing to
+        do with the seal. Without the freeze this passed only when both chains
+        happened to land in one millisecond, which a tight loop does and a
+        fixture-laden run does not.
+        """
+        monkeypatch.setattr(time, "time", lambda: 1_700_000_000.0)
         configure_device_signer(load_device_signer(_seed_file(tmp_path)))
         sealed = _signed_chain()
         _reset_sender()
         plain = _signed_chain()
+        # The session id is stable in-process, and the clock is frozen, so the
+        # entire HMAC — sdk_sig itself, not just its inputs — must be identical.
+        # The seal only ADDS device fields; it never touches the HMAC preimage.
         for s, p in zip(sealed, plain):
-            for field in ("seq_no", "prompt", "response", "prev_sig" ):
+            for field in ("seq_no", "prompt", "response", "prev_sig", "sdk_sig"):
                 assert s.get(field) == p.get(field)
-        # Session ids and timestamps differ per run; re-verify the sealed
-        # chain under the plain HMAC verifier instead: it must pass with the
-        # device fields simply ignored.
+            assert "device_sig" in s and "device_sig" not in p
+        # The sealed chain still verifies under the plain HMAC verifier, which
+        # ignores the device fields entirely.
         result = verify_chain(sealed, "test-key")
         assert result.valid and not result.device_checked
         assert result.device_signed_events == len(sealed)
