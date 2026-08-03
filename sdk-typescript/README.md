@@ -136,14 +136,21 @@ obsvr.init({
     },
   ],
 
-  // Custom pre-call hook: allow | block | redact (supports human-in-the-loop)
+  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
+  // and resolved by failMode on expiry — for human approval, use
+  // approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) => {
     if (event.provider === 'openai' && isHighRisk(event.prompt)) {
-      return await waitForHumanApproval(event); // pause until a human decides
+      return 'block';
     }
     return 'allow';
   },
   hookTimeoutMs: 2000,
+
+  // Human-in-the-loop: hold a require_approval block while the grant
+  // channel is polled. 0 (default) = refuse now, pass on a retry once granted.
+  approvalWaitMs: 300_000,
+  approvalPollMs: 5_000,
 
   // Enforcement fail mode when a hook times out or throws:
   // 'open' (default) allows the call; 'closed' blocks it.
@@ -155,9 +162,28 @@ Built-in regex detection covers 13 PII types including SSN, credit cards, API ke
 
 **Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
+**Blocking human approval.** A rule with `require_approval: true` refuses
+when no grant covers the call and files a request for the approvals queue; a
+retry passes once a human grants it. That is the default, and
+`approvalWaitMs: 0` means exactly that — no waiting. Set it above zero and
+the SDK **holds the call in-process** instead, polling the grant channel
+(`approvalPollMs`, default 5000) until a covering grant lands or the budget
+expires. Only an explicit, still-live grant lifts the hold — it is
+re-validated after the wait, so a grant that expires mid-hold authorizes
+nothing — and an expired hold blocks with its own registry code,
+`APPROVAL_TIMEOUT`, distinct from `APPROVAL_REQUIRED` so a run-out hold is
+never conflated with a plain refusal. Degradation mid-wait aborts the hold
+and the block stands. One stated limit: **a denial is currently
+indistinguishable from indecision client-side** — the grant channel carries
+grants, not verdicts, so an explicitly denied request surfaces as the same
+`APPROVAL_TIMEOUT` as one nobody looked at. Do not build this out of
+`onPreCall`: the hook is budgeted by `hookTimeoutMs` and resolves by
+`failMode` on expiry, which at shipped defaults means a hook that waits for a
+human times out and allows.
+
 ### Verdict reason codes
 
-Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (the `ReasonCode` enum, exported from the package) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the thrown `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the TypeScript and Python SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `failMode: 'closed'`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
+Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (the `ReasonCode` enum, exported from the package) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the thrown `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, `APPROVAL_TIMEOUT`, `PRINCIPAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the TypeScript and Python SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `failMode: 'closed'`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
 
 ```typescript
 import { ReasonCode, REASON_CODES } from '@obsvr/sdk';

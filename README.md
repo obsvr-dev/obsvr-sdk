@@ -195,14 +195,40 @@ obsvr.init({
     }, // enforce | shadow
   ],
 
-  // Human-in-the-loop: a pre-call hook can pause until a human decides.
+  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
+  // and resolved by failMode on expiry — for human approval, use
+  // approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) =>
-    isHighRisk(event.prompt) ? await waitForHumanApproval(event) : "allow",
+    isHighRisk(event.prompt) ? "block" : "allow",
   hookTimeoutMs: 2000,
   failMode: "open", // 'open' (default) allows on hook/detector failure; 'closed' blocks.
                     // Floors, canary, and a failed redaction block either way.
+
+  // Human-in-the-loop: hold a require_approval block while the grant
+  // channel is polled. 0 (default) = refuse now, pass on a retry once granted.
+  approvalWaitMs: 300_000,
+  approvalPollMs: 5_000,
 });
 ```
+
+**Blocking human approval.** A rule with `require_approval` refuses when no
+grant covers the call and files a request for the dashboard's approvals queue;
+a retry passes once a human grants it. That is the default, and
+`approvalWaitMs: 0` means exactly that — no waiting. Set it above zero and the
+SDK **holds the call in-process** instead, polling the grant channel until a
+covering grant lands or the budget expires. Only an explicit, still-live grant
+lifts the hold — the grant is re-validated after the wait, so one that expires
+or is revoked mid-hold authorizes nothing — and an expired hold blocks with its
+own registry code, **`APPROVAL_TIMEOUT`**, distinct from `APPROVAL_REQUIRED` so
+a run-out hold is never conflated with a plain refusal. Degradation mid-wait
+(kill switch, fail-closed staleness) aborts the hold immediately and the block
+stands. One limitation worth knowing rather than discovering: **a denial is
+currently indistinguishable from indecision client-side.** The grant channel
+carries grants, not verdicts, so a request a human explicitly denied surfaces
+as the same `APPROVAL_TIMEOUT` as a request nobody looked at. And do not build
+this out of the hook: the pre-call hook is budgeted by `hookTimeoutMs` (2000 ms
+default) and resolves by `failMode` on expiry — at shipped defaults a hook that
+waits for a human times out and **allows**.
 
 **Shadow mode** — set `mode: 'shadow'` on any rule to evaluate it against live traffic and record a would-have outcome without altering the response. Every verdict — and every audit **event** — also carries a stable **`reason_code`** from a closed registry (alongside the free-form `reason`): the deciding layer's own fine-grained code, identical on the event and the thrown error, so downstream tooling classifies decisions without string-matching.
 

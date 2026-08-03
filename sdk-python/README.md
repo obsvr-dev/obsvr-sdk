@@ -350,9 +350,28 @@ Built-in regex detection covers 13 PII types including SSN, credit cards, API ke
 
 **Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; **`require_principal=True`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
+**Blocking human approval.** A rule with `"require_approval": True` refuses
+when no grant covers the call and files a request for the approvals queue; a
+retry passes once a human grants it. That is the default, and
+`approval_wait_ms=0` means exactly that — no waiting. Set it above zero and
+the SDK **holds the call in the calling thread** instead, polling the grant
+channel (`approval_poll_ms`, default 5000) until a covering grant lands or
+the budget expires. Only an explicit, still-live grant lifts the hold — it is
+re-validated after the wait, so a grant that expires mid-hold authorizes
+nothing — and an expired hold blocks with its own registry code,
+`APPROVAL_TIMEOUT`, distinct from `APPROVAL_REQUIRED` so a run-out hold is
+never conflated with a plain refusal. Degradation mid-wait aborts the hold and
+the block stands. One stated limit: **a denial is currently indistinguishable
+from indecision client-side** — the grant channel carries grants, not
+verdicts, so an explicitly denied request surfaces as the same
+`APPROVAL_TIMEOUT` as one nobody looked at. Do not build this out of
+`on_pre_call`: the hook is budgeted by `hook_timeout_ms` and resolves by
+`fail_mode` on expiry, which at shipped defaults means a hook that waits for a
+human times out and allows.
+
 ### Verdict reason codes
 
-Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (`obsvr.ReasonCode`) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the raised `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the Python and TypeScript SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `fail_mode="closed"`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
+Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (`obsvr.ReasonCode`) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the raised `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, `APPROVAL_TIMEOUT`, `PRINCIPAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the Python and TypeScript SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `fail_mode="closed"`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
 
 ```python
 from obsvr import ReasonCode, REASON_CODES
