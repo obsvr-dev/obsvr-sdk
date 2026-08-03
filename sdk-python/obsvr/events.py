@@ -117,6 +117,47 @@ def _trim_metadata_to_budget(md: Optional[Dict[str, Any]]) -> Optional[Dict[str,
             trimmed[k] = md[k]
     return trimmed
 
+def _principal_string(value: Any) -> Optional[str]:
+    """Canonical string form of the signed principal, or None for absent.
+
+    ``user_id`` is inside the format-3 decision digest, and the offline
+    verifiers in both languages must reach the same verdict over one export.
+    The two runtimes do not stringify scalars alike — ``str(1.0)`` is
+    ``"1.0"`` where JS ``String(1.0)`` is ``"1"``, ``str(True)`` is ``"True"``
+    where JS prints ``"true"`` — and a JSON export erases the distinction JS
+    would need to reproduce Python's rendering (``1.0`` parses to the number
+    ``1``). So the event stores ONE canonical string, minted at this boundary
+    under the SDK's shared canonical-scalar rules (the same ECMAScript
+    rendering ``policy_version`` hashing already uses), and everything
+    downstream — the signer, both verifiers, the export — handles only that
+    string. The TypeScript boundary (proxy/filters/filter.ts) mints the same
+    strings via ``String()``.
+
+    The vocabulary is deliberately restricted to scalars: str unchanged,
+    bool as the JSON literals, int exact, finite float in shortest ECMAScript
+    form. Anything else — containers, objects, non-finite floats — is treated
+    as ABSENT rather than sealed as a repr no other consumer can recompute.
+    None stays None: the decision digest's presence byte keeps an absent
+    principal distinct from an empty one, and that distinction is
+    load-bearing.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        import math
+
+        if not math.isfinite(value):
+            return None
+        from .rules import _js_number
+
+        return _js_number(value)
+    return None
+
+
 TRUNCATION_MARKER = " [TRUNCATED]"
 
 
@@ -354,8 +395,11 @@ def build_audit_event(
         "region": opts.get("region") or config.default_region or "unknown",
         # Identity fields — explicit options win, else the ambient
         # use_subject() scope (TS parity: buildIntegrationEvent resolves
-        # `options.user_id || ambientSubject?.user_id`).
-        "user_id": opts.get("user_id") or _ambient_subject.get("user_id"),
+        # `options.user_id || ambientSubject?.user_id`), coerced to the one
+        # canonical string both offline verifiers recompute identically.
+        "user_id": _principal_string(
+            opts.get("user_id") or _ambient_subject.get("user_id")
+        ),
         # Network fields. This SDK has no capture path for either, so they are
         # always None rather than sometimes None — there is no per-call kwarg
         # and no config default that reaches them. A DIVERGENCE from the
