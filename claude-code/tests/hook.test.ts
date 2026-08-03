@@ -7,6 +7,8 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { test, beforeEach, afterEach } from "node:test";
@@ -218,4 +220,59 @@ test("malformed stdin defers by default and denies under fail-closed", () => {
   const closed = runHook("this is not json", { OBSVR_API_KEY: "k", OBSVR_FAIL_CLOSED: "1" });
   assert.equal(closed.status, 0);
   assert.equal(JSON.parse(closed.stdout).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("a real OBSVR_CLAUDE_CODE_POLICY file (camelCase, as documented) actually blocks", () => {
+  // Regression for a convention trap: the hook inits in camelCase, so a
+  // policy file written the way the README documents (`policyRules`) must be
+  // read, not silently dropped as the wrong convention. Drive the built
+  // binary over a real file — the path loadPolicy() takes, which no in-process
+  // test exercised — and require the documented example to deny.
+  const dir = mkdtempSync(join(tmpdir(), "obsvr-cc-policy-"));
+  const policyPath = join(dir, "policy.json");
+  writeFileSync(
+    policyPath,
+    JSON.stringify({
+      policyRules: [
+        {
+          id: "no-rf",
+          name: "block recursive force delete",
+          enabled: true,
+          action: "block",
+          type: "keyword",
+          conditions: { keywords: ["rm -rf"] },
+        },
+      ],
+    }),
+  );
+  const r = runHook(
+    JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf /important" },
+      session_id: "pol-1",
+    }),
+    {
+      OBSVR_API_KEY: "k",
+      OBSVR_INGEST_URL: "https://localhost:1",
+      OBSVR_CLAUDE_CODE_POLICY: policyPath,
+    },
+  );
+  assert.equal(r.status, 0);
+  assert.ok(r.stdout.trim().length > 0, "the documented policy file must produce a decision, not be dropped");
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(out.hookSpecificOutput.permissionDecisionReason, /delete/i);
+
+  // And a call the policy does not name is not blocked by it.
+  const allow = runHook(
+    JSON.stringify({
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: "ls -la" },
+      session_id: "pol-2",
+    }),
+    { OBSVR_API_KEY: "k", OBSVR_INGEST_URL: "https://localhost:1", OBSVR_CLAUDE_CODE_POLICY: policyPath },
+  );
+  assert.equal(allow.stdout.trim(), "", "an unmatched call defers, no deny");
 });

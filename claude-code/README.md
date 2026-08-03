@@ -96,9 +96,11 @@ A minimal policy that refuses a destructive shell command:
 ## What it enforces, and what it does not
 
 - **It refuses, it does not merely observe.** A policy block becomes the hook's
-  `permissionDecision: "deny"`, which stops the tool **before it runs**. A
-  blocking deny holds even under the agent's permission-bypass modes and cannot
-  be loosened by them — that is what makes a hook a real enforcement point.
+  `permissionDecision: "deny"`, which stops the tool **before it runs** rather
+  than recording that it ran — that is what makes a pre-tool hook a real
+  enforcement point rather than an audit tap. (Whether a hook `deny` also
+  overrides the agent's own permission-bypass modes is the agent's contract to
+  state, not this package's to promise; obsvr's guarantee is the deny itself.)
 - **It only ever adds a refusal.** The hook never emits `allow` as an override:
   a no-match verdict yields no output and the agent's own permission flow
   decides. A governor that could loosen a restriction would be a downgrade

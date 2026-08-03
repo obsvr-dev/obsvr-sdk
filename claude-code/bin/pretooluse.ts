@@ -5,10 +5,11 @@
  * Register it in settings.json (a PreToolUse hook, matcher ".*") so the agent
  * invokes it before every tool call. It reads the PreToolUse JSON on stdin,
  * governs the call through the obsvr policy engine, and — on a policy block —
- * writes the deny contract to stdout, which stops the tool BEFORE it runs.
- * A blocking deny holds even under the agent's permission-bypass modes and
- * cannot be loosened by them, which is exactly the property that makes a hook
- * a real enforcement point rather than a suggestion.
+ * writes the deny contract to stdout, which stops the tool BEFORE it runs
+ * rather than recording that it ran. That is what makes a pre-tool hook a
+ * real enforcement point rather than an audit tap. (Whether a hook deny also
+ * overrides the agent's own permission-bypass modes is the agent's contract
+ * to state, not this package's to promise.)
  *
  * Configuration is read from the environment so the hook needs no obsvr code
  * changes to point at a deployment:
@@ -69,6 +70,12 @@ function loadPolicy(): Record<string, unknown> {
   const path = process.env.OBSVR_CLAUDE_CODE_POLICY;
   if (!path) return {};
   try {
+    // The policy file is spread into a camelCase init() below (apiKey,
+    // ingestUrl, …), and the SDK reads a config's convention from whether
+    // `apiKey` is present — so the file's keys must be camelCase too
+    // (`policyRules`, not `policy_rules`), or the SDK reads them as the wrong
+    // convention and silently ignores them. That is the convention the README
+    // documents; keep the two in lockstep.
     return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
   } catch (err) {
     // A policy file that was configured but cannot be read is an operator
@@ -103,11 +110,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  // camelCase throughout — the natural convention for a TypeScript package,
+  // and the one the documented policy file uses. Mixing in a snake_case key
+  // here would flip the SDK's whole-config convention detection and silently
+  // drop the policy file's rules.
   obsvr.init({
-    api_key: apiKey,
-    ingest_url: process.env.OBSVR_INGEST_URL,
+    apiKey,
+    ingestUrl: process.env.OBSVR_INGEST_URL,
     ...(process.env.OBSVR_DEVICE_SIGNING_KEY_FILE
-      ? { device_signing_key_file: process.env.OBSVR_DEVICE_SIGNING_KEY_FILE }
+      ? { deviceSigningKeyFile: process.env.OBSVR_DEVICE_SIGNING_KEY_FILE }
       : {}),
     ...loadPolicy(),
   } as never);
