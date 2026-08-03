@@ -279,6 +279,15 @@ class TestRegistryGate:
         # host. Same exemption reason as tool_content_hash.py, plus that
         # inherited disposition.
         "stored_content.py",
+        # Ambient-subject scope (use_subject): a ContextVar carrier for the
+        # caller principal, same class of module as span.py and agent_run.py.
+        # Decides nothing: it supplies an identity that attribution and
+        # bucket-scoping READ; the layers that enforce with it (rules quota,
+        # session_taint) carry their own declarations. It runs no scan whose
+        # failure could resolve open or closed — its only failure shape is an
+        # unset scope, which resolves to the pre-existing behaviour (wrap-time
+        # identity, or none).
+        "subject.py",
         # Evidence producer, decides nothing: it hashes what a tool call saw
         # and its callers omit the field on failure. Matches the TS twin's
         # exemption for tool-content-hash.ts.
