@@ -67,6 +67,7 @@ jobs:
 | -------------- | -------- | --------- | ----------- |
 | `bundle`       | yes      | —         | Path (relative to the repo root) to the exported evidence file: an incident bundle (`trace.steps`), a trace bundle, or a plain JSON array of audit events. |
 | `api-key`      | no       | `''`      | obsvr signing/API key. When set, signatures are recomputed (full HMAC re-verification). Always pass via a secret. When empty, only structural verification runs. |
+| `allow-gaps`   | no       | `'false'` | Accept a bundle that verifies but is INCOMPLETE — exit 3, where a signed gap marker declares dropped events. Default `'false'` fails such a bundle; set `'true'` to treat exit 3 as a pass (`obsvr-verify --allow-gaps`). |
 | `version`      | no       | `0.10.0`  | `@obsvr/sdk` version to install (the `obsvr-verify` CLI ships in this package). Pin an exact version for reproducible checks. |
 | `node-version` | no       | `22`      | Node.js version used to run `obsvr-verify`. |
 

@@ -170,7 +170,7 @@ is the one printed here.
 
 1. **Python L3 is dominated by hook execution machinery**: the SDK creates (and abandons via
    `shutdown(wait=False)`) a `ThreadPoolExecutor` per governed call for the pre-call hook and
-   another for the post-call hook (`policy.py:1302`, `policy.py:1796`) — ~3.4× throughput cost
+   another for the post-call hook (`policy.py:1436`, `policy.py:1971`) — ~3.4× throughput cost
    vs L0. Intentional (bounds hook wall-clock), but the biggest Python optimization target.
 2. **Both SDKs recompute the policy-version hash (SHA-256 over the serialized ruleset) on
    every call**, uncached (TS `policy/rules.ts` `derivePolicyVersion`; Py `rules.py`

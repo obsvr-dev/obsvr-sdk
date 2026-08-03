@@ -113,6 +113,39 @@ cut, when it is renamed to that version.
   [`9dd50f1`](https://github.com/obsvr-dev/obsvr-sdk/commit/9dd50f1),
   [`5fbcc02`](https://github.com/obsvr-dev/obsvr-sdk/commit/5fbcc02))
 
+- **Optional client-held device signing (Ed25519), for local non-repudiation.**
+  `device_signing_key_file` / `deviceSigningKeyFile` points at an
+  operator-generated key that seals every event over the *same* preimage the
+  HMAC covers, with a derived key id (`sha256(pubkey)[:16]`) in the record.
+  `obsvr-verify --device-pubkey <pinned key>` adds a verification tier that
+  runs with or without the API key: an unpinned key is reported foreign and
+  never trusted on first use, a missing seal on a pinned chain is a break, and
+  an API-key holder's re-forged chain — which passes HMAC — fails the device
+  tier. The HMAC chain and every existing chain are untouched (device fields
+  are additive); the SDK never generates the key, and Python needs an Ed25519
+  backend (`pip install "obsvr-sdk[crypto]"`) while TypeScript uses
+  `node:crypto`. Signature bytes are pinned cross-language in
+  `conformance/fixtures/signing_vectors.json`.
+  ([`e80bef7`](https://github.com/obsvr-dev/obsvr-sdk/commit/e80bef7),
+  [`a725ec4`](https://github.com/obsvr-dev/obsvr-sdk/commit/a725ec4),
+  [`a7333c5`](https://github.com/obsvr-dev/obsvr-sdk/commit/a7333c5),
+  [`fb4042d`](https://github.com/obsvr-dev/obsvr-sdk/commit/fb4042d))
+
+- **`@obsvr/claude-code`: govern a coding agent's native tool calls.** A new
+  root package — a `PreToolUse` hook that refuses a coding agent's native tool
+  calls (shell, file edits, search) through the shipped obsvr policy engine and
+  records each on the same signed audit chain. It exists because the SDKs are
+  client-side (they govern an MCP `ClientSession` an application builds in its
+  own process, while a coding agent runs as a separate binary obsvr is not
+  loaded into), so the SDKs govern none of that agent's tool traffic — measured
+  directly. A policy block becomes a `deny` that stops the tool before it runs;
+  the hook only ever adds a refusal, defers to the agent's own permission flow
+  when it cannot sign a record (or denies under `OBSVR_FAIL_CLOSED`), and never
+  emits an allow.
+  ([`6db10e9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6db10e9),
+  [`b1ab30a`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1ab30a),
+  [`74a8feb`](https://github.com/obsvr-dev/obsvr-sdk/commit/74a8feb))
+
 ### Fixed
 
 - **`govern_tool`'s identity kwargs now scope enforcement.** The `user_id=` /
@@ -186,6 +219,19 @@ cut, when it is renamed to that version.
   `{n>=2}` over a rep- or alternation-bearing group; `{1}` and a fixed brace
   on a plain group stay allowed.
   ([`33a4e98`](https://github.com/obsvr-dev/obsvr-sdk/commit/33a4e98))
+
+- **An expired approval hold states only what it can know.** The grant channel
+  carries grants, not verdicts — the parser keeps an entry only with a
+  `rule_id` and `expires_at`, and the request POST's response is never read —
+  so an explicit human *denial* is indistinguishable from *no decision* in the
+  SDK today, and both surface as `APPROVAL_TIMEOUT`. The `APPROVAL_TIMEOUT`
+  registry text and the timeout record's reason now say the two are
+  indistinguishable rather than implying nobody answered; no `APPROVAL_DENIED`
+  code is minted, because a code whose emission path cannot know the fact it
+  asserts would be a fabricated record. `SECURITY.md` specifies the
+  approval-status endpoint ingest must expose before a distinct denial code
+  can exist.
+  ([`0482085`](https://github.com/obsvr-dev/obsvr-sdk/commit/0482085))
 
 ### Removed
 

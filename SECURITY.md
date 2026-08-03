@@ -26,7 +26,7 @@ Every event emitted by an SDK carries:
 | `seq_no` | Monotonic counter within the session |
 | `chain_format` | Signing format number (currently `3`; absent on pre-format-2 events) |
 | `prev_sig` | Signature of the previous event (chain link) |
-| `sdk_sig` | HMAC-SHA256 over `format|session|seq|timestamp|content_hash|prev_sig` |
+| `sdk_sig` | HMAC-SHA256 over `format|session|seq|timestamp|content_hash|decision_hash|prev_sig` (`decision_hash` present since format 3, the current format; formats 1–2 omit it) |
 
 The content hash inside the signature payload is domain-tagged and **length-prefixed per field** (`sha256("obsvr:content/2" || 0x00 || u64be(len(prompt)) || prompt || u64be(len(response)) || response)`), so the prompt/response boundary is itself under the HMAC: the same bytes re-split at a different boundary produce a different digest. The previous format hashed the bare concatenation `sha256(prompt + response)`, which left the boundary unsigned — text could move between "what the user said" and "what the model said" without breaking verification. Chains signed under that format keep verifying, and the verifiers report `chainFormat: 1` for them so legacy evidence is never mistaken for boundary-bound evidence (see the migration note in `CHANGELOG.md`).
 
@@ -111,7 +111,7 @@ a vocabulary obsvr invented.
   existed unmodified no later than the anchor time. That is stronger than a
   self-asserted timestamp and weaker than a nonce, and the difference matters:
   it bounds when Evidence *existed*, never when it was *created*. Separately,
-  `policyStalenessBudgetMs` (a TypeScript-only key) and the enforcement-integrity gate are a freshness
+  `policyStalenessBudgetMs` (`policy_staleness_budget_s` in Python, in seconds) and the enforcement-integrity gate are a freshness
   mechanism for the Reference Values rather than for the Evidence — they bound
   how stale the policy in force may be before enforcement degrades.
 - **Topology: passport model, with a background-check escape hatch.** Evidence

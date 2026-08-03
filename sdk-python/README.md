@@ -86,8 +86,8 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 Two things to know about the supported one. **It needs the explicit `obsvr.wrap()` above** — unlike the OpenAI and Anthropic clients it is not picked up by `obsvr.init()` alone, and a plainly constructed model emits no events at all. And its declared range is **unbounded on purpose**: one live cell (0.8.6) stands behind it, which shows that version works and locates no boundary, so no floor is claimed rather than one being guessed.
 
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
-`messages.create` / `.parse`, `generate_content`, and the `beta.messages.create` and
-`beta.responses.create` namespaces. Everything else on the client passes through
+`messages.create` / `.parse`, `generate_content`, and the `beta.chat.completions.create` / `.parse`,
+`beta.messages.create`, and `beta.responses.create` namespaces. Everything else on the client passes through
 ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for which of
 those carry no chat text at all and which are text-bearing but not yet reachable from
 a method-path table.
