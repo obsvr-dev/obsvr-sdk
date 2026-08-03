@@ -447,7 +447,7 @@ The durable guarantee is about what *was* captured, not about forcing capture: e
   - **What closed it.** `ingest_url` now runs the same static validation as the presidio endpoints at `init()`: scheme allowlist, unconditional refusal of the cloud-metadata and link-local range in every spelling, and the private-range check with only the parsed loopback hosts exempt. Pinned in both trees.
 
   Honest limit, and it applies to presidio and to ingest alike: both guards are init-time and static (literal-IP + scheme), so neither resolves a hostname per-call — a hostname that later rebinds to a metadata IP is a residual TOCTOU. `init()` is synchronous in both SDKs and the resolving guard needs DNS, so closing this means either an async `init()` or a check on the delivery path; the external policy backend is the only endpoint that gets the resolving check today. Both URLs are operator-configured rather than runtime-attacker-controlled, which is why the static guard is the proportionate one — though on the zero-code Python entry point `ingest_url` comes from the `OBSVR_INGEST_URL` environment variable, so "operator-configured" means whatever set that variable.
-- Customer-supplied regex rules pass a ReDoS validator (nested quantifiers, quantified alternation, and backreferences rejected; bounded input length) before they are ever executed.
+- Customer-supplied regex rules pass a ReDoS validator (nested quantifiers — including a fixed `{n}` repetition applied to a group that itself carries a quantifier or alternation, the `(.*a){20}b` shape — quantified alternation, and backreferences rejected; bounded input length) before they are ever executed.
 
 ## Known limitations under active work
 

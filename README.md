@@ -764,9 +764,11 @@ sections. **Four of the eight apply to one SDK and not the other**, so the scope
 is marked on each.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
-   *(both SDKs)* Only the MCP surface runs against the real upstream package in
-   CI. A green integration suite is evidence that the shape is right, not that
-   the framework behaves the way the test models it. Each SDK's
+   *(both SDKs)* In Python only the MCP surface runs against the real upstream
+   package in CI; in TypeScript four do — MCP, OpenAI, Google Generative AI and
+   OpenAI Agents. Every other surface is fake-driven in both. A green
+   integration suite is evidence that the shape is right, not that the
+   framework behaves the way the test models it. Each SDK's
    [TypeScript](sdk-typescript/tests/README.md) and
    [Python](sdk-python/tests/README.md) test README says which surfaces are which.
 

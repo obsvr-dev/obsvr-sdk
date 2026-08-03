@@ -472,10 +472,11 @@ The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
-   Only the MCP surface runs against the real upstream package in CI. A green
-   integration suite says the shape is right, not that the framework behaves the
-   way the test models it. [`tests/README.md`](tests/README.md) says which
-   surfaces are which.
+   Four surfaces run against the real upstream package in CI — MCP, OpenAI,
+   Google Generative AI and OpenAI Agents; every other integration is
+   fake-driven. A green integration suite says the shape is right, not that the
+   framework behaves the way the test models it.
+   [`tests/README.md`](tests/README.md) says which surfaces are which.
 
 2. **This package is ESM-only, and the zero-code path cannot reach `require()`.**
    A CommonJS service cannot consume it at all, and even where it loads,
