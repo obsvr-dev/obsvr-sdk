@@ -77,6 +77,20 @@ def test_valid_chain_with_api_key_exits_0(tmp_path, capsys):
     assert "2 signature(s) recomputed" in out
 
 
+def test_success_banner_states_the_preimage_boundary(tmp_path, capsys):
+    """The banner must say what the format-3 preimage covers (content, order,
+    the eight decision/attribution fields) and what it does not (tenant_id and
+    the other fields sealed only by the server countersignature)."""
+    assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", API_KEY]) == 0
+    out = capsys.readouterr().out
+    assert "does NOT cover the decision" not in out
+    for covered in ("action_taken", "rule_id", "policy_version", "user_id"):
+        assert covered in out
+    assert "does NOT cover tenant_id" in out
+    for uncovered in ("token", "metadata", "operation", "content_provenance"):
+        assert uncovered in out
+
+
 def test_tampered_content_with_api_key_exits_1(tmp_path, capsys):
     chain = _chain()
     chain[1]["prompt"] = "tampered"

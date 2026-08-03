@@ -18,8 +18,12 @@ plain JSON array of audit events. Two verification tiers:
    a re-signed forgery (that needs the key).
  - WITH --api-key: HMAC re-verification (verify_chain) - every signature is
    recomputed over the content + chain preimage, so any content tamper or
-   reorder breaks. The client signature does NOT cover the decision/attribution
-   fields (verdict, rule, tenant); those are sealed by the server
+   reorder breaks. Under chain format 3, the current signing format, the
+   preimage also covers the decision/attribution fields (action_taken,
+   action_reason, reason_code, rule_id, policy_version, model, provider,
+   user_id); chains signed under formats 1 and 2 bind content and order only.
+   The client signature does NOT cover tenant_id, token counts, metadata,
+   operation, or content_provenance; those are sealed by the server
    countersignature at ingest, not by this offline check.
 
 Either tier also reports GAP MARKERS: events the SDK signed to record that its
@@ -210,9 +214,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             f"✓ CONTENT + CHAIN verification passed: {verified} signature(s) "
             f"recomputed and chain-linked across {len(sessions)} session(s).\n"
-            "  This attests prompt/response CONTENT integrity and event ORDER. The client\n"
-            "  signature does NOT cover the decision/attribution fields (verdict, rule,\n"
-            "  tenant) — those are sealed by the server countersignature at ingest."
+            "  This attests prompt/response CONTENT integrity, event ORDER, and — under\n"
+            "  chain format 3, the current signing format — the decision/attribution\n"
+            "  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n"
+            "  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n"
+            "  and order only. The client signature does NOT cover tenant_id, token\n"
+            "  counts, metadata, operation, or content_provenance — those are sealed by\n"
+            "  the server countersignature at ingest."
         )
         return _report_gaps(gap_markers, events_lost, allow_gaps)
     else:
