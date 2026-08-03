@@ -232,6 +232,26 @@ waits for a human times out and **allows**.
 
 **Shadow mode** — set `mode: 'shadow'` on any rule to evaluate it against live traffic and record a would-have outcome without altering the response. Every verdict — and every audit **event** — also carries a stable **`reason_code`** from a closed registry (alongside the free-form `reason`): the deciding layer's own fine-grained code, identical on the event and the thrown error, so downstream tooling classifies decisions without string-matching.
 
+**Rule ordering, and opting out of it.** By default rules evaluate
+**first-match in document order**, and a matched `topic_allow`
+short-circuits — so an allow rule's list position can decide the verdict, and
+reordering a ruleset can change what it blocks. That contract stays the
+default because deployed policies may depend on it. Declaring
+`ruleResolution: 'deny_wins'` (`rule_resolution="deny_wins"` in Python) opts a
+deployment out: every enforcing rule is evaluated and the **strongest action
+prevails regardless of position** — refusal over redaction over flag over
+permit, smallest rule id breaking ties — and decisions carry engine version
+`obsvr-rules/2`. The stamped `policy_version` commits to the declared
+semantics: under a declared `first_match` it commits to evaluation order, so
+two orderings that can decide differently stamp distinct versions, while
+undeclared rulesets keep their existing hash bytes. An unknown declaration is
+refused at `init()`, never silently evaluated under semantics the author did
+not choose. Two deliberate edges, both pinned in tests rather than left to be
+discovered: **shadow rules evaluate first-match regardless** of the declared
+mode, and under `deny_wins` **every quota rule meters every evaluated call**
+— order-insensitive evaluation means a call that ends blocked can still
+consume quota, where first-match stopped metering at its first match.
+
 **Catching a block.** A blocked call throws `ObsvrPolicyError` (both SDKs), carrying a stable `type`, the `reason_code`, the deciding `rule_id`, and the decision metadata — so "refused on purpose" is distinguishable from a provider outage without matching on a message. A reason category the SDK doesn't recognize (a newer control plane) yields `ObsvrUnknownPolicyError` rather than an untyped throw. The Python class subclasses `RuntimeError`, and the message string is unchanged from earlier versions, so existing `except` blocks and string matches keep working.
 
 ```typescript

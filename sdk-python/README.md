@@ -350,6 +350,20 @@ Built-in regex detection covers 13 PII types including SSN, credit cards, API ke
 
 **Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; **`require_principal=True`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
 
+**Rule ordering, and opting out of it.** Rules evaluate **first-match in
+document order** by default, and a matched `topic_allow` short-circuits — an
+allow rule's list position can decide the verdict. `rule_resolution=
+"deny_wins"` opts a deployment out: every enforcing rule is evaluated and the
+strongest action prevails regardless of position (refusal over redaction over
+flag over permit, smallest rule id breaking ties), decisions carry engine
+version `obsvr-rules/2`, and the stamped `policy_version` commits to the
+declared semantics — under a declared `first_match` it commits to evaluation
+order, while undeclared rulesets keep their existing hash bytes. An unknown
+declaration raises at `init()`. Two deliberate, pinned edges: shadow rules
+evaluate first-match regardless of the declared mode, and under `deny_wins`
+every quota rule meters every evaluated call — a call that ends blocked can
+still consume quota, where first-match stopped metering at its first match.
+
 **Blocking human approval.** A rule with `"require_approval": True` refuses
 when no grant covers the call and files a request for the approvals queue; a
 retry passes once a human grants it. That is the default, and
