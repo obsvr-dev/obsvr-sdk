@@ -13,6 +13,7 @@ import {
   getQueueSize,
   getDroppedCount,
 } from "../../src/proxy/sender/fire-and-forget";
+import { MAX_QUEUE_SIZE } from "../../src/constants";
 import { evaluatePolicyRules, type PolicyRule } from "../../src/policy/rules";
 import { runBuiltinPiiScan } from "../../src/policy/hook";
 import { _resetAllQuotas } from "../../src/governance/quota";
@@ -228,9 +229,12 @@ describe("queue behavior under flood", () => {
   it("emit queue drops beyond capacity instead of growing unbounded", async () => {
     init({ api_key: "stress", ingest_url: "http://localhost:1" }); // unreachable
     const client = wrap(makeFakeOpenAI());
-    // Flood well past MAX_QUEUE_SIZE (100)
+    // Flood well past MAX_QUEUE_SIZE, whatever it is pinned at. This
+    // assertion once hard-coded a superseded capacity, and a bound test
+    // that floods below the actual bound proves nothing.
+    const flood = MAX_QUEUE_SIZE + 300;
     await Promise.all(
-      Array.from({ length: 400 }, (_, i) =>
+      Array.from({ length: flood }, (_, i) =>
         client.chat.completions.create({
           model: "gpt-4o",
           messages: [{ role: "user", content: `flood ${i}` }],
@@ -239,9 +243,9 @@ describe("queue behavior under flood", () => {
     );
     const queued = getQueueSize();
     const dropped = getDroppedCount();
-    console.log(`[bench] flood 400: queued=${queued} dropped=${dropped}`);
-    expect(queued).toBeLessThanOrEqual(100); // bounded
-    expect(queued + dropped).toBeGreaterThanOrEqual(300); // accounted for
+    console.log(`[bench] flood ${flood}: queued=${queued} dropped=${dropped}`);
+    expect(queued).toBeLessThanOrEqual(MAX_QUEUE_SIZE); // bounded
+    expect(queued + dropped).toBeGreaterThanOrEqual(flood - 100); // accounted for
   });
 });
 

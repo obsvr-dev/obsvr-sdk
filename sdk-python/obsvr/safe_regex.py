@@ -21,6 +21,7 @@ _QUANTIFIED_ALTERNATION = re.compile(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)\s*
 _BACKREFERENCE = re.compile(r"\\[1-9]")
 _QUANTIFIER_COUNT = re.compile(r"[+*?]|\{\d+(,\d*)?\}")
 _BRACE_REP = re.compile(r"\{\d+,\d*\}")
+_BRACE_FIXED = re.compile(r"\{(\d+)\}")
 
 
 def _has_nested_repetition(pattern: str) -> bool:
@@ -34,6 +35,13 @@ def _has_nested_repetition(pattern: str) -> bool:
     backtracking). A "repetition" grows the match: ``+``, ``*``, or a comma-
     bearing brace (``{n,}`` / ``{n,m}``); a fixed ``{n}`` and ``?`` do not grow.
     Character classes and escapes are skipped so ``[+*]`` / ``\\+`` read literally.
+
+    A fixed ``{n}`` earns one exception: applied to a group that CONTAINS its
+    own growth quantifier or alternation, it multiplies that group's
+    backtracking states n times over — ``(.*a){20}b`` stacks twenty
+    independent ``.*`` engines against one impossible suffix and stalls for
+    minutes, without ever growing the match. ``{1}`` and a fixed brace on a
+    plain group stay allowed.
     """
     n = len(pattern)
 
@@ -84,6 +92,12 @@ def _has_nested_repetition(pattern: str) -> bool:
             rlen = rep_at(i + 1)
             if rlen > 0 and (frame["rep"] or frame["alt"]):
                 return True
+            # The fixed-brace exception documented above: {n>=2} on a
+            # rep/alt-bearing group is the multiplied-backtracking shape.
+            if frame["rep"] or frame["alt"]:
+                fixed = _BRACE_FIXED.match(pattern, i + 1)
+                if fixed and int(fixed.group(1)) >= 2:
+                    return True
             stack[-1]["rep"] = stack[-1]["rep"] or frame["rep"] or rlen > 0
             stack[-1]["alt"] = stack[-1]["alt"] or frame["alt"]
             i += 1 + rlen

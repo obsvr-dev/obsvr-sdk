@@ -38,11 +38,23 @@ describe("validateRegexPattern", () => {
     expect(validateRegexPattern("(?:a+)+").reason).toBe("nested_quantifier");
   });
 
+  it("rejects a fixed brace multiplying an inner quantifier", () => {
+    // A fixed {n} never grows the match, but applied to a group carrying its
+    // own growth quantifier it multiplies that group's backtracking states n
+    // times over: (.*a){20}b stacks twenty independent .* engines against
+    // one impossible suffix and stalls for minutes.
+    expect(validateRegexPattern("(.*a){20}b").reason).toBe("nested_quantifier");
+    expect(validateRegexPattern("(a+b){8}c").reason).toBe("nested_quantifier");
+    expect(validateRegexPattern("((\\d*)x){4}y").reason).toBe("nested_quantifier");
+  });
+
   it("does not over-reject fixed-count or un-nested quantifiers", () => {
     expect(validateRegexPattern("(a{3})+").ok).toBe(true); // fixed inner {n} does not grow
     expect(validateRegexPattern("(abc)+").ok).toBe(true); // single quantifier on a group
     expect(validateRegexPattern("[+*]{1,5}").ok).toBe(true); // + and * are literals in the class
     expect(validateRegexPattern("\\d{3}-\\d{2}-\\d{4}").ok).toBe(true);
+    expect(validateRegexPattern("(abc){20}").ok).toBe(true); // fixed on a plain group
+    expect(validateRegexPattern("(.*a){1}b").ok).toBe(true); // {1} multiplies nothing
   });
 
   it("rejects quantified alternation (a|aa)+", () => {
