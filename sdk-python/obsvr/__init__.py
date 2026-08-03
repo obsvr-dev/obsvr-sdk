@@ -46,6 +46,10 @@ from .agent_policy import (  # noqa: F401
 )
 from .sender import flush  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
+# Ambient per-request subject: bind an end-user identity for a scope instead
+# of threading user_id through every call. Twin of the TypeScript
+# `useSubject()` (`import { useSubject } from "@obsvr/sdk"`).
+from .subject import get_current_subject, parse_subject, use_subject  # noqa: F401
 from .audit_gap import parse_audit_gap_prompt  # noqa: F401
 from .verify_chain import ChainVerificationResult, verify_chain  # noqa: F401
 # Layered call cost: a caller estimate, an operator-declared override, and a
@@ -92,6 +96,9 @@ __all__ = [
     "span",
     "with_span",
     "current_span_id",
+    "use_subject",
+    "get_current_subject",
+    "parse_subject",
     "agent_run",
     "current_agent_run",
     "current_agent_run_id",

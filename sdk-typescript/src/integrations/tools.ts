@@ -49,6 +49,19 @@ import { ReasonCode } from "../governance/reason-codes.js";
 const SOURCE = "obsvr_tool";
 
 /**
+ * Answered `true` by the Proxy every governed tool IS, and checked before
+ * wrapping, so governing twice yields one gate: without it a second wrap
+ * re-gates the first proxy's gated function and every invocation is
+ * evaluated and audited twice. The marker is served by the proxy's `get`
+ * trap only — it is never written onto the caller's original object, and a
+ * tool whose shape resolved no execute key is returned unchanged and
+ * unmarked, so a later legitimate attempt still runs rather than being
+ * refused by a claim no gate backs. `Symbol.for` so two copies of the SDK
+ * in one process still recognize each other's proxies.
+ */
+const GOVERNED_TOOL_MARKER = Symbol.for("obsvr.governedTool");
+
+/**
  * Names of every tool a pre-execution gate speaks for — the wrapper below, or
  * an integration-owned gate registered through {@link registerGovernedToolName}
  * (openai-agents' tool input guardrails). Audit rails that would otherwise
@@ -188,6 +201,10 @@ function safeJson(v: unknown): string {
  */
 export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T {
   const t = tool as unknown as AnyTool;
+  // Governing an already-governed proxy is a no-op returning it unchanged:
+  // re-gating the first proxy's gated function would evaluate and audit
+  // every invocation twice.
+  if ((t as Record<PropertyKey, unknown>)[GOVERNED_TOOL_MARKER] === true) return tool;
   const execKey = resolveExecKey(t);
   if (!execKey) return tool;
 
@@ -379,6 +396,10 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
 
   return new Proxy(t, {
     get(target, prop, receiver) {
+      // The idempotence marker: answered by the trap, never written onto the
+      // caller's object — the proxy IS the installed gate, so its existence
+      // is the verification the marker claims.
+      if (prop === GOVERNED_TOOL_MARKER) return true;
       if (prop === execKey) return gated;
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;

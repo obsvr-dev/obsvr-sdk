@@ -230,3 +230,55 @@ def test_mcp_provider_detail_marker():
     assert mcp["metadata"]["provider_detail"] == "mcp"
     other = build_audit_event(_cfg(), provider="openai", model="m", operation="chat", source="x", prompt="", response="")
     assert "provider_detail" not in (other.get("metadata") or {})
+
+
+# ---------------------------------------------------------------------------
+# user_id boundary coercion
+# ---------------------------------------------------------------------------
+#
+# user_id is inside the format-3 decision digest, and str()/String() disagree
+# on scalars (str(1.0) vs String(1.0), str(True) vs "true") while a JSON
+# export destroys what the other runtime would need to reproduce the
+# emitter's rendering. So the event stores ONE canonical string, minted at
+# this boundary; everything downstream handles only that string. The exact
+# cross-language strings and digests are pinned by the user_id_coercion
+# section of conformance/fixtures/signing_vectors.json (consumed by
+# test_signing.py and the TS twin suite).
+
+
+def _built_user_id(raw):
+    ev = build_audit_event(
+        _cfg(), provider="openai", model="m", operation="chat", source="x",
+        prompt="", response="", options={"user_id": raw},
+    )
+    # The builder strips None-valued fields, so an absent principal is a
+    # missing key — .get() maps both spellings of absent to None here.
+    return ev.get("user_id")
+
+
+def test_a_non_string_user_id_is_stored_as_its_canonical_string():
+    assert _built_user_id(123) == "123"
+    assert _built_user_id(1.0) == "1"
+    assert _built_user_id(1.5) == "1.5"
+    assert _built_user_id(True) == "true"
+    assert _built_user_id("alice") == "alice"
+
+
+def test_an_absent_user_id_stays_absent_never_the_string_none():
+    # The decision digest's presence byte keeps absent distinct from empty;
+    # "None" leaking in as a string would collapse that distinction.
+    assert _built_user_id(None) is None
+    ev = build_audit_event(
+        _cfg(), provider="openai", model="m", operation="chat", source="x",
+        prompt="", response="",
+    )
+    assert ev.get("user_id") is None
+
+
+def test_an_uncoercible_user_id_is_absent_not_a_repr():
+    # Containers and non-finite floats have no rendering both languages can
+    # recompute, so they are treated as absent rather than sealed as a repr.
+    assert _built_user_id({"id": 1}) is None
+    assert _built_user_id(["a"]) is None
+    assert _built_user_id(float("nan")) is None
+    assert _built_user_id(float("inf")) is None

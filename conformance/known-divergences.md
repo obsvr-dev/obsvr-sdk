@@ -19,7 +19,8 @@ better half of the record.
 **Ids are allocated once and never reused.** A `KD-` number that appears in the
 History below is spent: the divergence it named was fixed, and that record is
 what the History is for. The next live entry takes the next free number, which
-is why the catalog currently holds KD-6, KD-9 and KD-10 with gaps between them.
+is why the catalog currently holds KD-6, KD-9, KD-10 and KD-11 with gaps
+between them.
 
 **A row is added only after the divergence is re-measured, never transcribed
 from prose.** KD-10 was proposed alongside a second capability gap described in

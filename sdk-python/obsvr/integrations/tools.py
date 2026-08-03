@@ -113,6 +113,27 @@ from ..tool_content_hash import safe_tool_content_hash, tool_content_metadata
 
 SOURCE = "obsvr_tool"
 
+#: Set on an object :func:`govern_tool` verifiably installed a gate on, and
+#: checked before wrapping, so governing twice yields one gate: without it a
+#: second wrap re-gates the first wrapper's callables and every invocation is
+#: evaluated and audited twice (the per-call ``inflight`` guard is allocated
+#: fresh per govern_tool call and cannot see across wraps). The marker lives
+#: on the RETURNED object — govern_tool hands back a copy — never on the
+#: caller's original, and it is set only on the paths that confirmed a
+#: wrapper took: a tool where nothing was gateable stays unmarked, so a later
+#: legitimate attempt still runs rather than being refused by a claim no gate
+#: backs.
+_GOVERNED_MARKER_ATTR = "_obsvr_tool_governed"
+
+
+def _already_governed(tool: Any) -> bool:
+    """Whether this object is one govern_tool returned. Never raises — an
+    exotic __getattr__ must not break the caller's wrap call."""
+    try:
+        return getattr(tool, _GOVERNED_MARKER_ATTR, False) is True
+    except Exception:  # noqa: BLE001 - a getter that raises is not a marker
+        return False
+
 #: Names of every tool a governor wraps, for the audit rails that would
 #: otherwise re-judge a governed call after the fact (CrewAI's step callback
 #: consults this so it never stamps ``not_evaluated`` beside the wrapper's own
@@ -387,6 +408,41 @@ def _check_tool(tool_name: str, policy: Dict[str, Any]) -> Tuple[bool, str]:
     return True, ""
 
 
+def _identity_meta(options: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Identity metadata for the enforcing channel and the event record.
+
+    The caller principal reaches enforcement THROUGH the metadata dict: the
+    quota meter buckets on ``metadata.user_id``, the session-taint latch keys
+    on it, approval grants bind to it, and the decision-input hash commits to
+    it. The ``user_id=`` / ``service_name=`` wrap-time kwargs therefore have
+    to be folded in here, or a caller who passes them gets a signed principal
+    on the record and none of the user-scoped enforcement.
+
+    Precedence matches every other surface that threads identity
+    (``pydantic_ai.py``, ``bedrock.py``, ``vertex.py``, ``haystack.py``,
+    ``mcp.py``): start from ``metadata``, then the wrap-time kwargs overlay.
+    Consistency across surfaces matters more than either ordering.
+
+    The ambient ``use_subject()`` scope fills only what is still unset, so
+    the enforcing channel resolves the same identity the signed channel does
+    (``events.build_audit_event`` applies the same fallback) and an explicit
+    identity always wins over the ambient one.
+    """
+    opts = options or {}
+    meta = dict(opts.get("metadata") or {})
+    if opts.get("user_id") is not None:
+        meta["user_id"] = opts["user_id"]
+    if opts.get("service_name") is not None:
+        meta["service_name"] = opts["service_name"]
+    from ..subject import get_current_subject
+
+    ambient = get_current_subject() or {}
+    for key in ("user_id", "tenant_id", "service_name"):
+        if meta.get(key) is None and ambient.get(key) is not None:
+            meta[key] = ambient[key]
+    return meta or None
+
+
 def _gate(
     tool: Any,
     tool_name: str,
@@ -411,6 +467,11 @@ def _gate(
         )
     )
     event_options = options or None
+    # One resolution feeds the policy evaluation AND the emitted events, so
+    # the identity that scoped enforcement is the identity the record carries.
+    # The record's own facts (tool_name, sealed content digest) merge after
+    # caller identity, so caller metadata can never overwrite them.
+    identity_meta = _identity_meta(options)
 
     # 1) allow/deny — refuse a denied tool before it runs.
     policy = getattr(config, "agent_policy", None) or {}
@@ -426,7 +487,12 @@ def _gate(
             prompt="",
             response="",
             success=False,
-            metadata={"tool_name": tool_name, "reason": reason, **content_meta},
+            metadata={
+                **(identity_meta or {}),
+                "tool_name": tool_name,
+                "reason": reason,
+                **content_meta,
+            },
             compliance=compliance,
             options=event_options,
         )
@@ -455,7 +521,7 @@ def _gate(
                 config,
                 provider="unknown",
                 operation="tool.call",
-                metadata=(options or {}).get("metadata"),
+                metadata=identity_meta,
                 tool_name=tool_name,
                 tool_declared_destructive=declares_destructive(tool),
             )
@@ -474,7 +540,11 @@ def _gate(
                     response="",
                     success=False,
                     status_code=403,
-                    metadata={"tool_name": tool_name, **content_meta},
+                    metadata={
+                        **(identity_meta or {}),
+                        "tool_name": tool_name,
+                        **content_meta,
+                    },
                     compliance=compliance_out,
                     options=event_options,
                 )
@@ -509,7 +579,11 @@ def _gate(
         source=SOURCE,
         prompt=stored_prompt,
         response="",
-        metadata={"tool_name": tool_name, **content_meta},
+        metadata={
+            **(identity_meta or {}),
+            "tool_name": tool_name,
+            **content_meta,
+        },
         compliance=compliance_out
         or {
             "event_type": "tool_call",
@@ -637,8 +711,18 @@ def govern_tool(
     callers (see :func:`_resolve_exec_attrs` and :func:`_descriptor_of`) and
     both default to the table's own behaviour. Remaining keyword options
     (``user_id=``, ``service_name=``, ``metadata=``) attach the audit principal
-    to every event, the same way the other integrations accept them.
+    to every event AND scope the enforcement to it — user-scoped quota buckets,
+    the session-taint key, approval-grant binding and the decision-input hash
+    all resolve from the same folded identity (see :func:`_identity_meta`) —
+    the same way the other integrations accept them.
+
+    Governing an already-governed object is a no-op returning it unchanged:
+    re-gating the first wrapper's callables would evaluate and audit every
+    invocation twice (see ``_GOVERNED_MARKER_ATTR``).
     """
+    if _already_governed(tool):
+        return tool
+
     exec_attrs = _resolve_exec_attrs(tool, extra_exec_attrs)
     tool_name = _resolve_tool_name(tool, name)
 
@@ -649,10 +733,14 @@ def govern_tool(
                 "obsvr_tool_gate_inflight", default=False
             )
             _GOVERNED_TOOL_NAMES.add(tool_name)
-            return _wrap_callable(
+            gated_callable = _wrap_callable(
                 original, tool_name, "__call__", original, options, inflight,
                 descriptor,
             )
+            # A wrapped bare callable IS the installed gate, so it carries the
+            # marker directly (functions accept attributes).
+            setattr(gated_callable, _GOVERNED_MARKER_ATTR, True)
+            return gated_callable
         return tool
 
     governed = _copy_tool(tool)
@@ -693,6 +781,15 @@ def govern_tool(
         return tool
 
     _GOVERNED_TOOL_NAMES.add(tool_name)
+    # Marked only HERE — after read-back confirmed at least one wrapper took —
+    # and on the returned copy, never the caller's original. A container that
+    # refuses the marker write simply stays re-governable; that costs a
+    # duplicate gate in an exotic shape, where marking a tool no gate backs
+    # would silently disable governance on it.
+    try:
+        object.__setattr__(governed, _GOVERNED_MARKER_ATTR, True)
+    except Exception:  # noqa: BLE001 - marker is best-effort, the gate is not
+        pass
     return governed
 
 

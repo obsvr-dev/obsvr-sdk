@@ -26,6 +26,7 @@ import {
   decisionHash,
   signaturePayload,
 } from "../../src/proxy/chain-format";
+import { filterArgs } from "../../src/proxy/filters/filter";
 
 // Resolve the shared fixture upward from cwd (same pattern as
 // conformance.test.ts) so the one signing_vectors.json drives both suites.
@@ -165,6 +166,20 @@ describe("cross-language signing vectors", () => {
   it("matches every pinned decision-hash case", () => {
     for (const c of vectors.decision_hash.cases) {
       expect(decisionHash(c.fields)).toBe(c.digest);
+    }
+  });
+
+  it("coerces every pinned non-string user_id to the shared canonical string", () => {
+    // A non-string user_id is coerced to ONE canonical string at the audit
+    // boundary before anything stores or signs it; the fixture pins both the
+    // string and the decision digest over it, and the Python suite pins the
+    // same cases through its own boundary. `raw` arrives here through the
+    // same JSON parse a stored export goes through, which is exactly where
+    // the two runtimes' scalar renderings part company.
+    for (const c of vectors.user_id_coercion.cases) {
+      const { audit_fields } = filterArgs([{ model: "m", user_id: c.raw }]);
+      expect(audit_fields.user_id).toBe(c.canonical);
+      expect(decisionHash({ user_id: c.canonical })).toBe(c.digest);
     }
   });
 

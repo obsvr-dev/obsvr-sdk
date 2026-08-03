@@ -103,6 +103,22 @@ class TestSigningVectors:
             assert expected["prev_sig"] == prev
             prev = sig
 
+    def test_user_id_coercion_matches_every_pinned_case(self):
+        # A non-string user_id is coerced to ONE canonical string at the
+        # event boundary before anything stores or signs it; the fixture pins
+        # both the string and the decision digest over it, and the TS suite
+        # pins the same cases through its own boundary. `raw` arrives here
+        # through the same JSON parse a stored export goes through, which is
+        # exactly where the two runtimes' scalar renderings part company.
+        from obsvr.events import _principal_string
+
+        v = _load_vectors()
+        for case in v["user_id_coercion"]["cases"]:
+            assert _principal_string(case["raw"]) == case["canonical"], case["id"]
+            assert (
+                decision_hash({"user_id": case["canonical"]}) == case["digest"]
+            ), case["id"]
+
     def test_frozen_format_1_signatures_still_reproduce(self):
         v = _load_vectors()
         key = derive_signing_key(v["api_key"])
