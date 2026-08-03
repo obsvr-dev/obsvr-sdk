@@ -1501,6 +1501,29 @@ async function governCall(
         ...(resolvedTaintTenant !== undefined ? { tenant_id: resolvedTaintTenant } : {}),
       };
       taintKey = deriveSessionKey(taintIdentity);
+      // 0.4 Required principal (opt-in): an unattributed call is refused
+      //     before any scanning layer runs — the refusal is about
+      //     attribution, not content. Runs after the enforcement-integrity
+      //     gate so a paused project keeps its own verdict and rule id. The
+      //     identity read is `resolvedTaintUser` — the same per-call
+      //     metadata → wrap-time option → ambient-subject resolution the
+      //     taint key and the signed event use, so the channel that refuses
+      //     is the channel that would have attributed. An empty string is a
+      //     supplied principal; only an absent one refuses (Python parity).
+      if (
+        actionTaken !== "blocked" &&
+        config.requirePrincipal === true &&
+        resolvedTaintUser == null
+      ) {
+        actionTaken = "blocked";
+        actionReason = "policy_violation";
+        actionSource = "policy_rules";
+        ruleIdOverride = "sdk:principal_required";
+        policyReasonOverride =
+          "requirePrincipal is set and the call carries no user_id on the enforcing channel";
+        reasonCode = ReasonCode.PRINCIPAL_REQUIRED;
+        debugLog(config, "warn", `Call blocked: ${policyReasonOverride}`);
+      }
       if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
         const verdict = evaluateSessionTaint(taintKey, taintCfg);
         if (verdict.enforcement !== "none") {

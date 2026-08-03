@@ -883,6 +883,11 @@ async function runGovernedCallTool(
       (currentConfig.policyFloor && currentConfig.policyFloor.length > 0) ||
       currentConfig.pii_policy ||
       currentConfig.on_pre_call ||
+      // requirePrincipal arms the net by itself, for the same reason as the
+      // floor entry above: the refusal it configures is enforced INSIDE
+      // applyPreCallPolicy, so a deployment that sets only this flag must
+      // still reach the pipeline (same list as the Python MCP boundary).
+      currentConfig.requirePrincipal === true ||
       canaryRegistrySize() > 0 ||
       sessionTaintSize() > 0
     ) {

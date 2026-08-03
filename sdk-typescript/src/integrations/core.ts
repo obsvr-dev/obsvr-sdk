@@ -561,6 +561,33 @@ export async function applyPreCallPolicy(
     debugLog(config, "warn", `Call blocked: ${gatePolicyReason}`);
   }
 
+  // 0.4 Required principal (opt-in): an unattributed call is refused before
+  //     any scanning layer runs — the refusal is about attribution, not
+  //     content. Runs after the enforcement-integrity gate so a paused
+  //     project keeps its own verdict and rule id. The identity read here is
+  //     the one the taint key and the scoped-quota context resolve below:
+  //     explicit ctx identity, else the ambient subject, else a
+  //     metadata-supplied user_id. An empty string is a supplied principal;
+  //     only an absent one refuses — the decision digest's presence byte
+  //     draws the same absent-vs-empty line (Python parity).
+  const principalForGate =
+    identityUserId ??
+    (ctx.metadata ? (ctx.metadata as Record<string, unknown>)["user_id"] : undefined);
+  if (
+    actionTaken !== "blocked" &&
+    config.requirePrincipal === true &&
+    principalForGate == null
+  ) {
+    actionTaken = "blocked";
+    actionReason = "policy_violation";
+    actionSource = "policy_rules";
+    gateRuleId = "sdk:principal_required";
+    gatePolicyReason =
+      "requirePrincipal is set and the call carries no user_id on the enforcing channel";
+    detectorReasonCode = ReasonCode.PRINCIPAL_REQUIRED;
+    debugLog(config, "warn", `Call blocked: ${gatePolicyReason}`);
+  }
+
   // --- guarded detector section -------------------------------------
   // One enclosing guard over the detector layers AND the decision they
   // feed, so a failure resolves instead of escaping to the host. `layer`

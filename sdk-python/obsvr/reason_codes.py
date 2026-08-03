@@ -62,6 +62,13 @@ class ReasonCode(str, Enum):
     # within the budget. Conflating them would hide how many calls actually
     # waited out their window.
     APPROVAL_TIMEOUT = "APPROVAL_TIMEOUT"
+    # An unattributed call refused because require_principal is set: the
+    # enforcing metadata carried no user_id at all. An empty string is a
+    # supplied principal (the decision digest's presence byte draws the same
+    # absent-vs-empty line); only an absent one refuses. Distinct from
+    # POLICY_VIOLATION so an attribution refusal is never conflated with a
+    # content verdict.
+    PRINCIPAL_REQUIRED = "PRINCIPAL_REQUIRED"
     SHADOW_WOULD_BLOCK = "SHADOW_WOULD_BLOCK"
     INJECTION_DETECTED = "INJECTION_DETECTED"
     EXTERNAL_BACKEND_DENY = "EXTERNAL_BACKEND_DENY"

@@ -43,6 +43,7 @@ import {
   type ToolContentDescriptor,
 } from "../policy/tool-content-hash.js";
 import { declaresDestructive } from "../policy/capability-hints.js";
+import { getCurrentSubject } from "../proxy/subject.js";
 import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 
@@ -265,6 +266,47 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             options,
           });
           throw new Error(`[obsvr] Tool blocked by agent policy: ${toolName}`);
+        }
+      }
+
+      // 1.2) Required principal (opt-in): an unattributed tool call is
+      // refused before any scanning layer runs — the refusal is about
+      // attribution, not content. The identity read here is the one the
+      // taint key and the emitted events resolve: per-call metadata, then
+      // the wrap-time option, then the ambient subject. An empty string is
+      // a supplied principal; only an absent one refuses (Python parity:
+      // the same gate inside the shared pre-call pipeline).
+      if (config.requirePrincipal === true) {
+        const identityMeta = (options.metadata ?? {}) as Record<string, unknown>;
+        const principal =
+          identityMeta.user_id ?? options.user_id ?? getCurrentSubject()?.user_id;
+        if (principal == null) {
+          emitIntegrationEvent({
+            config,
+            provider: "unknown",
+            model: "unknown",
+            operation: "tool.policy.tool_blocked",
+            source: SOURCE,
+            prompt: "",
+            response: "",
+            success: false,
+            metadata: {
+              tool_name: toolName,
+              reason: "principal_required",
+              ...toolContentMeta,
+            },
+            compliance: {
+              ...BLOCKED_COMPLIANCE,
+              reason_code: ReasonCode.PRINCIPAL_REQUIRED,
+              rule_id: "sdk:principal_required",
+              policy_reason:
+                "requirePrincipal is set and the call carries no user_id on the enforcing channel",
+            },
+            options,
+          });
+          throw new Error(
+            `[obsvr] Tool blocked: no caller principal supplied (requirePrincipal): ${toolName}`,
+          );
         }
       }
 

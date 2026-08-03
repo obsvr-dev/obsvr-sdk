@@ -146,6 +146,18 @@ export interface ObsvrConfig {
   enforcementMode?: 'enforce' | 'monitor';
 
   /**
+   * Refuse an unattributed call (opt-in). When true, a governed call whose
+   * enforcing channel carries no user_id at all is blocked with
+   * PRINCIPAL_REQUIRED before any scanning layer runs. An empty string is a
+   * supplied principal; only an absent one refuses — the decision digest's
+   * presence byte draws the same absent-vs-empty line. Default false: a
+   * single-tenant deployment that legitimately passes no user_id must not
+   * start refusing on upgrade.
+   * @default false
+   */
+  requirePrincipal?: boolean;
+
+  /**
    * Built-in PII scan policy (opt-in).
    * Runs before the LLM call using the built-in pattern set (PII,
    * secrets, and prompt-injection detectors; see policy/hook.ts).
@@ -474,6 +486,9 @@ export interface LLMAuditInitConfig {
   /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
   enforcement_mode?: 'enforce' | 'monitor';
 
+  /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
+  require_principal?: boolean;
+
   /**
    * Built-in PII scan policy (opt-in, snake_case alias)
    */
@@ -693,6 +708,9 @@ export interface ResolvedConfig {
 
   /** Global enforcement mode (see ObsvrConfig.enforcementMode). @default "enforce" */
   enforcementMode?: 'enforce' | 'monitor';
+
+  /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
+  requirePrincipal?: boolean;
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool

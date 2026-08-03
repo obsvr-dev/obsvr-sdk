@@ -512,6 +512,10 @@ def _gate(
         config.policy_floor
         or config.pii_policy is not None
         or config.on_pre_call is not None
+        # require_principal arms the net by itself: a config whose only
+        # policy is "refuse unattributed calls" still needs the pipeline to
+        # run, or the flag is silently inert at this boundary.
+        or getattr(config, "require_principal", False)
         or canary_registry_size() > 0
         or session_taint_size() > 0
     ):

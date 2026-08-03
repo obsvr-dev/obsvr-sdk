@@ -151,6 +151,14 @@ class ResolvedConfig:
     # way to defeat a revoked key) and canary-leak blocks (an exfiltration in
     # flight is stopped in any mode).
     enforcement_mode: str = "enforce"
+    # Refuse an unattributed call (opt-in). When True, a governed call whose
+    # enforcing metadata carries no user_id at all is blocked with
+    # PRINCIPAL_REQUIRED before any scanning layer runs. An empty string is a
+    # supplied principal; only an absent one refuses — the decision digest's
+    # presence byte draws the same absent-vs-empty line. Default False: a
+    # single-tenant deployment that legitimately passes no user_id must not
+    # start refusing on upgrade.
+    require_principal: bool = False
     policy_rules: Optional[List[Any]] = None
     # Anti-tamper policy floor: rules that cannot be silently disabled/
     # downgraded (see TS ObsvrConfig.policyFloor). Its own field so a remote
@@ -264,6 +272,7 @@ def init(
     approval_poll_ms: Optional[int] = None,
     fail_mode: Optional[str] = None,
     enforcement_mode: Optional[str] = None,
+    require_principal: Optional[bool] = None,
     policy_rules: Optional[List[Any]] = None,
     policy_floor: Optional[List[Any]] = None,
     default_source: Optional[str] = None,
@@ -304,6 +313,13 @@ def init(
         raise ValueError(
             'obsvr.init(): enforcement_mode must be "enforce" or "monitor", got '
             f"{enforcement_mode!r}"
+        )
+    # A governance flag must be a real boolean: a truthy string like "false"
+    # silently enabling (or a falsy 0 silently disabling) an attribution
+    # requirement is exactly the misconfiguration strict init exists to catch.
+    if require_principal is not None and not isinstance(require_principal, bool):
+        raise ValueError(
+            f"obsvr.init(): require_principal must be a boolean, got {require_principal!r}"
         )
     if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError(
@@ -454,6 +470,7 @@ def init(
         enforcement_mode=(
             enforcement_mode if enforcement_mode in ("enforce", "monitor") else "enforce"
         ),
+        require_principal=require_principal if require_principal is True else False,
         policy_rules=policy_rules,
         policy_floor=policy_floor,
         default_source=default_source,

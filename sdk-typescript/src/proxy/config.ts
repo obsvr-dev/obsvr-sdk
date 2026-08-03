@@ -76,6 +76,7 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   approvalWaitMs: "approval_wait_ms",
   approvalPollMs: "approval_poll_ms",
   enforcementMode: "enforcement_mode",
+  requirePrincipal: "require_principal",
   piiPolicy: "pii_policy",
   policyRules: "policy_rules",
   policyFloor: "policyFloor",
@@ -322,6 +323,14 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): enforcementMode must be "enforce" or "monitor", got "${String(config.enforcement_mode)}"`,
     );
   }
+  // A governance flag must be a real boolean: a truthy string like "false"
+  // silently enabling (or a falsy 0 silently disabling) an attribution
+  // requirement is exactly the misconfiguration strict init exists to catch.
+  if (config.require_principal !== undefined && typeof config.require_principal !== "boolean") {
+    throw new Error(
+      `obsvr.init(): requirePrincipal must be a boolean, got ${String(config.require_principal)}`,
+    );
+  }
   const refreshMs = config.policy_refresh_interval_ms;
   if (refreshMs !== undefined && (typeof refreshMs !== "number" || refreshMs < 0)) {
     throw new Error(`obsvr.init(): policyRefreshIntervalMs must be >= 0, got ${String(refreshMs)}`);
@@ -425,6 +434,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     approvalWaitMs: config.approval_wait_ms ?? 0,
     approvalPollMs: config.approval_poll_ms ?? 5000,
     enforcementMode: config.enforcement_mode ?? 'enforce',
+    requirePrincipal: config.require_principal === true,
     pii_policy: (() => {
       const p = config.pii_policy as any;
       if (!p) return undefined;

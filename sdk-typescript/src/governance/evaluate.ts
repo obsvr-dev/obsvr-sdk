@@ -87,6 +87,22 @@ export async function evaluate(
         : `Policy sync unavailable with failMode=closed (${degraded.reason})`;
   }
 
+  // 0.4 Required principal (opt-in): an unattributed evaluation is refused
+  //     before any scanning layer runs — the refusal is about attribution,
+  //     not content. Runs after the enforcement-integrity gate so a paused
+  //     project keeps its own verdict and rule id, and reads the same folded
+  //     identity the rules context receives (`request.user_id`). An empty
+  //     string is a supplied principal; only an absent one refuses — the
+  //     decision digest's presence byte draws the same absent-vs-empty line.
+  //     Monitor mode converts this block like any non-integrity block. Twin:
+  //     the require_principal gate in the Python pre-call pipeline.
+  if (decision === 'PERMITTED' && cfg.requirePrincipal === true && request.user_id == null) {
+    decision = 'BLOCKED';
+    reasonCode = ReasonCode.PRINCIPAL_REQUIRED;
+    ruleId = 'sdk:principal_required';
+    reason = 'requirePrincipal is set and the call carries no user_id on the enforcing channel';
+  }
+
   // --- guarded detector section -------------------------------------
   // Same guard as the other pre-call paths: a detector defect resolves
   // here rather than escaping to whoever called evaluate().

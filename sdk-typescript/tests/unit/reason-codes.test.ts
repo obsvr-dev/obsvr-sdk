@@ -234,6 +234,15 @@ describe('reason-code registry: every code is REACHABLE', () => {
     });
     if (timedOut.compliance.reason_code) reachable.add(timedOut.compliance.reason_code);
 
+    // An unattributed call under requirePrincipal: the attribution
+    // refusal's own classification.
+    _reset();
+    init({ api_key: 'k', require_principal: true } as never);
+    const unattributed = await applyPreCallPolicy('hello', {
+      config: getConfig(), provider: 'bedrock', operation: 'test',
+    });
+    if (unattributed.compliance.reason_code) reachable.add(unattributed.compliance.reason_code);
+
     // 4. Loop + delegation trackers (TypeScript-only controls today).
     _reset();
     const emitted: Array<Record<string, unknown>> = [];

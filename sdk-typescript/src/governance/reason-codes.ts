@@ -57,6 +57,15 @@ export enum ReasonCode {
    * window.
    */
   APPROVAL_TIMEOUT = 'APPROVAL_TIMEOUT',
+  /**
+   * An unattributed call refused because requirePrincipal is set: the
+   * enforcing channel carried no user_id at all. An empty string is a
+   * supplied principal (the decision digest's presence byte draws the same
+   * absent-vs-empty line); only an absent one refuses. Distinct from
+   * POLICY_VIOLATION so an attribution refusal is never conflated with a
+   * content verdict.
+   */
+  PRINCIPAL_REQUIRED = 'PRINCIPAL_REQUIRED',
   SHADOW_WOULD_BLOCK = 'SHADOW_WOULD_BLOCK',
   INJECTION_DETECTED = 'INJECTION_DETECTED',
   EXTERNAL_BACKEND_DENY = 'EXTERNAL_BACKEND_DENY',

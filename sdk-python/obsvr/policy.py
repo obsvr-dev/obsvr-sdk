@@ -998,6 +998,30 @@ def apply_pre_call_policy(
         # codes: when a detector blocked, floor/rules never ran and a hook
         # block clears it (TS parity).
         detector_reason_code: Optional[str] = None
+        # 0.4 Required principal (opt-in): an unattributed call is refused
+        #     before any scanning layer runs — the refusal is about
+        #     attribution, not content. Runs after the enforcement-integrity
+        #     gate so a paused project keeps its own verdict and rule id, and
+        #     reads the enforcing channel (metadata) that every user-scoped
+        #     control keys on. An empty string is a supplied principal; only
+        #     an absent one (None) refuses — the decision digest's presence
+        #     byte draws the same absent-vs-empty line. Monitor mode converts
+        #     this block like any non-integrity block: rolling the flag out
+        #     in monitor first is the intended adoption path.
+        if (
+            action_taken != "blocked"
+            and getattr(config, "require_principal", False)
+            and (metadata or {}).get("user_id") is None
+        ):
+            action_taken = "blocked"
+            action_reason = "policy_violation"
+            action_source = "policy_rules"
+            gate_rule_id = "sdk:principal_required"
+            gate_reason = (
+                "require_principal is set and the call carries no user_id "
+                "on the enforcing metadata"
+            )
+            detector_reason_code = ReasonCode.PRINCIPAL_REQUIRED.value
         _layer = "session_taint"
         # 0.5 Session taint latch: a session compromised on an earlier turn has its
         #     later egress escalated. ENFORCE runs on PRIOR taint; SET happens at
