@@ -255,6 +255,11 @@ def build_audit_event(
 ) -> Dict[str, Any]:
     opts = options or {}
     comp = compliance or DEFAULT_COMPLIANCE
+    # Ambient use_subject() scope, resolved once for the identity fields
+    # below. Explicit per-call/wrap-time options always win over it.
+    from .subject import get_current_subject
+
+    _ambient_subject = get_current_subject() or {}
 
     # WHERE the call went, versus what the client looked like.
     #
@@ -343,10 +348,14 @@ def build_audit_event(
         "request_id": request_id or str(uuid.uuid4()),
         # Environment fields
         "environment": config.environment,
-        "service_name": opts.get("service_name") or config.default_service_name,
+        "service_name": opts.get("service_name")
+        or _ambient_subject.get("service_name")
+        or config.default_service_name,
         "region": opts.get("region") or config.default_region or "unknown",
-        # Identity fields
-        "user_id": opts.get("user_id"),
+        # Identity fields — explicit options win, else the ambient
+        # use_subject() scope (TS parity: buildIntegrationEvent resolves
+        # `options.user_id || ambientSubject?.user_id`).
+        "user_id": opts.get("user_id") or _ambient_subject.get("user_id"),
         # Network fields. This SDK has no capture path for either, so they are
         # always None rather than sometimes None — there is no per-call kwarg
         # and no config default that reaches them. A DIVERGENCE from the

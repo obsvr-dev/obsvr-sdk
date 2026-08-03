@@ -401,6 +401,11 @@ def _identity_meta(options: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
     (``pydantic_ai.py``, ``bedrock.py``, ``vertex.py``, ``haystack.py``,
     ``mcp.py``): start from ``metadata``, then the wrap-time kwargs overlay.
     Consistency across surfaces matters more than either ordering.
+
+    The ambient ``use_subject()`` scope fills only what is still unset, so
+    the enforcing channel resolves the same identity the signed channel does
+    (``events.build_audit_event`` applies the same fallback) and an explicit
+    identity always wins over the ambient one.
     """
     opts = options or {}
     meta = dict(opts.get("metadata") or {})
@@ -408,6 +413,12 @@ def _identity_meta(options: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]
         meta["user_id"] = opts["user_id"]
     if opts.get("service_name") is not None:
         meta["service_name"] = opts["service_name"]
+    from ..subject import get_current_subject
+
+    ambient = get_current_subject() or {}
+    for key in ("user_id", "tenant_id", "service_name"):
+        if meta.get(key) is None and ambient.get(key) is not None:
+            meta[key] = ambient[key]
     return meta or None
 
 
