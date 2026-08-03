@@ -38,6 +38,41 @@ class PolicyRule:
     mode: Optional[str] = None
 
 
+# ── Conflict-resolution semantics for the enabled rule set ──────────────────
+#
+# "first_match" is the engine's original contract: rules evaluate in document
+# order and the first rule that renders an outcome decides, so a matched
+# topic_allow pre-empts every rule after it (EV-6/EV-8). "deny_wins" is the
+# versioned opt-in: every enforcing rule is evaluated, and the collected
+# outcomes resolve by action strength -- a refusal anywhere in the set
+# prevails over a redaction, a redaction over a flag, a flag over a permit --
+# with a deterministic tie-break, so the verdict is identical for every
+# ordering of the same rules. Undeclared (None) evaluates as first_match; a
+# DECLARED mode is additionally committed into policy_version (see
+# derive_policy_version), which is what makes the opt-in auditable.
+RULE_RESOLUTION_FIRST_MATCH = "first_match"
+RULE_RESOLUTION_DENY_WINS = "deny_wins"
+RULE_RESOLUTION_MODES = (RULE_RESOLUTION_FIRST_MATCH, RULE_RESOLUTION_DENY_WINS)
+
+
+def ensure_rule_resolution(resolution: Optional[str]) -> Optional[str]:
+    """Validate a ruleset's declared conflict-resolution mode.
+
+    None (undeclared) and the known modes pass through; anything else raises
+    ValueError. Same posture as the per-rule ``mode`` validator (EV-12): an
+    unknown value must invalidate LOUDLY at the boundary that parses it,
+    never silently evaluate under semantics the author did not choose -- a
+    typo'd declaration that quietly fell back to first-match would reopen
+    the exact ordering hazard the opt-in exists to close.
+    """
+    if resolution is not None and resolution not in RULE_RESOLUTION_MODES:
+        raise ValueError(
+            "unknown rule resolution %r: expected one of %r, or None for the "
+            "default %r" % (resolution, RULE_RESOLUTION_MODES, RULE_RESOLUTION_FIRST_MATCH)
+        )
+    return resolution
+
+
 def evaluate_policy_rules(
     rules: List[PolicyRule],
     text: str,
@@ -968,13 +1003,50 @@ def _canonical_json(value: Any) -> str:
     raise TypeError("Object of type %s is not JSON serializable" % type(value).__name__)
 
 
-def derive_policy_version(rules: List[PolicyRule]) -> str:
+def _version_document(enabled: List[PolicyRule], resolution: str) -> Dict[str, Any]:
+    """Hash document for a ruleset that DECLARES its conflict-resolution
+    mode. The declaration rides inside the hashed document, so the same rules
+    under different semantics can never share a policy_version. Projections
+    are kept in evaluation order under first_match, because there position
+    decides; under deny_wins they are sorted by id, because resolution is
+    order-insensitive by construction and a pure reordering keeps the same
+    version -- the truthful signal that no decision changed."""
+    if resolution == RULE_RESOLUTION_DENY_WINS:
+        ordered = sorted(enabled, key=lambda r: _utf16_order(r.id))
+    else:
+        ordered = list(enabled)
+    return {"resolution": resolution, "rules": [_canonical_rule(r) for r in ordered]}
+
+
+def derive_policy_version(
+    rules: List[PolicyRule], resolution: Optional[str] = None
+) -> str:
     """Canonical rules hash of the enabled rule set: 16-hex-char SHA-256
     prefix over the canonical projections sorted by id in UTF-16 CODE-UNIT
     order -- the order JS sorts in, not Python's codepoint order.
     Returns "none" when no rules are enabled. Stamped on every audit
     event as policy_version; must match the TS SDK byte for byte
     (pinned by the shared fixture).
+
+    ``resolution`` is the ruleset's DECLARED conflict-resolution mode. A
+    declared mode is committed INTO the hash, and the hash then commits to
+    exactly what can change a decision under that mode: first_match hashes
+    the projections in evaluation order, because list position decides
+    there; deny_wins hashes them sorted by id, because its resolution is
+    order-insensitive by construction. Two rulesets that can decide
+    differently therefore stamp different policy_version values -- the same
+    rules under the two modes differ, and the same rules in two orders
+    differ under first_match.
+
+    Undeclared (None) keeps the historical bytes -- order-insensitive over
+    enabled rules, exactly what every deployed fleet, the poll header and
+    the pinned fixture already stamp -- even though first-match evaluation
+    reads list order. Changing those bytes would restamp every deployed
+    policy on upgrade: a false policy-change signal fleet-wide, and a
+    cross-SDK hash mismatch for the whole mixed-fleet rollout window, which
+    the fixture grades a release blocker. Order-commitment is therefore
+    bound to the declared, versioned semantics: declaring ``resolution`` is
+    what buys an order-committed policy_version.
 
     Guarded at the function, like ``redact_for_storage``, because there is one
     correct answer at all of its call sites and most are on live host paths -
@@ -990,21 +1062,26 @@ def derive_policy_version(rules: List[PolicyRule]) -> str:
     Twin: sdk-typescript/src/policy/rules.ts (``derivePolicyVersion``).
     """
     try:
+        ensure_rule_resolution(resolution)
         if not rules:
             return "none"
-        # _utf16_order, not the default codepoint order. The two agree on
-        # everything except an ASTRAL rule id meeting a BMP id above U+E000,
-        # where JS sees the leading surrogate and sorts it FIRST while Python
-        # sees U+10000+ and sorts it LAST. The projections are then hashed in
-        # that order, so the two SDKs stamped DIFFERENT policy_version on
-        # identical policy -- and policy_version is inside the chain preimage
-        # under format 3, which makes a wrong value durably wrong rather than
-        # merely wrong. The helper existed for exactly this and was wired only
-        # to object keys.
-        enabled = sorted([r for r in rules if r.enabled], key=lambda r: _utf16_order(r.id))
+        enabled = [r for r in rules if r.enabled]
         if not enabled:
             return "none"
-        data = _canonical_json([_canonical_rule(r) for r in enabled])
+        if resolution is None:
+            # _utf16_order, not the default codepoint order. The two agree on
+            # everything except an ASTRAL rule id meeting a BMP id above U+E000,
+            # where JS sees the leading surrogate and sorts it FIRST while Python
+            # sees U+10000+ and sorts it LAST. The projections are then hashed in
+            # that order, so the two SDKs stamped DIFFERENT policy_version on
+            # identical policy -- and policy_version is inside the chain preimage
+            # under format 3, which makes a wrong value durably wrong rather than
+            # merely wrong. The helper existed for exactly this and was wired only
+            # to object keys.
+            ordered = sorted(enabled, key=lambda r: _utf16_order(r.id))
+            data = _canonical_json([_canonical_rule(r) for r in ordered])
+        else:
+            data = _canonical_json(_version_document(enabled, resolution))
         return hashlib.sha256(data.encode("utf-8")).hexdigest()[:16]
     except Exception as _version_exc:  # noqa: BLE001 - deliberate catch-all
         from .policy import record_check_only_failure

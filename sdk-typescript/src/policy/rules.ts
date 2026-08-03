@@ -136,6 +136,45 @@ export interface PolicyEvalContext {
 }
 
 /**
+ * Conflict-resolution semantics for the enabled rule set.
+ *
+ * 'first_match' is the engine's original contract: rules evaluate in document
+ * order and the first rule that renders an outcome decides, so a matched
+ * topic_allow pre-empts every rule after it (EV-6/EV-8). 'deny_wins' is the
+ * versioned opt-in: every enforcing rule is evaluated, and the collected
+ * outcomes resolve by action strength — a refusal anywhere in the set
+ * prevails over a redaction, a redaction over a flag, a flag over a permit —
+ * with a deterministic tie-break, so the verdict is identical for every
+ * ordering of the same rules. Undeclared evaluates as first_match; a DECLARED
+ * mode is additionally committed into policy_version (see
+ * derivePolicyVersion), which is what makes the opt-in auditable.
+ */
+export type RuleResolution = 'first_match' | 'deny_wins';
+export const RULE_RESOLUTION_MODES: readonly RuleResolution[] = Object.freeze([
+  'first_match',
+  'deny_wins',
+]);
+
+/**
+ * Validate a ruleset's declared conflict-resolution mode. Undefined
+ * (undeclared) and the known modes pass through; anything else throws. Same
+ * posture as the per-rule `mode` validator (EV-12): an unknown value must
+ * invalidate LOUDLY at the boundary that parses it, never silently evaluate
+ * under semantics the author did not choose — a typo'd declaration that
+ * quietly fell back to first-match would reopen the exact ordering hazard the
+ * opt-in exists to close.
+ */
+export function ensureRuleResolution(resolution?: string): RuleResolution | undefined {
+  if (resolution !== undefined && !RULE_RESOLUTION_MODES.includes(resolution as RuleResolution)) {
+    throw new Error(
+      `unknown rule resolution ${JSON.stringify(resolution)}: expected one of ` +
+        `${RULE_RESOLUTION_MODES.join(', ')}, or undefined for the default first_match`,
+    );
+  }
+  return resolution as RuleResolution | undefined;
+}
+
+/**
  * Evaluate a list of policy rules against text.
  * - All enabled rules run in order.
  * - 'block' wins over 'redact'; first block short-circuits.
@@ -718,14 +757,50 @@ function canonicalRule(r: PolicyRule): Record<string, unknown> {
 }
 
 /**
+ * Hash document for a ruleset that DECLARES its conflict-resolution mode.
+ * The declaration rides inside the hashed document, so the same rules under
+ * different semantics can never share a policy_version. Projections are kept
+ * in evaluation order under first_match, because there position decides;
+ * under deny_wins they are sorted by id, because resolution is
+ * order-insensitive by construction and a pure reordering keeps the same
+ * version — the truthful signal that no decision changed.
+ */
+function versionDocument(enabled: PolicyRule[], resolution: RuleResolution): Record<string, unknown> {
+  const ordered =
+    resolution === 'deny_wins'
+      ? [...enabled].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      : enabled;
+  return { resolution, rules: ordered.map(canonicalRule) };
+}
+
+/**
  * Derive the canonical rules hash for the enabled rule set: 16-hex-char
  * prefix of SHA-256 over the stableStringify'd canonical projections,
  * sorted by id (codepoint order, NOT locale order, for cross-language
  * determinism). Returns "none" when no rules are enabled. Stamped on
  * every audit event as policy_version; must match the Python SDK's
  * derive_policy_version byte for byte (pinned by the shared fixture).
+ *
+ * `resolution` is the ruleset's DECLARED conflict-resolution mode. A declared
+ * mode is committed INTO the hash, and the hash then commits to exactly what
+ * can change a decision under that mode: first_match hashes the projections
+ * in evaluation order, because list position decides there; deny_wins hashes
+ * them sorted by id, because its resolution is order-insensitive by
+ * construction. Two rulesets that can decide differently therefore stamp
+ * different policy_version values — the same rules under the two modes
+ * differ, and the same rules in two orders differ under first_match.
+ *
+ * Undeclared (undefined) keeps the historical bytes — order-insensitive over
+ * enabled rules, exactly what every deployed fleet, the poll header and the
+ * pinned fixture already stamp — even though first-match evaluation reads
+ * list order. Changing those bytes would restamp every deployed policy on
+ * upgrade: a false policy-change signal fleet-wide, and a cross-SDK hash
+ * mismatch for the whole mixed-fleet rollout window, which the fixture grades
+ * a release blocker. Order-commitment is therefore bound to the declared,
+ * versioned semantics: declaring `resolution` is what buys an order-committed
+ * policy_version.
  */
-export function derivePolicyVersion(rules: PolicyRule[]): string {
+export function derivePolicyVersion(rules: PolicyRule[], resolution?: RuleResolution): string {
   // Guarded at the function, like redactForStorage, because there is one
   // correct answer at all ~20 of its call sites and most of them are on live
   // host paths - the wrapper's per-call stamp, the integrations, MCP, the poll
@@ -737,14 +812,19 @@ export function derivePolicyVersion(rules: PolicyRule[]): string {
   // version that cannot be computed must not block a call. "unknown" is the
   // honest value and is distinguishable from the legitimate "none".
   try {
+    ensureRuleResolution(resolution);
     if (!rules || rules.length === 0) return 'none';
-    const sorted = rules
-      .filter((r) => r.enabled)
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    if (sorted.length === 0) return 'none';
-    const hash = createHash('sha256')
-      .update(stableStringify(sorted.map(canonicalRule)))
-      .digest('hex');
+    const enabled = rules.filter((r) => r.enabled);
+    if (enabled.length === 0) return 'none';
+    const data =
+      resolution === undefined
+        ? stableStringify(
+            [...enabled]
+              .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+              .map(canonicalRule),
+          )
+        : stableStringify(versionDocument(enabled, resolution));
+    const hash = createHash('sha256').update(data).digest('hex');
     return hash.slice(0, 16);
   } catch (err) {
     recordCheckOnlyFailure('policy_rules', err);
