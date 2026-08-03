@@ -30,6 +30,8 @@ import { derivePolicyVersion, ensureRuleResolution } from "../policy/rules.js";
 import { snapshotPolicy, emitPolicyChangedEvent, sendPolicyEvent } from "../policy/policy-log.js";
 import { validateRegexPattern } from "../utils/safe-regex.js";
 import { updateApprovals, type ApprovalGrant } from "../policy/approvals.js";
+import { loadDeviceSigner } from "./device-identity.js";
+import { setDeviceSigner } from "./sender/fire-and-forget.js";
 import {
   applyEscrowResponse,
   snapshotConsumption,
@@ -78,6 +80,7 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   enforcementMode: "enforcement_mode",
   requirePrincipal: "require_principal",
   ruleResolution: "rule_resolution",
+  deviceSigningKeyFile: "device_signing_key_file",
   piiPolicy: "pii_policy",
   policyRules: "policy_rules",
   policyFloor: "policyFloor",
@@ -332,6 +335,19 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): requirePrincipal must be a boolean, got ${String(config.require_principal)}`,
     );
   }
+  if (config.device_signing_key_file !== undefined) {
+    // Loud at init: the operator asked for non-repudiation, so a key that
+    // cannot be read or cannot sign must refuse now — shipping unsigned
+    // events under a config that promised signing is the silent no-op this
+    // control exists to rule out. Never generated here.
+    try {
+      loadDeviceSigner(String(config.device_signing_key_file));
+    } catch (err) {
+      throw new Error(
+        `obsvr.init(): deviceSigningKeyFile: ${(err as Error).message}`,
+      );
+    }
+  }
   if (config.rule_resolution !== undefined) {
     // The rules engine's own validator: an unknown declaration must refuse
     // loudly at init, never silently evaluate under semantics the author did
@@ -447,6 +463,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     enforcementMode: config.enforcement_mode ?? 'enforce',
     requirePrincipal: config.require_principal === true,
     ruleResolution: config.rule_resolution as 'first_match' | 'deny_wins' | undefined,
+    deviceSigningKeyFile: config.device_signing_key_file,
     pii_policy: (() => {
       const p = config.pii_policy as any;
       if (!p) return undefined;
@@ -538,6 +555,14 @@ export function init(config: LLMAuditInitConfig | ObsvrConfig): void {
   const internal = isCamel ? fromObsvrConfig(config) : config;
   const resolved = resolveConfig(internal);
   state.config = resolved;
+  // Device signing identity (optional): validated above, installed on the
+  // sender so every signed event also carries the device seal. Cleared when
+  // the config carries no key, so a re-init without one stops sealing.
+  setDeviceSigner(
+    resolved.deviceSigningKeyFile
+      ? loadDeviceSigner(resolved.deviceSigningKeyFile)
+      : null,
+  );
   state.initialized = true;
   // What the caller declared in code, kept apart from what a poll delivers.
   // See LOCALLY-DECLARED RULES on updatePolicyRules.

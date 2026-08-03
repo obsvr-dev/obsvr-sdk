@@ -168,6 +168,17 @@ export interface ObsvrConfig {
   ruleResolution?: 'first_match' | 'deny_wins';
 
   /**
+   * Optional client-held device signing identity (Ed25519): path to an
+   * operator-generated private key (PKCS8 PEM, or a raw 32-byte seed as
+   * hex/base64). When set, every signed event ALSO carries `device_sig` /
+   * `device_key_id` over the same payload the HMAC signs — non-repudiation
+   * against everyone who does not hold this key, with the HMAC chain
+   * untouched. The SDK NEVER generates this key; a configured key that
+   * cannot sign refuses at init. See proxy/device-identity.ts.
+   */
+  deviceSigningKeyFile?: string;
+
+  /**
    * Built-in PII scan policy (opt-in).
    * Runs before the LLM call using the built-in pattern set (PII,
    * secrets, and prompt-injection detectors; see policy/hook.ts).
@@ -502,6 +513,9 @@ export interface LLMAuditInitConfig {
   /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
   rule_resolution?: 'first_match' | 'deny_wins';
 
+  /** Device signing key path (see ObsvrConfig.deviceSigningKeyFile). */
+  device_signing_key_file?: string;
+
   /**
    * Built-in PII scan policy (opt-in, snake_case alias)
    */
@@ -727,6 +741,9 @@ export interface ResolvedConfig {
 
   /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
   ruleResolution?: 'first_match' | 'deny_wins';
+
+  /** Device signing key path (see ObsvrConfig.deviceSigningKeyFile). */
+  deviceSigningKeyFile?: string;
 
   /**
    * MCP tool-level policy: allowlist/denylist of tool names, poisoned-tool
@@ -1014,6 +1031,12 @@ export interface AuditEvent {
    * payload. */
   chain_format?: number;
   sdk_sig?: string;          // HMAC-SHA256 hex signature, 64 chars (Phase 2)
+  /** Optional device seal: Ed25519 over the same payload sdk_sig covers,
+   *  hex (128 chars). Additive — absent unless a device key is configured. */
+  device_sig?: string;
+  /** sha256(raw device public key) hex, first 16 chars. A selection hint;
+   *  verification trusts only keys pinned out of band. */
+  device_key_id?: string;
   prev_sig?: string;         // sdk_sig of the previous event in this session (Phase 3)
 }
 

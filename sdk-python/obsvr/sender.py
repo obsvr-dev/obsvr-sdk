@@ -120,6 +120,22 @@ _seq_no = 0
 _last_sig: Optional[str] = None
 _signing_key: Optional[bytes] = None
 _signing_key_source: Optional[str] = None
+#: Optional client-held device signing identity (see obsvr/device_identity.py).
+#: Installed by init() when device_signing_key_file is configured; None means
+#: exactly the pre-existing behaviour — HMAC only.
+_device_signer: Optional[Any] = None
+
+
+def configure_device_signer(signer: Optional[Any]) -> None:
+    """Install (or clear) the device signing identity for this process.
+
+    Called from init() with an already-loaded ``DeviceSigner``; the loud
+    validation lives there. Under ``_sign_lock`` so an in-flight signing sees
+    either the old identity or the new one, never a torn pair of fields.
+    """
+    global _device_signer
+    with _sign_lock:
+        _device_signer = signer
 # Reentrant: send_audit_async holds it across sign + enqueue (atomic chain
 # advance), and the public sign_event() re-acquires it inside that scope.
 _sign_lock = threading.RLock()
@@ -296,6 +312,17 @@ def _sign_event_locked(event: Dict[str, Any], api_key: str) -> None:
     event["sdk_sig"] = hmac_mod.new(
         key, sig_payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
+    if _device_signer is not None:
+        # The optional second seal: the SAME payload, signed by the
+        # operator-held Ed25519 key. Additive by construction — the HMAC
+        # preimage above is byte-identical with or without it, so every
+        # existing chain and verifier is untouched, while a verifier that
+        # pins this key gets non-repudiation against every party that does
+        # not hold it (an API-key holder included). The key id is inside the
+        # device preimage, so neither it nor the version label can be
+        # swapped without breaking the signature.
+        event["device_key_id"] = _device_signer.key_id
+        event["device_sig"] = _device_signer.sign_payload(sig_payload)
     _last_sig = event["sdk_sig"]
 
 
@@ -841,7 +868,7 @@ def flush(timeout: float = 5.0) -> None:
 def _reset_sender() -> None:
     """Reset sender state (tests only). The worker thread stays alive."""
     global _dropped, _seq_no, _last_sig, _signing_key, _signing_key_source
-    global _gap_pending, _gap_marker_ordinal, _last_config
+    global _gap_pending, _gap_marker_ordinal, _last_config, _device_signer
     while True:
         try:
             _queue.get_nowait()
@@ -859,6 +886,7 @@ def _reset_sender() -> None:
         _last_sig = None
         _signing_key = None
         _signing_key_source = None
+        _device_signer = None
         _gap_pending = 0
         _gap_marker_ordinal = 0
         _last_config = None
