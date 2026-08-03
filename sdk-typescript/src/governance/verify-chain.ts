@@ -45,12 +45,16 @@ export interface ChainVerificationResult {
   breaks: Array<{ index: number; reason: string }>;
   /**
    * Signing format the chain was checked under (see proxy/chain-format.ts):
-   * 2 for current chains, 1 for chains signed before length-prefixed content
-   * framing existed. Reported so a legacy chain never passes as silently
-   * equivalent to a current one — format 1 does not bind the prompt/response
-   * boundary, and a consumer weighing the evidence is entitled to know that.
-   * Absent when verification broke before the format could be established
-   * (empty chain, missing session id, unrecognized format value).
+   * 3 for current chains, 2 for content-framed chains signed before the
+   * verdict entered the preimage, and 1 for chains signed before
+   * length-prefixed content framing existed. This list said "2 for current"
+   * and stopped there, so a current chain reported a value the documented
+   * vocabulary did not contain. Reported so a legacy chain never passes as
+   * silently equivalent to a current one — format 1 does not bind the
+   * prompt/response boundary, and a consumer weighing the evidence is
+   * entitled to know that. Absent when verification broke before the format
+   * could be established (empty chain, missing session id, unrecognized
+   * format value).
    */
   chainFormat?: number;
 }
