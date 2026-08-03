@@ -956,6 +956,28 @@ def apply_pre_call_policy(
         from .config import get_tenant_config
         config = get_tenant_config(tenant_id)
 
+    # Fold the ambient use_subject() scope into the ENFORCING metadata, once,
+    # before any layer reads it. Every user-scoped control below keys on this
+    # dict — require_principal (0.4), the session-taint latch, the quota
+    # bucket, the decision-input hash — and the signed record resolves its
+    # own user_id as ``opts.user_id or ambient`` (events.build_audit_event).
+    # Without this fold the two channels disagreed: an ambient-only principal
+    # was attributed on the record but invisible to enforcement, so
+    # require_principal refused a call whose signed event named the very
+    # principal it claimed was absent — a record contradicting its own reason.
+    # Explicit metadata always wins; the ambient only fills what is unset,
+    # matching the signed channel's ``or`` precedence and tools._identity_meta.
+    # A fresh dict, never the caller's — this is the enforcing view, not a
+    # mutation of what the caller passed. No ambient scope active ⇒ identical
+    # to before, byte for byte.
+    from .subject import get_current_subject
+    _ambient_subject = get_current_subject() or {}
+    if _ambient_subject:
+        metadata = dict(metadata or {})
+        for _idk in ("user_id", "tenant_id", "service_name"):
+            if not metadata.get(_idk) and _ambient_subject.get(_idk):
+                metadata[_idk] = _ambient_subject[_idk]
+
     action_taken = "allowed"
     action_reason = "none"
     action_source = "unknown"

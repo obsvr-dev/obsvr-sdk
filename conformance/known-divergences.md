@@ -31,6 +31,20 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-03: KD-11's substantive divergence was FIXED and the entry NARROWED.
+  Python's ambient `use_subject()` subject now reaches the ENFORCING channel —
+  the `require_principal` verdict, the user-scoped quota bucket, the
+  session-taint key and the decision-input hash — on every surface that
+  evaluates policy, via a single fold at the head of `apply_pre_call_policy`
+  (the choke point every governed surface calls, which also covers the wrap
+  path that `_identity_meta` folds never reached). This closed a verdict-level
+  defect, not just a bucketing one: an ambient-only principal under
+  `require_principal` was refused as absent while the same call's signed event
+  named that principal — a record contradicting its own reason. KD-11 is
+  retained, narrowed to the one residual edge (an explicit empty-string
+  `user_id` alongside an active ambient subject resolves to the ambient
+  subject in Python's enforcing channel and to the empty string in
+  TypeScript's), which changes no verdict.
 - 2026-07-28: KD-5 (customer-rule eval context on the TypeScript integrations
   path) was FIXED, and the row is gone. `applyPreCallPolicy` built the
   customer-rules context as `{provider, metadata}` while handing the floor,
