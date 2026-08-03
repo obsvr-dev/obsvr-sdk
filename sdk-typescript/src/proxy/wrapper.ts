@@ -810,8 +810,10 @@ function buildAuditEvent(
       config.default_region ||
       "unknown",
 
-    // Identity fields
-    user_id: auditFields.user_id || options.user_id || undefined,
+    // Identity fields — per-call audit fields win, then wrap-time options,
+    // then the ambient useSubject() scope (the same resolution the
+    // integration event builder and the session-taint key already use).
+    user_id: auditFields.user_id || options.user_id || getCurrentSubject()?.user_id || undefined,
 
     // Network fields (passed through to server for masking)
     client_ip: auditFields.client_ip || undefined,
@@ -1147,7 +1149,7 @@ function wrapStreamingIterator(
             options.region ||
             config.default_region ||
             "unknown",
-          user_id: auditFields.user_id || options.user_id || undefined,
+          user_id: auditFields.user_id || options.user_id || getCurrentSubject()?.user_id || undefined,
           client_ip: auditFields.client_ip || undefined,
           user_agent: auditFields.user_agent || undefined,
           // The destination, not the client's shape — see PathContext.
@@ -2089,7 +2091,7 @@ async function governCall(
             provider,
             model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
             environment: config.environment,
-            userId: audit_fields.user_id || ctx.options.user_id || undefined,
+            userId: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
             serviceName:
               audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
             tenantId:
@@ -2179,7 +2181,7 @@ async function governCall(
       degradedReason: degraded.reason,
       target: "request",
       evaluatedText: decisionEvaluatedText,
-      userId: audit_fields.user_id || ctx.options.user_id || undefined,
+      userId: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
       serviceName:
         audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
       hook: hookDisposition,
@@ -2254,7 +2256,7 @@ async function governCall(
           ctx.options.region ||
           config.default_region ||
           "unknown",
-        user_id: audit_fields.user_id || ctx.options.user_id || undefined,
+        user_id: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
         client_ip: audit_fields.client_ip || undefined,
         user_agent: audit_fields.user_agent || undefined,
         // The destination, not the client's shape — see PathContext. A blocked
