@@ -58,9 +58,14 @@ class ReasonCode(str, Enum):
     # A require_approval block whose configured blocking wait
     # (approval_wait_ms) expired with no covering grant. Distinct from
     # APPROVAL_REQUIRED on purpose: that code means "refused; ask and retry",
-    # while this one means a real-time hold was offered and no human decided
-    # within the budget. Conflating them would hide how many calls actually
-    # waited out their window.
+    # while this one means a real-time hold was offered and no covering grant
+    # arrived within the budget. It deliberately does NOT claim nobody
+    # answered: the grant channel carries grants, not verdicts, so an
+    # explicit human denial is indistinguishable from no decision and both
+    # surface as this code. A distinct denial code is minted only when a
+    # status channel that can actually know the difference exists
+    # (SECURITY.md, "The approval-status contract") — a code whose emission path cannot
+    # know the fact it asserts would be a fabricated record.
     APPROVAL_TIMEOUT = "APPROVAL_TIMEOUT"
     # An unattributed call refused because require_principal is set: the
     # enforcing metadata carried no user_id at all. An empty string is a

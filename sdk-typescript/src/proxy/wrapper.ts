@@ -1888,7 +1888,7 @@ async function governCall(
                 // Its own registry code: a hold that expired is a different
                 // fact from "refused; ask and retry".
                 reasonCode = ReasonCode.APPROVAL_TIMEOUT;
-                policyReason = `approval_wait_timeout: no grant within ${waitMs}ms (${result.reason})`;
+                policyReason = `approval_wait_timeout: no covering grant within ${waitMs}ms; denial and no-decision are indistinguishable on the grant channel (${result.reason})`;
               } else {
                 // Degraded mid-wait (kill switch / staleness) or a
                 // wait-internal failure: the APPROVAL_REQUIRED block stands,

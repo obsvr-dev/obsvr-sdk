@@ -450,9 +450,36 @@ The durable guarantee is about what *was* captured, not about forcing capture: e
   Honest limit, and it applies to presidio and to ingest alike: both guards are init-time and static (literal-IP + scheme), so neither resolves a hostname per-call — a hostname that later rebinds to a metadata IP is a residual TOCTOU. `init()` is synchronous in both SDKs and the resolving guard needs DNS, so closing this means either an async `init()` or a check on the delivery path; the external policy backend is the only endpoint that gets the resolving check today. Both URLs are operator-configured rather than runtime-attacker-controlled, which is why the static guard is the proportionate one — though on the zero-code Python entry point `ingest_url` comes from the `OBSVR_INGEST_URL` environment variable, so "operator-configured" means whatever set that variable.
 - Customer-supplied regex rules pass a ReDoS validator (nested quantifiers — including a fixed `{n}` repetition applied to a group that itself carries a quantifier or alternation, the `(.*a){20}b` shape — quantified alternation, and backreferences rejected; bounded input length) before they are ever executed.
 
+## The approval-status contract (what ingest must expose before a denial code may exist)
+
+The blocking approval hold can tell that a covering grant **arrived**; it cannot tell that a human **said no**, because neither channel the SDK has carries a verdict. `GET /policies` returns `approvals` as a list of grants — the parser keeps an entry only if it has a `rule_id` and an `expires_at`, so there is no representation a denial could ride in on — and `POST /approvals/request` is fire-and-forget, its response never read. An explicit denial and an unanswered request therefore both surface as the hold expiring: `APPROVAL_TIMEOUT`, with a reason text that says the two are indistinguishable rather than implying nobody answered. The call is blocked either way — the conflation is never a false enforcement — and a distinct denial code is **deliberately not minted**: a registry code whose emission path cannot know the fact it asserts would be a fabricated record.
+
+That changes when the ingest service exposes a per-request status endpoint. The contract, stated here so the SDK and the service cannot drift apart:
+
+```
+GET {ingest_url}/approvals/status?rule_id=<id>&action_hash=<hex>
+Headers: X-API-Key: <api key>
+→ { "status": "pending" | "approved" | "denied" | "expired" | "unknown",
+    "decided_at": "<ISO 8601, present for approved/denied>",
+    "decided_by": "<opaque reviewer label, optional>",
+    "signature": { ...same envelope as /policies, when signing is enabled... } }
+```
+
+`action_hash` is the digest the SDK already sends on `/approvals/request`, so status is per-call, not per-rule; `user_id` may be added as a narrowing parameter under the same discipline as grant binding (both sides present ⇒ must match; a silent side does not filter). What the SDK does with each state:
+
+| Status | SDK behaviour |
+|---|---|
+| `pending` | keep holding, within `approval_wait_ms` |
+| `approved` | shorten the next grant-channel poll — **the status answer never lifts the block by itself**; only a grant arriving on the signed `/policies` channel, passing grant-shape validation and end-of-pipeline revalidation, may do that, so a spoofed or replayed `approved` buys nothing |
+| `denied` | stop holding immediately and block with a new, distinct registry code (`APPROVAL_DENIED` — added to the closed registry, both languages and the shared fixture, in the same change that consumes this endpoint), recording `decided_at`/`decided_by` on the event's telemetry channel |
+| `expired` / `unknown` | treat as `pending` until the local budget expires → `APPROVAL_TIMEOUT` |
+
+Transport failure, a non-200, or an unparseable body: exactly today's behaviour — keep polling the grant channel, resolve by the local budget, never a fabricated denial. Because `denied` is the one state that changes SDK behaviour on the endpoint's word alone, a deployment that pins `policy_public_key` must receive `denied` under the same signature envelope `/policies` uses (covering `status`, `rule_id`, `action_hash`, `decided_at`, with `issued_at` monotonicity), and an unsigned or unverifiable `denied` is treated as `pending` — otherwise anyone who can answer the status URL could convert every hold into an instant denial. `approved` needs no signature because it grants nothing.
+
 ## Known limitations under active work
 
 - **Cross-instance dedup and rate limits.** Replay protection and rate limiting are per-process today; cross-replica replays are caught at verification time rather than rejected inline.
+- **A human denial is indistinguishable from indecision during an approval hold** — both surface as `APPROVAL_TIMEOUT`, and the record says so. Closes when the approval-status contract above is implemented by ingest.
 - **Sequence monotonicity at accept time** (currently detected at verification time).
 - **Organization-level RBAC and per-key policy**, including deployment-level controls over `disabled: true`.
 

@@ -163,6 +163,13 @@ describe('integrations pipeline: blocking approval wait', () => {
     expect(result.decision).toBe('block');
     expect(result.compliance.reason_code).toBe(ReasonCode.APPROVAL_TIMEOUT);
     expect(result.compliance.policy_reason).toContain('approval_wait_timeout');
+    // The record asserts only what is true in both worlds: the grant channel
+    // carries no verdicts, so an explicit denial surfaces exactly like no
+    // decision — and the record SAYS so instead of claiming nobody answered
+    // (SECURITY.md, "The approval-status contract").
+    expect(result.compliance.policy_reason).toContain(
+      'denial and no-decision are indistinguishable',
+    );
   });
 
   it('keeps the fire-and-forget refusal at the default of zero', async () => {
@@ -268,5 +275,8 @@ describe('proxy wrapper: blocking approval wait', () => {
     expect(blocked).toBeDefined();
     expect(blocked.reason_code).toBe(ReasonCode.APPROVAL_TIMEOUT);
     expect(blocked.policy_reason).toContain('approval_wait_timeout');
+    expect(blocked.policy_reason).toContain(
+      'denial and no-decision are indistinguishable',
+    );
   });
 });

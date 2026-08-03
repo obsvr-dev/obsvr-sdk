@@ -147,6 +147,14 @@ class TestBlockingWait:
         assert blocked, "the refused call must be on the record"
         assert blocked[0]["reason_code"] == ReasonCode.APPROVAL_TIMEOUT.value
         assert "approval_wait_timeout" in blocked[0]["policy_reason"]
+        # The record asserts only what is true in both worlds: the grant
+        # channel carries no verdicts, so an explicit denial surfaces
+        # exactly like no decision — and the signed record SAYS so instead
+        # of claiming nobody answered (SECURITY.md, "The approval-status contract").
+        assert (
+            "denial and no-decision are indistinguishable"
+            in blocked[0]["policy_reason"]
+        )
 
     def test_a_kill_switch_mid_wait_aborts_the_hold_and_blocks(
         self, sent, monkeypatch

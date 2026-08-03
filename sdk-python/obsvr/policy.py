@@ -1381,9 +1381,17 @@ def apply_pre_call_policy(
                         elif wait_verdict == "timeout":
                             # Its own registry code: a hold that expired is a
                             # different fact from "refused; ask and retry".
+                            # The reason asserts only what is true in both
+                            # worlds — the grant channel carries no verdicts,
+                            # so an explicit denial and no decision at all
+                            # both surface here, and the record says so
+                            # rather than claiming nobody answered
+                            # (SECURITY.md, "The approval-status contract").
                             rules_reason_code = ReasonCode.APPROVAL_TIMEOUT.value
                             rules_reason = (
-                                "approval_wait_timeout: no grant within %dms (%s)"
+                                "approval_wait_timeout: no covering grant "
+                                "within %dms; denial and no-decision are "
+                                "indistinguishable on the grant channel (%s)"
                                 % (wait_ms, rules_result.get("reason"))
                             )
                         else:
