@@ -197,13 +197,40 @@ class TestOptInDefault:
         assert "approval_required" in blocked[0]["policy_reason"]
         assert "approval_wait" not in blocked[0]["policy_reason"]
 
-    def test_the_default_is_zero(self):
-        """Mutation guard for (d): this test fails if the default ever moves
-        off 0 - the change that would make a library upgrade start blocking
-        production calls for minutes."""
+    def test_the_default_is_zero_and_zero_fails_closed(self, sent, monkeypatch):
+        """The wait is opt-in BY DECISION, and this pin carries the reasoning.
+
+        At the shipped default a require_approval rule REFUSES immediately
+        and files the request - fail-closed - so the zero default is not the
+        failure the wait was built to replace: a pre-call hook that pauses
+        for a human resolves by fail_mode when hook_timeout_ms expires,
+        which at shipped defaults ALLOWS. The wait's default does not
+        reintroduce that in either direction. A non-zero default would
+        convert this fast refusal into a slow one for every deployment
+        without a staffed approvals channel - the same verdict after minutes
+        of held threads - and would start blocking production calls for that
+        long on upgrade. Holding a call is only useful where a human is
+        actually watching the queue, an operational prerequisite only the
+        operator can declare; approval_wait_ms is that declaration.
+
+        Mutation guard: fails if the default moves off 0, and fails if a
+        zero-wait refusal ever starts consulting the grant channel (a hidden
+        wait) or resolving open.
+        """
         assert ResolvedConfig(api_key="k").approval_wait_ms == 0
+        state = _grant_source(monkeypatch, approve_after=None)
         _init()
         assert get_config().approval_wait_ms == 0
+
+        tool = _SpyTool(state)
+        governed = govern_tool(tool)
+        with pytest.raises(ObsvrPolicyError):
+            governed._run(note="send_money now")
+
+        assert tool.calls == [], "the default must refuse, never allow"
+        assert state["polls"] == 0, "a zero wait must not poll the grant channel"
+        blocked = [e for e in sent if e.get("action_taken") == "blocked"]
+        assert blocked[0]["reason_code"] == ReasonCode.APPROVAL_REQUIRED.value
 
 
 class TestNonVacuity:
