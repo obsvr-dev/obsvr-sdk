@@ -2,7 +2,8 @@
 /**
  * obsvr-verify: offline evidence verification for auditors.
  *
- *   npx obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]
+ *   npx obsvr-verify <bundle.json> [--api-key <key>] [--device-pubkey <key>]...
+ *                    [--allow-gaps] [--json]
  *
  * Input: an exported obsvr evidence file — an incident evidence bundle
  * (obsvr-incident-evidence-v1, `trace.steps`), a trace evidence bundle, or a
@@ -62,6 +63,7 @@
 import { readFileSync } from "node:fs";
 import { verifyAuditChain, type ChainVerificationResult } from "./governance/verify-chain.js";
 import { readAuditGapClaim } from "./proxy/audit-gap.js";
+import { deriveDeviceKeyId, loadDevicePublicKey } from "./proxy/device-identity.js";
 import type { AuditEvent } from "./proxy/types.js";
 
 function fail(msg: string, code = 1): never {
@@ -146,13 +148,34 @@ const keyFlag = args.indexOf("--api-key");
 const apiKey = keyFlag >= 0 ? args[keyFlag + 1] : undefined;
 const allowGaps = args.includes("--allow-gaps");
 const asJson = args.includes("--json");
-const file = args.find(
-  (a, i) => !a.startsWith("--") && (keyFlag < 0 || i !== keyFlag + 1),
-);
+const valueIndices = new Set<number>();
+if (keyFlag >= 0) valueIndices.add(keyFlag + 1);
+const deviceKeyArgs: string[] = [];
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--device-pubkey" && i + 1 < args.length) {
+    deviceKeyArgs.push(args[i + 1]);
+    valueIndices.add(i + 1);
+  }
+}
+const file = args.find((a, i) => !a.startsWith("--") && !valueIndices.has(i));
 
 if (!file) {
-  console.error("Usage: obsvr-verify <bundle.json> [--api-key <key>] [--allow-gaps] [--json]");
+  console.error(
+    "Usage: obsvr-verify <bundle.json> [--api-key <key>] [--device-pubkey <key>]... [--allow-gaps] [--json]",
+  );
   process.exit(2);
+}
+
+const deviceKeys: Buffer[] = [];
+const pinnedIds: string[] = [];
+for (const value of deviceKeyArgs) {
+  try {
+    const raw = loadDevicePublicKey(value);
+    deviceKeys.push(raw);
+    pinnedIds.push(deriveDeviceKeyId(raw));
+  } catch (e) {
+    fail(`--device-pubkey: ${e instanceof Error ? e.message : String(e)}`, 2);
+  }
 }
 
 let parsed: unknown;
@@ -183,10 +206,15 @@ function sessionDoc(sid: string, result: ChainVerificationResult): Record<string
   doc.eventsDeclaredLost = result.eventsDeclaredLost;
   doc.breaks = result.breaks;
   if (result.chainFormat !== undefined) doc.chainFormat = result.chainFormat;
+  doc.deviceSignedEvents = result.deviceSignedEvents;
+  doc.deviceChecked = result.deviceChecked;
+  if (result.deviceUnverifiedReason !== undefined) {
+    doc.deviceUnverifiedReason = result.deviceUnverifiedReason;
+  }
   return doc;
 }
 
-if (apiKey) {
+if (apiKey || deviceKeys.length > 0) {
   // Group per session: the HMAC chain is per sdk_session_id.
   const sessions = new Map<string, AuditEvent[]>();
   for (const e of events) {
@@ -198,27 +226,33 @@ if (apiKey) {
   let verified = 0;
   let gapMarkers = 0;
   let eventsLost = 0;
+  let deviceSigned = 0;
   for (const [sid, sessionEvents] of sessions) {
     const result = verifyAuditChain(
       sessionEvents.sort((a, b) => (a.seq_no ?? 0) - (b.seq_no ?? 0)),
-      apiKey,
+      apiKey ?? null,
+      deviceKeys.length > 0 ? deviceKeys : null,
     );
     reports.push([sid, result]);
     anyInvalid = anyInvalid || !result.valid;
     verified += result.eventsVerified;
     gapMarkers += result.gapMarkers;
     eventsLost += result.eventsDeclaredLost;
+    deviceSigned += result.deviceSignedEvents;
   }
   const code = anyInvalid ? 1 : gapMarkers === 0 || allowGaps ? 0 : EXIT_INCOMPLETE;
+  const mode = apiKey ? "content+chain" : "content+device";
   if (asJson) {
     console.log(
       jsonLine({
-        mode: "content+chain",
+        mode,
         valid: !anyInvalid,
         sessions: reports.map(([sid, result]) => sessionDoc(sid, result)),
         eventsVerified: verified,
         gapMarkers,
         eventsDeclaredLost: eventsLost,
+        deviceSignedEvents: deviceSigned,
+        deviceChecked: deviceKeys.length > 0,
         allowGaps,
         exitCode: code,
       }),
@@ -235,16 +269,36 @@ if (apiKey) {
     }
     process.exit(1);
   }
-  console.log(
-    `✓ CONTENT + CHAIN verification passed: ${verified} signature(s) recomputed and chain-linked across ${sessions.size} session(s).\n` +
-      `  This attests prompt/response CONTENT integrity, event ORDER, and — under\n` +
-      `  chain format 3, the current signing format — the decision/attribution\n` +
-      `  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n` +
-      `  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n` +
-      `  and order only. The client signature does NOT cover tenant_id, token\n` +
-      `  counts, metadata, operation, or content_provenance — those are sealed by\n` +
-      `  the server countersignature at ingest.`,
-  );
+  if (apiKey) {
+    console.log(
+      `✓ CONTENT + CHAIN verification passed: ${verified} signature(s) recomputed and chain-linked across ${sessions.size} session(s).\n` +
+        `  This attests prompt/response CONTENT integrity, event ORDER, and — under\n` +
+        `  chain format 3, the current signing format — the decision/attribution\n` +
+        `  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n` +
+        `  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n` +
+        `  and order only. The client signature does NOT cover tenant_id, token\n` +
+        `  counts, metadata, operation, or content_provenance — those are sealed by\n` +
+        `  the server countersignature at ingest.`,
+    );
+  } else {
+    console.log(
+      `✓ CONTENT + DEVICE verification passed: ${verified} device signature(s) recomputed and chain-linked across ${sessions.size} session(s).\n` +
+        `  Each event's Ed25519 device seal was verified under the pinned public\n` +
+        `  key(s) over the same payload the HMAC covers — content, order, and (under\n` +
+        `  chain format 3) the decision/attribution fields — so this run needed no\n` +
+        `  API key and shared no secret. It does NOT check the HMAC chain: run with\n` +
+        `  --api-key as well to attest both seals.`,
+    );
+  }
+  if (deviceKeys.length > 0) {
+    console.log(
+      `✓ device signatures verified: ${verified} event(s) under pinned key(s) ${[...pinnedIds].sort().join(", ")}`,
+    );
+  } else if (deviceSigned > 0) {
+    console.log(
+      `note: ${deviceSigned} event(s) carry device signatures not verified in this run (no --device-pubkey supplied)`,
+    );
+  }
   process.exit(reportGaps(gapMarkers, eventsLost));
 } else {
   const result = verifyStructure(events);
@@ -286,5 +340,13 @@ if (apiKey) {
       `  full HMAC re-verification, and check the daily Merkle root (git anchor /\n` +
       `  RFC 3161 token) for the no-insert/no-delete guarantee across days.`,
   );
+  const deviceSigned = events.filter(
+    (e) => typeof (e as { device_sig?: unknown }).device_sig === "string",
+  ).length;
+  if (deviceSigned > 0) {
+    console.log(
+      `note: ${deviceSigned} event(s) carry device signatures not verified in this run (no --device-pubkey supplied)`,
+    );
+  }
   process.exit(reportGaps(gapMarkers, eventsLost));
 }

@@ -14,6 +14,11 @@ import {
   signaturePayload,
   type DecisionFields,
 } from '../proxy/chain-format.js';
+import {
+  deriveDeviceKeyId,
+  loadDevicePublicKey,
+  verifyDeviceSig,
+} from '../proxy/device-identity.js';
 
 export interface ChainVerificationResult {
   valid: boolean;
@@ -57,6 +62,21 @@ export interface ChainVerificationResult {
    * format value).
    */
   chainFormat?: number;
+  /**
+   * Events carrying a `device_sig`, counted in the verified prefix whether
+   * or not device keys were pinned — so a caller (and the CLI) can say
+   * "seals present, not verified in this run" instead of silence.
+   */
+  deviceSignedEvents: number;
+  /**
+   * True when device public keys were pinned and the device tier ran. In
+   * this SDK the Ed25519 backend is node:crypto, always present, so keys
+   * pinned always means checked; the field exists for value parity with the
+   * Python result, where a missing optional backend reports itself in
+   * `deviceUnverifiedReason` instead of folding into valid or tampered.
+   */
+  deviceChecked: boolean;
+  deviceUnverifiedReason?: string;
 }
 
 const SIGNING_SALT = 'obsvr-sdk-signing-v1';
@@ -99,31 +119,6 @@ function signatureMatches(stored: unknown, expected: string): boolean {
   return timingSafeEqual(storedBuf, expectedBuf);
 }
 
-/** Compute expected signature for an event under the given chain format */
-function computeSignature(
-  signingKey: Buffer,
-  format: number,
-  sessionId: string,
-  seqNo: number,
-  timestampSdk: number,
-  prompt: string,
-  response: string,
-  prevSig: string | null,
-  decision: DecisionFields
-): string {
-  const sigPayload = signaturePayload(
-    format,
-    sessionId,
-    seqNo,
-    timestampSdk,
-    prompt,
-    response,
-    prevSig,
-    decision
-  );
-  return createHmac('sha256', signingKey).update(sigPayload).digest('hex');
-}
-
 /**
  * Verify the integrity of an audit event chain.
  *
@@ -146,13 +141,39 @@ function computeSignature(
  * One pass reports EVERY break (`breaks`), re-anchoring on each breaking
  * event's own claims so independent tampers surface as independent breaks;
  * `brokenAt` / `reason` remain the first of them.
+ *
+ * With `devicePublicKeys` pinned, the optional non-repudiation tier also
+ * runs: every event must carry a `device_sig` by a pinned key that verifies
+ * over the same payload (see proxy/device-identity.ts). An event signed by
+ * an UNPINNED key is reported as foreign ("Device key unknown"), never
+ * trusted on first use; a missing seal is a break, because pinning asserts
+ * the expectation and a stripped seal must not read as clean. `apiKey` may
+ * be null when device keys are pinned: the device seal covers the same
+ * payload the HMAC covers, so content, order and the decision fields verify
+ * under the public key alone — non-repudiation without sharing any secret.
  */
 export function verifyAuditChain(
   events: AuditEvent[],
-  apiKey: string
+  apiKey: string | null,
+  devicePublicKeys?: Array<Buffer | string> | null,
 ): ChainVerificationResult {
+  const pinned = new Map<string, Buffer>();
+  if (devicePublicKeys) {
+    for (const supplied of devicePublicKeys) {
+      const raw = Buffer.isBuffer(supplied) ? supplied : loadDevicePublicKey(String(supplied));
+      pinned.set(deriveDeviceKeyId(raw), raw);
+    }
+  }
+  const deviceChecked = pinned.size > 0;
+  if (apiKey === null && !deviceChecked) {
+    throw new Error(
+      'verifyAuditChain needs an apiKey, pinned devicePublicKeys, or both',
+    );
+  }
+
   let gapMarkers = 0;
   let eventsDeclaredLost = 0;
+  let deviceSignedEvents = 0;
   let chainFormat: number | undefined;
   const breaks: Array<{ index: number; reason: string }> = [];
 
@@ -171,14 +192,24 @@ export function verifyAuditChain(
       eventsDeclaredLost,
       breaks,
       ...(chainFormat !== undefined ? { chainFormat } : {}),
+      deviceSignedEvents,
+      deviceChecked,
     };
   };
 
   if (!events || events.length === 0) {
-    return { valid: true, eventsVerified: 0, gapMarkers: 0, eventsDeclaredLost: 0, breaks: [] };
+    return {
+      valid: true,
+      eventsVerified: 0,
+      gapMarkers: 0,
+      eventsDeclaredLost: 0,
+      breaks: [],
+      deviceSignedEvents: 0,
+      deviceChecked,
+    };
   }
 
-  const signingKey = deriveSigningKey(apiKey);
+  const signingKey = apiKey !== null ? deriveSigningKey(apiKey) : null;
   const sessionId = events[0].sdk_session_id;
 
   if (!sessionId) {
@@ -285,9 +316,11 @@ export function verifyAuditChain(
       }
     }
 
-    // Recompute and verify signature
-    const expectedSig = computeSignature(
-      signingKey,
+    // Recompute the shared payload; formats 1 and 2 ignore the decision
+    // argument entirely, so one call site verifies every format. Read through
+    // the SAME reader the signer used — two readers that disagree about an
+    // absent field would make every event look tampered with.
+    const sigPayload = signaturePayload(
       chainFormat,
       event.sdk_session_id!,
       event.seq_no,
@@ -295,19 +328,46 @@ export function verifyAuditChain(
       event.prompt ?? '',
       event.response ?? '',
       event.prev_sig ?? null,
-      // Format 3 folds these into the preimage; formats 1 and 2 ignore the
-      // argument entirely, so one call site verifies every format. Read through
-      // the SAME reader the signer used — two readers that disagree about an
-      // absent field would make every event look tampered with.
       decisionFieldsOf(event as unknown as Record<string, unknown>)
     );
 
-    if (!signatureMatches(event.sdk_sig, expectedSig)) {
-      recordBreak(i, `Signature mismatch at event ${i}`, event);
-      continue;
+    if (signingKey !== null) {
+      const expectedSig = createHmac('sha256', signingKey).update(sigPayload).digest('hex');
+      if (!signatureMatches(event.sdk_sig, expectedSig)) {
+        recordBreak(i, `Signature mismatch at event ${i}`, event);
+        continue;
+      }
     }
 
     lastSig = event.sdk_sig ?? null;
+
+    const deviceSig = (event as { device_sig?: unknown }).device_sig;
+    if (typeof deviceSig === 'string') {
+      deviceSignedEvents++;
+    }
+    if (deviceChecked) {
+      // The non-repudiation tier: the device seal must be present, by a
+      // pinned key, and valid over the SAME payload. These breaks do not
+      // re-anchor — the chain state above already advanced on the stored
+      // fields.
+      const keyId = (event as { device_key_id?: unknown }).device_key_id;
+      if (typeof deviceSig !== 'string') {
+        breaks.push({ index: i, reason: `Device signature missing at event ${i}` });
+        continue;
+      }
+      if (typeof keyId !== 'string' || !pinned.has(keyId)) {
+        const shown = typeof keyId === 'string' ? keyId : 'no usable device_key_id';
+        breaks.push({
+          index: i,
+          reason: `Device key unknown at event ${i}: ${shown} is not among the pinned keys`,
+        });
+        continue;
+      }
+      if (verifyDeviceSig(pinned.get(keyId)!, keyId, sigPayload, deviceSig) !== true) {
+        breaks.push({ index: i, reason: `Device signature mismatch at event ${i}` });
+        continue;
+      }
+    }
 
     // Counted only after the event's own signature verified, and only in the
     // prefix before the first break — the tally a caller acts on must not
@@ -333,6 +393,8 @@ export function verifyAuditChain(
       eventsDeclaredLost,
       breaks,
       ...(chainFormat !== undefined ? { chainFormat } : {}),
+      deviceSignedEvents,
+      deviceChecked,
     };
   }
 
@@ -343,5 +405,7 @@ export function verifyAuditChain(
     eventsDeclaredLost,
     breaks,
     chainFormat,
+    deviceSignedEvents,
+    deviceChecked,
   };
 }
