@@ -79,6 +79,31 @@ describe('integration pre-call pipeline', () => {
     expect(result.compliance.action_taken).toBe('allowed');
   });
 
+  it('never counts an unreadable metadata principal as attributed', async () => {
+    // A metadata object whose property getter throws: the gate reads it
+    // defensively (never escaping to the caller) and treats it as absent.
+    // The same unreadable object then fails the taint-key derivation inside
+    // the guarded detector section, whose failMode disposition resolves the
+    // whole call — the guard's own contract, identical in both SDKs and
+    // pinned for the flag-off case by the detector-guard suite. Under
+    // failMode closed the refusal therefore holds end to end.
+    init({ api_key: 'k', require_principal: true, fail_mode: 'closed' } as never);
+    const hostile = Object.defineProperty({}, 'user_id', {
+      get() {
+        throw new Error('detector bug');
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    const result = await applyPreCallPolicy('hello', {
+      config: getConfig(),
+      provider: 'bedrock',
+      operation: 'test',
+      metadata: hostile as never,
+    });
+    expect(result.decision).toBe('block');
+  });
+
   it('lets the enforcement-integrity gate verdict win outright', async () => {
     init({ api_key: 'k', require_principal: true } as never);
     _getPolicySyncState().remoteDisabled = true;

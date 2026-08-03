@@ -579,9 +579,24 @@ export async function applyPreCallPolicy(
   //     metadata-supplied user_id. An empty string is a supplied principal;
   //     only an absent one refuses — the decision digest's presence byte
   //     draws the same absent-vs-empty line (Python parity).
-  const principalForGate =
-    identityUserId ??
-    (ctx.metadata ? (ctx.metadata as Record<string, unknown>)["user_id"] : undefined);
+  // The metadata read happens ONLY when the flag is on, and defensively: this
+  // gate sits outside the guarded detector section, so a caller-supplied
+  // metadata object whose property getter throws must not escape here — with
+  // the flag off it is not read at all (the detector layers read it inside
+  // the guard, where a defect resolves by failMode), and with the flag on an
+  // unreadable principal counts as absent at this gate, never as attributed.
+  // The same unreadable object then fails the taint-key derivation inside
+  // the guard, whose failMode disposition resolves the whole call — so the
+  // end-to-end outcome for a defective metadata object is the guard's,
+  // exactly as it is in the Python pipeline.
+  let principalForGate: unknown = identityUserId;
+  if (principalForGate == null && config.requirePrincipal === true && ctx.metadata) {
+    try {
+      principalForGate = (ctx.metadata as Record<string, unknown>)["user_id"];
+    } catch {
+      principalForGate = undefined;
+    }
+  }
   if (
     actionTaken !== "blocked" &&
     config.requirePrincipal === true &&
