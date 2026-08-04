@@ -133,6 +133,28 @@ cut, when it is renamed to that version.
 
 ### Fixed
 
+- **The TypeScript MCP gate binds every client route into `tools/call`.** It
+  binds `request`, the path `callTool` is a convenience over, so the frame is
+  judged wherever it was built rather than only when the convenience method
+  built it. Two other public routes reach that frame: one a caller assembles
+  and hands to `request` directly, and the task API's `callToolStream`, which
+  arrives through `requestStream`. Driven against a real server over in-memory
+  JSON-RPC with the tool denied and the client governed, both executed the
+  tool's body and returned its result to the caller, recording nothing — a
+  bypass on a documented enforcement surface, and on the raw route a payload
+  disclosure as well. Both now refuse at zero executions with the result absent
+  and one blocked event recorded, allow controls unchanged at one execution
+  each, and a non-`tools/call` frame still passes through ungoverned. An
+  async-local guard keeps the frame `callTool` issues from being judged twice,
+  which also holds when the same client is governed more than once. This is the
+  route class the Python SDK closed at `send_request`; the two are still
+  measured independently rather than read across. One route is uncovered and
+  carries a test that pins it: an experimental-task facade a caller reads off
+  the raw client BEFORE governing it holds that object directly, and an
+  instance wrapper cannot reach into a reference the caller already has.
+  ([`acb5148`](https://github.com/obsvr-dev/obsvr-sdk/commit/acb5148),
+  [`6eea0cc`](https://github.com/obsvr-dev/obsvr-sdk/commit/6eea0cc))
+
 - **Every layer that consumes a principal reads the same resolved channel.** A
   principal reaches a governed call by three channels — per-call metadata, the
   wrap-time option, and the ambient `useSubject()` scope — and the TypeScript
