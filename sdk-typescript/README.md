@@ -339,7 +339,7 @@ captured audit event.
 
 | Surface | Tool policy |
 | --- | --- |
-| MCP (`callTool`) | **enforces** — the gate patches the invocation itself. It binds `callTool` and `listTools`; the Python SDK binds `send_request` instead, so the two are not the same boundary and this row does not carry Python's route coverage |
+| MCP | **enforces** — the gate binds `request`, the path every client route into `tools/call` converges on, rather than the `callTool` convenience above it. Driven against a real server on `callTool`, a hand-built `tools/call` frame, and the task API's `callToolStream`: denied tool at ZERO executions with its result absent from what the caller received, allow control at one execution on each. `listTools` is bound separately for discovery-time poisoning defense |
 | `obsvrGovernTool` | **enforces** — wraps the tool's own execute and gates before delegating |
 | LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError`. Both pre-tool callbacks reach one gate and the discount for a duplicate delivery is credited per call, not per handler: as a per-handler flag, one dispatch of the legacy `handleAgentAction` left every later `handleToolStart` returning before the gate, and `copy()` hands the same instance to every child manager. Driven against a real LangGraph agent |
 | LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |

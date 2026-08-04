@@ -476,6 +476,43 @@ describe("MCP tool gate on the routes around callTool", () => {
     }
   });
 
+  it("MEASURED LIMIT: a task facade read off the raw client before governing keeps it", async () => {
+    init({
+      api_key: "test-key",
+      sample_rate: 1,
+      mcpToolPolicy: { deniedTools: ["send_money"] },
+    });
+    const { client, executed, close } = await connectRealPair();
+    try {
+      // Upstream caches the facade on the instance the first time it is read,
+      // and it holds whatever object built it. A caller who reads it off the
+      // RAW client keeps a handle to the raw client, and an instance wrapper
+      // cannot reach back into an object the caller already holds. This is the
+      // same shape as the Python twin's session-group row; the class-governed
+      // form has no equivalent gap because nothing is read before governance.
+      const facadeReadEarly: any = (client as any).experimental;
+      const governed: any = obsvrGovernMCP(client, getConfig());
+
+      await drain(
+        facadeReadEarly.tasks.callToolStream({ name: "send_money", arguments: { amount: 1 } }),
+      );
+      expect(executed).toEqual(["send_money"]);
+
+      // The governed handle is unaffected: re-reading through it gives a
+      // facade seated on the gate, so the documented usage still refuses.
+      const messages = await drain(
+        governed.experimental.tasks.callToolStream({
+          name: "send_money",
+          arguments: { amount: 1 },
+        }),
+      );
+      expect(messages.find((m) => m.type === "result")).toBeUndefined();
+      expect(executed).toEqual(["send_money"]);
+    } finally {
+      await close();
+    }
+  });
+
   it("the raw-route refusal is recorded as blocked on a signed event", async () => {
     init({
       api_key: "test-key",
