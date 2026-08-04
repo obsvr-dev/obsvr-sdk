@@ -712,6 +712,16 @@ function redactMessagesInPlace(args: unknown): void {
 /**
  * Build an audit event from the extracted data
  */
+/**
+ * The principal carried on the per-call metadata channel, if it carries one.
+ * This is the channel `resolvedUser` reads first when it decides what policy
+ * evaluates against, so the signed event has to read it first too.
+ */
+function metadataPrincipal(auditFields: AuditFields): string | undefined {
+  const v = (auditFields.metadata as { user_id?: unknown } | undefined)?.user_id;
+  return typeof v === "string" ? v : undefined;
+}
+
 function buildAuditEvent(
   ctx: PathContext,
   request: unknown,
@@ -837,10 +847,20 @@ function buildAuditEvent(
       config.default_region ||
       "unknown",
 
-    // Identity fields — per-call audit fields win, then wrap-time options,
-    // then the ambient useSubject() scope (the same resolution the
-    // integration event builder and the session-taint key already use).
-    user_id: auditFields.user_id || options.user_id || getCurrentSubject()?.user_id || undefined,
+    // Identity fields — read in the SAME order the enforcing resolution above
+    // reads them (`resolvedUser`): the per-call metadata channel first, then
+    // the per-call audit field, then wrap-time options, then the ambient
+    // useSubject() scope. The metadata channel was missing here, so a call
+    // that overrode the principal per call was evaluated, metered and
+    // taint-keyed under the override while the record named the wrap-time
+    // user. Every layer reads one resolution; a second copy of this rule is
+    // how the two drift.
+    user_id:
+      metadataPrincipal(auditFields) ||
+      auditFields.user_id ||
+      options.user_id ||
+      getCurrentSubject()?.user_id ||
+      undefined,
 
     // Network fields (passed through to server for masking)
     client_ip: auditFields.client_ip || undefined,

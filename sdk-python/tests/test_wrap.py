@@ -501,3 +501,62 @@ class TestEventSigning:
 
         assert signed.get("seq_no") == 1
         assert len(signed.get("sdk_sig", "")) == 64
+
+
+class TestSignedPrincipalMatchesEnforcedPrincipal:
+    """The name on the record is the name policy decided for.
+
+    ``_collect_metadata`` folds the per-call ``obsvr_metadata`` kwarg over the
+    wrap-time options and hands the result to the policy layer, so a call may
+    be evaluated, metered and taint-keyed under a principal the wrap-time
+    options never named. The event has to carry that same principal: a record
+    naming one user for a decision made about another is not an audit trail,
+    and it is the class of split the shared enforcing-metadata view exists to
+    prevent.
+    """
+
+    def test_per_call_principal_reaches_the_signed_event(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        client = obsvr.wrap(FakeOpenAI(), user_id="wraptime-alice")
+
+        client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hello"}],
+            obsvr_metadata={"user_id": "percall-mallory"},
+        )
+
+        ev = captured[0]
+        # Both halves, because they fail independently: the enforcing view has
+        # to see the override at all, and the event has to sign the same one.
+        assert ev["metadata"]["user_id"] == "percall-mallory"
+        assert ev["user_id"] == "percall-mallory"
+
+    def test_wrap_time_principal_still_signs_when_no_override(self, monkeypatch):
+        # Without this, "the signed principal follows metadata" would also be
+        # satisfied by a resolution that had stopped reading the options.
+        _init()
+        captured = _captured_events(monkeypatch)
+        client = obsvr.wrap(FakeOpenAI(), user_id="wraptime-alice")
+
+        client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        ev = captured[0]
+        assert ev["metadata"]["user_id"] == "wraptime-alice"
+        assert ev["user_id"] == "wraptime-alice"
+
+    def test_unattributed_call_signs_no_principal(self, monkeypatch):
+        # And the absent case stays absent rather than becoming an empty
+        # string: the decision digest's presence byte draws that line, and an
+        # unset principal is pruned from the event rather than sent as null.
+        _init()
+        captured = _captured_events(monkeypatch)
+        client = obsvr.wrap(FakeOpenAI())
+
+        client.chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert captured[0].get("user_id") is None

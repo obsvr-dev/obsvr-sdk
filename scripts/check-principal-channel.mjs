@@ -102,6 +102,35 @@ const PY_FOLD = {
   fold: /metadata\[_idk\] = _ambient_subject\[_idk\]/,
 };
 
+/**
+ * The other half of the same invariant, and the one the surface scan above
+ * cannot see: the SIGNED principal must come from the channel the enforcing
+ * resolution reads FIRST.
+ *
+ * The scans above hold enforcement to one resolved view. They say nothing
+ * about what the event builder writes, and the two are different functions in
+ * both languages — so a builder reading only the wrap-time options passes
+ * every check above while recording a call against a principal the decision
+ * was never made for. That shipped: a per-call principal override was
+ * evaluated, metered and taint-keyed under the override while the event named
+ * the wrap-time user. A record naming the wrong principal is worse than one
+ * naming none, so this is asserted rather than left to review.
+ */
+const SIGNED_PRINCIPAL = [
+  {
+    file: "sdk-python/obsvr/events.py",
+    fn: "def build_audit_event(",
+    reads: /"user_id":\s*_principal_string\(\s*\(metadata or \{\}\)\.get\("user_id"\)/,
+    channel: "the folded enforcing metadata",
+  },
+  {
+    file: "sdk-typescript/src/proxy/wrapper.ts",
+    fn: "function buildAuditEvent(",
+    reads: /user_id:\s*\n?\s*metadataPrincipal\(auditFields\)/,
+    channel: "metadataPrincipal(auditFields)",
+  },
+];
+
 let failures = 0;
 const fail = (msg) => {
   console.error(`✗ ${msg}`);
@@ -160,6 +189,31 @@ for (const surface of SURFACES) {
     );
   } else {
     console.log(`✓ ${PY_FOLD.file}: the choke-point fold is in place`);
+  }
+}
+
+for (const site of SIGNED_PRINCIPAL) {
+  let src;
+  try {
+    src = readFileSync(join(root, site.file), "utf8");
+  } catch {
+    fail(`${site.file} is missing — the guard cannot check a surface it cannot read`);
+    continue;
+  }
+  const at = src.indexOf(site.fn);
+  if (at === -1) {
+    fail(`${site.file}: ${site.fn.trim()} is gone — the signing site moved without this guard`);
+    continue;
+  }
+  if (!site.reads.test(src.slice(at, at + 12000))) {
+    fail(
+      `${site.file}: ${site.fn.trim()} no longer resolves the signed principal from\n` +
+        `    ${site.channel} first. The enforcing resolution reads the per-call metadata\n` +
+        `    channel ahead of the wrap-time option; a builder that skips it records the call\n` +
+        `    against a principal the decision was not made for.`,
+    );
+  } else {
+    console.log(`✓ ${site.file}: the signed principal comes from the enforcing channel`);
   }
 }
 

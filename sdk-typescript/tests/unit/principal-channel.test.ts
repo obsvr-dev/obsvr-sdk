@@ -346,3 +346,50 @@ describe('the quota bucket and the config are read consistently', () => {
     expect(getConfig().api_key).toBe('k');
   });
 });
+
+describe('wrap(): the signed principal is the principal that was enforced on', () => {
+  /**
+   * `resolvedUser` reads the per-call metadata channel FIRST when it decides
+   * what policy evaluates, meters and taint-keys against. The event builder
+   * did not read that channel at all, so a call that overrode the principal
+   * per call was decided for one user and recorded against another. Both
+   * halves are asserted on every row: which principal the enforcing view
+   * holds, and which one the record carries.
+   */
+  it('signs the per-call principal when one overrides the wrap-time option', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x', policy_rules: userQuota(5) } as any);
+    const client = wrap(fakeClient(), { user_id: 'wraptime-alice' });
+
+    expect(await say(client, 'hi', { user_id: 'percall-mallory' })).toBe('ran');
+    await waitFor(1);
+
+    // Metered under the override...
+    expect(getQuotaStatus('user_id', 'percall-mallory', 5, 60_000).used).toBe(1);
+    expect(getQuotaStatus('user_id', 'wraptime-alice', 5, 60_000).used).toBe(0);
+    // ...and recorded under the same one.
+    expect(sentEvents[0].user_id).toBe('percall-mallory');
+    expect(sentEvents[0].metadata.user_id).toBe('percall-mallory');
+  });
+
+  it('CONTROL: with no per-call override the wrap-time principal still signs', async () => {
+    // Without this, "the record follows metadata" would also be satisfied by
+    // a resolution that had stopped reading the wrap-time option.
+    init({ api_key: 'k', ingest_url: 'https://x' } as any);
+    const client = wrap(fakeClient(), { user_id: 'wraptime-alice' });
+
+    expect(await say(client, 'hi')).toBe('ran');
+    await waitFor(1);
+
+    expect(sentEvents[0].user_id).toBe('wraptime-alice');
+  });
+
+  it('CONTROL: a metadata key that is not a principal does not become one', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x' } as any);
+    const client = wrap(fakeClient(), { user_id: 'wraptime-alice' });
+
+    expect(await say(client, 'hi', { tenant_id: 't-9' })).toBe('ran');
+    await waitFor(1);
+
+    expect(sentEvents[0].user_id).toBe('wraptime-alice');
+  });
+});

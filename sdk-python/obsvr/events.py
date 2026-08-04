@@ -393,12 +393,20 @@ def build_audit_event(
         or _ambient_subject.get("service_name")
         or config.default_service_name,
         "region": opts.get("region") or config.default_region or "unknown",
-        # Identity fields — explicit options win, else the ambient
-        # use_subject() scope (TS parity: buildIntegrationEvent resolves
-        # `options.user_id || ambientSubject?.user_id`), coerced to the one
-        # canonical string both offline verifiers recompute identically.
+        # Identity fields — read from the SAME view policy enforced against,
+        # so the signed principal is the principal the decision was made for.
+        # `metadata` is the enforcing channel: wrap() options folded with the
+        # per-call obsvr_metadata kwarg (wrap._collect_metadata, later wins)
+        # and then ambient-filled at the head of apply_pre_call_policy. Reading
+        # `options` alone left the per-call channel out, so a call that
+        # overrode the principal was METERED under the override and SIGNED
+        # under the wrap-time name. Options and the ambient scope remain the
+        # fallbacks for surfaces that pass no folded metadata. Coerced to the
+        # one canonical string both offline verifiers recompute identically.
         "user_id": _principal_string(
-            opts.get("user_id") or _ambient_subject.get("user_id")
+            (metadata or {}).get("user_id")
+            or opts.get("user_id")
+            or _ambient_subject.get("user_id")
         ),
         # Network fields. This SDK has no capture path for either, so they are
         # always None rather than sometimes None — there is no per-call kwarg
