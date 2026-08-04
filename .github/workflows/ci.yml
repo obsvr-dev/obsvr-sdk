@@ -120,6 +120,39 @@ jobs:
       - name: Build the wheel, install it clean, drive a refusal
         run: scripts/check-install-path-python.sh
 
+  # The same gap on the other side, and the same reasoning: every TypeScript
+  # job imports out of the checkout, so an export-map entry that stops
+  # resolving, a declaration file left out of `files`, or a bin pointing at a
+  # module that was never compiled all reach a consumer before they reach a
+  # test. This packs the tarball `npm publish` uploads, installs it into a
+  # scratch package with no workspace link and no inherited node_modules, and
+  # drives the same refusal from there.
+  install-path-npm:
+    name: Install path (packed tarball, Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The `engines` floor and the newest runtime the suites cover.
+        node-version: [22.x, 26.x]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: sdk-typescript/package-lock.json
+
+      # Here rather than inside the script so the cache above is used.
+      - name: Install build dependencies
+        run: npm ci
+        working-directory: sdk-typescript
+
+      - name: Pack the tarball, install it clean, drive a refusal
+        run: scripts/check-install-path-npm.sh
+
   conformance:
     name: Cross-language conformance fixtures
     runs-on: ubuntu-latest
@@ -423,6 +456,7 @@ jobs:
         ts-test,
         py-test,
         install-path-python,
+        install-path-npm,
         conformance,
         lint,
         version-consistency,
