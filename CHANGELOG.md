@@ -18,6 +18,24 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **CI installs the built artifact and drives a governed refusal through it.**
+  Two new blocking jobs build the Python wheel and pack the npm tarball,
+  install each into an environment where the repository is not reachable — a
+  virtualenv with no editable install and nothing from the tree on `sys.path`,
+  and a scratch package with its own manifest and no workspace link — and,
+  from a directory outside the repository, import the public entry point and
+  refuse a denied tool. The refused tool's side effect is asserted absent on
+  both halves that can fail separately: the marker file is never written and
+  the tool's payload never reaches the caller. The refusal is required to be
+  the real one — Python's typed `ObsvrPolicyError` carrying reason code
+  `TOOL_DENIED`, and on both sides a delivered `tool.policy.tool_blocked`
+  record graded `TOOL_DENIED` — behind an allowed-tool positive control that
+  must execute exactly once, so the job cannot go green because an import
+  failed. Every other job runs against the source tree, so a defect that
+  exists only in the built artifact reached a caller before it reached a test.
+  ([`8de5086`](https://github.com/obsvr-dev/obsvr-sdk/commit/8de5086),
+  [`d9746ba`](https://github.com/obsvr-dev/obsvr-sdk/commit/d9746ba))
+
 - **BREAKING: two new reason codes in the closed registry.** `APPROVAL_TIMEOUT`
   (a blocking approval hold expired with no covering grant — a different fact
   from `APPROVAL_REQUIRED`'s "refused; ask and retry") and `PRINCIPAL_REQUIRED`
@@ -132,6 +150,25 @@ cut, when it is renamed to that version.
   [`fb4042d`](https://github.com/obsvr-dev/obsvr-sdk/commit/fb4042d))
 
 ### Fixed
+
+- **The signed principal is the principal the decision was made for, on the
+  `wrap()` path in both languages.** A principal reaches a wrapped call by
+  three channels — per-call metadata, the wrap-time option, and the ambient
+  subject scope — and the enforcing resolution reads the per-call channel
+  first, so a call carrying a per-call override is evaluated, metered and
+  taint-keyed under that override. The event builders resolved the signed user
+  from the wrap-time options alone, so such a call was decided for one user and
+  recorded against another: an auditor reading the named user's history saw a
+  call that user never made, and the call that was made appeared under no
+  history at all. Measured before the repair with a per-user quota: the
+  override was metered in its own bucket while the record named the wrap-time
+  user. Each builder now reads the same channel in the same order its own
+  enforcing resolution reads. The ambient channel was already reconciled; this
+  was the per-call channel on the other side of that fix.
+  `scripts/check-principal-channel.mjs` now covers the signing sites as well as
+  the enforcement reads — the surface scans it already ran hold enforcement to
+  one view and say nothing about what the record carries.
+  ([`0e9d7a8`](https://github.com/obsvr-dev/obsvr-sdk/commit/0e9d7a8))
 
 - **The TypeScript MCP gate binds every client route into `tools/call`.** It
   binds `request`, the path `callTool` is a convenience over, so the frame is
@@ -334,6 +371,26 @@ cut, when it is renamed to that version.
   ([`ebd2b33`](https://github.com/obsvr-dev/obsvr-sdk/commit/ebd2b33))
 
 ### Changed
+
+- **Python 3.14 is advertised and tested.** The classifier list reached 3.13
+  and no matrix leg covered 3.14 while `requires-python` already admitted it,
+  so the supported set and the declared set were different sets. The full suite
+  runs on 3.14 in the pull-request matrix and the nightly full-suite matrix,
+  and the install-path job builds and drives the wheel on it, so the classifier
+  stands on a tested leg.
+  ([`072ad83`](https://github.com/obsvr-dev/obsvr-sdk/commit/072ad83))
+
+- **Two accepted-divergence entries narrowed to the coverage they can
+  evidence.** The network-attribution entry credited every TypeScript event
+  with caller-supplied `client_ip`/`user_agent`, where only the wrapped-client
+  path captures them and the integration surfaces record null exactly as Python
+  does. The empty-string precedence entry described a session-taint divergence
+  present in neither SDK — both map an empty identity to absent before the
+  latch key is derived — and omitted the decision-input document, which does
+  differ. The catalog is read as the complete inventory of accepted
+  divergences, so an entry claiming more than it can evidence is the catalog
+  overstating the code.
+  ([`2291512`](https://github.com/obsvr-dev/obsvr-sdk/commit/2291512))
 
 - **Haystack: two limits of the tool gate are now measured and stated rather
   than left to be inferred.** Neither is a behaviour change and neither is
