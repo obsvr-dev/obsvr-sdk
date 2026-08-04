@@ -327,6 +327,26 @@ function apiShapeFor(operation: string): ApiShape | undefined {
 const WRAPPED_MARKER = Symbol("obsvr-wrapped");
 
 /**
+ * Reads back a governed client's UNDERLYING instance and the options it was
+ * governed with, so `wrap()` can honor a second call's options without
+ * stacking a second audit layer over the first.
+ *
+ * The double-wrap guard exists because a caller following the documentation
+ * (init() plus wrap(), or auto-instrumentation plus wrap()) was getting two
+ * audit events per call. Returning the existing proxy closes that, but it
+ * also DISCARDED whatever the second call passed — and under
+ * auto-instrumentation the client a caller holds is already governed, so
+ * `wrap(client, { user_id })` was the documented way to attribute it and the
+ * one path where the principal never reached the pipeline. Rebinding keeps
+ * governance single-layer and the options honored. Python's twin unwraps
+ * `_obsvr_target` in wrap() for the same reason.
+ */
+const REBIND_MARKER = Symbol("obsvr-rebind");
+
+/** What a governed proxy hands back under {@link REBIND_MARKER}. */
+type RebindTarget = { instance: object; options: WrapOptions };
+
+/**
  * Track the current method path during proxy traversal
  */
 /**
@@ -3101,6 +3121,17 @@ function createRecursiveProxy<T extends object>(
         return true;
       }
 
+      // Only the ROOT proxy is rebindable: a nested path proxy's target is a
+      // sub-object of the client (`client.chat`), and rebuilding from that
+      // would govern the sub-object rather than the client. wrap() is a
+      // client-level call, so a deeper proxy simply declines and takes the
+      // existing return-unchanged path.
+      if (prop === REBIND_MARKER) {
+        return ctx.path.length === 0
+          ? ({ instance: obj, options: ctx.options } as RebindTarget)
+          : undefined;
+      }
+
       // Handle other symbol properties (like Symbol.toStringTag)
       if (typeof prop === "symbol") {
         return Reflect.get(obj, prop);
@@ -3228,10 +3259,43 @@ export function wrap<T extends object>(
 
   // Check for double-wrapping
   if (isWrapped(client) || (client as any)[WRAPPED_MARKER]) {
+    // Governance stays single-layer either way. When this call passes
+    // options, rebuild around the client's UNDERLYING instance with them
+    // merged over the ones it already carried, rather than dropping them:
+    // under auto-instrumentation every client is already governed, so
+    // `wrap(client, { user_id })` is the documented way to attribute one and
+    // was the single path where the principal was silently lost — with
+    // requirePrincipal on, an attributed call was refused as unattributed.
+    // Later wins, matching every other option channel. A wrap() that passes
+    // no options returns the very object it was given, as before.
+    const rebind = (client as unknown as Record<symbol, unknown>)[REBIND_MARKER] as
+      | RebindTarget
+      | undefined;
+    if (rebind && Object.keys(options).length > 0) {
+      // Straight to the constructor, not back through wrap(): the first wrap
+      // marked the underlying INSTANCE as wrapped too, so re-entering here
+      // would take this same branch, find no rebind on a raw client, and
+      // hand back an ungoverned one.
+      return governClient(rebind.instance, { ...rebind.options, ...options }, config) as T;
+    }
     debugLog(config, "warn", "Client already wrapped, returning existing");
     return client;
   }
 
+  return governClient(client, options, config);
+}
+
+/**
+ * Build the governance proxy. The double-wrap guard lives in {@link wrap};
+ * this is the single construction path both it and a rebind go through, so
+ * "one client, one governed proxy, one set of resolved options" is expressed
+ * once rather than duplicated per entry point.
+ */
+function governClient<T extends object>(
+  client: T,
+  options: WrapOptions,
+  config: ResolvedConfig,
+): T {
   // The client's SHAPE, which selects the extractors.
   const provider = detectProvider(client);
 

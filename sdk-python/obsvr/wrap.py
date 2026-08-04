@@ -1289,17 +1289,6 @@ def wrap(client: Any, **options: Any) -> Any:
     """
     if not is_initialized():
         raise RuntimeError("obsvr: call init() before wrap()")
-    # ALREADY GOVERNED -> hand it straight back. register.py patches the openai
-    # and anthropic client classes so construction already returns a governed
-    # client, and both READMEs document init() and wrap() side by side — so a
-    # caller who follows the documentation was wrapping a wrapped client and
-    # getting TWO audit events for every call, plus double-counted cost and
-    # quota wherever metering is on. TypeScript has carried a WRAPPED_MARKER
-    # check for exactly this; this side had none. Same defect class as the
-    # framework double-registration already fixed: one governed call, one
-    # audit record.
-    if isinstance(client, _ObsvrProxy):
-        return client
 
     config: ResolvedConfig = get_config()
     if config.disabled:
@@ -1313,6 +1302,33 @@ def wrap(client: Any, **options: Any) -> Any:
 
     if not is_governing_instance(_MODULE_INSTANCE_ID):
         return client
+
+    # ALREADY GOVERNED. register.py patches the openai and anthropic client
+    # classes so construction already returns a governed client, and both
+    # READMEs document init() and wrap() side by side — so a caller who
+    # follows the documentation was wrapping a wrapped client and getting TWO
+    # audit events for every call, plus double-counted cost and quota wherever
+    # metering is on. TypeScript has carried a WRAPPED_MARKER check for
+    # exactly this; this side had none. Same defect class as the framework
+    # double-registration already fixed: one governed call, one audit record.
+    #
+    # The options this call carries survive that de-duplication. Under
+    # auto-instrumentation the client a caller holds is ALREADY governed, so
+    # ``wrap(client, user_id=...)`` is the documented way to attribute it and
+    # was the one path where the principal never reached the pipeline: with
+    # require_principal on, a call the caller had attributed was refused as
+    # unattributed. Governance stays single-layer — the new proxy is built
+    # around the INNER target, never around the proxy — while the options
+    # merge, later winning, the way every other option channel resolves. A
+    # wrap() that passes none returns the same object it was given.
+    prior_options: Dict[str, Any] = {}
+    prior_path: List[str] = []
+    if isinstance(client, _ObsvrProxy):
+        if not options:
+            return client
+        prior_options = object.__getattribute__(client, "_obsvr_options") or {}
+        prior_path = list(object.__getattribute__(client, "_obsvr_path") or [])
+        client = object.__getattribute__(client, "_obsvr_target")
 
     # The client's SHAPE, which selects the extractors downstream.
     provider = _detect_provider(client)
@@ -1330,12 +1346,14 @@ def wrap(client: Any, **options: Any) -> Any:
     )
 
     recorded_provider, attribution = resolve_destination(client, provider)
-    options = dict(options or {})
+    options = {**prior_options, **dict(options or {})}
+    # Re-resolved from the client rather than carried over, so the reserved
+    # destination keys can never be set by a caller passing them as options.
     options[RECORDED_PROVIDER_OPTION_KEY] = recorded_provider
     options[ATTRIBUTION_OPTION_KEY] = attribution
 
     # Gemini: generate_content sits directly on the model object
     if provider == "google" and hasattr(client, "generate_content"):
-        return _ObsvrProxy(client, [], provider, options)
+        return _ObsvrProxy(client, prior_path, provider, options)
 
-    return _ObsvrProxy(client, [], provider, options)
+    return _ObsvrProxy(client, prior_path, provider, options)

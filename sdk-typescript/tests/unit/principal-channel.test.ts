@@ -272,6 +272,66 @@ describe('wrap(): the decision record commits the principal it enforced on', () 
   });
 });
 
+describe('wrap(): options reach an ALREADY-GOVERNED client', () => {
+  // Under auto-instrumentation every client a caller holds is already
+  // governed, so wrap(client, { user_id }) is the documented way to attribute
+  // one — and the de-duplication that stops a second audit layer was
+  // discarding those options with it. Governance stays single-layer; the
+  // attribution survives. Python's twin: tests/test_wrap_idempotent.py.
+  it('a second wrap with no options returns the very same object', () => {
+    init({ api_key: 'k', ingest_url: 'https://x' } as any);
+    const once = wrap(fakeClient());
+    expect(wrap(once)).toBe(once);
+  });
+
+  it('a second wrap carrying a principal attributes the call', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x' } as any);
+    const governed = wrap(fakeClient());
+    const attributed = wrap(governed, { user_id: 'alice' });
+
+    await say(attributed, 'hi');
+    await waitFor(1);
+
+    expect(sentEvents[0].user_id).toBe('alice');
+  });
+
+  it('and still records exactly ONE audit event', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x' } as any);
+    const attributed = wrap(wrap(fakeClient()), { user_id: 'alice' });
+
+    await say(attributed, 'hi');
+    await waitFor(1);
+    // Give a second, duplicate event time to arrive if the layer stacked.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(sentEvents.filter((e) => e.event_type !== 'blocked_call').length).toBe(1);
+  });
+
+  it('options merge over the ones the client already carried', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x' } as any);
+    const governed = wrap(fakeClient(), { user_id: 'alice', source: 'first' });
+    const attributed = wrap(governed, { user_id: 'bob' });
+
+    await say(attributed, 'hi');
+    await waitFor(1);
+
+    expect(sentEvents[0].user_id).toBe('bob');
+    expect(sentEvents[0].source).toBe('first');
+  });
+
+  it('a re-attributed client meters the NEW principal’s quota bucket', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x', policy_rules: userQuota(5) } as any);
+    const attributed = wrap(wrap(fakeClient()), { user_id: 'alice' });
+
+    await say(attributed, 'hi');
+
+    // The two fixes meeting: the option survives the rebind AND reaches the
+    // enforcing channel.
+    expect(getQuotaStatus('user_id', 'alice', 5, 60_000).used).toBe(1);
+    expect(getQuotaStatus('user_id', 'default', 5, 60_000).used).toBe(0);
+  });
+});
+
 describe('the quota bucket and the config are read consistently', () => {
   it('getConfig() is unchanged by the enforcing view (no metadata mutation)', async () => {
     init({ api_key: 'k', ingest_url: 'https://x', policy_rules: userQuota(5) } as any);
