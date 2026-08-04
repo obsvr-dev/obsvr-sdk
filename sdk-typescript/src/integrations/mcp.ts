@@ -63,6 +63,7 @@ import {
   type ToolPinVerdict,
 } from "../policy/tool-pinning.js";
 import { debugLog } from "../utils/logger.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // Re-exported so operators can precompute config pins from a known-good
 // descriptor (additive public surface on the mcp subpath).
@@ -71,6 +72,48 @@ export type { McpToolDescriptor, ToolPinningConfig } from "../policy/tool-pinnin
 
 const SOURCE = "mcp_sdk";
 const PATCHED_SYMBOL = Symbol("obsvr-mcp-patched");
+
+/** JSON-RPC method that carries a tool invocation. */
+const CALL_TOOL_METHOD = "tools/call";
+
+/**
+ * Set while the gate is running the call it already approved, so the `request`
+ * binding does not re-judge the frame `callTool` issues on its way out.
+ * AsyncLocalStorage rather than a module flag, so concurrent calls on one
+ * client are independent (the Python twin uses a contextvar for the same
+ * reason).
+ */
+const gateInflight = new AsyncLocalStorage<boolean>();
+
+/**
+ * `{ name, arguments }` if this request frame is a `tools/call`, else
+ * undefined.
+ *
+ * Structure is probed rather than matched against an imported type: the
+ * request union moves between MCP SDK releases and a failed type check would
+ * silently downgrade this to no gate at all. Anything unrecognized returns
+ * undefined and is passed through ungoverned — this binding exists to catch
+ * tool calls, not to stand in front of the whole protocol.
+ */
+function toolCallFrame(
+  request: unknown,
+): { name: string; arguments?: Record<string, unknown> } | undefined {
+  if (request === null || typeof request !== "object") return undefined;
+  const frame = request as { method?: unknown; params?: unknown };
+  if (frame.method !== CALL_TOOL_METHOD) return undefined;
+  const params = frame.params;
+  if (params === null || typeof params !== "object") return undefined;
+  const name = (params as { name?: unknown }).name;
+  const args = (params as { arguments?: unknown }).arguments;
+  return {
+    // Same spelling rule as mcpToolName: a present empty string is kept.
+    name: typeof name === "string" ? name : name == null ? "unknown" : String(name),
+    arguments:
+      args !== null && typeof args === "object"
+        ? (args as Record<string, unknown>)
+        : undefined,
+  };
+}
 
 /** Cap on per-tool hashes carried in inventory-event metadata. */
 const MAX_TOOL_HASHES_ON_EVENT = 50;
@@ -975,7 +1018,11 @@ async function runGovernedCallTool(
 
     let result: unknown;
     try {
-      result = await callOriginal(params, ...rest);
+      // The flag is set only around the delegated call, so the `request`
+      // binding lets through the frame this gate is itself issuing
+      // (callTool -> request under the prototype patch) instead of evaluating
+      // the policy twice and emitting two records for one call.
+      result = await gateInflight.run(true, () => callOriginal(params, ...rest));
     } catch (callError) {
       const latencyMs = Math.round(performance.now() - startTime);
       const eventCompliance = compliance ?? defaultToolCompliance();
@@ -1144,11 +1191,58 @@ async function runGovernedCallTool(
 }
 
 /**
+ * Governed `request`: the raw-frame route.
+ *
+ * `callTool` is a convenience over `request` — `client/index.js` builds
+ * `{ method: "tools/call", params }` and hands it straight to `this.request`.
+ * It is neither the only way to reach `tools/call` nor the deepest. A caller
+ * can build the frame itself, and the package's own task API does exactly
+ * that: `experimental.tasks.callToolStream` goes through `requestStream`,
+ * which delegates to `this.request` on both its branches.
+ *
+ * Measured against a real server over in-memory JSON-RPC with the tool denied
+ * and the client governed: before this binding existed, both the hand-built
+ * frame and the task API executed the tool AND returned its payload to the
+ * caller, with no event recorded.
+ *
+ * So the gate binds `request` and inspects the frame: anything that is not
+ * `tools/call` passes straight through (initialize, tools/list, ping,
+ * resources), and a `tools/call` frame runs the same sequence `callTool`
+ * runs. Binding here rather than only at the convenience method means a route
+ * added by a future protocol revision is governed the day it ships, provided
+ * it goes through `request`. Mirrors the Python twin's `send_request` binding.
+ */
+async function runGovernedRequest(
+  config: ResolvedConfig,
+  opts: IntegrationOptions,
+  requestOriginal: (...args: unknown[]) => Promise<unknown>,
+  args: unknown[],
+  pinStore?: ToolPinStore,
+  capabilityStore?: CapabilityStore,
+): Promise<unknown> {
+  const invoke = () => requestOriginal(...args);
+  // Already inside the gate: this is the delegated call the gate itself
+  // issued. Re-entering would evaluate the policy twice for one tool call.
+  if (gateInflight.getStore() === true) return invoke();
+  const frame = toolCallFrame(args[0]);
+  if (frame === undefined) return invoke();
+  return runGovernedCallTool(
+    config,
+    opts,
+    () => invoke(),
+    frame,
+    [],
+    pinStore,
+    capabilityStore,
+  );
+}
+
+/**
  * Non-mutating governance for a single MCP Client INSTANCE. Returns a Proxy
- * that intercepts callTool + listTools via the get trap — the client's
- * prototype is never touched, so it coexists with anything else and other
- * Client instances are unaffected. instanceof is preserved (the Proxy target
- * is the real instance).
+ * that intercepts callTool + listTools + request via the get trap — the
+ * client's prototype is never touched, so it coexists with anything else and
+ * other Client instances are unaffected. instanceof is preserved (the Proxy
+ * target is the real instance).
  */
 function governClientInstance<T extends object>(
   client: T,
@@ -1173,6 +1267,11 @@ function governClientInstance<T extends object>(
   // from one server must not gate another server's same-named tool.
   const capabilityStore = createCapabilityStore();
 
+  const origRequest =
+    typeof c.request === "function"
+      ? (c.request as (...a: unknown[]) => Promise<unknown>).bind(client)
+      : undefined;
+
   const governedCall = origCall
     ? (params: { name: string; arguments?: Record<string, unknown> }, ...rest: unknown[]) =>
         runGovernedCallTool(config, opts, origCall, params, rest, pinStore, capabilityStore)
@@ -1181,17 +1280,60 @@ function governClientInstance<T extends object>(
     ? (...args: unknown[]) =>
         runGovernedListTools(config, opts, origList, args, pinStore, capabilityStore)
     : undefined;
+  const governedRequest = origRequest
+    ? (...args: unknown[]) =>
+        runGovernedRequest(config, opts, origRequest, args, pinStore, capabilityStore)
+    : undefined;
 
-  return new Proxy(client, {
-    get(target, prop, receiver) {
+  const proxy: T = new Proxy(client, {
+    get(target, prop) {
       if (prop === "callTool" && governedCall) return governedCall;
       if (prop === "listTools" && governedList) return governedList;
+      if (prop === "request" && governedRequest) return governedRequest;
+      // The task API's facade holds whichever object built it, and its
+      // requestStream reaches tools/call through `this.request`. Seat both
+      // against the governed object so that `this.request` is the gated one:
+      // without this the facade would hold the raw client and the whole task
+      // route would run outside the gate.
+      if (prop === "experimental") return governedExperimental(target, proxy);
+      if (prop === "requestStream") {
+        const stream = Reflect.get(target, prop, target);
+        if (typeof stream === "function") return (stream as Function).bind(proxy);
+        return stream;
+      }
       // Bind other methods to the REAL target so private-field (#) access works
       // through the Proxy.
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? (value as Function).bind(target) : value;
     },
   }) as T;
+  return proxy;
+}
+
+/**
+ * The experimental-features facade, seated against the governed object.
+ *
+ * Upstream's `get experimental()` lazily caches
+ * `{ tasks: new ExperimentalClientTasks(this) }` on the instance, so the
+ * facade permanently holds whatever `this` was the first time anyone read the
+ * property. Read on the raw client that is the raw client, and every task-route
+ * call would then bypass the gate. Dropping that cache and re-reading with the
+ * governed object as the receiver makes the getter build the facade around the
+ * governed object instead. Cached per client so repeated reads are stable and
+ * `client.experimental === client.experimental` still holds.
+ */
+const experimentalFacades = new WeakMap<object, unknown>();
+
+function governedExperimental(target: object, receiver: unknown): unknown {
+  if (experimentalFacades.has(target)) return experimentalFacades.get(target);
+  try {
+    Reflect.deleteProperty(target, "_experimental");
+  } catch {
+    // Non-configurable: fall through and take whatever the getter returns.
+  }
+  const facade = Reflect.get(target, "experimental", receiver);
+  experimentalFacades.set(target, facade);
+  return facade;
 }
 
 /**
@@ -1220,6 +1362,23 @@ function _applyMCPPatch(
       return runGovernedListTools(
         config, opts,
         (...a) => (originalListTools as Function).apply(this, a),
+        args,
+        pinStoreForPatchedInstance(this),
+        capabilityStoreForPatchedInstance(this),
+      );
+    };
+  }
+  // The raw-frame route. On the prototype this one binding covers every
+  // client route into tools/call: the patched callTool below delegates through
+  // it (the reentrancy guard keeps that from being judged twice), and the task
+  // API's requestStream reaches it as `this.request` without the facade
+  // needing to know anything about the patch.
+  const originalRequest = proto["request"] as Function | undefined;
+  if (typeof originalRequest === "function") {
+    proto["request"] = async function patchedRequest(this: unknown, ...args: unknown[]) {
+      return runGovernedRequest(
+        config, opts,
+        (...a) => (originalRequest as Function).apply(this, a),
         args,
         pinStoreForPatchedInstance(this),
         capabilityStoreForPatchedInstance(this),
