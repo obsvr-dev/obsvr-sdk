@@ -78,6 +78,48 @@ jobs:
           python -m build
         working-directory: sdk-python
 
+  # WHAT THIS CATCHES THAT NOTHING ELSE HERE DOES.
+  #
+  # Every other Python job installs the SDK editable and imports it out of the
+  # checkout, so all of them run against the SOURCE TREE. A packaging defect is
+  # invisible to every one of them and total for the caller: a module left out
+  # of the wheel, a dropped py.typed, a dynamic version that stops resolving,
+  # a console script that no longer points anywhere. The step above builds the
+  # distribution but never installs it, which establishes only that the build
+  # command exits zero.
+  #
+  # So this installs the wheel where the repository is not reachable and drives
+  # a governed refusal from outside the tree, asserting the guarantee this SDK
+  # exists to make: the denied tool's side effect never happens. It gates the
+  # MERGE rather than running nightly, because the artifact is what ships and
+  # the publish workflow builds from whatever is on main — a wheel that only
+  # breaks on install would otherwise be publishable for a day before anything
+  # noticed.
+  #
+  # The check cannot pass because the import failed: it locates the package in
+  # site-packages, runs an ALLOWED tool as a positive control before asserting
+  # anything about a refusal, and requires the typed policy error, the
+  # TOOL_DENIED reason code and a blocked record on the wire.
+  install-path-python:
+    name: Install path (built wheel, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and the newest advertised interpreter. Packaging
+        # breaks at the ends of a supported range, not in the middle.
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build the wheel, install it clean, drive a refusal
+        run: scripts/check-install-path-python.sh
+
   conformance:
     name: Cross-language conformance fixtures
     runs-on: ubuntu-latest
@@ -376,6 +418,16 @@ jobs:
   ci-complete:
     name: CI complete
     runs-on: ubuntu-latest
-    needs: [ts-test, py-test, conformance, lint, version-consistency, supply-chain, bench-integrity]
+    needs:
+      [
+        ts-test,
+        py-test,
+        install-path-python,
+        conformance,
+        lint,
+        version-consistency,
+        supply-chain,
+        bench-integrity,
+      ]
     steps:
       - run: echo "ok"
