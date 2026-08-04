@@ -319,6 +319,14 @@ jobs:
       - name: Doc commit links resolve
         run: node scripts/check-doc-commit-links.mjs
 
+      # Every layer that consumes a principal must read the SAME resolved
+      # channel. Four repairs of that one shape landed before anything
+      # enforced it, and each instance is one plausible line in a file where
+      # the raw metadata object is already in scope — so a reviewer catching
+      # the fifth was never a reliable plan.
+      - name: Principal channel is resolved once per surface
+        run: node scripts/check-principal-channel.mjs
+
   bench-integrity:
     name: Benchmark harness integrity
     runs-on: ubuntu-latest

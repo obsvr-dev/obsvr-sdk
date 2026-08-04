@@ -621,6 +621,18 @@ export async function applyPreCallPolicy(
   // dispositions still apply; the integrity gate stays outside it.
   let layer = "";
   try {
+    // Caller identity merged over ctx.metadata: THE view every layer below
+    // evaluates against — the taint key, the multi-turn session key, the
+    // rules eval (so scoped quota rules meter the right bucket, never
+    // 'default'). Built once here rather than re-merged per layer: a second
+    // copy of the rule is how the enforcing view and the recorded view drift
+    // apart, which is the defect class the proxy wrapper's
+    // `enforcingMetadata()` and Python's choke-point fold also close.
+    const evalMetadata: Record<string, unknown> = { ...(ctx.metadata ?? {}) };
+    if (identityUserId !== undefined) evalMetadata.user_id = identityUserId;
+    if (identityServiceName !== undefined) evalMetadata.service_name = identityServiceName;
+    if (identityTenantId !== undefined) evalMetadata.tenant_id = identityTenantId;
+
     layer = "session_taint";
     // 0.5 Session taint latch. The session key matches the multi-turn / event
     //     derivation exactly so SET (below, on a detection) and ENFORCE (here)
@@ -628,11 +640,7 @@ export async function applyPreCallPolicy(
     //     that first taints the session is handled by its own gate, and only
     //     SUBSEQUENT egress in the session is escalated. Only when enabled.
     const taintCfg = resolveSessionTaint(config);
-    const taintKey = deriveSessionKey({
-      ...(ctx.metadata ?? {}),
-      ...(identityUserId !== undefined ? { user_id: identityUserId } : {}),
-      ...(identityTenantId !== undefined ? { tenant_id: identityTenantId } : {}),
-    });
+    const taintKey = deriveSessionKey(evalMetadata);
     let taintRuleId: string | undefined;
     let taintPolicyReason: string | undefined;
     if (taintCfg && sessionTaintSize() > 0 && actionTaken !== "blocked") {
@@ -741,14 +749,6 @@ export async function applyPreCallPolicy(
         // detect_only: reason/source set; action stays "allowed"
       }
     }
-
-    // Caller identity merged over ctx.metadata: the view the rules eval runs
-    // with (scoped quota rules meter the right bucket, never 'default'); also
-    // keys multi-turn injection sessions below.
-    const evalMetadata: Record<string, unknown> = { ...(ctx.metadata ?? {}) };
-    if (identityUserId !== undefined) evalMetadata.user_id = identityUserId;
-    if (identityServiceName !== undefined) evalMetadata.service_name = identityServiceName;
-    if (identityTenantId !== undefined) evalMetadata.tenant_id = identityTenantId;
 
     layer = "multi_turn_injection";
     // 1.2. Multi-turn injection scoring — catches injection payloads split

@@ -195,6 +195,45 @@ class TestAmbientReachesEnforcement:
         assert attributed, "the governed call must be on the record"
         assert all(e["user_id"] == "alice" for e in attributed)
 
+    def test_the_wrap_path_admits_a_principal_added_to_a_governed_client(self, sent):
+        # Auto-instrumentation patches the client CLASS, so a client built
+        # after init() is already governed and wrap(client, user_id=...) is
+        # the documented way to attribute it. wrap() handed the governed
+        # client straight back to avoid a second audit layer, which also threw
+        # the options away — so this gate refused a call the caller HAD
+        # attributed, and reported "no principal" about a principal it had
+        # been given. _FakeOpenAI stands in for the patched class: the
+        # already-governed client is what the caller holds either way.
+        _init(require_principal=True)
+        already_governed = wrap(_FakeOpenAI())
+        client = wrap(already_governed, user_id="alice")
+
+        client.chat.completions.create(
+            model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
+
+        refusals = [
+            e for e in sent if e.get("reason_code") == ReasonCode.PRINCIPAL_REQUIRED.value
+        ]
+        assert refusals == [], "a wrap-time principal must not be refused as absent"
+        attributed = [e for e in sent if e.get("user_id")]
+        assert attributed, "the governed call must be on the record"
+        assert all(e["user_id"] == "alice" for e in attributed)
+
+    def test_a_governed_client_wrapped_again_still_records_one_event(self, sent):
+        # The guard the rebinding must not break: honouring the options costs
+        # nothing if it re-introduces the duplicate audit the early return
+        # exists to prevent.
+        _init()
+        client = wrap(wrap(_FakeOpenAI()), user_id="alice")
+
+        client.chat.completions.create(
+            model="gpt-4", messages=[{"role": "user", "content": "hi"}]
+        )
+
+        calls = [e for e in sent if e.get("event_type") == "llm_call"]
+        assert len(calls) == 1, f"expected one audit event, got {len(calls)}"
+
     def test_a_real_block_under_an_ambient_principal_agrees_with_the_record(self, sent):
         # The contradiction, cornered: when a call IS blocked while an ambient
         # principal is active, the enforcing channel and the signed record must

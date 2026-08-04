@@ -43,6 +43,63 @@ def test_a_wrapped_client_is_still_a_proxy():
     assert isinstance(obsvr.wrap(FakeAnthropic()), _ObsvrProxy)
 
 
+def test_a_second_wrap_carrying_options_honours_them():
+    """De-duplicating the governance layer must not discard the attribution.
+
+    Auto-instrumentation patches the client class, so under it EVERY client a
+    caller holds is already governed and ``wrap(client, user_id=...)`` is the
+    documented way to attribute one. Returning the proxy untouched dropped the
+    principal on exactly that path — silently on its own, and with
+    require_principal on it became a refusal of a call the caller HAD
+    attributed (pinned end to end in test_require_principal.py).
+    """
+    _init()
+    governed = obsvr.wrap(FakeAnthropic())
+    attributed = obsvr.wrap(governed, user_id="alice")
+    assert object.__getattribute__(attributed, "_obsvr_options")["user_id"] == "alice"
+
+
+def test_a_second_wrap_carrying_options_still_does_not_nest():
+    """The de-duplication survives the rebinding: one layer, not two."""
+    _init()
+    governed = obsvr.wrap(FakeAnthropic())
+    attributed = obsvr.wrap(governed, user_id="alice")
+    inner = object.__getattribute__(attributed, "_obsvr_target")
+    assert not isinstance(inner, _ObsvrProxy), "a proxy was nested inside a proxy"
+    assert isinstance(inner, FakeAnthropic)
+
+
+def test_options_merge_over_the_ones_the_client_already_carried():
+    """Later wins, the way every other option channel resolves."""
+    _init()
+    governed = obsvr.wrap(FakeAnthropic(), user_id="alice", source="first")
+    attributed = obsvr.wrap(governed, user_id="bob")
+    options = object.__getattribute__(attributed, "_obsvr_options")
+    assert options["user_id"] == "bob"
+    assert options["source"] == "first", "an option this call did not pass must survive"
+
+
+def test_the_destination_keys_are_re_resolved_not_caller_supplied():
+    """The reserved attribution keys name WHERE the calls go, so they are
+    derived from the client on every rebind and never taken from options."""
+    from obsvr.provider_attribution import RECORDED_PROVIDER_OPTION_KEY
+
+    _init()
+    governed = obsvr.wrap(FakeAnthropic())
+    resolved = object.__getattribute__(governed, "_obsvr_options")[
+        RECORDED_PROVIDER_OPTION_KEY
+    ]
+    attributed = obsvr.wrap(
+        governed, user_id="alice", **{RECORDED_PROVIDER_OPTION_KEY: "spoofed"}
+    )
+    assert (
+        object.__getattribute__(attributed, "_obsvr_options")[
+            RECORDED_PROVIDER_OPTION_KEY
+        ]
+        == resolved
+    )
+
+
 def test_a_second_wrap_does_not_nest_a_proxy_inside_a_proxy():
     """The mechanism behind the duplicate events, asserted directly.
 

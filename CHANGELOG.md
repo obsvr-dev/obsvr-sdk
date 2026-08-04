@@ -133,6 +133,36 @@ cut, when it is renamed to that version.
 
 ### Fixed
 
+- **Every layer that consumes a principal reads the same resolved channel.** A
+  principal reaches a governed call by three channels — per-call metadata, the
+  wrap-time option, and the ambient `useSubject()` scope — and the TypeScript
+  proxy path now resolves them once and hands every layer below the same view.
+  Two measured consequences of the layers resolving separately: a
+  `quota_scope: "user_id"` rule metered the `default` bucket for any principal
+  that arrived by option or ambient scope, so a per-user limit behaved as a
+  global one and refused an unrelated user's first call, and the approval
+  request filed for a human reviewer carried no `user_id` while the blocked
+  event for that same call named one — a reviewer asked to authorise an action
+  without being told who asked, and an issuer with nothing to bind a
+  user-scoped grant to. The taint key, multi-turn session key, floor and rules
+  contexts, external backend and decision-input scope id all read that view;
+  Python already resolved this at the head of `apply_pre_call_policy`. A CI
+  guard now holds each surface to one resolution.
+  ([`2494ac6`](https://github.com/obsvr-dev/obsvr-sdk/commit/2494ac6),
+  [`3555c99`](https://github.com/obsvr-dev/obsvr-sdk/commit/3555c99))
+
+- **`wrap()` options survive on an already-governed client.** Auto-instrumentation
+  patches the provider client class, so a client constructed after `init()` is
+  already governed and `wrap(client, user_id=...)` /
+  `wrap(client, { user_id })` is the documented way to attribute it. The guard
+  that stops a second wrap from stacking a second audit layer returned the
+  client unchanged and discarded the options with it, so that path recorded no
+  principal — and under `require_principal` refused a call the caller had
+  attributed. Both SDKs now rebuild around the client's underlying instance
+  with the options merged, later winning: one governance layer, one audit
+  event per call, and the attribution kept.
+  ([`687c573`](https://github.com/obsvr-dev/obsvr-sdk/commit/687c573))
+
 - **`govern_tool`'s identity kwargs now scope enforcement.** The `user_id=` /
   `service_name=` wrap-time kwargs reach the enforcing metadata channel, so
   user-scoped quota buckets, the session-taint key, approval binding and the

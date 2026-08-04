@@ -327,6 +327,26 @@ function apiShapeFor(operation: string): ApiShape | undefined {
 const WRAPPED_MARKER = Symbol("obsvr-wrapped");
 
 /**
+ * Reads back a governed client's UNDERLYING instance and the options it was
+ * governed with, so `wrap()` can honor a second call's options without
+ * stacking a second audit layer over the first.
+ *
+ * The double-wrap guard exists because a caller following the documentation
+ * (init() plus wrap(), or auto-instrumentation plus wrap()) was getting two
+ * audit events per call. Returning the existing proxy closes that, but it
+ * also DISCARDED whatever the second call passed — and under
+ * auto-instrumentation the client a caller holds is already governed, so
+ * `wrap(client, { user_id })` was the documented way to attribute it and the
+ * one path where the principal never reached the pipeline. Rebinding keeps
+ * governance single-layer and the options honored. Python's twin unwraps
+ * `_obsvr_target` in wrap() for the same reason.
+ */
+const REBIND_MARKER = Symbol("obsvr-rebind");
+
+/** What a governed proxy hands back under {@link REBIND_MARKER}. */
+type RebindTarget = { instance: object; options: WrapOptions };
+
+/**
  * Track the current method path during proxy traversal
  */
 /**
@@ -1485,6 +1505,39 @@ async function governCall(
     // or the latch silently no-ops — so what travels is the input to the one
     // derivation rule, never a second copy of the rule.
     let taintIdentity: Record<string, unknown> = {};
+    // THE resolved principal for this call, derived ONCE below and read by
+    // every layer that consumes one. `enforcingMetadata()` is the view those
+    // layers evaluate against: the caller's per-call metadata with the
+    // resolved identity merged over it.
+    //
+    // The wrap-time option and the ambient `useSubject()` scope are identity
+    // CHANNELS, not metadata keys, so a layer that spread `audit_fields.
+    // metadata` directly saw neither — it read a principal the signed event
+    // resolves from three channels off one of them. That disagreement is the
+    // whole defect class: the scoped-quota bucket metered `default` for a
+    // wrap-time principal (so a "per user" limit behaved as a global one and
+    // refused an unrelated user's first call), and the approval request filed
+    // for a human reviewer carried no user_id while the blocked event for the
+    // same call named one.
+    //
+    // Precedence matches Python's enforcing channel exactly — per-call
+    // metadata, then the wrap-time option, then the ambient subject
+    // (wrap._collect_metadata folds the options in, policy.apply_pre_call_
+    // policy folds the ambient over what is still unset). service_name takes
+    // metadata then ambient only, because Python's option fold covers
+    // user_id/tenant_id and not service_name; adding the option here would
+    // isolate a service-scoped quota in one language only.
+    let resolvedIdentity: Record<string, unknown> = {};
+    // Built fresh per read rather than snapshotted, so a site running after
+    // the telemetry stamps below still evaluates against the metadata the
+    // event carries. The spread is the only place a hostile metadata getter
+    // can fire, and it fires at the call site — for the sites inside the
+    // guarded section that is a failMode disposition, and the two outside it
+    // spread the same object today.
+    const enforcingMetadata = (): Record<string, unknown> => ({
+      ...((audit_fields.metadata ?? {}) as Record<string, unknown>),
+      ...resolvedIdentity,
+    });
     // A redaction that could not be applied. Set by either redact branch (the
     // builtin one inside the span, the hook one below it) and stamped on the
     // event at the end, so the record says the call was blocked because
@@ -1510,29 +1563,33 @@ async function governCall(
       //     escalation silently no-ops for useSubject-identified sessions.
       taintCfg = resolveSessionTaint(config);
       const ambientSubject = getCurrentSubject();
-      const rawTaintMeta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
-      const resolvedTaintUser =
-        rawTaintMeta.user_id ?? audit_fields.user_id ?? ctx.options.user_id ?? ambientSubject?.user_id;
-      const resolvedTaintTenant = rawTaintMeta.tenant_id ?? ambientSubject?.tenant_id;
-      taintIdentity = {
-        ...rawTaintMeta,
-        ...(resolvedTaintUser !== undefined ? { user_id: resolvedTaintUser } : {}),
-        ...(resolvedTaintTenant !== undefined ? { tenant_id: resolvedTaintTenant } : {}),
+      const rawMeta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
+      // The one derivation. Every layer below reads its RESULT, never the
+      // channels again — a second copy of this rule is how the two drift.
+      const resolvedUser =
+        rawMeta.user_id ?? audit_fields.user_id ?? ctx.options.user_id ?? ambientSubject?.user_id;
+      const resolvedTenant = rawMeta.tenant_id ?? ambientSubject?.tenant_id;
+      const resolvedService = rawMeta.service_name ?? ambientSubject?.service_name;
+      resolvedIdentity = {
+        ...(resolvedUser !== undefined ? { user_id: resolvedUser } : {}),
+        ...(resolvedTenant !== undefined ? { tenant_id: resolvedTenant } : {}),
+        ...(resolvedService !== undefined ? { service_name: resolvedService } : {}),
       };
+      taintIdentity = enforcingMetadata();
       taintKey = deriveSessionKey(taintIdentity);
       // 0.4 Required principal (opt-in): an unattributed call is refused
       //     before any scanning layer runs — the refusal is about
       //     attribution, not content. Runs after the enforcement-integrity
       //     gate so a paused project keeps its own verdict and rule id. The
-      //     identity read is `resolvedTaintUser` — the same per-call
-      //     metadata → wrap-time option → ambient-subject resolution the
-      //     taint key and the signed event use, so the channel that refuses
-      //     is the channel that would have attributed. An empty string is a
+      //     identity read is `resolvedUser` — the one resolution above, which
+      //     the taint key, the rules context, the approval request and the
+      //     signed event all read too, so the channel that refuses is the
+      //     channel that would have attributed. An empty string is a
       //     supplied principal; only an absent one refuses (Python parity).
       if (
         actionTaken !== "blocked" &&
         config.requirePrincipal === true &&
-        resolvedTaintUser == null
+        resolvedUser == null
       ) {
         actionTaken = "blocked";
         actionReason = "policy_violation";
@@ -1702,7 +1759,11 @@ async function governCall(
         // on every subsequent call and inflates the decayed score into a false trip
         // (the gate is designed to accumulate per-turn deltas).
         const promptText = lastUserText();
-        const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
+        // Keyed off the RESOLVED principal, so a wrap-time or ambient
+        // identity gets its own accumulation bucket instead of sharing the
+        // process-wide "global" one with every other such session (Python
+        // keys this off its folded metadata for the same reason).
+        const meta = enforcingMetadata();
         const sessionKey = String(meta.user_id ?? meta.session_id ?? meta.tenant_id ?? "global");
         // RAW scan only — deliberately NOT the deobfuscation-aware scan. The
         // gate below fires on `tripped && !hadFullMatch` ("a full match is
@@ -1767,7 +1828,7 @@ async function governCall(
         // spoof the values a floor model_gate / environment_gate rule reads and
         // dodge it. Other caller metadata (quota scope, namespaces) is preserved.
         const floorCtx: PolicyEvalContext = {
-          ...(audit_fields.metadata as Record<string, unknown> ?? {}),
+          ...enforcingMetadata(),
           currentEnvironment: config.environment,
           model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
           provider,
@@ -1800,13 +1861,18 @@ async function governCall(
       policyReason = policyReasonOverride;
       if (config.policyRules?.length && actionTaken !== "blocked") {
         const promptText = lastUserText();
-        // Build PolicyEvalContext from audit_fields metadata and config environment
+        // Build PolicyEvalContext from the ENFORCING metadata and config
+        // environment. Scope-keyed rules (quota by user_id / service_name /
+        // tenant_id, namespace and cross-tenant gates) bucket off this
+        // context, so it has to be the resolved view: reading raw metadata
+        // metered `default` for every wrap-time and ambient principal, which
+        // made a per-user quota behave as a global one.
         const evalCtx: PolicyEvalContext = {
           currentEnvironment: config.environment,
           // model_gate context: model from the request (or Gemini instance hint)
           model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
           provider,
-          ...(audit_fields.metadata as Record<string, unknown> ?? {}),
+          ...enforcingMetadata(),
         };
         const result = evaluatePolicyRules(config.policyRules, promptText, "prompt", evalCtx, {
           failMode: config.failMode,
@@ -1851,7 +1917,14 @@ async function governCall(
           // dashboard Approvals queue can grant a time-boxed pass; the retry
           // succeeds once the grant arrives on a policy poll.
           if (result.approval_required) {
-            const meta = (audit_fields.metadata ?? {}) as Record<string, unknown>;
+            // The ENFORCING view, so the request names the same principal the
+            // blocked event for this call names. Filed off raw metadata it
+            // carried no user_id whenever the principal arrived by wrap-time
+            // option or ambient subject, and a reviewer was asked to
+            // authorise the action without being told who asked for it —
+            // while an issuer narrowing a grant by user_id had nothing to
+            // bind to. Python files this from its folded metadata.
+            const meta = enforcingMetadata();
             requestApproval(config, {
               rule_id: result.rule_id,
               rule_name: result.reason,
@@ -2181,6 +2254,9 @@ async function governCall(
     let externalBackend: ExternalBackendRecord | undefined;
     if (config.external_policy_backend && actionTaken !== "blocked") {
       const localDecision = actionTaken === "redacted" ? "redact" : "allow";
+      // The customer's engine decides on the same principal the local layers
+      // decided on. Python builds this input from its folded metadata too.
+      const backendMeta = enforcingMetadata();
       try {
         const step = await runExternalBackendStep(
           config.external_policy_backend,
@@ -2190,13 +2266,13 @@ async function governCall(
             provider,
             model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
             environment: config.environment,
-            userId: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
+            userId:
+              typeof backendMeta.user_id === "string" && backendMeta.user_id !== ""
+                ? backendMeta.user_id
+                : undefined,
             serviceName:
               audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
-            tenantId:
-              typeof (audit_fields.metadata as Record<string, unknown> | undefined)?.tenant_id === "string"
-                ? ((audit_fields.metadata as Record<string, unknown>).tenant_id as string)
-                : undefined,
+            tenantId: typeof backendMeta.tenant_id === "string" ? backendMeta.tenant_id : undefined,
             localDecision,
             rulesHash: policyVersion,
             promptSha256: sha256Hex(decisionEvaluatedText),
@@ -2255,7 +2331,7 @@ async function governCall(
         currentEnvironment: config.environment,
         model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
         provider,
-        ...(audit_fields.metadata as Record<string, unknown> ?? {}),
+        ...enforcingMetadata(),
       };
       // Check-only, and structurally always open: a shadow rule is defined as
       // never decision-affecting (it runs AFTER the active decision is final),
@@ -2274,13 +2350,24 @@ async function governCall(
     // Canonical decision record (ADR-2): commit exactly what this decision
     // ran over — rules hash, gate state, evaluated-text digest, scope ids,
     // hook disposition. Additive fields; never part of the chain preimage.
+    // The scope id is the principal the layers ENFORCED on, which is what
+    // makes the digest a commitment to the decision that was actually taken
+    // (Python commits its folded metadata's user_id here for the same
+    // reason).
+    const decisionMeta = enforcingMetadata();
     const decisionInput = buildDecisionInput({
       rulesHash: policyVersion,
       degraded: degraded.degraded,
       degradedReason: degraded.reason,
       target: "request",
       evaluatedText: decisionEvaluatedText,
-      userId: audit_fields.user_id || ctx.options.user_id || getCurrentSubject()?.user_id || undefined,
+      // The `!== ""` keeps this site's existing absent-vs-empty line exactly
+      // where it was: only the CHANNEL changes here, never what counts as a
+      // supplied principal.
+      userId:
+        typeof decisionMeta.user_id === "string" && decisionMeta.user_id !== ""
+          ? decisionMeta.user_id
+          : undefined,
       serviceName:
         audit_fields.service_name || ctx.options.service_name || config.default_service_name || undefined,
       hook: hookDisposition,
@@ -3034,6 +3121,17 @@ function createRecursiveProxy<T extends object>(
         return true;
       }
 
+      // Only the ROOT proxy is rebindable: a nested path proxy's target is a
+      // sub-object of the client (`client.chat`), and rebuilding from that
+      // would govern the sub-object rather than the client. wrap() is a
+      // client-level call, so a deeper proxy simply declines and takes the
+      // existing return-unchanged path.
+      if (prop === REBIND_MARKER) {
+        return ctx.path.length === 0
+          ? ({ instance: obj, options: ctx.options } as RebindTarget)
+          : undefined;
+      }
+
       // Handle other symbol properties (like Symbol.toStringTag)
       if (typeof prop === "symbol") {
         return Reflect.get(obj, prop);
@@ -3161,10 +3259,43 @@ export function wrap<T extends object>(
 
   // Check for double-wrapping
   if (isWrapped(client) || (client as any)[WRAPPED_MARKER]) {
+    // Governance stays single-layer either way. When this call passes
+    // options, rebuild around the client's UNDERLYING instance with them
+    // merged over the ones it already carried, rather than dropping them:
+    // under auto-instrumentation every client is already governed, so
+    // `wrap(client, { user_id })` is the documented way to attribute one and
+    // was the single path where the principal was silently lost — with
+    // requirePrincipal on, an attributed call was refused as unattributed.
+    // Later wins, matching every other option channel. A wrap() that passes
+    // no options returns the very object it was given, as before.
+    const rebind = (client as unknown as Record<symbol, unknown>)[REBIND_MARKER] as
+      | RebindTarget
+      | undefined;
+    if (rebind && Object.keys(options).length > 0) {
+      // Straight to the constructor, not back through wrap(): the first wrap
+      // marked the underlying INSTANCE as wrapped too, so re-entering here
+      // would take this same branch, find no rebind on a raw client, and
+      // hand back an ungoverned one.
+      return governClient(rebind.instance, { ...rebind.options, ...options }, config) as T;
+    }
     debugLog(config, "warn", "Client already wrapped, returning existing");
     return client;
   }
 
+  return governClient(client, options, config);
+}
+
+/**
+ * Build the governance proxy. The double-wrap guard lives in {@link wrap};
+ * this is the single construction path both it and a rebind go through, so
+ * "one client, one governed proxy, one set of resolved options" is expressed
+ * once rather than duplicated per entry point.
+ */
+function governClient<T extends object>(
+  client: T,
+  options: WrapOptions,
+  config: ResolvedConfig,
+): T {
   // The client's SHAPE, which selects the extractors.
   const provider = detectProvider(client);
 
