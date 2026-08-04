@@ -14,6 +14,11 @@ keywords = [
     "llm", "audit", "governance", "compliance", "observability",
     "pii", "ai-governance", "openai", "anthropic", "langchain",
 ]
+# Every interpreter listed here is one the CI matrix runs the full suite on,
+# and the list reaches as far as ``requires-python`` admits. 3.14 is measured
+# rather than assumed: the whole suite passes there, and the built wheel is
+# installed into a clean environment and driven through a governed refusal on
+# that interpreter by the install-path job.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -24,6 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Monitoring",
     "Typing :: Typed",
