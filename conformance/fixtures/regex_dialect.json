@@ -6,7 +6,7 @@
   },
   "schema_version": 1,
   "name": "regex_dialect.portability",
-  "description": "Cross-SDK portability of customer `regex` rule patterns. A regex rule is authored ONCE and run by TWO engines, so a construct that only one engine accepts - or that both accept and read differently - enforces in one language and is inert in the other, with nothing on the record to say so. Measured: 30 diverging verdicts across 17 construct families. Both validators must return the same ok/not-ok verdict for every pattern here; the REASON strings are deliberately not pinned, because each engine's own parser legitimately catches some of these first and reports its own reason. NOT in this fixture, and deliberately: the SEMANTIC splits with no syntactic marker - `\\d` `\\w` `\\s` `\\b` are Unicode-aware in Python and ASCII-only in JS, `$` matches before a trailing newline in Python only, and `.` matches U+000D and U+2028 in Python only. Those cannot be rejected without banning the most common constructs in the language, so they are enumerated in SECURITY.md and the parity claim is worded to exclude them. A fixture pinning them would fail today by design.",
+  "description": "Cross-SDK portability of customer `regex` rule patterns. A regex rule is authored ONCE and run by TWO engines, so a construct that only one engine accepts - or that both accept and read differently - enforces in one language and is inert in the other, with nothing on the record to say so. Measured: 30 diverging verdicts across 17 construct families. The split has two halves and this fixture pins BOTH. `cases` is the SYNTAX half: both validators must return the same ok/not-ok verdict for every pattern, and the REASON strings are deliberately not pinned, because each engine's own parser legitimately catches some of these first and reports its own reason. `semantic_cases` is the half that used to be open: \\d \\w \\s \\b $ and . read differently in `re` and `RegExp` and carry no syntactic marker, so they cannot be rejected without banning the most common constructs in the language. They are closed by normalizing the Python side to ECMAScript's meaning at its one compile call, and each row here pins a pattern, an input, and the single MATCH verdict both SDKs must reach - measured per codepoint across the whole BMP in both engines. One residual is named rather than pinned: ECMAScript `RegExp` without the `u` flag matches over UTF-16 code units while Python `re` matches over code points, so a single-character construct consumes one astral character in Python and one surrogate half in JS. Astral inputs are therefore absent here by design, and that residual is stated in SECURITY.md.",
   "cases": [
     {
       "id": "python_named_group",
@@ -139,14 +139,14 @@
       "pattern": "\\d+",
       "portable": true,
       "family": "control",
-      "note": "Portable syntax. The SEMANTIC split on \\d is documented, not rejected - see the note field."
+      "note": "Portable syntax, and now portable SEMANTICS: \\d means [0-9] in both engines. Pinned against a real input in `semantic_cases`."
     },
     {
       "id": "portable_word_class",
       "pattern": "^\\w+$",
       "portable": true,
       "family": "control",
-      "note": "Portable syntax; semantics documented."
+      "note": "Portable syntax and semantics; the Unicode/ASCII split on \\w is closed. Pinned against a real input in `semantic_cases`."
     },
     {
       "id": "portable_literal",
@@ -168,6 +168,204 @@
       "portable": true,
       "family": "control",
       "note": "Ordinary class and bounded quantifier."
+    },
+    {
+      "id": "negated_space_in_bare_class",
+      "pattern": "[\\S]",
+      "portable": false,
+      "family": "class-shorthand",
+      "note": "The ONE position the semantic normalization cannot reach. \\s inside a class is spliced into the explicit ECMAScript whitespace set; \\S cannot be, because Python `re` has no class subtraction and a negated shorthand is not expressible inside a positive class. Rejected loudly in both languages rather than left to differ silently; the fix is to write \\S outside a class, or [^\\s]."
+    },
+    {
+      "id": "negated_space_beside_a_member",
+      "pattern": "[a\\S]",
+      "portable": false,
+      "family": "class-shorthand",
+      "note": "Same rejection with another member present, so the rule is not read as 'a class of exactly one shorthand'."
+    },
+    {
+      "id": "negated_space_in_negated_class",
+      "pattern": "[^\\S]",
+      "portable": false,
+      "family": "class-shorthand",
+      "note": "The negated spelling of \\s. Rejected for the same reason and with the same one-character fix."
+    },
+    {
+      "id": "portable_saturated_class",
+      "pattern": "[\\s\\S]",
+      "portable": true,
+      "family": "control",
+      "note": "The dotall idiom, and the exemption to the three rows above - provably rather than by convenience. The spliced \\s covers exactly the ASCII spaces the ASCII \\S omits, so this denotes EVERY character in both engines. Without this control the rejection above would read as 'a class may never contain \\S'."
+    }
+  ],
+  "semantic_cases": [
+    {
+      "id": "digit_class_rejects_arabic_indic",
+      "pattern": "^\\d+$",
+      "input": "\u0660\u0661\u0662\u0663",
+      "matches": false,
+      "family": "digit-class",
+      "note": "Python's \\d matched Arabic-Indic digits and ECMAScript's did not, so an SSN rule blocked on one SDK and allowed on the other for this exact input. ECMAScript's meaning wins: [0-9] in both."
+    },
+    {
+      "id": "digit_class_accepts_ascii",
+      "pattern": "^\\d+$",
+      "input": "123",
+      "matches": true,
+      "family": "control",
+      "note": "The other half. Without it, a \\d that matched nothing would satisfy the row above."
+    },
+    {
+      "id": "ssn_shape_rejects_non_ascii_digits",
+      "pattern": "^\\d{3}-\\d{2}-\\d{4}$",
+      "input": "\u0660\u0661\u0662-\u0663\u0664-\u0665\u0666\u0667\u0668",
+      "matches": false,
+      "family": "digit-class",
+      "note": "The rule shape this actually matters for, at full length."
+    },
+    {
+      "id": "ssn_shape_accepts_ascii",
+      "pattern": "^\\d{3}-\\d{2}-\\d{4}$",
+      "input": "123-45-6789",
+      "matches": true,
+      "family": "control",
+      "note": "Its positive control."
+    },
+    {
+      "id": "word_class_rejects_accented_letter",
+      "pattern": "^\\w+$",
+      "input": "caf\u00e9",
+      "matches": false,
+      "family": "word-class",
+      "note": "Python's \\w was Unicode-aware and ECMAScript's is ASCII. ECMAScript wins."
+    },
+    {
+      "id": "word_class_rejects_cjk",
+      "pattern": "^\\w+$",
+      "input": "\u65e5\u672c\u8a9e",
+      "matches": false,
+      "family": "word-class",
+      "note": "Same family, a different script."
+    },
+    {
+      "id": "word_class_accepts_ascii",
+      "pattern": "^\\w+$",
+      "input": "abc_1",
+      "matches": true,
+      "family": "control",
+      "note": "Its positive control."
+    },
+    {
+      "id": "space_class_rejects_python_only_whitespace",
+      "pattern": "a\\sb",
+      "input": "a\u0085b",
+      "matches": false,
+      "family": "space-class",
+      "note": "U+0085 NEXT LINE is whitespace to Python's \\s and not to ECMAScript's. re.ASCII alone would NOT have closed this family - it makes it worse, from 6 disagreeing codepoints to 19 - so \\s is rewritten to the explicit ECMAScript set instead."
+    },
+    {
+      "id": "space_class_accepts_nbsp",
+      "pattern": "a\\sb",
+      "input": "a\u00a0b",
+      "matches": true,
+      "family": "space-class",
+      "note": "The other direction of the same family: U+00A0 is whitespace to ECMAScript and not to Python's ASCII \\s. Both directions are pinned because a one-sided fixture would look closed while half the split stayed open."
+    },
+    {
+      "id": "space_class_accepts_bom",
+      "pattern": "a\\sb",
+      "input": "a\ufeffb",
+      "matches": true,
+      "family": "space-class",
+      "note": "U+FEFF is ECMAScript whitespace and is in neither of Python's own sets."
+    },
+    {
+      "id": "space_class_accepts_ascii_space",
+      "pattern": "a\\sb",
+      "input": "a b",
+      "matches": true,
+      "family": "control",
+      "note": "Its positive control."
+    },
+    {
+      "id": "negated_space_rejects_nbsp",
+      "pattern": "^a\\Sb$",
+      "input": "a\u00a0b",
+      "matches": false,
+      "family": "space-class",
+      "note": "\\S outside a class is rewritten too, so the negation agrees wherever the class does."
+    },
+    {
+      "id": "saturated_class_matches_everything",
+      "pattern": "^[\\s\\S]$",
+      "input": "\u00a0",
+      "matches": true,
+      "family": "class-shorthand",
+      "note": "The exemption, measured: [\\s\\S] denotes every character in both engines even though the \\S inside it keeps ASCII semantics, because the spliced \\s covers exactly what that omits."
+    },
+    {
+      "id": "word_boundary_after_accented_letter",
+      "pattern": "x\\b",
+      "input": "x\u00e9",
+      "matches": true,
+      "family": "word-boundary",
+      "note": "Python's \\b was Unicode-aware, so it saw no boundary between x and \u00e9; ECMAScript's is ASCII and sees one. ECMAScript wins."
+    },
+    {
+      "id": "word_boundary_inside_ascii_word",
+      "pattern": "cat\\b",
+      "input": "cats",
+      "matches": false,
+      "family": "control",
+      "note": "Its negative control: a boundary that must NOT be found."
+    },
+    {
+      "id": "dollar_does_not_match_before_trailing_newline",
+      "pattern": "secret$",
+      "input": "secret\n",
+      "matches": false,
+      "family": "end-anchor",
+      "note": "Python's $ also matched just before a trailing newline; ECMAScript's, without m, matches only at end of input. $ is rewritten to \\Z."
+    },
+    {
+      "id": "dollar_matches_at_end_of_input",
+      "pattern": "secret$",
+      "input": "secret",
+      "matches": true,
+      "family": "control",
+      "note": "Its positive control."
+    },
+    {
+      "id": "dot_excludes_carriage_return",
+      "pattern": "^.$",
+      "input": "\r",
+      "matches": false,
+      "family": "dot",
+      "note": "ECMAScript's dot excludes all four LineTerminators; Python's excludes only \\n. Rewritten to an explicit negated class."
+    },
+    {
+      "id": "dot_excludes_line_separator",
+      "pattern": "^.$",
+      "input": "\u2028",
+      "matches": false,
+      "family": "dot",
+      "note": "U+2028 LINE SEPARATOR, the same family."
+    },
+    {
+      "id": "dot_excludes_paragraph_separator",
+      "pattern": "^.$",
+      "input": "\u2029",
+      "matches": false,
+      "family": "dot",
+      "note": "U+2029 PARAGRAPH SEPARATOR. Named here because the enumeration in SECURITY.md listed U+000D and U+2028 only, and this third codepoint diverged just as far."
+    },
+    {
+      "id": "dot_matches_an_ordinary_character",
+      "pattern": "^.$",
+      "input": "x",
+      "matches": true,
+      "family": "control",
+      "note": "Its positive control."
     }
   ]
 }

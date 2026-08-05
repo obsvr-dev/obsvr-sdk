@@ -411,24 +411,75 @@ What the SDKs do about it:
   path were the two found, and both now record honestly.
 - **Three surfaces the READMEs list as supported run far less policy than `obsvr.wrap()` does, and the difference is not a tool-gate question.** Measured layer by layer rather than read off the code, in both languages. **LangChain, LlamaIndex and the OpenAI Agents tracing processor** call the observe-only path: the PII scan runs and the stored copy is redacted, and that is all. The tracing processor joined that set when its model-call path was wired to the same net; before that it ran no policy pipeline whatsoever, so raw PII went into signed events at any sample rate while its two siblings stored a redacted copy. `policyRules`, the non-overridable `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch/stale-policy integrity gate, the response-side scan, and PII **blocking** do not run there, and metering is opt-in. So a `pii_policy` of `{ssn: "block"}` refuses the call through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and through any of those three the call goes out with the SSN in it while the event records the stored copy as redacted — the record is honest about what it stored and says nothing false about a block, but the control a reader configured did not fire. **The named compatibility wrappers** (`wrapAzureOpenAI`, `wrapTogether`, `wrapOpenAICompatible`) govern `chat.completions.create` and nothing else: counted against real clients, 17 governed method paths through `obsvr.wrap()` against 1 through these, with `responses.*`, `.parse`, `.stream`, `runTools`, `completions.create` and the whole assistants surface binding through ungoverned and unaudited. Both are silences rather than false records, and both are repairable by wrapping with `obsvr.wrap()` instead — it accepts the same clients. Put an enforcement decision on `obsvr.wrap()` or on MCP.
 
-- **A customer `regex` rule is authored once and run by two engines, and they do not agree everywhere.** Measured, not inferred: 30 diverging verdicts across 17 construct families, driven through both SDKs' real validators and matchers. The split has two halves and only one of them is closable by rejection.
+- **A customer `regex` rule is authored once and run by two engines, and they do not agree everywhere.** Measured, not inferred: 30 diverging verdicts across 17 construct families, driven through both SDKs' real validators and matchers. The split has two halves, they close by different mechanisms, and both are now closed.
 
-  **Closed — the validator now refuses these in BOTH languages**, so a rule that cannot mean the same thing in both is refused loudly (it fires the existing `sdk:rule_rejected` signal and lands on the audit record naming the id) rather than enforcing on half a fleet: Python-only named groups and backreferences (`(?P<x>…)`, `(?P=x)`), JS-only named groups and backreferences (`(?<x>…)`, `\k<x>`), inline flags (`(?i)`, `(?s)`, `(?m)`, `(?x)`, `(?a)`, and the scoped `(?i:…)`), possessive quantifiers (`a*+`), atomic groups (`(?>…)`), variable-width lookbehind (`(?<=USD\s*)`), the anchors `\A` `\Z` `\z` (anchors in Python, LITERAL characters in JS), any other alphabetic escape outside the shared set (`\h`, `\p{…}`, `\P{…}`), character-class set operations (`[\w--[0-9]]`), and `{,n}` (a quantifier in Python, three literal characters in JS). Pinned cross-language by `conformance/fixtures/regex_dialect.json`, in both directions — the fixture carries portable controls too, because a corpus in which every pattern is rejected would pass while proving nothing.
+  **Closed — the SYNTAX half: the validator refuses these in BOTH languages**, so a rule that cannot mean the same thing in both is refused loudly (it fires the existing `sdk:rule_rejected` signal and lands on the audit record naming the id) rather than enforcing on half a fleet: Python-only named groups and backreferences (`(?P<x>…)`, `(?P=x)`), JS-only named groups and backreferences (`(?<x>…)`, `\k<x>`), inline flags (`(?i)`, `(?s)`, `(?m)`, `(?x)`, `(?a)`, and the scoped `(?i:…)`), possessive quantifiers (`a*+`), atomic groups (`(?>…)`), variable-width lookbehind (`(?<=USD\s*)`), the anchors `\A` `\Z` `\z` (anchors in Python, LITERAL characters in JS), any other alphabetic escape outside the shared set (`\h`, `\p{…}`, `\P{…}`), character-class set operations (`[\w--[0-9]]`), `{,n}` (a quantifier in Python, three literal characters in JS), and `\S` inside a character class that does not also hold `\s` (see the residuals below). Pinned cross-language by `conformance/fixtures/regex_dialect.json`, in both directions — the fixture carries portable controls too, because a corpus in which every pattern is rejected would pass while proving nothing.
 
-  **Open, and enumerated rather than allowlisted** — these are SEMANTIC splits with no syntactic marker, so rejecting them would mean banning the most common constructs in the language:
+  **Closed — the second half, by normalization rather than by rejection.** `\d`
+  `\w` `\s` `\b` `$` and `.` are SEMANTIC splits with no syntactic marker, so
+  refusing them would mean refusing the most common constructs in the language.
+  They are aligned instead: **ECMAScript's meaning is the meaning**, and the
+  Python SDK rewrites a customer pattern to that meaning at its one compile call.
+  ECMAScript wins because Python can express its semantics exactly (`re.ASCII`
+  plus a mechanical rewrite) while the reverse is not true — a Unicode-aware
+  `\b` has no JavaScript spelling short of lookaround built from `\p{...}`
+  escapes, which need the `u` flag, and `u` mode changes which *syntax* the
+  engine accepts. The TypeScript engine is untouched, so nothing already measured
+  on that side moves.
 
-  | Construct | Python | JavaScript |
+  | Construct | was, in Python | is now, in both |
   |---|---|---|
-  | `\d` `\D` | Unicode-aware — matches Arabic-Indic `٠١٢٣`, Devanagari `१२३` | ASCII `[0-9]` only |
-  | `\w` `\W` | Unicode-aware — matches `日本語`, `café` | ASCII `[A-Za-z0-9_]` only |
-  | `\s` `\S` | matches U+0085 NEXT LINE | does not |
-  | `\b` | word boundary is Unicode-aware | ASCII-only, so `x\b` matches in `xé` in JS and not in Python |
-  | `$` (no `m` flag) | matches before a trailing `\n` | end of input only |
-  | `.` | matches U+000D and U+2028 | matches neither |
+  | `\d` `\D` | Unicode-aware — matched Arabic-Indic `\u0660\u0661\u0662\u0663`, Devanagari `\u0966\u0967\u0968` | ASCII `[0-9]` |
+  | `\w` `\W` | Unicode-aware — matched `\u65e5\u672c\u8a9e`, `caf\u00e9` | ASCII `[A-Za-z0-9_]` |
+  | `\s` `\S` | matched U+001C–U+001F and U+0085; did not match U+FEFF | the ECMAScript WhiteSpace + LineTerminator set, exactly |
+  | `\b` `\B` | word boundary was Unicode-aware | ASCII word boundary |
+  | `$` (no `m` flag) | also matched before a trailing `\n` | end of input only |
+  | `.` | matched U+000D, U+2028 and U+2029 | excludes all four ECMAScript LineTerminators |
 
-  Aligning these means choosing which engine's meaning wins and re-verifying every deployed rule against the change — a breaking change with its own migration, not a validator entry, and it is not made here. **These are deliberately NOT in `known-divergences.json`:** that catalog's own policy is that an entry whose allowed difference would cover an enforcement-verdict difference is invalid, and these are enforcement-verdict differences. They are open defects stated in the open, not accepted divergences.
+  Measured per codepoint across the whole BMP in both engines, before and after.
+  Two findings are worth stating because they contradict the obvious approach.
+  `re.ASCII` alone closes `\d` `\w` `\b` **exactly** and makes `\s` **worse** —
+  from 6 disagreeing codepoints to 19 — because the ECMAScript whitespace set is
+  neither of Python's; `\s` is therefore rewritten to an explicit class rather
+  than left to a flag. And the `.` row above used to name U+000D and U+2028 only:
+  U+2029 PARAGRAPH SEPARATOR diverged just as far and is now covered and pinned.
 
-  Practical consequence: a `regex` rule that must behave identically on both SDKs should stay inside `[a-z]`-style explicit classes, bounded quantifiers, groups, alternation, and fixed-width lookaround. `keyword`, `topic_deny` and the built-in PII scanners are unaffected — they do not use customer regex.
+  **What is not closed, named rather than folded in.** Two residuals:
+
+  - **`\S` inside a character class is REFUSED rather than aligned**, in both
+    languages, because a negated shorthand cannot be expressed inside a positive
+    class without class subtraction, which Python `re` does not have. `[\s\S]`
+    is exempt and provably so — the rewritten `\s` covers exactly the ASCII
+    spaces the ASCII `\S` omits, so it denotes every character in both engines —
+    which keeps the dotall idiom legal. `[\S]`, `[a\S]` and `[^\S]` are
+    refused loudly through the existing `sdk:rule_rejected` signal; the fix is
+    one character (`[^\s]`).
+  - **The code-unit / code-point model.** ECMAScript `RegExp` without the `u`
+    flag matches over UTF-16 code units while Python `re` matches over code
+    points, so any single-character construct — `.`, a negated class, even
+    `[^a]` — consumes one astral character in Python and one surrogate half in
+    JavaScript. Measured: `^.$` matches U+1F600 in Python and not in JavaScript.
+    This is not an escape-semantics question and no rewrite reaches it. Closing
+    it means putting the JavaScript engine in `u` mode, which is a second
+    behaviour change of a different kind: 6 of 18 sampled patterns change SYNTAX
+    verdict under `u` (identity escapes of non-syntax characters, an unbalanced
+    `{` or `]`), so it would open a syntax split in the other direction unless
+    the validator moved with it. Not done here, and not claimed.
+
+  **Neither residual is in `known-divergences.json`,** for the reason that
+  catalog states about itself: an entry whose allowed difference would cover an
+  enforcement-verdict difference is invalid. The first is not a divergence at all
+  — both SDKs refuse the same patterns — and the second is an open defect stated
+  in the open.
+
+  Both halves are pinned cross-language by `conformance/fixtures/regex_dialect.json`
+  (`cases` for the syntax verdicts, `semantic_cases` for the match verdicts) and
+  by `scripts/check-regex-dialect-parity.mjs`, which runs the cross product of a
+  pattern corpus and an input corpus — 3,000 pattern/input pairs, built from the
+  codepoints the two engines were measured to disagree on — through both real
+  matchers and fails on any divergence.
+
+  Practical consequence: a `regex` rule now behaves identically on both SDKs for every construct either validator accepts, with the astral residual above as the one exception. `[a-z]`-style explicit classes, bounded quantifiers, groups, alternation and fixed-width lookaround remain the most predictable way to write one. `keyword`, `topic_deny` and the built-in PII scanners are unaffected — they do not use customer regex.
 
 - **A duplicated install costs coverage, loudly.** If the SDK ends up in one process twice (installed directly and again as a transitive dependency), the first copy to `init()` claims a process-global slot and governs; the second logs a warning and stands down rather than both polling, both wrapping, and both emitting duplicate evidence for a single call. The copy that stood down does not wrap, so **clients wrapped only through it are not governed** — the warning says so and names the fix (deduplicate the dependency). Semantics are pinned in `conformance/fixtures/instance_guard.json`.
 

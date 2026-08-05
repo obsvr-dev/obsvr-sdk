@@ -171,15 +171,19 @@ const QUANTIFIED_ALTERNATION = /\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)\s*[+*{]/;
  * alternative — leaving it — is a rule an operator believes is deployed fleet-
  * wide that is enforcing on half the fleet.
  *
- * NOT covered here, and deliberately: `\d` `\w` `\s` `\b` and their negations
- * are Unicode-aware in Python and ASCII-only in JS; `$` matches before a
- * trailing newline in Python and not in JS; `.` matches U+000D and U+2028 in
- * Python and neither in JS. Those are SEMANTIC splits with no syntactic marker,
- * so they cannot be rejected without banning the most common constructs in the
- * language. Aligning them means choosing which engine's meaning wins and
- * re-verifying every deployed rule against the change — a breaking change with
- * its own migration, not a validator entry. They are enumerated in
- * `SECURITY.md` instead, and the parity claim is worded to exclude them.
+ * The SEMANTIC splits — `\d` `\w` `\s` `\b` `$` `.` — are NOT in this list, and
+ * rejection is the wrong instrument for them: they carry no syntactic marker,
+ * and banning them would ban the most common constructs in the language. They
+ * are closed by NORMALIZATION on the Python side instead, at that SDK's one
+ * compile call — ECMAScript's meaning is the meaning, so this engine is
+ * untouched and nothing already measured here moves. See
+ * `_ecmascript_equivalent` in sdk-python/obsvr/safe_regex.py for the rewrite and
+ * the per-codepoint measurement behind it.
+ *
+ * One POSITION still needs a rejection, and it is `unsaturatedNegatedSpaceInClass`
+ * below: `\S` inside a character class is the one place the rewrite cannot
+ * reach, because a negated shorthand is not expressible inside a positive class
+ * without class subtraction, which Python `re` does not have.
  */
 const CROSS_DIALECT_CONSTRUCTS: Array<{ re: RegExp; reason: string }> = [
   { re: /\(\?P[<=]/, reason: "python_only_named_group" },
@@ -221,12 +225,74 @@ function hasVariableWidthLookbehind(pattern: string): boolean {
 }
 
 /**
+ * Every character class in `pattern`, as `[openIndex, closeIndex)` spans.
+ *
+ * A leading `^` and a leading `]` are literal members, which both engines agree
+ * on — `[]]` is a class containing `]` in each. Escapes are skipped so `[\]]`
+ * reads as one member and not as a class that ends early.
+ */
+function characterClassSpans(pattern: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const n = pattern.length;
+  let i = 0;
+  while (i < n) {
+    if (pattern[i] === "\\") {
+      i += 2;
+      continue;
+    }
+    if (pattern[i] !== "[") {
+      i++;
+      continue;
+    }
+    const start = i;
+    i++;
+    if (pattern[i] === "^") i++;
+    if (pattern[i] === "]") i++;
+    while (i < n && pattern[i] !== "]") {
+      if (pattern[i] === "\\") i++;
+      i++;
+    }
+    spans.push([start, Math.min(i, n)]);
+    i++;
+  }
+  return spans;
+}
+
+/**
+ * Is `\S` used inside a character class that does not also hold `\s`?
+ *
+ * The ONE position Python's normalization cannot reach. `\s` inside a class is
+ * spliced out into the explicit ECMAScript whitespace set; `\S` cannot be,
+ * because Python `re` has no class subtraction and a NEGATED shorthand is not
+ * expressible inside a POSITIVE class.
+ *
+ * A class holding BOTH is exempt, and provably so rather than by convenience:
+ * the spliced `\s` covers exactly the six ASCII spaces the ASCII `\S` omits, so
+ * `[\s\S]` denotes every character in both engines — and `[^\s\S]` denotes none
+ * in both. That is the dotall idiom people actually write, and it stays legal.
+ * `[\S]`, `[a\S]` and `[^\S]` do not: Python's ASCII `\S` admits the nineteen
+ * non-ASCII spaces this engine's `\S` refuses, and nothing inside the class can
+ * take them back out.
+ *
+ * Twin: `_unsaturated_negated_space_in_class` in sdk-python/obsvr/safe_regex.py.
+ */
+function unsaturatedNegatedSpaceInClass(pattern: string): boolean {
+  return characterClassSpans(pattern).some(([start, end]) => {
+    const body = pattern.slice(start, end);
+    return body.includes("\\S") && !body.includes("\\s");
+  });
+}
+
+/**
  * Reject any construct that does not mean the same thing in both engines.
  * Returns a reason, or null when the pattern is dialect-portable.
  */
 export function crossDialectViolation(pattern: string): string | null {
   for (const { re, reason } of CROSS_DIALECT_CONSTRUCTS) {
     if (re.test(pattern)) return reason;
+  }
+  if (unsaturatedNegatedSpaceInClass(pattern)) {
+    return "negated_space_shorthand_in_class (\\S)";
   }
   // Alphabetic escapes outside the shared set: a literal in JS, an error in
   // Python (\h), or an anchor in Python and a literal in JS (\A, \Z, \z).

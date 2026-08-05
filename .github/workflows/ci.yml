@@ -310,6 +310,16 @@ jobs:
       - name: Canonicalizer parity (fast-check vs hypothesis, generated corpus)
         run: node scripts/check-canonical-json-parity.mjs --cases 3000
 
+      # A customer regex rule is authored once and run by two engines, so a rule
+      # that matches in one and not the other blocks a call on one SDK and
+      # allows it on the other. The fixture pins the cases someone thought of;
+      # this drives the CROSS PRODUCT of a pattern corpus and an input corpus
+      # through both real matchers, with the input corpus built from the
+      # codepoints the two engines were measured to disagree on. The TS build
+      # above is what this imports.
+      - name: Regex dialect parity (both engines, 3000 pattern/input pairs)
+        run: node scripts/check-regex-dialect-parity.mjs
+
   supply-chain:
     name: Dependency audit (npm + pip)
     runs-on: ubuntu-latest

@@ -128,12 +128,12 @@ def _has_nested_repetition(pattern: str) -> bool:
 # ``sdk:rule_rejected`` signal and lands on the audit record naming the id, so a
 # rule that stops enforcing is visible rather than silently one-sided.
 #
-# NOT covered here, and deliberately: ``\d`` ``\w`` ``\s`` ``\b`` and their
-# negations are Unicode-aware here and ASCII-only in JS; ``$`` matches before a
-# trailing newline here and not in JS; ``.`` matches U+000D and U+2028 here and
-# neither in JS. Those are SEMANTIC splits with no syntactic marker, so they
-# cannot be rejected without banning the most common constructs in the language.
-# They are enumerated in SECURITY.md instead.
+# The SEMANTIC splits -- ``\d`` ``\w`` ``\s`` ``\b`` ``$`` ``.`` -- are NOT in
+# this list, because rejection is the wrong instrument for them: they have no
+# syntactic marker, and banning them would ban the most common constructs in the
+# language. They are closed by NORMALIZATION instead, at the one compile call --
+# see ``_ecmascript_equivalent`` below. One position needs a rejection even so,
+# and it is the last entry in the list.
 _CROSS_DIALECT_CONSTRUCTS = [
     (re.compile(r"\(\?P[<=]"), "python_only_named_group"),
     (re.compile(r"\(\?[a-zA-Z]+[):]"), "python_only_inline_flags"),
@@ -174,6 +174,66 @@ def _has_variable_width_lookbehind(pattern: str) -> bool:
     return False
 
 
+def _character_class_spans(pattern: str):
+    """Yield ``(open_index, close_index)`` for every character class.
+
+    A leading ``^`` and a leading ``]`` are literal members, which both engines
+    agree on -- ``[]]`` is a class containing ``]`` in each. Escapes are skipped
+    so ``[\\]]`` reads as one member and not as a class that ends early.
+    """
+    n = len(pattern)
+    i = 0
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c != "[":
+            i += 1
+            continue
+        start = i
+        i += 1
+        if i < n and pattern[i] == "^":
+            i += 1
+        if i < n and pattern[i] == "]":
+            i += 1
+        while i < n and pattern[i] != "]":
+            if pattern[i] == "\\":
+                i += 1
+            i += 1
+        yield start, min(i, n)
+        i += 1
+
+
+def _unsaturated_negated_space_in_class(pattern: str) -> bool:
+    """Is ``\\S`` used inside a character class that does not also hold ``\\s``?
+
+    The ONE position the normalizer below cannot reach. ``\\s`` inside a class is
+    spliced out into the explicit ECMAScript whitespace set; ``\\S`` cannot be,
+    because Python ``re`` has no class subtraction and a NEGATED shorthand is not
+    expressible inside a POSITIVE class.
+
+    A class holding BOTH is exempt, and provably so rather than by convenience:
+    the spliced ``\\s`` covers exactly the six ASCII spaces the ASCII ``\\S``
+    omits, so ``[\\s\\S]`` denotes every character in both engines -- and
+    ``[^\\s\\S]`` denotes none in both. That is the dotall idiom people actually
+    write, and it stays legal. ``[\\S]``, ``[a\\S]`` and ``[^\\S]`` do not:
+    ASCII ``\\S`` admits the nineteen non-ASCII spaces that ECMAScript ``\\S``
+    refuses, and nothing inside the class can take them back out.
+
+    Rejecting is the SAFE direction here for the same reason it is for the
+    syntax splits above: a rejected rule fires ``sdk:rule_rejected`` and lands on
+    the audit record naming the id, so a rule that stops enforcing is visible
+    rather than silently one-sided. The fix is one character: write ``\\s`` in a
+    negated class instead.
+    """
+    for start, end in _character_class_spans(pattern):
+        body = pattern[start:end]
+        if "\\S" in body and "\\s" not in body:
+            return True
+    return False
+
+
 def cross_dialect_violation(pattern: str):
     """Reason a pattern does not mean the same thing in both engines, or None.
 
@@ -182,6 +242,8 @@ def cross_dialect_violation(pattern: str):
     for rx, reason in _CROSS_DIALECT_CONSTRUCTS:
         if rx.search(pattern):
             return reason
+    if _unsaturated_negated_space_in_class(pattern):
+        return "negated_space_shorthand_in_class (\\S)"
     i = 0
     while i < len(pattern) - 1:
         if pattern[i] != "\\":
@@ -235,16 +297,149 @@ def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+# ── ECMAScript semantics for the shorthands ─────────────────────────────────
+#
+# A customer ``regex`` rule is authored ONCE and run by TWO engines, and six
+# constructs read differently in each. They carry no syntactic marker, so the
+# validator above cannot refuse them without banning ``\d``. The resolution is
+# to make one engine's meaning the meaning, and ECMAScript wins:
+#
+#   * Python can express ECMAScript's semantics exactly -- ``re.ASCII`` for the
+#     shorthand classes plus a mechanical rewrite for the rest -- while the
+#     reverse is not true. Making JS Unicode-aware would need ``\p{...}`` under
+#     the ``u`` flag, ``u`` mode CHANGES WHICH SYNTAX IS ACCEPTED, and a
+#     Unicode-aware ``\b`` has no JS spelling at all short of lookaround built
+#     from those same property escapes.
+#   * ASCII classes are what a rule author means by ``\d`` in an SSN or a card
+#     number, which is what these rules are written for.
+#   * It is one compile call in one file, so nothing already measured on the
+#     TypeScript side moves.
+#
+# Measured per codepoint across the whole BMP, both engines, before and after:
+# ``re.ASCII`` alone aligns ``\d`` ``\D`` ``\w`` ``\W`` ``\b`` ``\B`` EXACTLY and
+# leaves three families open -- and it makes ``\s`` WORSE, from 6 disagreeing
+# codepoints to 19, because ECMAScript ``\s`` is neither Python's Unicode set nor
+# its ASCII one. The rewrite below closes those three:
+#
+#   ``\s`` / ``\S``  ->  the explicit ECMAScript WhiteSpace + LineTerminator set
+#   ``.``            ->  ``[^\n\r\u2028\u2029]``  (JS excludes all four
+#                        LineTerminators; Python's dot excludes only ``\n``)
+#   ``$``            ->  ``\Z``  (Python's ``$`` also matches before a trailing
+#                        newline; ECMAScript's, without ``m``, does not)
+#
+# ``^`` needs no rewrite: without MULTILINE / ``m`` both mean start-of-input.
+#
+# WHAT IS NOT CLOSED, stated rather than implied. ECMAScript ``RegExp`` without
+# the ``u`` flag matches over UTF-16 CODE UNITS while Python ``re`` matches over
+# CODE POINTS, so any single-character construct -- ``.``, a negated class, even
+# ``[^a]`` -- consumes one astral character in Python and one surrogate half in
+# JS. Measured: ``^.$`` matches U+1F600 in Python and not in JS, and the rewrite
+# above does not change that because it is not about escapes. Closing it means
+# putting the JS engine in ``u`` mode, which is a SECOND behaviour change of a
+# different kind: 6 of 18 sampled patterns change syntax verdict under ``u``
+# (identity escapes of non-syntax characters, an unbalanced ``{`` or ``]``), so
+# it would open a syntax split in the other direction unless the validator moves
+# with it. It is named here and in SECURITY.md rather than folded in quietly.
+
+#: ECMAScript ``\s``: WhiteSpace + LineTerminator (ECMA-262), as a class BODY so
+#: it can be spliced into a customer's own class as well as stand alone.
+_JS_SPACE_BODY = (
+    "\\t\\n\\x0b\\f\\r \\u00a0\\u1680\\u2000-\\u200a"
+    "\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff"
+)
+#: ECMAScript LineTerminator: what ``.`` excludes without the ``s`` flag.
+_JS_LINE_TERMINATORS = "\\n\\r\\u2028\\u2029"
+
+
+def _ecmascript_equivalent(pattern: str) -> str:
+    """Rewrite ``pattern`` so Python ``re`` (with ``re.ASCII``) reads it the way
+    ECMAScript ``RegExp`` reads the original.
+
+    Applied at COMPILE time, never at validation time: the customer's pattern is
+    what gets validated, reported and hashed, and this is only what the engine is
+    handed. A single left-to-right scan, because every rewrite is local and the
+    only context that matters is whether the cursor is inside a character class.
+    """
+    out = []
+    n = len(pattern)
+    i = 0
+    in_class = False
+    while i < n:
+        c = pattern[i]
+        if c == "\\" and i + 1 < n:
+            nxt = pattern[i + 1]
+            if nxt == "s":
+                out.append(_JS_SPACE_BODY if in_class else "[" + _JS_SPACE_BODY + "]")
+            elif nxt == "S" and not in_class:
+                out.append("[^" + _JS_SPACE_BODY + "]")
+            else:
+                # Inside a class, ``\S`` reaches here and stays as it is. The
+                # validator refuses the classes where that would diverge, so the
+                # only ones left are the saturated ``[\s\S]`` family.
+                out.append(c + nxt)
+            i += 2
+            continue
+        if in_class:
+            if c == "]":
+                in_class = False
+            out.append(c)
+            i += 1
+            continue
+        if c == "[":
+            in_class = True
+            out.append(c)
+            i += 1
+            # A leading ``^`` and a leading ``]`` are literal members in both
+            # engines; copying them here keeps the ``]`` from closing the class.
+            if i < n and pattern[i] == "^":
+                out.append(pattern[i])
+                i += 1
+            if i < n and pattern[i] == "]":
+                out.append(pattern[i])
+                i += 1
+            continue
+        if c == ".":
+            out.append("[^" + _JS_LINE_TERMINATORS + "]")
+            i += 1
+            continue
+        if c == "$":
+            out.append("\\Z")
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 _compiled_cache: Dict[str, Optional[re.Pattern]] = {}
 _CACHE_MAX = 500
 
 
 def compile_safe_regex(pattern: str) -> Optional[re.Pattern]:
-    """Compile through the validator, with caching. Returns None if rejected."""
+    """Compile through the validator, with caching. Returns None if rejected.
+
+    Compiled from the ECMAScript-equivalent rewrite, under ``re.ASCII``, so a
+    rule authored once means one thing on both SDKs. The cache is keyed on the
+    ORIGINAL pattern -- that is what a caller holds and what the audit record
+    names.
+    """
     if pattern in _compiled_cache:
         return _compiled_cache[pattern]
     ok, _reason = validate_regex_pattern(pattern)
-    compiled = re.compile(pattern) if ok else None
+    compiled = None
+    if ok:
+        try:
+            compiled = re.compile(_ecmascript_equivalent(pattern), re.ASCII)
+        except re.error:
+            # The rewrite is mechanical and the original already compiled, so
+            # this is unreachable in practice and pinned as such by the corpus
+            # test. Reaching it means the rewrite produced something this engine
+            # will not take, and the honest resolution is the one every rejected
+            # pattern gets -- refuse loudly through the existing
+            # ``sdk:rule_rejected`` signal -- rather than quietly falling back to
+            # un-normalized semantics, which would restore the divergence this
+            # exists to close and say nothing.
+            compiled = None
     if len(_compiled_cache) >= _CACHE_MAX:
         _compiled_cache.clear()
     _compiled_cache[pattern] = compiled

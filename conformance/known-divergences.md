@@ -31,6 +31,43 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-06: a customer `regex` rule now means one thing on both SDKs. The
+  SYNTAX half of the dialect split had already been closed by rejection in both
+  validators; the SEMANTIC half — `\d` `\w` `\s` `\b` `$` `.`, which read
+  differently in `re` and `RegExp` and carry no syntactic marker — was open and
+  enumerated, because rejecting them would have meant rejecting the most common
+  constructs in the language. It was an enforcement-verdict difference and
+  therefore never eligible for the catalog above: measured, a rule
+  `^\d{3}-\d{2}-\d{4}$` matched Arabic-Indic digits in Python and not in
+  TypeScript, so the same rule blocked a call on one SDK and allowed it on the
+  other. It was carried in `SECURITY.md` as an open defect while it existed.
+  **ECMAScript's meaning wins, and the Python side is rewritten to it** at that
+  SDK's one compile call. The direction is forced rather than preferred: Python
+  can express ECMAScript's semantics exactly (`re.ASCII` plus a mechanical
+  pattern rewrite) while the reverse is not true — a Unicode-aware `\b` has no
+  JavaScript spelling short of lookaround built from `\p{...}` escapes, which
+  need the `u` flag, and `u` mode changes which SYNTAX the engine accepts. The
+  TypeScript engine is untouched, so nothing already measured there moves.
+  Two measurements shaped the fix and are worth keeping. `re.ASCII` alone closes
+  `\d` `\w` `\b` EXACTLY and makes `\s` WORSE — 6 disagreeing codepoints across
+  the BMP become 19, because the ECMAScript whitespace set is neither of
+  Python's — so `\s` is rewritten to an explicit class rather than left to the
+  flag. And the enumeration in `SECURITY.md` named U+000D and U+2028 for the `.`
+  row: U+2029 PARAGRAPH SEPARATOR diverged just as far and was missing.
+  **Two residuals, both named rather than folded in.** `\S` inside a character
+  class is REFUSED in both languages instead of aligned, because a negated
+  shorthand is not expressible inside a positive class without class
+  subtraction, which Python `re` lacks; `[\s\S]` is exempt and provably so, so
+  the dotall idiom stays legal. And the code-unit / code-point model — JS
+  `RegExp` without `u` matches UTF-16 code units, Python `re` matches code
+  points — is a SEVENTH family that no escape rewrite reaches; closing it means
+  `u` mode, which changes syntax acceptance in the other direction. Neither is a
+  catalog entry: the first is not a divergence (both SDKs refuse the same
+  patterns) and the second is an open defect stated in the open.
+  Pinned by `conformance/fixtures/regex_dialect.json` (`semantic_cases`) and by
+  `scripts/check-regex-dialect-parity.mjs`, which drives 3,000 pattern/input
+  pairs through both real matchers. Without the fix that script reports 43
+  divergences across all six families.
 - 2026-08-06: the Python sender installs `SIGTERM`/`SIGINT` handlers, closing the
   shutdown divergence. It flushed only from `atexit`, which a default-disposition
   `SIGTERM` does not reach, so every container stop dropped whatever the bounded
