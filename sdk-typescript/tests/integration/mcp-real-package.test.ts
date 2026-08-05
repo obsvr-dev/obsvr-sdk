@@ -542,3 +542,60 @@ describe("MCP tool gate on the routes around callTool", () => {
     }
   });
 });
+
+/**
+ * A customer rule set is enough, on its own, to reach the MCP gate.
+ *
+ * The pre-call net is armed by a list of "is any policy configured" tests, and
+ * `policyRules` was not on it. A deployment whose only policy was a rule set
+ * therefore got no rule evaluation at all on MCP tool calls: measured live in
+ * both languages, the tool body RAN, its result reached the caller, and the
+ * event recorded `allowed` — a verdict the rule set was never asked for, which
+ * is worse than recording nothing. The rules already worked the moment any
+ * OTHER entry in that list was configured, which is what kept it invisible.
+ */
+describe("MCP: a customer rule set arms the gate by itself", () => {
+  const RULE = {
+    id: "r-block",
+    name: "block badword",
+    enabled: true,
+    action: "block",
+    type: "keyword",
+    conditions: { keywords: ["badword"] },
+  } as unknown as never;
+
+  it("a rule set alone blocks the tool and the server never runs its body", async () => {
+    init({ api_key: "test-key", sample_rate: 1, policy_rules: [RULE] } as never);
+    const { client, executed, close } = await connectRealPair();
+    try {
+      const governed = obsvrGovernMCP(client, getConfig());
+      await expect(
+        governed.callTool({ name: "send_money", arguments: { memo: "this has badword in it" } }),
+      ).rejects.toThrow();
+      await waitForEvents(1);
+
+      const events = sentEvents.flatMap((b: any) => b.events ?? [b]);
+      // All three halves: the body did not run, and the record does not claim
+      // a verdict that was never rendered.
+      expect(executed).toEqual([]);
+      expect(events.find((e: any) => e.action_taken === "blocked")).toBeDefined();
+      expect(events.find((e: any) => e.action_taken === "allowed")).toBeUndefined();
+    } finally {
+      await close();
+    }
+  });
+
+  it("CONTROL: the same rule set lets a non-matching call through", async () => {
+    // Without this, the block above would also be satisfied by a gate that had
+    // started refusing every call once a rule set was present.
+    init({ api_key: "test-key", sample_rate: 1, policy_rules: [RULE] } as never);
+    const { client, executed, close } = await connectRealPair();
+    try {
+      const governed = obsvrGovernMCP(client, getConfig());
+      await governed.callTool({ name: "read_file", arguments: { path: "/tmp/benign" } });
+      expect(executed).toEqual(["read_file"]);
+    } finally {
+      await close();
+    }
+  });
+});

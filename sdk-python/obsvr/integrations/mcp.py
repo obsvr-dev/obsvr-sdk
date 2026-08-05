@@ -660,6 +660,15 @@ def _build_governed_mcp_callables(
         # was configured, which is what made the gap invisible.
         if (
             cfg.policy_floor
+            # The customer rule set arms the net for exactly the reason the
+            # floor above does, and was missing from this list for exactly as
+            # long. Measured live: with only policy_rules configured, an MCP
+            # tool call whose arguments matched a block rule EXECUTED, returned
+            # its result to the caller, and recorded `allowed` — a verdict the
+            # rule set was never asked for. Adding any other entry here, even
+            # an empty pii_policy, made the same rule work, which is what kept
+            # it invisible.
+            or cfg.policy_rules
             or cfg.pii_policy is not None
             or cfg.on_pre_call is not None
             # require_principal arms the net by itself, for the same reason as

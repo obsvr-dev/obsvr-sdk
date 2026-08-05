@@ -924,6 +924,14 @@ async function runGovernedCallTool(
     // this list was configured, which is what made the gap invisible.
     if (
       (currentConfig.policyFloor && currentConfig.policyFloor.length > 0) ||
+      // The customer rule set arms the net for exactly the reason the floor
+      // above does, and was missing from this list for exactly as long.
+      // Measured live in both languages: with only policyRules configured, an
+      // MCP tool call whose arguments matched a block rule EXECUTED, returned
+      // its result to the caller, and recorded `allowed` — a verdict the rule
+      // set was never asked for. Adding any other entry here, even an empty
+      // pii_policy, made the same rule work, which is what kept it invisible.
+      (currentConfig.policyRules && currentConfig.policyRules.length > 0) ||
       currentConfig.pii_policy ||
       currentConfig.on_pre_call ||
       // requirePrincipal arms the net by itself, for the same reason as the

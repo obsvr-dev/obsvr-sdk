@@ -510,6 +510,11 @@ def _gate(
     stored_prompt = input_text
     if (
         config.policy_floor
+        # Same entry, same reason as the MCP boundary: a deployment whose only
+        # policy is a customer rule set must still reach the pipeline, or the
+        # rules are silently inert at this boundary and the call records
+        # `allowed` without them having been consulted.
+        or config.policy_rules
         or config.pii_policy is not None
         or config.on_pre_call is not None
         # require_principal arms the net by itself: a config whose only

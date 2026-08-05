@@ -218,3 +218,63 @@ class TestMcpGateAgainstRealPackage:
         listing = _run(_list())
         names = sorted(t.name for t in listing.tools)
         assert names == ["read_file", "send_money"]
+
+
+class TestCustomerRulesArmTheNetAlone:
+    """A customer rule set is enough, on its own, to reach the MCP gate.
+
+    The pre-call net is armed by a list of "is any policy configured" tests,
+    and ``policy_rules`` was not on it. A deployment whose only policy was a
+    rule set therefore got no rule evaluation at all on MCP tool calls:
+    measured live, the tool body RAN, its result reached the caller, and the
+    event recorded ``allowed`` — a verdict the rule set was never asked for,
+    which is the one thing worse than recording nothing. The rules already
+    worked the moment any OTHER entry in that list was configured, even an
+    empty ``pii_policy``, which is what kept it invisible.
+    """
+
+    RULE = {
+        "id": "r-block",
+        "name": "block badword",
+        "enabled": True,
+        "action": "block",
+        "type": "keyword",
+        "conditions": {"keywords": ["badword"]},
+    }
+
+    def _rule(self):
+        from obsvr.rules import PolicyRule
+
+        return PolicyRule(**self.RULE)
+
+    def test_a_rule_set_alone_blocks_the_tool_and_records_the_block(self, monkeypatch):
+        _init(policy_rules=[self._rule()])
+        captured = _captured(monkeypatch)
+        executed = []
+        # A STRING argument on a tool whose schema takes a string. An earlier
+        # draft of this test sent a string to send_money(amount: int), so the
+        # SERVER rejected the frame on its schema and the test passed with the
+        # gate removed - grading a validation error as a refusal.
+        result, raised = _run(_call("read_file", {"path": "/tmp/badword.txt"}, executed))
+
+        # Graded on the RECORD, not on "something raised": the body did not
+        # run, the caller got nothing, and the event carries a real verdict
+        # rather than the `allowed` the rule set was never asked for.
+        assert executed == []
+        assert result is None and raised is not None
+        actions = [e.get("action_taken") for e in captured]
+        assert "blocked" in actions, f"expected a blocked record, got {actions}"
+
+    def test_control_the_same_rule_set_lets_a_non_matching_call_through(self, monkeypatch):
+        # Without this, the block above would also be satisfied by a gate that
+        # had started refusing every call once a rule set was present - and by
+        # a server that had stopped accepting this tool's arguments at all.
+        _init(policy_rules=[self._rule()])
+        captured = _captured(monkeypatch)
+        executed = []
+        result, raised = _run(_call("read_file", {"path": "/tmp/benign.txt"}, executed))
+
+        assert raised is None
+        assert executed == ["read_file"]
+        assert result is not None
+        assert "blocked" not in [e.get("action_taken") for e in captured]
