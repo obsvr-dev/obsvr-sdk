@@ -149,7 +149,59 @@ cut, when it is renamed to that version.
   [`a7333c5`](https://github.com/obsvr-dev/obsvr-sdk/commit/a7333c5),
   [`fb4042d`](https://github.com/obsvr-dev/obsvr-sdk/commit/fb4042d))
 
+- **CI runs the keyless integration suites against the real client libraries.**
+  A new blocking job installs the actual `openai`, `together-ai`, Bedrock and
+  MCP packages, points them at local stubs, and lets auto-discovery find them
+  through the built package's export map — so 23 suites exercise the shipped
+  artifact end to end on every push, asserting the signed schema, the HMAC
+  chain, the policy decision and whether the governed operation ran. Every
+  other TypeScript job imports the source and stubs the boundary, which is why
+  a run of defects was invisible to both SDKs' unit suites and visible here.
+  The suites are a vendored copy of the keyless half of a harness maintained
+  outside this repository; `integration-harness/README.md` records that a
+  vendored copy can drift from its source.
+  ([`ea4a6d6`](https://github.com/obsvr-dev/obsvr-sdk/commit/ea4a6d6))
+
+- **The exported Rego bundle is checked against the SDK evaluator on every
+  run.** `opa` is installed from a version-pinned, digest-verified release
+  wherever the suite runs, and the parity block now fails when it is absent
+  instead of degrading to a passing placeholder. Running the corpus for the
+  first time showed it could not distinguish case-folded matchers from
+  case-sensitive ones, so it gained mixed-case and response-target rows.
+  ([`f24f69b`](https://github.com/obsvr-dev/obsvr-sdk/commit/f24f69b))
+
 ### Fixed
+
+- **An `allowed` verdict now carries evidence that a policy pipeline evaluated
+  the call.** The enforcement suites police "blocked implies not executed" —
+  that a refusal is real. Nothing policed the reverse, and a gate that stops
+  running never claims `blocked`, so every refusal-grading assertion holds
+  while a surface enforces nothing; that is the shape a rule set which failed
+  to arm the pre-call pipeline hid in. An event claiming `allowed` must now
+  carry the decision-input hash produced inside that pipeline, and a surface
+  that could not consult a configured layer records `not_evaluated` and names
+  the layer. Three false records were found by holding all four boundaries to
+  it: both tool gates stamped `action_source: "policy_rules"` on permits the
+  rules engine was never asked for, and both MCP boundaries recorded `allowed`
+  when the policy engine had crashed and `fail_mode: "open"` let the call
+  proceed — the call proceeding is documented, claiming a gate permitted it was
+  not. The TypeScript tool gate is synchronous and cannot await the async
+  pre-call pipeline, so those layers genuinely do not run there; that remains a
+  coverage gap, and the record now reports it as one instead of as a permit.
+  ([`7b0247e`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b0247e))
+
+- **The tool boundary's session-taint latch keys on the resolved principal.**
+  A principal reaches a governed tool by three channels — per-call metadata,
+  the wrap-time option, the ambient subject scope — and the require-principal
+  gate there reads all three. The taint key was derived from the raw metadata
+  object alone, so a caller who attributed through either of the other two
+  satisfied the gate and was then keyed to the `global` bucket, while the LLM
+  path set the taint under their real principal: SET and ENFORCE disagreed, and
+  the latch never fired for that caller on the most side-effecting egress the
+  SDK governs. Both consumers now read one resolution.
+  `scripts/check-principal-channel.mjs` covers this surface, so the next
+  consumer written the old way fails there rather than in review.
+  ([`8ea57f6`](https://github.com/obsvr-dev/obsvr-sdk/commit/8ea57f6))
 
 - **The signed principal is the principal the decision was made for, on the
   `wrap()` path in both languages.** A principal reaches a wrapped call by
