@@ -18,6 +18,58 @@ cut, when it is renamed to that version.
 
 ### Added
 
+- **BREAKING: a customer `regex` rule means one thing on both SDKs.** `\d` `\w`
+  `\s` `\b` `$` and `.` read differently in Python `re` and JavaScript
+  `RegExp`, so the same rule could block a call on one SDK and allow it on the
+  other with nothing on the record to say so — measured, `^\d{3}-\d{2}-\d{4}$`
+  matched Arabic-Indic digits in Python and not in TypeScript. **ECMAScript's
+  meaning is now the meaning**, rewritten into the pattern at the Python SDK's
+  one compile call; the TypeScript engine is untouched. The direction is forced
+  rather than preferred: Python can express ECMAScript's semantics exactly while
+  a Unicode-aware `\b` has no JavaScript spelling that does not also change
+  which syntax the engine accepts. Measured per codepoint across the whole BMP:
+  `re.ASCII` alone closes `\d` `\w` `\b` exactly and makes `\s` *worse* (6
+  disagreeing codepoints to 19), so `\s` is rewritten to an explicit class
+  instead. Two residuals are named rather than folded in: `\S` inside a
+  character class that does not also hold `\s` is now **refused** in both
+  languages (a negated shorthand is not expressible inside a positive class;
+  `[\s\S]` stays legal and provably means every character in both engines), and
+  the code-unit/code-point model — JavaScript matches UTF-16 code units, Python
+  matches code points — which no escape rewrite reaches. Pinned by
+  `conformance/fixtures/regex_dialect.json` and by a new CI job driving 3,000
+  pattern/input pairs through both real matchers.
+  **Migration: none.** Nothing has been published to npm or PyPI from this
+  repository, so no installed build carries the old behaviour and there is no
+  deployed rule to re-verify — which is why the change is made now rather than
+  after the first release. If you are running from source with a rule that
+  relied on Python's Unicode `\d`/`\w`, write the class out explicitly.
+  ([`6cb9cc9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6cb9cc9))
+
+- **`wrap()` says when it governed nothing.** Wrapping a client whose shape
+  carries no auditable method returned a proxy that forwarded every call
+  through: no policy, no event, and nothing said, so a caller reasonably
+  concluded they were covered. `wrap()` now probes the client for every path the
+  proxy can intercept and reports a miss once per client — `console.warn` in
+  TypeScript, the `obsvr` logger in Python, matching where each SDK already
+  reports a misconfigured `init()`. Once per CLIENT, not per call. The new
+  opt-in `requireGovernedSurface` / `require_governed_surface` throws instead,
+  for a deployment that wants an ungoverned client to fail at startup rather
+  than at audit time. The proxy is still returned either way, so a client that
+  worked before still works. ([`d5ec1fa`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5ec1fa))
+
+- **The Python SDK installs `SIGTERM`/`SIGINT` handlers.** It flushed from
+  `atexit` alone, which a default-disposition `SIGTERM` never reaches, so every
+  container stop dropped whatever the bounded queue still held. The TypeScript
+  ownership rules are ported rather than reinvented: chain to any prior handler,
+  flush within this SDK's existing five-second shutdown budget, and restore the
+  default disposition and re-deliver only when nothing else owned the signal —
+  so the process dies **by** the signal, the status a supervisor reads. `SIG_IGN`
+  is left alone. One residual is structural and documented: a POSIX disposition
+  is a single slot where Node keeps a listener list, so a host installing its own
+  handler *after* `obsvr.init()` replaces obsvr's. Call `init()` before your
+  shutdown wiring. ([`cd5679c`](https://github.com/obsvr-dev/obsvr-sdk/commit/cd5679c))
+
+
 - **CI installs the built artifact and drives a governed refusal through it.**
   Two new blocking jobs build the Python wheel and pack the npm tarball,
   install each into an environment where the repository is not reachable — a
@@ -187,6 +239,40 @@ cut, when it is renamed to that version.
   ([`03d5a18`](https://github.com/obsvr-dev/obsvr-sdk/commit/03d5a18))
 
 ### Fixed
+
+- **Host metadata the audit sender cannot serialize no longer reaches the
+  caller.** The sender sized caller-supplied `metadata` with a bare serializer
+  before deciding whether to trim it, so a bag carrying a throwing property
+  getter, a `BigInt`, a hostile `toJSON` or a circular reference raised out of
+  the sender into the application's own synchronous call — the one path outside
+  the guarantee that an exception inside a detector layer never reaches your
+  application. A bag that cannot be measured is now treated as **over budget**
+  and takes the trim that already exists for an oversized one, so the grouping
+  keys (`trace_id`, `agent_run_id`, the span envelope) survive and the event is
+  still delivered; a reserved key that is itself unreadable is dropped rather
+  than thrown. Python had the same defect through a cycle, which its
+  `default=str` never covered. ([`7b8c03c`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b8c03c))
+
+- **The two package READMEs no longer ship links that resolve to nothing.** They
+  carried ten relative links, six of them reaching above the package directory.
+  PyPI renders its long description standalone with no repository around it, so
+  every one of them 404'd for an installed reader while working perfectly under
+  GitHub review. They are now absolute to the repository, and the doc-link guard
+  gained the half it was missing: a relative link in a published README fails,
+  every other relative link must name a tracked file, and the published set is
+  checked against the package manifests so it cannot go stale on its own.
+  ([`3f25744`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f25744))
+
+- **The per-integration tool-policy grading table is read back against the
+  tree.** It is the table the documentation points a reader at before they put a
+  destructive capability behind a policy, and no test read it — a row flipped to
+  the wrong grade, or a surface that lost its gate while the row kept claiming
+  one, was caught by nothing offline. Each SDK now parses the table and grades
+  its own column with the same source predicate its enforcement-invariant suite
+  already uses. Coverage runs both ways: an unparseable cell, a row with no
+  source mapping, and a gated file with no row all fail.
+  ([`7144341`](https://github.com/obsvr-dev/obsvr-sdk/commit/7144341))
+
 
 - **The TypeScript tool governor evaluates policy, closing the largest
   functional difference between the two SDKs.** `obsvrGovernTool` reached its
