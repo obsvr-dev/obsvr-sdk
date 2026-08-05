@@ -1,0 +1,21 @@
+{
+  "name": "obsvr-integration-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vendored keyless integration suites: real provider client libraries driven against local stubs, wrapped with @obsvr/sdk, asserting the signed-event schema, HMAC chain, policy decisions and enforcement end to end.",
+  "scripts": {
+    "test": "node run.mjs offline",
+    "test:one": "node run.mjs"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@obsvr/sdk": "file:../sdk-typescript",
+    "@aws-sdk/client-bedrock-runtime": "^3.735.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "openai": "^6.0.0",
+    "together-ai": "^0.46.0"
+  }
+}
