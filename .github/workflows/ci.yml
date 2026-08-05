@@ -41,6 +41,23 @@ jobs:
         run: npm run build
         working-directory: sdk-typescript
 
+      # WHAT THIS UNBLOCKS, AND WHY IT IS A STEP RATHER THAN A COMMENT.
+      #
+      # tests/unit/rego-export.test.ts holds the only assertions that the Rego
+      # bundle `exportToRego()` hands an operator produces the SAME verdict as
+      # the SDK's own evaluator. Those assertions need `opa` on PATH. opa was
+      # installed in no workflow, no script and no manifest, and the test
+      # degraded without it to a green placeholder whose comment claimed the
+      # parity ran "in CI where opa is present" — so the check had never
+      # executed anywhere while reporting a pass on every run.
+      #
+      # It now FAILS when opa is absent, which is what makes this step
+      # load-bearing: delete it and the suite goes red rather than quiet. The
+      # binary is version-pinned and digest-verified in the script, matching
+      # how every action here is SHA-pinned.
+      - name: Install opa (arms the Rego parity assertions)
+        run: scripts/install-opa.sh
+
       - name: Test
         run: npm test
         working-directory: sdk-typescript
