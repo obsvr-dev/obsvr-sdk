@@ -10,6 +10,7 @@ Two layers of defense:
 2. safe_regex_search() — bounded input length at execution time.
 """
 import re
+import warnings
 from typing import Dict, Optional, Tuple
 
 MAX_PATTERN_LENGTH = 512
@@ -258,6 +259,50 @@ def cross_dialect_violation(pattern: str):
     return None
 
 
+#: CPython's ``re`` parser warns when a character class LOOKS like it is using
+#: another dialect's set operation. Enumerated rather than matched by a prefix:
+#: a variant CPython adds later then leaks -- visibly, and in the safe
+#: direction -- instead of being silently swallowed by a loose pattern.
+_SET_OPERATION_WARNING = (
+    r"Possible (nested set|set (difference|intersection|symmetric difference|union))"
+)
+
+
+def _compiles_quietly(pattern: str) -> bool:
+    """Is ``pattern`` syntactically valid to this engine? Answered silently.
+
+    A SYNTAX PROBE, and its only output is the boolean it returns. ``re``
+    writes a ``FutureWarning`` to stderr for a class like ``[\\w--[0-9]]`` or
+    ``[[a]]``, so validating a customer rule printed into the host application's
+    logs from a call the host never asked to be noisy -- and the SDK had already
+    decided what to do about that pattern.
+
+    Three things this deliberately does NOT do:
+
+    * It does not filter globally. A process-wide filter would silence the same
+      warning for the host's own regexes, which are not obsvr's to quiet.
+    * It does not reach the OPERATIVE compile in ``compile_safe_regex``. That
+      one builds the object that will run against customer data, so a warning
+      there is about a pattern the SDK is about to execute and an operator
+      should see it. ``[[a]]`` passes validation and still warns from there;
+      that boundary is deliberate, not an oversight.
+    * It does not suppress by category alone. ``catch_warnings`` swaps
+      PROCESS-GLOBAL filter state for the duration of the block, and governed
+      calls arrive on whatever thread the application uses, so a concurrent
+      warning can fall inside the window. Narrowing to this one message family
+      bounds that to a warning this would have suppressed anyway.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", category=FutureWarning, message=_SET_OPERATION_WARNING
+        )
+        try:
+            re.compile(pattern)
+        except re.error:
+            return False
+    return True
+
+
 def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
     """Statically validate a customer-supplied pattern.
 
@@ -268,9 +313,7 @@ def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
     if len(pattern) > MAX_PATTERN_LENGTH:
         return False, f"pattern_too_long (max {MAX_PATTERN_LENGTH})"
 
-    try:
-        re.compile(pattern)
-    except re.error:
+    if not _compiles_quietly(pattern):
         return False, "invalid_syntax"
 
     if _BACKREFERENCE.search(pattern):
