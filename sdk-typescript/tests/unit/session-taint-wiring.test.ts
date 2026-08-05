@@ -7,6 +7,7 @@ import { applyPreCallPolicy } from '../../src/integrations/core';
 import { obsvrGovernTool } from '../../src/integrations/tools';
 import { mintCanary, _resetCanaries } from '../../src/policy/canary';
 import { sessionTaintSize, markTainted, _resetSessionTaint } from '../../src/policy/session-taint';
+import { useSubject } from '../../src/proxy/subject';
 
 /**
  * End-to-end session taint latch wiring. Twin:
@@ -159,6 +160,93 @@ describe('session taint: tool EXECUTION egress (the most dangerous one)', () => 
     );
     expect(tool.execute({ x: 1 })).toBe('done');
     expect(ran).toBe(true);
+  });
+});
+
+/**
+ * The tool boundary's OTHER two identity channels.
+ *
+ * Every test above hands the principal in on `metadata.user_id`, which is one
+ * of three channels this surface accepts — the require-principal gate reads
+ * per-call metadata, then the wrap-time option, then the ambient subject, and
+ * its comment says the taint key resolves the same way. It did not: the key
+ * was derived from the raw `options.metadata` object alone, so a caller who
+ * attributed through either of the other two channels was keyed to the
+ * 'global' bucket while core.ts SET the taint under their real principal.
+ *
+ * SET and ENFORCE disagreeing is the whole failure: the latch silently never
+ * fires for that caller, on the most side-effecting egress the SDK governs.
+ * Both channels are pinned here, each with a negative control so a fix that
+ * simply taints everything fails too.
+ */
+describe('session taint: the tool gate keys on the RESOLVED principal, not the raw metadata', () => {
+  const taintedTool = (options: Record<string, unknown>) => {
+    let ran = false;
+    const tool = obsvrGovernTool(
+      { name: 't', execute: (_i: unknown) => { ran = true; return 'done'; } },
+      options,
+    );
+    return { tool, didRun: () => ran };
+  };
+
+  beforeEach(() => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+    markTainted('alice', 'prompt_injection', Date.now());
+  });
+
+  it('wrap-time user_id: the tainted caller\'s tool call is refused', () => {
+    const { tool, didRun } = taintedTool({ user_id: 'alice' });
+    expect(() => tool.execute({ x: 1 })).toThrow(/session tainted/i);
+    expect(didRun()).toBe(false);
+  });
+
+  it('wrap-time user_id: an UNtainted caller on the same channel still runs', () => {
+    const { tool, didRun } = taintedTool({ user_id: 'bob' });
+    expect(tool.execute({ x: 1 })).toBe('done');
+    expect(didRun()).toBe(true);
+  });
+
+  it('ambient useSubject: the tainted caller\'s tool call is refused', () => {
+    const { tool, didRun } = taintedTool({});
+    useSubject('user:alice', () => {
+      expect(() => tool.execute({ x: 1 })).toThrow(/session tainted/i);
+    });
+    expect(didRun()).toBe(false);
+  });
+
+  it('ambient useSubject: an UNtainted subject on the same channel still runs', () => {
+    const { tool, didRun } = taintedTool({});
+    useSubject('user:bob', () => {
+      expect(tool.execute({ x: 1 })).toBe('done');
+    });
+    expect(didRun()).toBe(true);
+  });
+
+  it('per-call metadata still outranks the wrap-time option, as the gate above reads it', () => {
+    // Precedence is the surface's existing contract, not a free choice: the
+    // require-principal gate resolves metadata FIRST. The taint key now
+    // resolves identically, so an explicit per-call principal is the one both
+    // of them enforce on.
+    const { tool, didRun } = taintedTool({ user_id: 'bob', metadata: { user_id: 'alice' } });
+    expect(() => tool.execute({ x: 1 })).toThrow(/session tainted/i);
+    expect(didRun()).toBe(false);
+  });
+
+  it('tenant_id from the ambient subject keys the latch when no user_id is supplied', () => {
+    // deriveSessionKey falls back user_id -> session_id -> tenant_id, so the
+    // resolved view has to carry tenant_id too or the fallback lands on
+    // 'global' for a tenant-scoped caller.
+    _resetSessionTaint();
+    markTainted('acme', 'prompt_injection', Date.now());
+    const { tool, didRun } = taintedTool({});
+    useSubject('tenant:acme', () => {
+      expect(() => tool.execute({ x: 1 })).toThrow(/session tainted/i);
+    });
+    expect(didRun()).toBe(false);
   });
 });
 

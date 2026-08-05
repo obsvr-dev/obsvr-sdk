@@ -269,17 +269,61 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         }
       }
 
+      // 1.15) The enforcing identity view, resolved ONCE for every gate below.
+      //
+      // A principal reaches this boundary by three channels — per-call
+      // metadata, the wrap-time option, the ambient useSubject() scope — and
+      // each gate below has to enforce on the same one. Resolving per gate is
+      // how they drift: the require-principal gate read all three while the
+      // taint key read the raw metadata object alone, so a caller who
+      // attributed through either of the other two satisfied the gate and was
+      // then keyed to the 'global' taint bucket. core.ts SETS the taint under
+      // the resolved principal, so SET and ENFORCE disagreed and the latch
+      // never fired for that caller — on the most side-effecting egress the
+      // SDK governs.
+      //
+      // Precedence is this surface's existing contract (per-call metadata,
+      // then the wrap-time option, then the ambient subject), matching the
+      // signed principal in buildAuditEvent so the view that ENFORCES and the
+      // view that is RECORDED name the same caller. Twin of Python's
+      // `_identity_meta`, which folded these three the same way.
+      //
+      // A FUNCTION, not a value, because the two consumers below need
+      // different postures toward a metadata object that throws when read —
+      // and a hostile object is a real vector here, not a hypothetical. The
+      // require-principal gate calls it defensively (unreadable counts as
+      // absent, matching core.ts's pre-guard read); the taint layer calls it
+      // inside its own guard so the same defect is recorded as a detector
+      // failure and resolved by failMode. One resolution, two dispositions.
+      const enforcingIdentity = (): Record<string, unknown> => {
+        const ambient = getCurrentSubject();
+        const view: Record<string, unknown> = {
+          ...((options.metadata ?? {}) as Record<string, unknown>),
+        };
+        const userId = view.user_id ?? options.user_id ?? ambient?.user_id;
+        const serviceName = view.service_name ?? options.service_name ?? ambient?.service_name;
+        const tenantId = view.tenant_id ?? ambient?.tenant_id;
+        if (userId !== undefined) view.user_id = userId;
+        if (serviceName !== undefined) view.service_name = serviceName;
+        if (tenantId !== undefined) view.tenant_id = tenantId;
+        return view;
+      };
+
       // 1.2) Required principal (opt-in): an unattributed tool call is
       // refused before any scanning layer runs — the refusal is about
-      // attribution, not content. The identity read here is the one the
-      // taint key and the emitted events resolve: per-call metadata, then
-      // the wrap-time option, then the ambient subject. An empty string is
-      // a supplied principal; only an absent one refuses (Python parity:
-      // the same gate inside the shared pre-call pipeline).
+      // attribution, not content. An empty string is a supplied principal;
+      // only an absent one refuses (Python parity: the same gate inside the
+      // shared pre-call pipeline). A metadata object that throws on read is
+      // an ABSENT principal, not a readable one: this gate runs ahead of the
+      // detector guard, and refusing an unattributed call is the safe answer
+      // when the attribution cannot be read at all.
       if (config.requirePrincipal === true) {
-        const identityMeta = (options.metadata ?? {}) as Record<string, unknown>;
-        const principal =
-          identityMeta.user_id ?? options.user_id ?? getCurrentSubject()?.user_id;
+        let principal: unknown;
+        try {
+          principal = enforcingIdentity().user_id;
+        } catch {
+          principal = undefined;
+        }
         if (principal == null) {
           emitIntegrationEvent({
             config,
@@ -312,9 +356,10 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
 
       // 1.5) Session taint latch: tool execution is a real, side-effecting
       // egress — the MOST dangerous one — so a session compromised on an
-      // earlier turn has its tool calls escalated. Keyed on options.metadata
-      // identity (same derivation as every other egress). block mode refuses
-      // the tool before it runs; flag mode records it on the event.
+      // earlier turn has its tool calls escalated. Keyed on the resolved
+      // identity above, which is the derivation core.ts uses to SET the taint;
+      // deriveSessionKey's contract is that SET and ENFORCE agree. block mode
+      // refuses the tool before it runs; flag mode records it on the event.
       //
       // Guarded: a defect in the taint layer resolves here instead of
       // escaping into the host's own tool call. The INTENDED block travels
@@ -325,9 +370,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
       try {
         const taintCfg = resolveSessionTaint(config);
         if (taintCfg && sessionTaintSize() > 0) {
-          const taintKey = deriveSessionKey(
-            (options.metadata ?? {}) as Record<string, unknown>,
-          );
+          const taintKey = deriveSessionKey(enforcingIdentity());
           // Tool-aware: a tainted session in flag mode still loses its
           // DESTRUCTIVE capabilities — the composition that stops indirect
           // injection without bricking the session. One set-membership test
