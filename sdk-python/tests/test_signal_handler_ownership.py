@@ -318,3 +318,281 @@ def test_the_shutdown_latch_is_released_when_the_host_owns_termination(monkeypat
     assert killed == []
     assert not sender._shutdown.is_set()
     assert not sender._signal_flush_started
+
+
+# ── the second flush: a signal, then a normal exit ──────────────────────────
+#
+# When the host handler RETURNS rather than exiting, obsvr clears both latches
+# and hands the signal on. The process may then exit normally, and `atexit`
+# fires a SECOND flush over the same sender. That path is correct by
+# construction -- the flushes are sequential, the second finds a drained queue,
+# and a genuine duplicate is absorbed as idempotent success by the 409
+# `duplicate_event` rule -- and none of the nine rows above drove it.
+#
+# These three drive it against a REAL ingest endpoint rather than a patched
+# sender: duplication is a delivery-layer property, and a spy on `flush` cannot
+# see it. The child runs a recording HTTP server on loopback, writes every event
+# the server durably accepted to a file, and the parent grades that file.
+
+#: Child-side recording ingest. Records each event once per `request_id`.
+#: In `duplicate` mode it records the event and STILL answers 409
+#: `duplicate_event`, which is what ingest returns when a retry races a lost
+#: 2xx -- the answer the sender is required to read as idempotent success.
+RECORDING_INGEST = """
+    import http.server, json, threading, time
+
+    ACCEPTED = []          # every event durably recorded, in arrival order
+    _SEEN = set()          # request_ids already recorded
+    ALWAYS_409 = %r
+    SLOW_FROM = %r          # 1-based request index from which delivery is slow
+    SLOW_SECONDS = %r
+
+    _requests = [0]
+
+    class _Ingest(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = json.loads(self.rfile.read(n) or b"{}")
+            events = body if isinstance(body, list) else [body]
+            _requests[0] += 1
+            if SLOW_FROM and _requests[0] >= SLOW_FROM:
+                # Record only AFTER the delay, so a process that exits without
+                # waiting for its queue leaves this delivery unrecorded -- which
+                # is what an undelivered queue tail looks like from ingest.
+                time.sleep(SLOW_SECONDS)
+            for ev in events:
+                rid = ev.get("request_id")
+                if rid in _SEEN:
+                    continue
+                _SEEN.add(rid)
+                ACCEPTED.append(ev)
+            if ALWAYS_409:
+                payload = json.dumps({"error": "duplicate_event"}).encode()
+                self.send_response(409)
+            else:
+                payload = b"{}"
+                self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    _server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Ingest)
+    INGEST_URL = "http://127.0.0.1:%%d" %% _server.server_address[1]
+    threading.Thread(target=_server.serve_forever, daemon=True).start()
+
+    def dump_accepted(path):
+        with open(path, "w") as fh:
+            for ev in ACCEPTED:
+                fh.write(json.dumps(ev) + "\\n")
+"""
+
+
+#: Signal handlers in these rows write with `os.write` rather than `print`.
+#: The parent delivers each signal as soon as it reads a marker LINE, so the
+#: child can still be inside that `print` when the handler runs, and `print`
+#: from a handler then re-enters the same buffered writer. `os.write` goes
+#: straight to the fd and takes no lock. The nine rows above are unaffected:
+#: they signal into a `time.sleep`, not into a print.
+MARK = 'def mark(text):\n    os.write(1, text.encode() + b"\\n")\n'
+
+
+def _emit(request_id):
+    """Child source enqueuing one governed event with a known request_id."""
+    return (
+        "obsvr.sender.send_audit_async(obsvr.config.get_config(), "
+        '{"request_id": %r, "environment": "test", "region": "us", '
+        '"provider": "openai", "model": "m", "operation": "chat.completions.create", '
+        '"source": "test", "prompt": "p", "response": "r", "success": True})' % request_id
+    )
+
+
+def run_recording_child(
+    body, steps, always_409=False, slow_from=0, slow_seconds=0.0, timeout=25
+):
+    """Run a child with a recording ingest, signaling it at each step.
+
+    `steps` is a list of `(marker, signal_or_None)`: wait for the child to
+    print `marker`, then deliver `signal`. Returns
+    `(returncode, output, stderr, accepted_events)`.
+    """
+    import json
+    import tempfile
+
+    fd, dump_path = tempfile.mkstemp(suffix=".jsonl")
+    os.close(fd)
+    src = (
+        "import os, signal, sys, time\n"
+        + textwrap.dedent(RECORDING_INGEST % (always_409, slow_from, slow_seconds))
+        + "\nDUMP_PATH = %r\n" % dump_path
+        + MARK
+        + textwrap.dedent(body)
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", src],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    seen = []
+    try:
+        for marker, sig in steps:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                line = proc.stdout.readline()
+                seen.append(line)
+                if marker in line or proc.poll() is not None:
+                    break
+            else:  # pragma: no cover - only on a hung child
+                proc.kill()
+                pytest.fail("child never printed %r" % marker)
+            if sig is not None:
+                # The marker is a LINE; the child may still be flushing it.
+                time.sleep(0.15)
+                proc.send_signal(sig)
+        out, err = proc.communicate(timeout=timeout)
+    finally:
+        if proc.poll() is None:  # pragma: no cover - only on a hung child
+            proc.kill()
+            out, err = proc.communicate(timeout=5)
+    accepted = []
+    with open(dump_path, encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip():
+                accepted.append(json.loads(line))
+    os.unlink(dump_path)
+    return proc.returncode, "".join(seen) + out, err, accepted
+
+
+def assert_one_delivery_each(accepted, expected_ids, where):
+    """Exactly one durable record per event, on one unforked chain."""
+    ids = [ev["request_id"] for ev in accepted]
+    assert sorted(ids) == sorted(expected_ids), f"{where}: delivered {ids}"
+    assert len(set(ids)) == len(ids), f"{where}: duplicate delivery {ids}"
+    sessions = {ev["sdk_session_id"] for ev in accepted}
+    assert len(sessions) == 1, f"{where}: {len(sessions)} sessions claimed"
+    seqs = sorted(ev["seq_no"] for ev in accepted)
+    assert seqs == list(range(1, len(accepted) + 1)), f"{where}: seq_no {seqs}"
+
+
+def test_a_signal_then_a_normal_exit_delivers_each_event_exactly_once():
+    """The path none of the nine rows above drove. The host handler returns, so
+    obsvr clears its latches and does not end the process; the process then
+    exits normally and `atexit` flushes a second time over the same sender."""
+    body = """
+    import obsvr
+
+    def prior(signum, frame):
+        mark("HOST RETURNED")
+    signal.signal(signal.SIGTERM, prior)
+
+    obsvr.init(api_key="k", ingest_url=INGEST_URL, sample_rate=1)
+    import atexit
+    atexit.register(lambda: dump_accepted(DUMP_PATH))
+    %s
+    print("ready", flush=True)
+
+    time.sleep(1.2)                       # the signal lands in here
+    %s                                    # enqueued AFTER the signal flush
+    print("SECOND EVENT QUEUED", flush=True)
+    sys.exit(0)                           # normal exit -> obsvr's atexit flush
+""" % (_emit("before-signal"), _emit("after-signal"))
+
+    code, out, err, accepted = run_recording_child(
+        body, [("ready", signal.SIGTERM), ("SECOND EVENT QUEUED", None)]
+    )
+
+    assert "HOST RETURNED" in out, (out, err)
+    assert code == 0, (code, out, err)
+    assert_one_delivery_each(accepted, ["before-signal", "after-signal"], "signal+atexit")
+
+
+def test_a_second_signal_still_flushes_what_arrived_after_the_first():
+    """Why the latch reset is load-bearing. The host exits on the SECOND
+    signal, so `atexit` never runs and obsvr's own handler is the only flush the
+    later event can get -- which it performs only because the first signal
+    cleared `_signal_flush_started` on its way out.
+
+    Ingest is made SLOW for the second delivery on purpose. With a healthy
+    endpoint the live worker drains the queue in milliseconds and the flush is
+    never what delivers anything, so the row would pass with the latch reset
+    removed -- it would be measuring the worker, not the shutdown path. A
+    delivery still in flight is the only state in which "did obsvr wait for its
+    queue" is answerable."""
+    body = """
+    import obsvr
+
+    _n = [0]
+    def prior(signum, frame):
+        _n[0] += 1
+        if _n[0] == 1:
+            mark("HOST RETURNED")
+            return
+        mark("HOST EXITING")
+        dump_accepted(DUMP_PATH)
+        os._exit(0)                       # skips atexit entirely
+    signal.signal(signal.SIGTERM, prior)
+
+    obsvr.init(api_key="k", ingest_url=INGEST_URL, sample_rate=1)
+    %s
+    print("ready", flush=True)
+
+    time.sleep(1.2)
+    %s
+    print("SECOND EVENT QUEUED", flush=True)
+    time.sleep(8)
+""" % (_emit("before-signal"), _emit("after-signal"))
+
+    code, out, err, accepted = run_recording_child(
+        body,
+        [("ready", signal.SIGTERM), ("SECOND EVENT QUEUED", signal.SIGTERM)],
+        slow_from=2,
+        slow_seconds=1.5,
+    )
+
+    assert "HOST EXITING" in out, (out, err)
+    assert_one_delivery_each(accepted, ["before-signal", "after-signal"], "two signals")
+
+
+def test_a_duplicate_answer_across_the_flushes_is_absorbed_not_dropped():
+    """The other half of "safe today". Ingest answers 409 `duplicate_event` for
+    an event it already holds, which is what a retry racing a lost 2xx sees. It
+    is idempotent success: counting it as a drop would put a fabricated coverage
+    gap on evidence that exists."""
+    body = """
+    import obsvr
+    from obsvr import sender
+
+    def prior(signum, frame):
+        mark("HOST RETURNED")
+    signal.signal(signal.SIGTERM, prior)
+
+    obsvr.init(api_key="k", ingest_url=INGEST_URL, sample_rate=1)
+    import atexit
+    atexit.register(lambda: dump_accepted(DUMP_PATH))
+    %s
+    print("ready", flush=True)
+
+    time.sleep(1.2)
+    %s
+    print("SECOND EVENT QUEUED", flush=True)
+    time.sleep(1.5)
+    s = sender.get_sender_stats()
+    print("DROPS", s["dropped_permanent"] + s["dropped_retry_exhausted"]
+                   + s["dropped_overflow"], flush=True)
+    print("SENT", s["sent"], flush=True)
+    sys.exit(0)
+""" % (_emit("before-signal"), _emit("after-signal"))
+
+    code, out, err, accepted = run_recording_child(
+        body, [("ready", signal.SIGTERM), ("SENT", None)], always_409=True
+    )
+
+    # Every delivery was answered 409 duplicate_event, and none of them counted
+    # as a loss. Both events are still on the record exactly once.
+    assert "DROPS 0" in out, (out, err)
+    assert "SENT 2" in out, (out, err)
+    assert_one_delivery_each(accepted, ["before-signal", "after-signal"], "409 duplicate")
