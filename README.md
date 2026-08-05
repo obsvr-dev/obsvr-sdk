@@ -577,7 +577,8 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 
 ## Framework & provider support
 
-**Auto-governed by `init()` alone** — TypeScript: OpenAI · Anthropic · Google Gemini². Python: OpenAI · Anthropic.
+**Auto-governed by `init()` alone** — Python: OpenAI · Anthropic.
+**TypeScript needs the module interceptor for zero-code coverage** — start Node with `--import @obsvr/sdk/register` and OpenAI · Anthropic · Google Gemini² are governed globally, [as described above](#interception-model). `init()` on its own installs no interception in TypeScript and says so at startup when `providers` is configured — measured: with `init()` alone, a call carrying an SSN under a `block` rule reached the provider with the SSN still in the request body and emitted **zero** events; the same script under `--import` refused it before send and recorded one. `obsvr.wrap()` governs a client explicitly in either language and needs no flag.
 **Gemini on Python is fully governed, but needs an explicit `obsvr.wrap(genai.GenerativeModel(...))`** — measured: after `obsvr.init()` a plainly constructed model emitted **zero** events, and the same model through `obsvr.wrap()` emitted a complete one. Everything under "also supported" needs an explicit wrap in both languages.
 **Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together¹ · Cloudflare Workers AI
 

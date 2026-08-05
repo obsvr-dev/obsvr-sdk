@@ -184,3 +184,60 @@ describe("the @modelcontextprotocol/sdk peer range excludes the advisory window"
     expect(satisfies(dev.replace(/^[\^~]/, ""))).toBe(true);
   });
 });
+
+/**
+ * The root README's auto-governance claim, held to what the code does.
+ *
+ * It read "Auto-governed by `init()` alone - TypeScript: OpenAI · Anthropic ·
+ * Google Gemini", which is false for TypeScript: `autoInstrument()` patches
+ * nothing, and zero-code coverage comes from the `--import` module hook, which
+ * must run before the application's own imports resolve. Measured with only
+ * `init()`: a call carrying an SSN under a `block` rule reached the provider
+ * with the SSN still in the body and emitted zero events.
+ *
+ * Both halves are asserted, so the pair cannot drift apart: if `init()` ever
+ * does install interception, the behavioural row fails and the sentence has to
+ * be revisited deliberately rather than left stale.
+ */
+describe("root README: TypeScript auto-governance", () => {
+  const rootReadme = readFileSync(join(process.cwd(), "..", "README.md"), "utf-8");
+
+  it("init() installs no interception on its own", async () => {
+    // The PUBLIC entry point, which is what the README tells the reader to
+    // call; the lower-level config init() does not run the coverage check.
+    const { obsvr } = await import("../../src/index");
+    const { _reset } = await import("../../src/proxy/config");
+    const { isInterceptionActive, _resetInterception } = await import("../../src/auto/index");
+    _reset();
+    _resetInterception();
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...a: unknown[]) => void warnings.push(a.join(" "));
+    try {
+      obsvr.init({ apiKey: "k", ingestUrl: "https://x", providers: ["openai"] } as never);
+      expect(isInterceptionActive()).toBe(false);
+      // And it says so rather than leaving the caller to find out from traffic.
+      expect(warnings.join("\n")).toContain("--import @obsvr/sdk/register");
+    } finally {
+      console.warn = realWarn;
+      _reset();
+    }
+  });
+
+  it("the README sends TypeScript readers to the module interceptor", () => {
+    expect(rootReadme).toContain("TypeScript needs the module interceptor");
+    expect(rootReadme).toContain("--import @obsvr/sdk/register");
+  });
+
+  it("the README does not claim init() alone auto-governs TypeScript", () => {
+    // The exact shape of the old claim: the init()-alone line naming
+    // TypeScript. Python genuinely does auto-govern on that line and is
+    // measured doing so, so the assertion is scoped to that one line rather
+    // than to the phrase.
+    const line = rootReadme
+      .split("\n")
+      .find((l) => l.includes("Auto-governed by `init()` alone"));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("TypeScript");
+  });
+});
