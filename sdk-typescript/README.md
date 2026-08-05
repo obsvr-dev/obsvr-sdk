@@ -160,7 +160,7 @@ obsvr.init({
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy.
 
-**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](../SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md) for each control's exact guarantee and boundary.
 
 **Global monitor mode.** `enforcementMode: 'monitor'` is one flip meaning
 "keep deciding and recording, stop enforcing": every layer still evaluates,
@@ -209,7 +209,7 @@ human times out and allows.
 
 ### Verdict reason codes
 
-Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (the `ReasonCode` enum, exported from the package) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the thrown `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, `APPROVAL_TIMEOUT`, `PRINCIPAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](../conformance/fixtures/reason_codes.json) so the TypeScript and Python SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `failMode: 'closed'`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
+Every policy verdict carries a stable, machine-groupable `reason_code` drawn from a **closed registry** (the `ReasonCode` enum, exported from the package) **plus** the existing free-form `reason` string as human detail — the code is additive, so nothing is lost. The same code rides every audit **event** (`reason_code`), always identical to the one on the thrown `ObsvrPolicyError`, so the record and the exception never classify a decision differently. Codes such as `KEYWORD_BLOCKED`, `QUOTA_EXCEEDED`, `MODEL_GATE_BLOCKED`, `APPROVAL_REQUIRED`, `APPROVAL_TIMEOUT`, `PRINCIPAL_REQUIRED`, and `SHADOW_WOULD_BLOCK` are pinned in [`conformance/fixtures/reason_codes.json`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/conformance/fixtures/reason_codes.json) so the TypeScript and Python SDKs share one identical vocabulary. One is worth knowing by name: `QUOTA_UNMETERED` is the only code that reports enforcement **did not happen** rather than a verdict the engine reached, and it is emitted when a quota scope the bounded counter store could not admit is refused under `failMode: 'closed'`. A CI staleness check fails if the two registries diverge, if the engine can emit a code outside the registry, or — the inverse — if a registry code has no emission path at all (a code without one must be explicitly reserved, with its owning control named).
 
 ```typescript
 import { ReasonCode, REASON_CODES } from '@obsvr/sdk';
@@ -308,7 +308,7 @@ npx -p @obsvr/sdk obsvr-verify evidence-bundle.json            # structural (key
 npx -p @obsvr/sdk obsvr-verify evidence-bundle.json --api-key $OBSVR_API_KEY  # full HMAC re-verification
 ```
 
-To gate merges on this in CI, use the [obsvr Evidence Verification GitHub Action](../action/README.md).
+To gate merges on this in CI, use the [obsvr Evidence Verification GitHub Action](https://github.com/obsvr-dev/obsvr-sdk/blob/main/action/README.md).
 
 ## Framework Integrations
 
@@ -418,8 +418,8 @@ AutoGen, CrewAI, Haystack and PydanticAI gates this SDK has no equivalent of,
 and it gates MCP on a different method. Both SDKs' LangChain integrations
 enforce — each in the framework's pre-execution tool callback, with the handler
 flag that lets a refusal escape rather than be logged. The per-integration table for Python is in
-[`../sdk-python/README.md`](../sdk-python/README.md), and the combined view is in
-the [root README](../README.md).
+[`sdk-python/README.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-python/README.md), and the combined view is in
+the [root README](https://github.com/obsvr-dev/obsvr-sdk/blob/main/README.md).
 
 ### Agent runs
 
@@ -490,7 +490,7 @@ The combined list for both, with the scope marked on each entry, is in the
    Google Generative AI and OpenAI Agents; every other integration is
    fake-driven. A green integration suite says the shape is right, not that the
    framework behaves the way the test models it.
-   [`tests/README.md`](tests/README.md) says which surfaces are which.
+   [`tests/README.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-typescript/tests/README.md) says which surfaces are which.
 
 2. **This package is ESM-only, and the zero-code path cannot reach `require()`.**
    A CommonJS service cannot consume it at all, and even where it loads,
@@ -540,7 +540,7 @@ With `stream: true`, PII scanning and policy hooks run **before** the LLM is con
 
 Event signatures are derived from your API key inside the SDK. They prove capture order and detect after-the-fact modification, but a party holding the API key could construct validly-signed events. Server-side countersigning at ingest binds each accepted event to a key that never leaves the server. Treat the client chain as integrity, not as non-repudiation against a key-holder.
 
-For local non-repudiation without trusting ingest, set `deviceSigningKeyFile` to an operator-generated Ed25519 key: every event then also carries a `device_sig` over the same preimage the HMAC covers, and `obsvr-verify --device-pubkey <pinned key>` verifies it — with or without the API key. Pinned keys are trusted, an unpinned key id is reported foreign (never trusted on first use), and a missing seal on a pinned chain is a break. It catches an API-key holder re-forging the chain, which the HMAC cannot. The SDK never generates the key (uses `node:crypto` to sign; a key it cannot read refuses at init). Full boundary in [`SECURITY.md`](../SECURITY.md).
+For local non-repudiation without trusting ingest, set `deviceSigningKeyFile` to an operator-generated Ed25519 key: every event then also carries a `device_sig` over the same preimage the HMAC covers, and `obsvr-verify --device-pubkey <pinned key>` verifies it — with or without the API key. Pinned keys are trusted, an unpinned key id is reported foreign (never trusted on first use), and a missing seal on a pinned chain is a break. It catches an API-key holder re-forging the chain, which the HMAC cannot. The SDK never generates the key (uses `node:crypto` to sign; a key it cannot read refuses at init). Full boundary in [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md).
 
 ### Fail mode
 

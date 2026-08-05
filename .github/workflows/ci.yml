@@ -430,10 +430,13 @@ jobs:
       - name: Check versions agree
         run: node scripts/check-version-consistency.mjs
 
-      # A commit hash named in a tracked doc must still be reachable. History
-      # rewrites retire hashes while leaving the prose around them correct, so
-      # nothing else in CI would notice the link had gone dead.
-      - name: Doc commit links resolve
+      # Both kinds of link a doc can carry. A commit hash named in a tracked doc
+      # must still be reachable — history rewrites retire hashes while leaving
+      # the prose around them correct — and a relative file link must resolve
+      # for whoever follows it, which for the two READMEs that ship inside a
+      # package means it may not be relative at all: PyPI and npm render them
+      # with no repository around them, where GitHub review never can.
+      - name: Doc links resolve
         run: node scripts/check-doc-commit-links.mjs
 
       # Every layer that consumes a principal must read the SAME resolved
