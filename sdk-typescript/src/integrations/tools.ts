@@ -6,9 +6,15 @@
  * that every invocation of that tool is governed at the point of execution:
  *
  *   1. allow/deny against `agentPolicy` (deniedTools / allowedTools) — a denied
- *      tool THROWS before its function runs, blocking it;
- *   2. built-in PII scan on the tool arguments (redacted in the signed record);
- *   3. a signed `tool.call` audit event (RFC-chained like every obsvr event).
+ *      tool is refused before its function runs;
+ *   2. `requirePrincipal`, then the session-taint latch (with the destructive-
+ *      capability gate for a tainted session);
+ *   3. the shared pre-call pipeline on the tool ARGUMENTS — the anti-tamper
+ *      floor, the customer rule set, the PII policy, the pre-call hook and the
+ *      external policy backend — so a tool call is judged by the same policy an
+ *      LLM call is, and a matching rule refuses it before it runs;
+ *   4. a signed `tool.call` audit event (RFC-chained like every obsvr event),
+ *      carrying the decision-input hash that evidences step 3 ran.
  *
  * This works regardless of whether the framework surfaces tool calls through a
  * callback/hook (many don't, or change across versions) because it governs the
@@ -18,13 +24,20 @@
  *   import { obsvrGovernTool } from "@obsvr/sdk";
  *   const safeCalc = obsvrGovernTool(calculatorTool, { name: "calculator" });
  *
+ * THE WRAPPED FUNCTION IS ASYNC, EVEN AROUND A SYNCHRONOUS TOOL. Step 3 awaits,
+ * so the gate awaits, so the value handed back is a Promise. Every framework
+ * this wrapper targets awaits the value it gets from a tool, so this is
+ * invisible through a framework; code that invokes a wrapped tool DIRECTLY has
+ * to await it, including to observe a refusal, which now rejects rather than
+ * throwing synchronously.
+ *
  * @packageDocumentation
  */
 import {
   emitIntegrationEvent,
   redactForStorage,
   applyObservePolicy,
-  toolGateNotEvaluatedCompliance,
+  applyPreCallPolicy,
   tryGetConfig,
   setupExitHandlers,
   destructiveSourceLabel,
@@ -227,7 +240,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
   const cfgAtWrap = tryGetConfig();
   if (cfgAtWrap) setupExitHandlers(cfgAtWrap);
 
-  const gated = function (this: unknown, ...args: unknown[]): unknown {
+  const gated = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
     const config = tryGetConfig();
     if (config) {
       // Tool input position differs by framework: Vercel `execute(input, opts)`,
@@ -456,38 +469,112 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         throw new Error(toolBlock.message);
       }
 
-      // 1.8) Which configured pre-call layers this synchronous gate could NOT
-      // consult, so the record says so instead of claiming a permit for them.
+      // 1.8) The shared pre-call pipeline: the PII policy, the customer rule
+      // set, the anti-tamper floor, the pre-call hook, the external backend.
       //
-      // The shared pre-call pipeline — the PII policy, the customer rule set,
-      // the anti-tamper floor, the pre-call hook — is `async` in TypeScript
-      // (the hook and the external backend are awaited), and this gate cannot
-      // be: it wraps sync tool functions as well as async ones, so awaiting
-      // here would hand every sync caller a Promise and change the tool's
-      // contract. Python's pipeline is synchronous, which is why `_gate` there
-      // consults it and this does not.
+      // This boundary reached section 2 directly, so all of them were silently
+      // inert on a governed tool call: a tool whose arguments matched a block
+      // rule executed, returned its result to the caller, and recorded a
+      // permit the rule set had never been asked for. Python's `_gate` has
+      // always consulted its pipeline here; this was the largest remaining
+      // functional divergence between the two SDKs.
       //
-      // That is a coverage gap, and it stays one. What it must not be is a
-      // false record: a call these layers never saw recorded `allowed` under
-      // `action_source: "policy_rules"`, crediting the rules engine with a
-      // permit it was never asked for. So when one of those layers is
-      // CONFIGURED, this reports the absence and names it — the same
-      // `not_evaluated` shape the tool-runner path and Python's tool gate use.
-      // Nothing configured means nothing was skipped, and the call records a
-      // plain permit naming no deciding layer.
-      const unconsulted: string[] = [];
-      if (config.policyFloor && config.policyFloor.length > 0) unconsulted.push("policy_floor");
-      if (config.policyRules && config.policyRules.length > 0) unconsulted.push("policy_rules");
-      if (config.pii_policy) unconsulted.push("pii_policy");
-      if (config.on_pre_call) unconsulted.push("customer_hook");
+      // WHY THIS GATE IS ASYNC, WHICH IT DID NOT USE TO BE.
+      //
+      // The pipeline awaits, so consulting it means awaiting, so the wrapped
+      // tool returns a Promise even when the tool it wraps is synchronous.
+      // That is a breaking contract change, and it was taken deliberately over
+      // the alternative of a second synchronous entry point: the awaited
+      // layers (Presidio, the approval wait, the customer hook, the external
+      // backend) are interleaved with the deterministic ones rather than
+      // bookending them, so a synchronous path would have to re-implement the
+      // ORCHESTRATION — precedence, floor-over-rules, monitor conversion,
+      // reason-code resolution — and two copies of that rule disagreeing is
+      // the defect class this repository keeps finding.
+      //
+      // The cost was measured before it was accepted: every framework whose
+      // tool shape `resolveExecKey` resolves awaits the value it gets back —
+      // LangChain (`await this._call` into `this.func`), Vercel AI
+      // (`await executeToolCall`), the OpenAI tool runner
+      // (`await fn.function`), `@openai/agents` (an async `invoke`), MCP
+      // (async by protocol), and LlamaIndex whose tool return type is
+      // declared `JSONValue | Promise<JSONValue>`. What breaks is code that
+      // calls a wrapped tool directly and does not await it.
+      //
+      // The layers this file already enforced ABOVE are omitted from the
+      // arming list so nothing is evaluated twice: requirePrincipal (1.2) and
+      // the session-taint latch (1.5) both refuse before this point.
+      let preCallCompliance: ComplianceInfo | undefined;
+      let recordedPrompt = inputText;
+      if (
+        (config.policyFloor && config.policyFloor.length > 0) ||
+        (config.policyRules && config.policyRules.length > 0) ||
+        config.pii_policy ||
+        config.on_pre_call ||
+        config.external_policy_backend
+      ) {
+        const identity = enforcingIdentity();
+        const policyResult = await applyPreCallPolicy(inputText, {
+          config,
+          provider: "unknown",
+          operation: "tool.call",
+          userId: identity.user_id as string | undefined,
+          serviceName: identity.service_name as string | undefined,
+          toolName,
+          toolDeclaredDestructive: declaresDestructive(t),
+          metadata: identity,
+        });
+        preCallCompliance = policyResult.compliance;
+        recordedPrompt = policyResult.redactedPrompt;
+
+        if (policyResult.decision === "block") {
+          emitIntegrationEvent({
+            config,
+            provider: "unknown",
+            model: "unknown",
+            operation: "tool.call",
+            source: SOURCE,
+            prompt: policyResult.redactedPrompt,
+            response: "",
+            success: false,
+            statusCode: 403,
+            metadata: {
+              tool_name: toolName,
+              // Sealed provenance after the tool fields, so a caller key
+              // collision can never displace it (same precedence as MCP).
+              ...(policyResult.securityNormalized !== undefined
+                ? { security_normalized: policyResult.securityNormalized }
+                : {}),
+              ...(policyResult.canaryTelemetry !== undefined ||
+              policyResult.floorTelemetry !== undefined
+                ? {
+                    obsvr_telemetry: {
+                      ...(policyResult.canaryTelemetry ?? {}),
+                      ...(policyResult.floorTelemetry ?? {}),
+                    },
+                  }
+                : {}),
+              ...toolContentMeta,
+            },
+            compliance: policyResult.compliance,
+            options,
+          });
+          throw new Error(
+            `[obsvr] Tool blocked by policy: ${toolName}` +
+              (policyResult.compliance.policy_reason
+                ? ` (${policyResult.compliance.policy_reason})`
+                : ""),
+          );
+        }
+      }
 
       // 2) PII scan on the arguments; redact in the stored record. A
       // view-only hit (storedRedactionVia) has no locatable span, so the
       // stored copy becomes a whole-text placeholder via redactForStorage.
-      const { shouldRedactStored, storedRedactionVia } = applyObservePolicy(inputText, config);
+      const { shouldRedactStored, storedRedactionVia } = applyObservePolicy(recordedPrompt, config);
       const recordedArgs = shouldRedactStored
-        ? redactForStorage(inputText, storedRedactionVia)
-        : inputText;
+        ? redactForStorage(recordedPrompt, storedRedactionVia)
+        : recordedPrompt;
 
       // 3) signed tool.call audit event.
       emitIntegrationEvent({
@@ -499,32 +586,22 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         prompt: recordedArgs,
         response: "",
         metadata: { tool_name: toolName, ...toolContentMeta },
-        // A configured layer this gate could not consult makes the honest
-        // verdict `not_evaluated`, not `allowed` — see 1.8. The taint flag
-        // still rides on top when the latch flagged the call, because that
-        // latch DID run: the two say different things about different layers
-        // and both belong on the record.
+        // The pipeline's own verdict when it ran: it carries the
+        // decision_input_hash and engine_version that EVIDENCE the evaluation,
+        // so an `allowed` tool call can be told apart from one nothing judged.
+        // The fallback is reached only when no policy the pipeline enforces was
+        // configured, and it names no deciding layer rather than crediting
+        // `policy_rules` for a permit it never issued. The taint flag rides on
+        // top when the latch flagged the call, because that latch also ran.
         compliance: toolTaintFlag !== undefined
           ? {
-              ...(unconsulted.length
-                ? toolGateNotEvaluatedCompliance(
-                    "obsvr_tool",
-                    unconsulted.join("+"),
-                    `${unconsulted.join(", ")} configured, but the synchronous tool gate cannot await the pre-call pipeline`,
-                  )
-                : TOOL_CALL_COMPLIANCE),
+              ...(preCallCompliance ?? TOOL_CALL_COMPLIANCE),
               event_type: "policy_flag",
               action_reason: "policy_violation",
               rule_id: "sdk:session_tainted",
               policy_reason: `Session previously compromised (${toolTaintFlag}); tool call flagged`,
             }
-          : unconsulted.length
-            ? toolGateNotEvaluatedCompliance(
-                "obsvr_tool",
-                unconsulted.join("+"),
-                `${unconsulted.join(", ")} configured, but the synchronous tool gate cannot await the pre-call pipeline`,
-              )
-            : TOOL_CALL_COMPLIANCE,
+          : (preCallCompliance ?? TOOL_CALL_COMPLIANCE),
         options,
       });
     }

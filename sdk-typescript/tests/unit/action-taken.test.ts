@@ -109,13 +109,13 @@ describe('containment', () => {
       { name: 'get_weather', execute: () => 'ok' },
       { name: 'get_weather' },
     ) as { execute: (i: unknown) => unknown };
-    allowed.execute({});
+    await allowed.execute({});
 
     const denied = obsvrGovernTool(
       { name: 'send_money', execute: () => 'ran' },
       { name: 'send_money' },
     ) as { execute: (i: unknown) => unknown };
-    expect(() => denied.execute({ amount: 1 })).toThrow();
+    await expect(denied.execute({ amount: 1 })).rejects.toThrow();
 
     await new Promise((r) => setTimeout(r, 20));
     await flushQueue(getConfig());

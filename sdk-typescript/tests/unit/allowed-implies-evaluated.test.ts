@@ -183,6 +183,40 @@ describe('allowed implies evaluated: applyPreCallPolicy (the integrations seam)'
 });
 
 // ── Surface 3: obsvrGovernTool ─────────────────────────────────────────────
+//
+// WHY THIS SURFACE IS ASYNC, AND WHY THAT WAS THE RIGHT ANSWER.
+//
+// The gate here was synchronous and never consulted the pre-call pipeline at
+// all, so the floor, the rule set, the PII policy, the hook and the external
+// backend were inert on every governed tool call while Python enforced all of
+// them — the largest functional divergence between the two SDKs. Three routes
+// were measured before this one was taken:
+//
+//   a SYNCHRONOUS entry point into the pipeline. Feasible on paper: every
+//     `await` in applyPreCallPolicy sits behind an opt-in (Presidio, the
+//     approval wait, the customer hook, the external backend), so the
+//     deterministic layers need no I/O. Rejected because those awaits are
+//     INTERLEAVED with the deterministic ones rather than bookending them, so a
+//     sync path has to re-implement the orchestration — precedence,
+//     floor-over-rules, monitor conversion, reason-code resolution — and two
+//     copies of that rule drifting apart is the defect class this repository
+//     keeps finding.
+//
+//   a SPLIT, sync layers inline and async layers opt-in. Same duplicated
+//     orchestration, plus a verdict whose meaning depends on configuration.
+//
+//   an ASYNC gate (this). One pipeline, no second copy, full parity — and the
+//     only route that can run the awaited layers at all. Its cost is a
+//     breaking contract: a wrapped tool returns a Promise even around a
+//     synchronous tool, and a refusal rejects instead of throwing.
+//
+// That cost was measured, not assumed: every framework whose tool shape
+// `resolveExecKey` resolves awaits what it gets back — LangChain
+// (`await this._call` into `this.func`), Vercel AI (`await executeToolCall`),
+// the OpenAI tool runner (`await fn.function`), `@openai/agents` (async
+// `invoke`), MCP (async by protocol), and LlamaIndex, whose tool return type is
+// declared `JSONValue | Promise<JSONValue>`. The 679-check integration harness,
+// which drives the real client libraries, is unchanged by it.
 describe('allowed implies evaluated: obsvrGovernTool', () => {
   const governed = (ran: { v: boolean }) =>
     obsvrGovernTool(
@@ -190,54 +224,70 @@ describe('allowed implies evaluated: obsvrGovernTool', () => {
       { name: 'calc', metadata: { user_id: 'alice' } },
     );
 
-  it('with NO policy configured the permit is honest: it names no deciding layer', () => {
+  it('with NO policy configured the permit is honest: it names no deciding layer', async () => {
     init({ api_key: 'k', ingest_url: 'https://x' });
     const ran = { v: false };
-    expect(governed(ran).execute({ q: 'hello' })).toBe('done');
+    expect(await governed(ran).execute({ q: 'hello' })).toBe('done');
     const ev = sent.find((e) => e.operation === 'tool.call');
     expect(ev.action_taken).toBe('allowed');
-    // Nothing was configured, so nothing was skipped and nothing is claimed.
+    // Nothing was configured, so nothing evaluated and nothing is claimed.
     // `policy_rules` here was the false attribution this invariant removed.
     expect(ev.action_source).toBe('unknown');
   });
 
-  it('with a rule set CONFIGURED the record says not_evaluated, never allowed', () => {
-    // This synchronous gate cannot await the async pre-call pipeline, so the
-    // rule set genuinely does not run here. That is a coverage gap. Recording
-    // `allowed` for it was a false record, and this is the line between them.
+  it('a rule set that PERMITS is evidenced, exactly as the wrap() path is', async () => {
     init({ api_key: 'k', ingest_url: 'https://x', policy_rules: [BLOCK_RULE] });
     const ran = { v: false };
-    expect(governed(ran).execute({ q: 'forbidden' })).toBe('done');
+    expect(await governed(ran).execute({ q: 'perfectly fine' })).toBe('done');
+    expect(ran.v).toBe(true); // control: a permit really is a permit
     const ev = sent.find((e) => e.operation === 'tool.call');
-    expect(ev.action_taken).toBe('not_evaluated');
-    expect(ev.action_taken).not.toBe('allowed');
-    assertAllowedIsEvidenced(ev, 'governTool/rules-configured');
+    expect(ev.action_taken).toBe('allowed');
+    assertAllowedIsEvidenced(ev, 'governTool/permit');
   });
 
-  it('the skipped layer is NAMED on the record, not merely omitted', () => {
-    init({
-      api_key: 'k',
-      ingest_url: 'https://x',
-      policy_rules: [BLOCK_RULE],
-      pii_policy: { default: 'detect_only' },
-    });
-    governed({ v: false }).execute({ q: 'hello' });
+  it('the same rule set REFUSES the matching call before the tool body runs', async () => {
+    // The whole point of the change: this call used to execute, return its
+    // result to the caller, and record a permit the rule set was never asked
+    // for. Graded on the side effect and the record, not on the rejection.
+    init({ api_key: 'k', ingest_url: 'https://x', policy_rules: [BLOCK_RULE] });
+    const ran = { v: false };
+    await expect(governed(ran).execute({ q: 'forbidden' })).rejects.toThrow(
+      /Tool blocked by policy/i,
+    );
+    expect(ran.v).toBe(false);
     const ev = sent.find((e) => e.operation === 'tool.call');
-    const notEvaluated = ev.metadata?.obsvr_telemetry?.policy_not_evaluated;
-    expect(notEvaluated).toBeDefined();
-    expect(notEvaluated.surface).toBe('obsvr_tool');
-    expect(notEvaluated.gate).toContain('policy_rules');
-    expect(notEvaluated.gate).toContain('pii_policy');
-    expect(notEvaluated.reason).toMatch(/cannot await the pre-call pipeline/i);
+    expect(ev.action_taken).toBe('blocked');
+    expect(ev.action_source).toBe('policy_rules');
   });
 
-  it('a gate this surface DOES own still refuses, and is recorded as a block', () => {
-    // The point of the row above is that not_evaluated is scoped to the layers
-    // that did not run — it must not become a blanket excuse that swallows the
-    // enforcement this boundary really does perform.
+  it('a PII policy alone reaches this surface too', async () => {
+    // Each layer armed ALONE, because the Severity 1 was invisible precisely
+    // when a second layer was present to arm the pipeline for the first.
+    init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { default: 'block' } });
+    const ran = { v: false };
+    await expect(governed(ran).execute({ ssn: '123-45-6789' })).rejects.toThrow(/\[obsvr\]/);
+    expect(ran.v).toBe(false);
+    const ev = sent.find((e) => e.operation === 'tool.call');
+    expect(ev.action_taken).toBe('blocked');
+  });
+
+  it('the wrapped tool is a Promise even around a SYNCHRONOUS tool', async () => {
+    // The contract this surface now makes, stated where a reader will meet it.
+    // The tool below returns a string; the gate hands back a Promise, because
+    // consulting the pipeline means awaiting it. A framework awaits this and
+    // never notices; direct callers must.
+    init({ api_key: 'k', ingest_url: 'https://x', policy_rules: [BLOCK_RULE] });
+    const returned = governed({ v: false }).execute({ q: 'fine' });
+    expect(returned).toBeInstanceOf(Promise);
+    expect(await returned).toBe('done');
+  });
+
+  it('a gate this surface owns ITSELF still refuses, and is recorded as a block', async () => {
     init({ api_key: 'k', ingest_url: 'https://x', agent_policy: { deniedTools: ['calc'] } });
     const ran = { v: false };
-    expect(() => governed(ran).execute({ q: 'hello' })).toThrow(/blocked by agent policy/i);
+    await expect(governed(ran).execute({ q: 'hello' })).rejects.toThrow(
+      /blocked by agent policy/i,
+    );
     expect(ran.v).toBe(false);
     const ev = sent.find((e) => e.operation === 'tool.policy.tool_blocked');
     expect(ev.action_taken).toBe('blocked');

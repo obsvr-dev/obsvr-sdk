@@ -31,6 +31,38 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-05: the TypeScript generic tool governor now evaluates policy, closing
+  the largest functional difference between the two SDKs. `obsvrGovernTool`
+  reached its audit step without consulting the shared pre-call pipeline, so on
+  that surface the anti-tamper floor, the customer rule set, the PII policy, the
+  pre-call hook and the external policy backend were all inert, while Python's
+  `govern_tool` consulted its pipeline for every one of them. This was an
+  enforcement-verdict difference and therefore never eligible for the catalog
+  above: measured on one rule set, a tool call whose arguments matched a block
+  rule was refused in Python and executed in TypeScript. It was carried in
+  neither the catalog nor this History while it existed, which is the gap the
+  preamble's "silent divergence is never acceptable" names.
+  The repair makes the TypeScript gate `async` and routes it through the same
+  `applyPreCallPolicy` every other TypeScript surface uses. A synchronous entry
+  point was measured as the alternative and rejected: every `await` in that
+  function sits behind an opt-in (Presidio, the approval wait, the customer
+  hook, the external backend), but they are interleaved with the deterministic
+  layers rather than bookending them, so a synchronous path would have to carry
+  a second copy of the orchestration — precedence, floor-over-rules, monitor
+  conversion, reason-code resolution — and two copies of that rule drifting
+  apart is the defect class this file exists to record. The cost is a breaking
+  contract on one public API: a wrapped tool hands back a Promise even around a
+  synchronous tool, and a refusal rejects rather than throwing. Every framework
+  whose tool shape the wrapper resolves awaits that value (LangChain, Vercel AI,
+  the OpenAI tool runner, `@openai/agents`, MCP, and LlamaIndex, whose tool
+  return type is declared `JSONValue | Promise<JSONValue>`), so the change is
+  invisible through a framework and reaches only direct callers.
+  Two record-level repairs landed with it, on both SDKs: a tool permit no longer
+  reports `action_source: "policy_rules"` when no policy layer judged it, and an
+  MCP call whose policy engine raised under `fail_mode: "open"` records
+  `not_evaluated` naming the layer instead of `allowed`. The permit side is
+  pinned by `allowed-implies-evaluated` in both languages — an `allowed` verdict
+  must carry the decision-input hash that evidences an evaluation.
 - 2026-08-03: KD-11's substantive divergence was FIXED and the entry NARROWED.
   Python's ambient `use_subject()` subject now reaches the ENFORCING channel —
   the `require_principal` verdict, the user-scoped quota bucket, the

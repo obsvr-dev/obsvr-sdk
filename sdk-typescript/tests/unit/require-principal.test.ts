@@ -157,7 +157,7 @@ describe('generic tool governor', () => {
     const anonymous = obsvrGovernTool(tool) as typeof tool;
     // The refusal is thrown synchronously from the gate, before the tool's
     // async body is entered — same shape as the deny-list refusal.
-    expect(() => anonymous.execute('2+2')).toThrow(/principal/i);
+    await expect(anonymous.execute('2+2')).rejects.toThrow(/principal/i);
     expect(bodyRuns).toBe(0);
 
     const attributed = obsvrGovernTool(tool, { user_id: 'alice' }) as typeof tool;
