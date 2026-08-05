@@ -13,6 +13,8 @@ so editing the count breaks verification.
 Twin: sdk-typescript/tests/unit/audit-gap.test.ts.
 """
 
+from queue import Queue
+
 import pytest
 
 from obsvr import sender
@@ -22,15 +24,48 @@ from obsvr.verify_chain import verify_chain
 
 API_KEY = "test-key"
 
+#: The process-global queue, captured at import — before any fixture runs —
+#: so the isolation assertion below has the real object to compare against.
+_PROCESS_GLOBAL_QUEUE = sender._queue
+
 
 @pytest.fixture(autouse=True)
 def _quiet_sender(monkeypatch):
-    """No worker thread and no OTel: the queue fills and stays full, which is
-    the overflow condition, and nothing drains it behind the test's back."""
+    """A queue of this file's own, no worker, and no OTel: the queue fills and
+    stays full, which is the overflow condition, and nothing drains it behind
+    the test's back.
+
+    THE PRIVATE QUEUE IS LOAD-BEARING, AND STOPPING A NEW WORKER WAS NOT ENOUGH.
+
+    Patching ``_ensure_worker`` stops this file from STARTING a worker. It
+    cannot stop one that is already running, and the worker is a process-global
+    daemon that any earlier test in the session may have started by delivering a
+    real event. When one was alive, it drained the saturated queue behind these
+    tests and carried ~1000 undeliverable events aimed at a host that does not
+    resolve into the rest of the session, where the sender retried them under
+    exponential backoff for tens of seconds.
+
+    That is what a state leak looks like from the far end: the events surfaced
+    inside an unrelated test that asserts the sender makes NO network call when
+    no ingest_url is set, which failed on the full run and passed alone. It was
+    invisible to every reset — ``_reset_sender()`` drains the QUEUE, and a live
+    worker holds its item outside the queue while it sleeps out a backoff, so at
+    teardown the queue was empty, the stats were zeroed and the backoff unarmed.
+    Nothing could see it.
+
+    Rebinding the queue removes the sharing rather than isolating around it: a
+    worker parked on ``Queue.get()`` holds the OLD queue object and never sees
+    this one, so it cannot drain these events no matter when it was started, and
+    nothing this file enqueues can reach the process-global sender at all.
+    monkeypatch restores the real queue afterwards, which is the same object the
+    parked worker is still waiting on.
+    """
     sender._reset_sender()
     monkeypatch.setattr(sender, "_ensure_worker", lambda: None)
     monkeypatch.setattr(sender, "_mirror", lambda config, event: None)
+    monkeypatch.setattr(sender, "_queue", Queue(maxsize=sender.MAX_QUEUE_SIZE))
     yield
+    # Drains THIS file's queue, before monkeypatch hands the real one back.
     sender._reset_sender()
 
 
@@ -217,3 +252,38 @@ def test_an_ordinary_prompt_cannot_mint_a_loss_claim():
     assert parse_audit_gap_prompt("obsvr:audit-gap/1 dropped=99 reason=queue_overflow extra") is None
     assert parse_audit_gap_prompt("summarize this") is None
     assert parse_audit_gap_prompt(None) is None
+
+
+def test_nothing_this_file_enqueues_reaches_the_process_global_sender():
+    """The isolation the file depends on, asserted rather than assumed.
+
+    Every test above needs the saturated queue to STAY saturated. The fixture
+    used to secure that by stopping this file from starting a worker, which is
+    a weaker claim than it looks: the worker is a process-global daemon, and
+    any earlier test in the session that delivers a real event starts one. A
+    live worker then drained these events toward a host that does not resolve,
+    and the sender retried them under exponential backoff across unrelated
+    tests — surfacing tens of seconds later inside a test asserting the sender
+    makes no network call when no ingest_url is set. Red on the full run, green
+    alone, and invisible to every reset, because a worker holds its item
+    outside the queue while it sleeps out a backoff.
+
+    Stated as a property with no threads and no timing in it: this file's queue
+    is not the shared one, and saturating it leaves the shared one empty.
+    Delete the private queue from the fixture and this fails HERE, at the file
+    that leaks, instead of somewhere unrelated much later.
+    """
+    assert sender._queue is not _PROCESS_GLOBAL_QUEUE, (
+        "the fixture is enqueueing into the process-global sender; a worker "
+        "started by any earlier test will drain these events and retry them "
+        "across the rest of the session"
+    )
+
+    before = _PROCESS_GLOBAL_QUEUE.qsize()
+    dropped = _saturate(_config(), 40)
+
+    assert dropped > 0
+    assert sender.get_queue_size() == sender.MAX_QUEUE_SIZE
+    assert _PROCESS_GLOBAL_QUEUE.qsize() == before, (
+        "events from this file reached the shared queue"
+    )
