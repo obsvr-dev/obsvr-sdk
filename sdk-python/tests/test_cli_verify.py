@@ -374,3 +374,61 @@ def test_module_runs_as_a_script(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "CONTENT + CHAIN verification passed" in result.stdout
+
+
+# ── an explicitly passed --api-key that carries no key ──────────────────────
+
+
+def _tampered_chain():
+    """A valid chain whose middle event's content has been altered."""
+    chain = _chain()
+    chain[1] = dict(chain[1], prompt="TAMPERED - not what was signed")
+    return chain
+
+
+def test_empty_api_key_is_a_usage_error_not_a_silent_downgrade(tmp_path, capsys):
+    """`--api-key "$SECRET"` with the secret unset is the ordinary CI shape.
+
+    The empty string is falsy, so the run used to fall through to structural
+    verification and exit 0 -- on a TAMPERED chain, with the printed text
+    honestly saying "STRUCTURAL". Nothing lied; the exit code, which is the
+    whole interface for the CI use the README recommends, could not tell
+    "verified" from "could not verify".
+    """
+    path = _write(tmp_path, "t.json", _tampered_chain())
+    assert _run([path, "--api-key", ""]) == 2
+    err = capsys.readouterr().err
+    assert "--api-key was passed with no key" in err
+
+
+def test_api_key_flag_with_no_value_is_a_usage_error(tmp_path, capsys):
+    # Same failure, other spelling: a dropped variable can leave the flag
+    # trailing with nothing after it, which also read as absent.
+    path = _write(tmp_path, "t.json", _tampered_chain())
+    assert _run([path, "--api-key"]) == 2
+    assert "--api-key was passed with no key" in capsys.readouterr().err
+
+
+def test_empty_api_key_is_refused_before_json_can_report_a_pass(tmp_path, capsys):
+    path = _write(tmp_path, "t.json", _tampered_chain())
+    assert _run([path, "--api-key", "", "--json"]) == 2
+    captured = capsys.readouterr()
+    # The refusal must not be dressed as a verification document: a consumer
+    # parsing stdout must find nothing that reads as a verdict.
+    assert '"valid":true' not in captured.out
+    assert captured.out.strip() == ""
+
+
+def test_CONTROL_the_absent_flag_still_means_structural_verification(tmp_path, capsys):
+    # Without this, the three rows above would also be satisfied by a CLI that
+    # had simply stopped accepting keyless runs -- which is a documented mode.
+    path = _write(tmp_path, "t.json", _tampered_chain())
+    assert _run([path]) == 0
+    assert "STRUCTURAL verification passed" in capsys.readouterr().out
+
+
+def test_CONTROL_a_real_key_still_detects_the_tamper(tmp_path):
+    # And without THIS, they would be satisfied by a CLI that had stopped
+    # verifying anything at all.
+    path = _write(tmp_path, "t.json", _tampered_chain())
+    assert _run([path, "--api-key", API_KEY]) == 1

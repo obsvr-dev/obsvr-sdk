@@ -237,3 +237,55 @@ describe("every break in one run, and --json", () => {
     expect(allowedDoc.exitCode).toBe(0);
   });
 });
+
+describe("an explicitly passed --api-key that carries no key", () => {
+  /** A valid chain whose middle event's content has been altered. */
+  function tamperedChain(): Array<Record<string, unknown>> {
+    const c = chain();
+    c[1] = { ...c[1], prompt: "TAMPERED - not what was signed" };
+    return c;
+  }
+
+  test("an empty value is a usage error, not a silent downgrade", () => {
+    // `--api-key "$SECRET"` with the secret unset is the ordinary CI shape.
+    // The empty string is falsy, so the run used to fall through to structural
+    // verification and exit 0 - on a TAMPERED chain, with the printed text
+    // honestly saying "STRUCTURAL". Nothing lied; the exit code, which is the
+    // whole interface for the CI use the README recommends, could not tell
+    // "verified" from "could not verify".
+    const r = run([write(tamperedChain()), "--api-key", ""]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("--api-key was passed with no key");
+  });
+
+  test("the flag with no value at all is a usage error", () => {
+    // Same failure, other spelling: a dropped variable can leave the flag
+    // trailing with nothing after it, which also read as absent.
+    const r = run([write(tamperedChain()), "--api-key"]);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("--api-key was passed with no key");
+  });
+
+  test("it is refused before --json can report a pass", () => {
+    const r = run([write(tamperedChain()), "--api-key", "", "--json"]);
+    expect(r.status).toBe(2);
+    // The refusal must not be dressed as a verification document: a consumer
+    // parsing stdout must find nothing that reads as a verdict.
+    expect(r.stdout.trim()).toBe("");
+  });
+
+  test("CONTROL: the absent flag still means structural verification", () => {
+    // Without this, the three rows above would also be satisfied by a CLI that
+    // had simply stopped accepting keyless runs - which is a documented mode.
+    const r = run([write(tamperedChain())]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("STRUCTURAL verification passed");
+  });
+
+  test("CONTROL: a real key still detects the tamper", () => {
+    // And without THIS, they would be satisfied by a CLI that had stopped
+    // verifying anything at all.
+    const r = run([write(tamperedChain()), "--api-key", API_KEY]);
+    expect(r.status).toBe(1);
+  });
+});

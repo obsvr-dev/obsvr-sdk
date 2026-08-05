@@ -198,7 +198,23 @@ def _parse_args(
     api_key: Optional[str] = None
     value_indices = set()
     key_index = args.index("--api-key") if "--api-key" in args else -1
-    if key_index >= 0 and key_index + 1 < len(args):
+    if key_index >= 0:
+        # An explicitly passed --api-key must carry a usable key. Absent, the
+        # CLI verifies structure only and says so; EMPTY, it used to do the
+        # same thing silently and exit 0 - and `--api-key "$SECRET"` with the
+        # secret unset is the ordinary CI shape that produces exactly that. A
+        # tampered chain then passed. Refusing here keeps the distinction the
+        # caller actually made: no flag means "structure only", and a flag
+        # whose value did not arrive means the run cannot do what was asked.
+        if key_index + 1 >= len(args) or args[key_index + 1] == "":
+            print(
+                "obsvr-verify: --api-key was passed with no key. Pass a key, or omit\n"
+                "  the flag entirely for structural verification. An empty value is\n"
+                "  refused rather than downgraded: in CI an unset secret expands to\n"
+                "  one, and the downgrade is silent.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
         api_key = args[key_index + 1]
         value_indices.add(key_index + 1)
     device_keys: List[str] = []

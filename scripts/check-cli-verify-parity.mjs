@@ -199,6 +199,26 @@ const CASES = [
   { name: "wrong key", args: [write("valid.json", chain), "--api-key", "not-the-key"] },
   { name: "unrecognized shape", args: [write("weird.json", { nope: true })] },
   { name: "missing file argument", args: [] },
+  // An explicitly passed --api-key that carries no key. Both spellings of the
+  // mistake, because both arise the same way: `--api-key "$SECRET"` with the
+  // secret unset expands to an empty string, and a dropped variable can leave
+  // the flag trailing with nothing after it. Both used to fall through to
+  // structural verification and exit 0, so a TAMPERED chain passed CI - which
+  // is why the bundle here is the tampered one rather than a clean one. The
+  // absent-flag row above keeps the documented keyless mode, so these two
+  // cannot pass by the CLI having simply started refusing keyless runs.
+  {
+    name: "--api-key with an empty value is a usage error, not a downgrade",
+    args: [write("tampered.json", tampered), "--api-key", ""],
+  },
+  {
+    name: "--api-key with no value at all is a usage error",
+    args: [write("tampered.json", tampered), "--api-key"],
+  },
+  {
+    name: "--api-key empty is refused before --json can report a pass",
+    args: [write("tampered.json", tampered), "--api-key", "", "--json"],
+  },
   {
     name: "nonexistent file",
     args: [join(workdir, "absent.json")],
