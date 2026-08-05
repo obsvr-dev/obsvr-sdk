@@ -26,6 +26,7 @@ import {
   applyPreCallPolicy,
   emitIntegrationEvent,
   setupExitHandlers,
+  toolGateNotEvaluatedCompliance,
   tryGetConfig,
   type ComplianceInfo,
   type IntegrationOptions,
@@ -1009,7 +1010,18 @@ async function runGovernedCallTool(
             `[obsvr] MCP tool call blocked: policy evaluation failed and failMode=closed (${err instanceof Error ? err.message : String(err)})`,
           );
         }
-        // fail_open (default): policy evaluation errors do not block the tool call
+        // fail_open (default): a policy engine that could not render a verdict
+        // does not block the tool call — but it does not get to be recorded as
+        // one that permitted it either. Without this the compliance stayed
+        // undefined and the event fell through to defaultToolCompliance()
+        // below, stamping `allowed` on a call the engine had crashed on: the
+        // same shape as an unarmed pipeline, and a claim that a gate looked and
+        // said yes. `not_evaluated` is the honest verdict and names the layer.
+        compliance = toolGateNotEvaluatedCompliance(
+          "mcp",
+          "pre_call_pipeline",
+          `policy evaluation raised ${err instanceof Error ? err.message : String(err)}; failMode=open let the call proceed unjudged`,
+        );
       }
     }
 

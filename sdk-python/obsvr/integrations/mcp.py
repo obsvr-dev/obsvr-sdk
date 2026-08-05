@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional
 
 from ..capability_hints import CapabilityStore, create_capability_store, declares_destructive
 from ..config import ResolvedConfig, get_config, try_get_config
-from ..events import build_audit_event
+from ..events import build_audit_event, tool_gate_not_evaluated_compliance
 from ..mcp_fields import descriptor_field
 from ..normalize import normalize_for_matching
 from ..policy import apply_pre_call_policy
@@ -722,6 +722,18 @@ def _build_governed_mcp_callables(
                         "[obsvr] MCP tool call blocked: policy evaluation failed "
                         f"and fail_mode=closed ({e})"
                     ) from e
+                # ...but proceeding is not permitting. `compliance` stayed None
+                # here, so the event fell through to the default below and
+                # stamped `allowed` on a call the engine had crashed on — a
+                # claim that a gate looked and said yes. The honest verdict
+                # names the layer that could not decide (same shape as the TS
+                # boundary and as the tool gate's own not_evaluated record).
+                compliance = tool_gate_not_evaluated_compliance(
+                    "mcp",
+                    "pre_call_pipeline",
+                    f"policy evaluation raised {e}; fail_mode=open let the call "
+                    "proceed unjudged",
+                )
 
         # 3. Execute the original call
         try:

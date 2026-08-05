@@ -24,6 +24,7 @@ import {
   emitIntegrationEvent,
   redactForStorage,
   applyObservePolicy,
+  toolGateNotEvaluatedCompliance,
   tryGetConfig,
   setupExitHandlers,
   destructiveSourceLabel,
@@ -111,13 +112,23 @@ const BLOCKED_COMPLIANCE: ComplianceInfo = {
   blocked_types: [],
 };
 
-/** Verdict for an allowed tool call (typed as tool_call, not llm_call). */
+/**
+ * Verdict for an allowed tool call that NO pre-call policy layer judged —
+ * the fallback used only when nothing the shared pipeline enforces was
+ * configured, so there was no evaluation to evidence.
+ *
+ * `action_source` is "unknown" rather than "policy_rules" for exactly that
+ * reason: this permit is not the rules engine's, and naming that layer here
+ * credited a verdict it had never issued. The layers this file enforces on its
+ * own (the allow/deny gate, requirePrincipal, the taint latch) speak through
+ * their own compliance records when they refuse.
+ */
 const TOOL_CALL_COMPLIANCE: ComplianceInfo = {
   event_type: "tool_call",
   policy_version: "none",
   action_taken: "allowed",
   action_reason: "none",
-  action_source: "policy_rules",
+  action_source: "unknown",
   redacted_types: [],
   blocked_types: [],
 };
@@ -445,6 +456,31 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         throw new Error(toolBlock.message);
       }
 
+      // 1.8) Which configured pre-call layers this synchronous gate could NOT
+      // consult, so the record says so instead of claiming a permit for them.
+      //
+      // The shared pre-call pipeline — the PII policy, the customer rule set,
+      // the anti-tamper floor, the pre-call hook — is `async` in TypeScript
+      // (the hook and the external backend are awaited), and this gate cannot
+      // be: it wraps sync tool functions as well as async ones, so awaiting
+      // here would hand every sync caller a Promise and change the tool's
+      // contract. Python's pipeline is synchronous, which is why `_gate` there
+      // consults it and this does not.
+      //
+      // That is a coverage gap, and it stays one. What it must not be is a
+      // false record: a call these layers never saw recorded `allowed` under
+      // `action_source: "policy_rules"`, crediting the rules engine with a
+      // permit it was never asked for. So when one of those layers is
+      // CONFIGURED, this reports the absence and names it — the same
+      // `not_evaluated` shape the tool-runner path and Python's tool gate use.
+      // Nothing configured means nothing was skipped, and the call records a
+      // plain permit naming no deciding layer.
+      const unconsulted: string[] = [];
+      if (config.policyFloor && config.policyFloor.length > 0) unconsulted.push("policy_floor");
+      if (config.policyRules && config.policyRules.length > 0) unconsulted.push("policy_rules");
+      if (config.pii_policy) unconsulted.push("pii_policy");
+      if (config.on_pre_call) unconsulted.push("customer_hook");
+
       // 2) PII scan on the arguments; redact in the stored record. A
       // view-only hit (storedRedactionVia) has no locatable span, so the
       // stored copy becomes a whole-text placeholder via redactForStorage.
@@ -463,15 +499,32 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         prompt: recordedArgs,
         response: "",
         metadata: { tool_name: toolName, ...toolContentMeta },
+        // A configured layer this gate could not consult makes the honest
+        // verdict `not_evaluated`, not `allowed` — see 1.8. The taint flag
+        // still rides on top when the latch flagged the call, because that
+        // latch DID run: the two say different things about different layers
+        // and both belong on the record.
         compliance: toolTaintFlag !== undefined
           ? {
-              ...TOOL_CALL_COMPLIANCE,
+              ...(unconsulted.length
+                ? toolGateNotEvaluatedCompliance(
+                    "obsvr_tool",
+                    unconsulted.join("+"),
+                    `${unconsulted.join(", ")} configured, but the synchronous tool gate cannot await the pre-call pipeline`,
+                  )
+                : TOOL_CALL_COMPLIANCE),
               event_type: "policy_flag",
               action_reason: "policy_violation",
               rule_id: "sdk:session_tainted",
               policy_reason: `Session previously compromised (${toolTaintFlag}); tool call flagged`,
             }
-          : TOOL_CALL_COMPLIANCE,
+          : unconsulted.length
+            ? toolGateNotEvaluatedCompliance(
+                "obsvr_tool",
+                unconsulted.join("+"),
+                `${unconsulted.join(", ")} configured, but the synchronous tool gate cannot await the pre-call pipeline`,
+              )
+            : TOOL_CALL_COMPLIANCE,
         options,
       });
     }

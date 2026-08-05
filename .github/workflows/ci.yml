@@ -271,6 +271,29 @@ jobs:
         env:
           NODE_ENV: test
 
+      # THE REVERSE OF THE TWO STEPS ABOVE, AND THE HOLE THEY CANNOT SEE.
+      #
+      # "blocked implies not executed" grades refusals. A gate that stops
+      # running never claims `blocked`, so every assertion in those steps holds
+      # while the surface enforces nothing — which is exactly how a rule set
+      # that did not arm the pre-call pipeline let a matching call execute,
+      # return its result, and record `allowed`. These grade the PERMIT: an
+      # `allowed` verdict has to carry the decision-input hash that evidences
+      # an evaluation, and a surface that could not consult a configured layer
+      # has to say `not_evaluated` instead of claiming a permit.
+      #
+      # Separate release-gate steps, beside their counterparts, for the same
+      # reason those are: a reviewer should be able to point at the check.
+      - name: Allowed-implies-evaluated invariant (Python half)
+        run: python -m pytest tests/test_allowed_implies_evaluated.py -q
+        working-directory: sdk-python
+
+      - name: Allowed-implies-evaluated invariant (TypeScript half)
+        run: npm test -- tests/unit/allowed-implies-evaluated.test.ts tests/unit/mcp-allowed-implies-evaluated.test.ts
+        working-directory: sdk-typescript
+        env:
+          NODE_ENV: test
+
       # Both obsvr-verify CLIs, driven over ONE export built from the shared
       # signing vectors. Each language's own suite can agree with itself
       # forever while disagreeing with the other; only this catches that.
