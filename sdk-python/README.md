@@ -467,13 +467,19 @@ combined list for both, with the scope marked on each entry, is in the
    way the test models it. [`tests/README.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-python/tests/README.md) says which
    surfaces are which.
 
-2. **This SDK installs no signal handlers, so a container stop drops the queue
-   tail.** It flushes from `atexit`, which a default-disposition `SIGTERM` never
-   reaches — so whatever the bounded sender queue still holds is lost, and the
-   events most likely to be lost are the ones nearest the shutdown. Call
-   `obsvr.flush()` from your own shutdown handler if the tail matters. The
-   TypeScript SDK does install them; this is a real divergence, not an omission
-   in the documentation.
+2. **A shutdown handler you install AFTER `obsvr.init()` replaces obsvr's.**
+   This SDK flushes on `SIGTERM`/`SIGINT` as well as `atexit`, chains to
+   whatever disposition was already there, and restores the default and
+   re-delivers only when nothing else owned the signal — so a container stop no
+   longer drops the queue tail, and the process still dies **by** the signal
+   rather than with an exit code standing in for one. The residual is ordering,
+   and it is structural: a POSIX disposition is a single slot where Node keeps a
+   listener list, so TypeScript decides ownership when the signal arrives and
+   this SDK can only decide it at install time. Call `obsvr.init()` before your
+   shutdown wiring, or call `obsvr.flush()` from your own handler. Two smaller
+   consequences of the same rule: `SIG_IGN` is left alone entirely, and a
+   handler installed from outside Python cannot be chained to, so obsvr keeps
+   the exit there rather than swallowing the signal.
 
 3. **LangChain, LlamaIndex and the OpenAI Agents tracing processor observe rather
    than govern.** On those model-call paths the PII scan runs over what the event

@@ -564,7 +564,7 @@ Wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queu
 
 If your application has its own graceful shutdown, it owns termination. obsvr flushes beside it and will not end the process while your drain, transaction commit or pool close is still in flight — the trade being that a host exiting before the flush completes drops whatever is still queued, which is the cheaper of the two losses. Ownership is decided **when the signal arrives**, not when the client was wrapped, so installing your handler after `wrap()` behaves the same way.
 
-The Python SDK installs no signal handlers; it flushes from `atexit`, which a default-disposition `SIGTERM` does not reach. Call `flush()` from your own shutdown there if the queue tail matters.
+The Python SDK now does the same, with the same ownership rules and its own five-second budget. One difference is structural rather than chosen: a POSIX disposition is a single slot where Node keeps a listener list, so Python decides ownership at install time — a host installing its handler after `obsvr.init()` replaces obsvr's there, where installing yours after `wrap()` works here.
 
 ### SDK bypass
 

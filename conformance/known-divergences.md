@@ -31,6 +31,34 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-06: the Python sender installs `SIGTERM`/`SIGINT` handlers, closing the
+  shutdown divergence. It flushed only from `atexit`, which a default-disposition
+  `SIGTERM` does not reach, so every container stop dropped whatever the bounded
+  queue still held — on an evidence product, a hole in the chain on every rolling
+  deploy, in the SDK half regulated buyers are most likely to run. TypeScript was
+  the reference and its ownership rules were ported rather than reinvented: chain
+  to any prior handler, flush within the SDK's existing shutdown budget, and
+  restore the default disposition only when the prior handler was `SIG_DFL`.
+  This was a coverage difference rather than an enforcement-verdict one — a lost
+  event, never a wrong one — and it was recorded in both READMEs while it existed
+  rather than held silently.
+  **The residual is ordering, and it is the platform, not a decision.** Node
+  keeps a listener LIST, so TypeScript can ask at signal time whether the host's
+  handler arrived after `wrap()`. A POSIX disposition is a single SLOT: a host
+  installing its handler after `obsvr.init()` replaces obsvr's, and obsvr's flush
+  never runs. Python therefore decides ownership at install time. Two smaller
+  consequences of the same slot model: `SIG_IGN` is left alone entirely rather
+  than taken over, and a disposition installed from outside Python cannot be
+  called, so obsvr keeps the exit there — a swallowed signal hangs a process
+  forever where a truncated one merely ends it early. Not a catalog entry: the
+  contract ("obsvr flushes at shutdown and does not seize termination from the
+  host") holds on both sides, and what differs is which instant the question is
+  asked. Both are documented in the READMEs and driven by
+  `sdk-python/tests/test_signal_handler_ownership.py`, whose SIG_DFL rows are
+  real interpreters sent real signals and graded on their exit status.
+  One deliberate difference is an improvement rather than a gap: TypeScript can
+  only `process.exit(143)`, while Python restores `SIG_DFL` and re-delivers, so
+  the process dies BY the signal — the wait status a supervisor reads.
 - 2026-08-05: the TypeScript generic tool governor now evaluates policy, closing
   the largest functional difference between the two SDKs. `obsvrGovernTool`
   reached its audit step without consulting the shared pre-call pipeline, so on

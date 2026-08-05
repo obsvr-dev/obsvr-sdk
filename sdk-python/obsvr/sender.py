@@ -1,9 +1,16 @@
 """Fire-and-forget audit sender.
 
 Bounded queue.Queue(MAX_QUEUE_SIZE, currently 1000) + daemon worker thread, urllib.request POST to
-{ingest_url}/ingest with X-API-Key, 429 backoff (1s -> 60s, x2), and an
-atexit flush. The delivery path never blocks or breaks the caller's LLM path:
-the enqueue is non-blocking and the POST happens on the worker thread.
+{ingest_url}/ingest with X-API-Key, 429 backoff (1s -> 60s, x2), and a
+shutdown flush on both atexit and SIGTERM/SIGINT. The delivery path never
+blocks or breaks the caller's LLM path: the enqueue is non-blocking and the
+POST happens on the worker thread.
+
+The signal half exists because atexit alone does not run on a default-
+disposition SIGTERM, which is how every container runtime stops a process --
+so a rolling deploy dropped whatever the queue still held. Ownership rules,
+and the two places the platform forces a departure from the TypeScript twin,
+are stated in full above ``_install_signal_handlers``.
 
 The one exception, stated because the blanket claim used to hide it: when
 ``otel.enabled`` is set, ``_mirror`` runs the exporter SYNCHRONOUSLY on the
@@ -35,6 +42,7 @@ import json
 import logging
 import os
 import random
+import signal
 import threading
 import time
 import uuid
@@ -70,6 +78,8 @@ INGEST_PATH = "/ingest"
 INGEST_BATCH_PATH = "/ingest/batch"
 API_KEY_HEADER = "X-API-Key"
 SIGNING_SALT = b"obsvr-sdk-signing-v1"
+#: Budget for the shutdown flush, on every path that has one.
+SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
 
 _queue: "Queue[Any]" = Queue(maxsize=MAX_QUEUE_SIZE)
 _backoff: Dict[str, float] = {"until": 0.0, "multiplier": 1.0}
@@ -612,6 +622,7 @@ def _ensure_worker() -> None:
         if not _atexit_registered:
             atexit.register(_atexit_flush)
             _atexit_registered = True
+    _install_signal_handlers()
 
 
 def _atexit_flush() -> None:
@@ -619,9 +630,151 @@ def _atexit_flush() -> None:
     # give the flush a wider budget than a single backoff step.
     _shutdown.set()
     try:
-        flush(timeout=5.0)
+        flush(timeout=SHUTDOWN_FLUSH_TIMEOUT_S)
     except Exception:
         pass
+
+
+# ── Signal handling ─────────────────────────────────────────────────────────
+#
+# WHO OWNS TERMINATION. Ported from the TypeScript twin
+# (sdk-typescript/src/proxy/sender/fire-and-forget.ts, ``setupExitHandlers``),
+# which is the reference implementation for these rules. Installing a handler
+# REPLACES the disposition that was there, so a library that installs one and
+# does not end the process swallows the signal outright — which is why the
+# re-raise below exists at all. But an unconditional exit is worse: it ends the
+# process while the host's own shutdown is still draining connections or
+# committing a transaction, and calling obsvr.init() is not consent to that.
+#
+# So ownership goes to the host whenever the host has a disposition of its own,
+# and three rules follow from that:
+#
+#   * CHAIN. A prior handler that is a Python callable is the host's shutdown.
+#     Flush first, then call it and let it decide what happens next. obsvr never
+#     ends the process on this path.
+#   * FLUSH WITHIN THE EXISTING BUDGET. The same ``SHUTDOWN_FLUSH_TIMEOUT_S``
+#     the atexit flush already uses, so a Python process drains identically
+#     whichever way it is stopped. (The TypeScript budget is 2s on both of its
+#     paths; the two SDKs' budgets already differed at exit and this change does
+#     not narrow that.)
+#   * RE-RAISE ONLY FROM SIG_DFL. If the prior disposition was the default, the
+#     signal was going to end the process and nothing else was listening, so
+#     obsvr restores the default and re-delivers — the process then dies BY the
+#     signal, which is what a supervisor reads, rather than with an exit code
+#     that merely encodes one.
+#
+# TWO DEPARTURES FROM THE TWIN, both forced by the platform rather than chosen:
+#
+#   1. Node keeps a LIST of listeners, so it can ask at signal time whether the
+#      host installed one after obsvr did. A POSIX disposition is a single slot:
+#      a host installing its handler after obsvr REPLACES obsvr's, and obsvr's
+#      flush simply never runs. Ownership is therefore decided at INSTALL time
+#      here, not at signal time. Install obsvr first (call ``init()`` early) or
+#      chain to ``obsvr.flush()`` from your own handler.
+#   2. SIG_IGN is left alone entirely — obsvr does not install over it. A
+#      process that ignores SIGTERM is not going to die from it, so there is no
+#      queue tail to save, and taking the signal over would break a disposition
+#      the host set deliberately.
+#
+# A prior disposition of ``None`` means the handler was installed from outside
+# Python and cannot be called. That is unknowable rather than absent, and it
+# resolves the same way the twin resolves its unknowable case: keep the exit. A
+# swallowed signal hangs the process forever where a truncated one merely ends
+# it early.
+
+#: Signals obsvr will take over. SIGINT and SIGTERM only: these are the two a
+#: container runtime and an operator actually send, and each one taken is an
+#: imposition that has to earn its place.
+_SHUTDOWN_SIGNALS = ("SIGTERM", "SIGINT")
+
+#: signum -> the disposition that was in place when obsvr installed over it.
+_prior_dispositions: Dict[int, Any] = {}
+_signal_handlers_installed = False
+#: Guards re-entry: a second SIGTERM during the flush must not start another.
+_signal_flush_started = False
+
+
+def _install_signal_handlers() -> None:
+    """Install the SIGTERM/SIGINT flush, once, if this thread may."""
+    global _signal_handlers_installed
+    if _signal_handlers_installed:
+        return
+    if threading.current_thread() is not threading.main_thread():
+        # Only the main thread may set a disposition. The enqueue path runs on
+        # whatever thread made the governed call, so this is reached from a
+        # worker often enough to be normal, not an error: atexit still covers
+        # an ordinary exit, and the next enqueue from the main thread installs.
+        return
+    installed_any = False
+    for name in _SHUTDOWN_SIGNALS:
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            prior = signal.getsignal(signum)
+        except (ValueError, OSError):
+            continue
+        if prior is signal.SIG_IGN:
+            continue  # the host ignores it deliberately; see the note above
+        try:
+            signal.signal(signum, _handle_shutdown_signal)
+        except (ValueError, OSError, RuntimeError):
+            # Not settable here (a restricted embedding, or a platform without
+            # this signal). atexit remains the coverage.
+            continue
+        _prior_dispositions[signum] = prior
+        installed_any = True
+    if installed_any:
+        _signal_handlers_installed = True
+
+
+def _handle_shutdown_signal(signum: int, frame: Any) -> None:
+    """Flush, then hand the signal on to whoever owned it before obsvr did."""
+    global _signal_flush_started
+    prior = _prior_dispositions.get(signum, signal.SIG_DFL)
+
+    if not _signal_flush_started:
+        _signal_flush_started = True
+        try:
+            _atexit_flush()
+        except Exception:  # noqa: BLE001 - shutdown must not raise out of a handler
+            pass
+
+    if callable(prior):
+        # The host is shutting itself down. Flushed beside it; it chooses when
+        # the process ends, and obsvr never ends it out from under a drain.
+        #
+        # Both latches come back off, because a host handler is allowed to
+        # RETURN rather than exit. ``_shutdown`` is what makes the worker skip
+        # its 429 backoff, so leaving it set on a process that keeps running
+        # would leave the sender hammering a rate-limited ingest for the rest of
+        # its life. If the host does exit, atexit sets it again on the way out.
+        _signal_flush_started = False
+        _shutdown.clear()
+        prior(signum, frame)
+        return
+
+    # SIG_DFL, or a disposition installed from outside Python that cannot be
+    # called. Restore the default and re-deliver, so the process dies BY the
+    # signal rather than with an exit code standing in for one.
+    try:
+        signal.signal(signum, signal.SIG_DFL)
+    except (ValueError, OSError, RuntimeError):
+        pass
+    os.kill(os.getpid(), signum)
+
+
+def _reset_signal_handlers() -> None:
+    """Restore the dispositions obsvr replaced (tests only)."""
+    global _signal_handlers_installed, _signal_flush_started
+    for signum, prior in list(_prior_dispositions.items()):
+        try:
+            signal.signal(signum, prior)
+        except (ValueError, OSError, RuntimeError):
+            pass
+    _prior_dispositions.clear()
+    _signal_handlers_installed = False
+    _signal_flush_started = False
 
 
 def _stamp_integrity_flags(event: Dict[str, Any]) -> None:
@@ -845,7 +998,7 @@ def get_pending_gap_count() -> int:
     return _gap_pending
 
 
-def flush(timeout: float = 5.0) -> None:
+def flush(timeout: float = SHUTDOWN_FLUSH_TIMEOUT_S) -> None:
     """Wait until all queued events are processed (graceful shutdown).
 
     Declares any outstanding gap first, so a shutdown that follows a saturated

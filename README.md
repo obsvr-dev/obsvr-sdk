@@ -837,11 +837,15 @@ is marked on each.
    a tool guardrail, or a governed tool.
    [Per-surface grading](#framework--provider-support).
 
-6. **The Python SDK installs no signal handlers, so a container stop drops the
-   queue tail.** *(Python only)* It flushes from `atexit`, which a
-   default-disposition `SIGTERM` never reaches. Call `obsvr.flush()` from your own
-   shutdown if the tail matters. TypeScript does install them, and hands the
-   process back rather than exiting out from under you.
+6. **A shutdown handler installed AFTER `obsvr.init()` replaces obsvr's, in
+   Python.** *(Python only)* Both SDKs now flush on `SIGTERM`/`SIGINT`, chain to
+   whatever handler was already there, and re-raise the default disposition only
+   when nothing else owned it. But a POSIX disposition is a single slot where
+   Node keeps a listener list, so TypeScript decides ownership when the signal
+   arrives and Python can only decide it at install time: a host that installs
+   its own handler after `init()` takes obsvr's place, and obsvr's flush does not
+   run. Call `init()` before your shutdown wiring, or call `obsvr.flush()` from
+   your own handler.
 
 7. **The current Google Gemini SDK is not supported.** *(both SDKs)* obsvr binds
    the legacy line — `@google/generative-ai` / `google-generativeai` — which
@@ -884,11 +888,13 @@ that line.
 - **PII scope.** Policy decisions scan the last user message; `name`, `address`, `person`, `location`, `medical`, `national_id` require Presidio and never fire on the built-in regex.
 - **Budget scope.** In-process token/request budgets are enforced **per SDK instance**, and token usage is recorded post-call, so N instances can allow up to N× a limit and budgets lag by one call. The counter store is bounded at 10,000 scopes per meter; past that it refuses a new scope rather than evicting a live counter, since evicting one would reset that scope's count and hand a caller who can mint scope values a free quota. A scope it could not admit goes **unmetered** under the default fail-open, or is refused with `QUOTA_UNMETERED` under `failMode: 'closed'`; either way the call's event records that the rule did not run, so an unenforced quota never reads as a compliant call. Fleet-wide quota escrow is coordinated by the ingest service; enforce hard global caps upstream if you need them.
 - **Serverless.** Each cold start begins a fresh integrity session (`sdk_session_id`, `seq_no` reset). Multiple sessions starting at `seq_no=1` are expected and verify correctly. Call `await obsvr.flush()` before the runtime freezes.
-- **Process shutdown.** In TypeScript, wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. Python installs no signal handlers at all and flushes from `atexit` instead, so a container stop can drop the queue tail there. Call `obsvr.flush()` in your own shutdown if the tail matters.
+- **Process shutdown.** Both SDKs install `SIGTERM`/`SIGINT` handlers that flush the audit queue within a bounded budget — two seconds in TypeScript, five in Python, which is each SDK's own existing exit-flush budget. Neither ends the process when something else owns the signal. The one place they differ is WHEN ownership is decided; see below.
 
   <details><summary>Signal-ownership semantics, and why the two SDKs differ</summary>
 
-  In TypeScript, wrapping a client installs `SIGTERM`/`SIGINT` handlers that flush the audit queue within a two-second budget. They end the process **only when nothing else is listening for that signal** — attaching a handler replaces the runtime's default disposition, so a library that attaches one and never exits swallows the signal instead. When your application has its own graceful shutdown, it owns termination: obsvr flushes beside it and never ends the process out from under it, which is the trade — a host that exits before the flush completes drops whatever is still queued. Ownership is decided when the signal arrives rather than when the client was wrapped, so installing your handler after `wrap()` works. **Python differs and installs no signal handlers at all**: it flushes from `atexit`, which a default-disposition `SIGTERM` never reaches, so a container stop drops the queue tail there. Call `await obsvr.flush()` / `obsvr.flush()` in your own shutdown if the tail matters.
+  Both SDKs install `SIGTERM`/`SIGINT` handlers that flush the audit queue within a bounded budget, and both end the process **only when nothing else owns the signal** — installing a handler replaces the runtime's default disposition, so a library that installs one and never exits swallows the signal instead. When your application has its own graceful shutdown it owns termination: obsvr flushes beside it, hands the signal on, and never ends the process out from under a drain. The trade is that a host exiting before the flush completes drops whatever is still queued, which is the cheaper of the two losses.
+
+  **Where they differ is when ownership is decided, and it is the platform that decides that.** Node keeps a LIST of listeners, so TypeScript can ask at signal time whether your handler arrived after `wrap()` — installing yours later works. A POSIX disposition is a single slot: a Python host installing its own handler after `obsvr.init()` REPLACES obsvr's, and obsvr's flush never runs. Call `init()` before your shutdown wiring, or call `obsvr.flush()` from your own handler. Two smaller differences follow from the same place: Python leaves `SIG_IGN` alone entirely rather than taking a signal the host deliberately ignores, and where TypeScript can only exit with 143/130, Python restores the default disposition and re-delivers, so the process dies **by** the signal — the status a supervisor actually reads.
 
   </details>
 - **SDK bypass.** Not calling `init()` means no coverage — there is no post-hoc runtime check; assert `obsvr.isInitialized()` (TypeScript) / `obsvr.is_initialized()` (Python) at startup. `disabled: true` in production emits a `governance_disabled` event so the bypass is on the record.
