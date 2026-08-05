@@ -158,6 +158,17 @@ export interface ObsvrConfig {
   requirePrincipal?: boolean;
 
   /**
+   * Refuse a `wrap()` that governs nothing (opt-in). When true, wrapping a
+   * client on which no auditable method path resolves throws instead of
+   * returning a proxy that will never emit an event. Default false, and the
+   * default still WARNS — see {@link wrap}. A deployment that treats coverage
+   * as a deploy-time invariant sets this so the process refuses to start
+   * rather than running ungoverned.
+   * @default false
+   */
+  requireGovernedSurface?: boolean;
+
+  /**
    * Declared conflict-resolution mode for the policy rules. Undefined (the
    * default) is undeclared: the original first-match contract AND the
    * original policy_version bytes are kept. Declaring a mode opts the
@@ -510,6 +521,9 @@ export interface LLMAuditInitConfig {
   /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
   require_principal?: boolean;
 
+  /** Refuse a wrap() that governs nothing (see ObsvrConfig.requireGovernedSurface). @default false */
+  require_governed_surface?: boolean;
+
   /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
   rule_resolution?: 'first_match' | 'deny_wins';
 
@@ -738,6 +752,9 @@ export interface ResolvedConfig {
 
   /** Refuse an unattributed call (see ObsvrConfig.requirePrincipal). @default false */
   requirePrincipal?: boolean;
+
+  /** Refuse a wrap() that governs nothing (see ObsvrConfig.requireGovernedSurface). @default false */
+  requireGovernedSurface?: boolean;
 
   /** Declared rule conflict-resolution mode (see ObsvrConfig.ruleResolution). */
   ruleResolution?: 'first_match' | 'deny_wins';

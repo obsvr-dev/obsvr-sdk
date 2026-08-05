@@ -159,6 +159,13 @@ class ResolvedConfig:
     # single-tenant deployment that legitimately passes no user_id must not
     # start refusing on upgrade.
     require_principal: bool = False
+    # Refuse a wrap() that governs nothing (opt-in). When True, wrapping a
+    # client on which no auditable method path resolves raises instead of
+    # returning a proxy that will never emit an event. Default False, and the
+    # default still WARNS (see wrap.py). A deployment that treats coverage as a
+    # deploy-time invariant sets this so the process refuses to start rather
+    # than running ungoverned. Twin: requireGovernedSurface.
+    require_governed_surface: bool = False
     # Declared conflict-resolution mode for the policy rules ("first_match"
     # or "deny_wins"). None (the default) is undeclared: the original
     # first-match contract AND the original policy_version bytes are kept.
@@ -288,6 +295,7 @@ def init(
     fail_mode: Optional[str] = None,
     enforcement_mode: Optional[str] = None,
     require_principal: Optional[bool] = None,
+    require_governed_surface: Optional[bool] = None,
     rule_resolution: Optional[str] = None,
     device_signing_key_file: Optional[str] = None,
     policy_rules: Optional[List[Any]] = None,
@@ -334,6 +342,13 @@ def init(
     # A governance flag must be a real boolean: a truthy string like "false"
     # silently enabling (or a falsy 0 silently disabling) an attribution
     # requirement is exactly the misconfiguration strict init exists to catch.
+    if require_governed_surface is not None and not isinstance(
+        require_governed_surface, bool
+    ):
+        raise ValueError(
+            "obsvr.init(): require_governed_surface must be a boolean, got "
+            f"{require_governed_surface!r}"
+        )
     if require_principal is not None and not isinstance(require_principal, bool):
         raise ValueError(
             f"obsvr.init(): require_principal must be a boolean, got {require_principal!r}"
@@ -513,6 +528,7 @@ def init(
             enforcement_mode if enforcement_mode in ("enforce", "monitor") else "enforce"
         ),
         require_principal=require_principal if require_principal is True else False,
+        require_governed_surface=require_governed_surface is True,
         rule_resolution=rule_resolution,
         device_signing_key_file=device_signing_key_file,
         policy_rules=policy_rules,

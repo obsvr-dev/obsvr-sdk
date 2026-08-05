@@ -44,7 +44,9 @@ delegates every other attribute untouched.
 
 import copy as _copy
 import inspect
+import logging
 import time
+import weakref
 from typing import Any, Callable, Dict, List, Optional
 
 from .config import ResolvedConfig, get_config, is_initialized
@@ -1270,6 +1272,85 @@ class _ObsvrProxy:
         return f"<obsvr-wrapped {object.__getattribute__(self, '_obsvr_target')!r}>"
 
 
+def _resolves_to_callable(client: Any, path: str) -> bool:
+    """Does ``path`` resolve to a callable on this client? Never raises.
+
+    Walked on the RAW client, so it is unaffected by ``_TRAVERSABLE`` — that set
+    decides what the PROXY descends into, and asking it here would report a
+    client as covered because the proxy is willing to walk toward a method the
+    client does not have.
+    """
+    cur = client
+    for segment in path.split("."):
+        if cur is None:
+            return False
+        try:
+            cur = getattr(cur, segment)
+        except Exception:  # noqa: BLE001 - a property that raises is not a surface
+            # Provider SDKs build sub-resources in lazy properties. One that
+            # raises on read is not a governed surface, and this probe must
+            # never be the thing that breaks wrap().
+            return False
+    return callable(cur)
+
+
+# Clients already reported. Weak, so holding one here cannot keep it alive.
+_ungoverned_reported: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def _report_ungoverned_client(client: Any, provider: str, config: ResolvedConfig) -> None:
+    """Report a ``wrap()`` that matched nothing.
+
+    A configuration that is ACCEPTED is a configuration that is IN FORCE — the
+    rule ``init()`` already applies to an unreadable config key, applied to the
+    one remaining acceptance that silently governed nothing. Wrapping a client
+    whose shape carries no auditable method returned a proxy that forwards every
+    call through: no policy, no event, and nothing said. A caller reasonably
+    concludes they are covered.
+
+    WHY WARN, AND WHY ONCE PER CLIENT. Through the ``obsvr`` logger at WARNING,
+    which is where every other init-time misconfiguration in this SDK speaks —
+    a coverage gap must be visible without debug mode. Once per CLIENT rather
+    than per call, because the condition is a property of the object: ``wrap()``
+    decides it once, and a library that reprints it on every request is its own
+    bug. Not once per process either — two differently-shaped clients are two
+    separate gaps and each is worth naming.
+
+    WHY NOT RAISE BY DEFAULT. Refusing turns a harmless wrap into an outage for
+    a caller who was passing a client obsvr simply does not intercept: a
+    framework object governed elsewhere, or a provider surface that is a
+    documented coverage boundary. ``require_governed_surface`` is there for the
+    deployment that wants the opposite trade, and it refuses at ``wrap()``
+    rather than at first call so the failure lands at startup.
+
+    Twin: ``reportUngovernedClient`` in sdk-typescript/src/proxy/wrapper.ts.
+    """
+    label = type(client).__name__
+    message = (
+        f"wrap() matched no governed method on this client ({label}; detected "
+        f"shape: {provider}). The object it returned forwards every call "
+        f"straight through - no policy runs and no audit event is emitted for "
+        f"it, so this client is NOT covered. obsvr intercepts these paths: "
+        f"{', '.join(sorted(AUDITABLE_METHODS))}. Wrap the provider client "
+        f"itself (obsvr.wrap(OpenAI())), or govern this object through its own "
+        f"integration. Pass require_governed_surface=True to obsvr.init() to "
+        f"make this raise instead."
+    )
+    if getattr(config, "require_governed_surface", False):
+        # RuntimeError, matching the "call init() before wrap()" refusal this
+        # same function already raises — one wrap()-time failure type.
+        raise RuntimeError(f"obsvr: {message}")
+    try:
+        if client in _ungoverned_reported:
+            return
+        _ungoverned_reported.add(client)
+    except TypeError:
+        # Not weak-referenceable or not hashable: report every time rather than
+        # not at all. Silence is the failure this exists to remove.
+        pass
+    logging.getLogger("obsvr").warning("WARNING: %s", message)
+
+
 def wrap(client: Any, **options: Any) -> Any:
     """Wrap an LLM client for automatic governance + audit.
 
@@ -1286,6 +1367,11 @@ def wrap(client: Any, **options: Any) -> Any:
     (generate_content).
     Sync and async clients both work. Pass options like user_id=, region=,
     source= to stamp every audit event from this wrapper.
+
+    A client on which no governed method path resolves is still wrapped and
+    still works — but it is not covered, and that is reported once per client
+    at WARNING rather than left to be inferred from absent traffic. Pass
+    ``require_governed_surface=True`` to ``init()`` to make it raise instead.
     """
     if not is_initialized():
         raise RuntimeError("obsvr: call init() before wrap()")
@@ -1344,6 +1430,13 @@ def wrap(client: Any, **options: Any) -> Any:
         RECORDED_PROVIDER_OPTION_KEY,
         resolve_destination,
     )
+
+    # COVERAGE, decided here rather than discovered from missing traffic. The
+    # proxy is built either way — a client with no governed method still gets a
+    # transparent pass-through, which is what it got before — but the caller is
+    # told instead of left to infer coverage from the fact that wrap() returned.
+    if not any(_resolves_to_callable(client, p) for p in AUDITABLE_METHODS):
+        _report_ungoverned_client(client, provider, config)
 
     recorded_provider, attribution = resolve_destination(client, provider)
     options = {**prior_options, **dict(options or {})}

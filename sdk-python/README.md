@@ -92,6 +92,14 @@ ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for wh
 those carry no chat text at all and which are text-bearing but not yet reachable from
 a method-path table.
 
+**A `wrap()` that governs nothing says so.** If none of those paths resolve on the
+client you pass, the returned object still works and still forwards every call — but
+no policy runs and no event is emitted for it, so `wrap()` logs one WARNING naming
+the gap and the paths it looks for. Once per client, not per call. Pass
+`require_governed_surface=True` to `init()` to make it raise instead, for a
+deployment that wants an ungoverned client to fail at startup rather than at audit
+time.
+
 ## MCP Governance
 
 Wrap the MCP client session; governance then covers all three phases —

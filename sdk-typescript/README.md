@@ -270,6 +270,8 @@ Three different things sit outside that table, and only the first is a policy de
 
 **"Metering is opt-in" means the default is OFF, and that is a decision.** ``meterIntegrationEvents`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
 
+**A `wrap()` that governs nothing says so.** If none of the paths above resolve on the client you pass, the returned object still works and still forwards every call — but no policy runs and no event is emitted for it, so `wrap()` prints one `console.warn` naming the gap and the paths it looks for. Once per client, not per call. Set `requireGovernedSurface: true` at `init()` to make it throw instead, for a deployment that wants an ungoverned client to fail at startup rather than at audit time.
+
 MCP tool calls are governed separately (below); any framework's tools can be governed with `obsvrGovernTool` / `obsvrGovernTools`.
 
 ## MCP Governance

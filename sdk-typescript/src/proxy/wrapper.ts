@@ -3128,6 +3128,111 @@ function isAuditablePath(path: string[]): boolean {
 }
 
 /**
+ * Every method path this proxy can intercept, as one list.
+ *
+ * The union of all THREE tables, not `AUDITABLE_METHODS` alone: the `.stream()`
+ * helpers and the tool runners are governed through the deferred runner, so a
+ * client that exposes only those is fully covered and must not be reported as
+ * ungoverned.
+ */
+function governedMethodPaths(): string[] {
+  return [
+    ...AUDITABLE_METHODS.keys(),
+    ...STREAM_RUNNER_METHODS.keys(),
+    ...TOOL_RUNNER_METHODS.keys(),
+  ];
+}
+
+/** Does `path` resolve to a callable on this client? Never throws. */
+function resolvesToFunction(client: object, path: string): boolean {
+  let cur: unknown = client;
+  for (const segment of path.split(".")) {
+    if (cur === null || (typeof cur !== "object" && typeof cur !== "function")) {
+      return false;
+    }
+    try {
+      cur = (cur as Record<string, unknown>)[segment];
+    } catch {
+      // Provider SDKs build sub-resources in lazy getters. One that throws on
+      // read is not a governed surface, and this probe must never be the thing
+      // that breaks wrap().
+      return false;
+    }
+  }
+  return typeof cur === "function";
+}
+
+/** Clients already reported. Weak, so holding one here cannot leak a client. */
+let ungovernedReported = new WeakSet<object>();
+
+/**
+ * Report a `wrap()` that matched nothing.
+ *
+ * A configuration that is ACCEPTED is a configuration that is IN FORCE — the
+ * rule `init()` already applies to an unreadable config key, applied to the one
+ * remaining acceptance that silently governed nothing. Wrapping a client whose
+ * shape carries no auditable method returned a proxy that forwards every call
+ * through: no policy, no event, and nothing said. A caller reasonably concludes
+ * they are covered.
+ *
+ * WHY WARN, AND WHY ONCE PER CLIENT. `console.warn`, not `debugLog`, for the
+ * same reason the config-key gate uses it: a coverage gap must be visible
+ * without debug mode. Once per CLIENT rather than per call, because the
+ * condition is a property of the object — `wrap()` decides it once, and a
+ * library that reprints it on every request is its own bug. Not once per
+ * process either: two differently-shaped clients are two separate gaps and
+ * each is worth naming.
+ *
+ * WHY NOT THROW BY DEFAULT. The same argument the config-key gate makes:
+ * refusing turns a harmless wrap into an outage for a caller who was passing a
+ * client obsvr simply does not intercept — a framework object governed
+ * elsewhere, or a provider surface that is a documented coverage boundary.
+ * `requireGovernedSurface` is there for the deployment that wants the opposite
+ * trade, and it refuses at wrap() rather than at first call so the failure
+ * lands at startup.
+ */
+function reportUngovernedClient(
+  client: object,
+  provider: string,
+  config: ResolvedConfig,
+): void {
+  const message =
+    `[obsvr] WARNING: wrap() matched no governed method on this client ` +
+    `(${clientLabel(client)}; detected shape: ${provider}). The object it ` +
+    `returned forwards every call straight through — no policy runs and no ` +
+    `audit event is emitted for it, so this client is NOT covered. obsvr ` +
+    `intercepts these paths: ${governedMethodPaths().join(", ")}. Wrap the ` +
+    `provider client itself (obsvr.wrap(new OpenAI())), or govern this object ` +
+    `through its own integration. Set requireGovernedSurface: true to make ` +
+    `this throw instead.`;
+
+  if (config.requireGovernedSurface === true) {
+    throw new Error(message.replace("WARNING: ", ""));
+  }
+  if (ungovernedReported.has(client)) return;
+  ungovernedReported.add(client);
+  console.warn(message);
+}
+
+/** The client's constructor name, for a message a caller can act on. */
+function clientLabel(client: object): string {
+  try {
+    return (client as { constructor?: { name?: string } })?.constructor?.name ?? "object";
+  } catch {
+    return "object";
+  }
+}
+
+/**
+ * Forget which clients have been reported (for testing only). A WeakSet cannot
+ * be enumerated or cleared, so the binding is replaced.
+ * @internal
+ */
+export function _resetUngovernedReports(): void {
+  ungovernedReported = new WeakSet<object>();
+}
+
+/**
  * Create a recursive proxy for the client
  */
 function createRecursiveProxy<T extends object>(
@@ -3260,6 +3365,11 @@ function createRecursiveProxy<T extends object>(
 /**
  * Wrap an LLM client for automatic audit tracking
  *
+ * A client on which no governed method path resolves is still wrapped and still
+ * works — but it is not covered, and that is reported once per client on
+ * `console.warn` rather than left to be inferred from absent traffic. Set
+ * `requireGovernedSurface: true` at `init()` to make it throw instead.
+ *
  * @param client - The LLM client instance (e.g., new OpenAI())
  * @param options - Optional configuration for this wrapped client
  * @returns The wrapped client with the same interface
@@ -3358,6 +3468,18 @@ function governClient<T extends object>(
     recordedProvider,
     providerAttribution,
   };
+
+  // COVERAGE, decided here rather than discovered from missing traffic. The
+  // proxy is built either way — a client with no governed method still gets a
+  // transparent pass-through, which is what it got before — but the caller is
+  // told instead of left to infer coverage from the fact that wrap() returned.
+  if (
+    (typeof client === "object" || typeof client === "function") &&
+    client !== null &&
+    !governedMethodPaths().some((p) => resolvesToFunction(client, p))
+  ) {
+    reportUngovernedClient(client, provider, config);
+  }
 
   // Setup exit handlers (once)
   setupExitHandlers(config);

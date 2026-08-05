@@ -79,6 +79,7 @@ const CONFIG_KEY_MAP: Record<string, string> = {
   approvalPollMs: "approval_poll_ms",
   enforcementMode: "enforcement_mode",
   requirePrincipal: "require_principal",
+  requireGovernedSurface: "require_governed_surface",
   ruleResolution: "rule_resolution",
   deviceSigningKeyFile: "device_signing_key_file",
   piiPolicy: "pii_policy",
@@ -335,6 +336,14 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): requirePrincipal must be a boolean, got ${String(config.require_principal)}`,
     );
   }
+  if (
+    config.require_governed_surface !== undefined &&
+    typeof config.require_governed_surface !== "boolean"
+  ) {
+    throw new Error(
+      `obsvr.init(): requireGovernedSurface must be a boolean, got ${String(config.require_governed_surface)}`,
+    );
+  }
   if (config.device_signing_key_file !== undefined) {
     // Loud at init: the operator asked for non-repudiation, so a key that
     // cannot be read or cannot sign must refuse now — shipping unsigned
@@ -462,6 +471,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     approvalPollMs: config.approval_poll_ms ?? 5000,
     enforcementMode: config.enforcement_mode ?? 'enforce',
     requirePrincipal: config.require_principal === true,
+    requireGovernedSurface: config.require_governed_surface === true,
     ruleResolution: config.rule_resolution as 'first_match' | 'deny_wins' | undefined,
     deviceSigningKeyFile: config.device_signing_key_file,
     pii_policy: (() => {
