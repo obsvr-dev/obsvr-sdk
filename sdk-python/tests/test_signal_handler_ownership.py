@@ -348,16 +348,22 @@ def test_the_shutdown_latch_is_released_when_the_host_owns_termination(monkeypat
     seen = []
     prior = lambda signum, frame: seen.append(signum)  # noqa: E731
     sender._prior_dispositions[signal.SIGTERM] = prior
+    latched = {}
     try:
         sender._handle_shutdown_signal(signal.SIGTERM, None)
+        # Read both latches HERE, not after the reset. ``_reset_signal_handlers``
+        # clears ``_signal_flush_started`` itself, so a read taken after it
+        # answers for the reset and would hold whatever the handler did.
+        latched["shutdown"] = sender._shutdown.is_set()
+        latched["flush_started"] = sender._signal_flush_started
     finally:
         sender._reset_signal_handlers()
 
     assert seen == [signal.SIGTERM]
     # The host owns termination on this path — obsvr must not re-raise.
     assert killed == []
-    assert not sender._shutdown.is_set()
-    assert not sender._signal_flush_started
+    assert not latched["shutdown"]
+    assert not latched["flush_started"]
 
 
 # ── the second flush: a signal, then a normal exit ──────────────────────────
