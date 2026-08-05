@@ -911,7 +911,7 @@ that line.
 
   </details>
 - **Two copies of the SDK in one process.** If the SDK is installed twice — directly and again as a transitive dependency — the first copy to `init()` governs and the second logs a warning and stands down, so one call is never governed or emitted twice. A copy that stood down does **not** wrap: clients wrapped only through it are **not governed**. The warning names the fix (deduplicate the dependency); do not treat it as cosmetic.
-- **Audit-sender serialization.** An exception inside a detector layer never reaches your application (see "Fail mode" above), but one obsvr path is still unguarded and is named rather than buried: the audit sender serializes host-supplied `metadata` with a plain `JSON.stringify`, so metadata carrying a throwing property getter, a throwing `toJSON`, or a circular reference can surface from the sender. It is tracked with its own posture decision. Pass plain, serializable metadata until it is closed.
+- **Audit-sender serialization.** An exception inside a detector layer never reaches your application (see "Fail mode" above), and the one obsvr path that sat outside that guarantee is now inside it. The audit sender measures host-supplied `metadata` against its size budget before deciding whether to trim it, and metadata carrying a throwing property getter, a throwing `toJSON`, a `BigInt` or a circular reference made that measurement raise on the caller's own call. A bag it cannot measure is treated as over budget and takes the trim that already exists for an oversized one: the grouping keys survive, the event is still delivered, and nothing reaches the caller. Both SDKs.
 
 ---
 

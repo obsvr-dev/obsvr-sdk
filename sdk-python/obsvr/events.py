@@ -98,16 +98,42 @@ _RESERVED_META_KEYS = (
 )
 
 
+def _within_metadata_budget(md: Dict[str, Any]) -> bool:
+    """Is the metadata bag inside the budget? An UNMEASURABLE bag counts as over.
+
+    ``metadata`` is caller-supplied. ``default=str`` already covers a value
+    ``json`` cannot serialize, but two shapes still raise straight through it: a
+    CIRCULAR reference (``ValueError: Circular reference detected``) and a value
+    whose own ``__str__`` raises. This runs on the caller's synchronous emit
+    path, so an unguarded raise leaves the sender and lands in the application's
+    own call — the one exception to "an exception inside any detector layer never
+    reaches your application".
+
+    Answering "over budget" rather than inventing a posture is the point. A bag
+    this cannot measure is a bag ingest's canonicalizer cannot measure either,
+    and ingest REPLACES metadata wholesale with ``{"_truncated":true}`` past
+    10 KB — destroying ``trace_id`` / ``agent_run_id`` and orphaning the event
+    from its run. Taking the existing trim keeps the grouping keys, which is
+    exactly what that branch exists to do.
+
+    Twin: ``withinBudget`` in sdk-typescript/src/proxy/sender/fire-and-forget.ts.
+    """
+    try:
+        return len(json.dumps(md, default=str)) <= _METADATA_BUDGET_CHARS
+    except Exception:  # noqa: BLE001 - a bag that cannot be measured is over
+        return False
+
+
 def _trim_metadata_to_budget(md: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not md:
         return md
-    if len(json.dumps(md, default=str)) <= _METADATA_BUDGET_CHARS:
+    if _within_metadata_budget(md):
         return md
     # 1. The span attribute bag is the usual culprit — collapse it first.
     span = md.get("obsvr_span")
     if isinstance(span, dict) and "attributes" in span:
         md = {**md, "obsvr_span": {**span, "attributes": {"_trimmed": True}}}
-        if len(json.dumps(md, default=str)) <= _METADATA_BUDGET_CHARS:
+        if _within_metadata_budget(md):
             md["_obsvr_metadata_trimmed"] = True
             return md
     # 2. Still over: keep only the reserved grouping/provenance keys.

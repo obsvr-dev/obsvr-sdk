@@ -541,13 +541,13 @@ const RESERVED_META_KEYS = [
 function trimMetadataToBudget(event: AuditEvent): void {
   const md = event.metadata as Record<string, unknown> | undefined;
   if (!md) return;
-  if (JSON.stringify(md).length <= METADATA_BUDGET_CHARS) return;
+  if (withinBudget(md)) return;
 
   // 1. The span attribute bag is the usual culprit — collapse it first.
   const span = md.obsvr_span as Record<string, unknown> | undefined;
   if (span && typeof span === "object" && "attributes" in span) {
     md.obsvr_span = { ...span, attributes: { _trimmed: true } };
-    if (JSON.stringify(md).length <= METADATA_BUDGET_CHARS) {
+    if (withinBudget(md)) {
       md._obsvr_metadata_trimmed = true;
       return;
     }
@@ -555,9 +555,46 @@ function trimMetadataToBudget(event: AuditEvent): void {
   // 2. Still over: keep only the reserved grouping/provenance keys.
   const trimmed: Record<string, unknown> = { _obsvr_metadata_trimmed: true };
   for (const k of RESERVED_META_KEYS) {
-    if (k in md) trimmed[k] = md[k];
+    if (!(k in md)) continue;
+    try {
+      trimmed[k] = md[k];
+    } catch {
+      // The one read the measurement guard does not cover: a hostile getter on
+      // a RESERVED key. A grouping value that cannot be read is not a grouping
+      // value, so it is dropped — the same thing the trim already costs an
+      // over-budget event for every non-reserved key.
+    }
   }
   event.metadata = trimmed;
+}
+
+/**
+ * Is the metadata bag inside the budget? An unmeasurable bag counts as OVER.
+ *
+ * `metadata` is CALLER-SUPPLIED, and four ordinary shapes make `JSON.stringify`
+ * throw: a getter that raises, a `BigInt`, a circular reference, a `toJSON` that
+ * throws. This runs on the synchronous enqueue path, so an unguarded throw came
+ * back out of the sender into the application's own call — the single named
+ * exception to "an exception inside any detector layer never reaches your
+ * application". Python's twin (`_trim_metadata_to_budget` in obsvr/events.py)
+ * uses the same rule.
+ *
+ * Answering "over budget" rather than inventing a posture is the point. A bag
+ * this cannot measure is a bag ingest's canonicalizer cannot measure either, and
+ * ingest REPLACES metadata wholesale with `{"_truncated":true}` past 10 KB —
+ * destroying `trace_id` / `agent_run_id` and orphaning the event from its run.
+ * Taking the existing trim keeps the grouping keys, which is exactly what that
+ * branch exists to do.
+ */
+function withinBudget(md: Record<string, unknown>): boolean {
+  try {
+    const serialized = JSON.stringify(md);
+    // A `toJSON` returning undefined serializes to undefined, not a string.
+    if (typeof serialized !== "string") return false;
+    return serialized.length <= METADATA_BUDGET_CHARS;
+  } catch {
+    return false;
+  }
 }
 
 /**
