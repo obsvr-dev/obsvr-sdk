@@ -170,7 +170,42 @@ cut, when it is renamed to that version.
   case-sensitive ones, so it gained mixed-case and response-target rows.
   ([`f24f69b`](https://github.com/obsvr-dev/obsvr-sdk/commit/f24f69b))
 
+- **BREAKING: a tool wrapped by `obsvrGovernTool` returns a Promise, and a
+  refusal rejects rather than throwing synchronously.** The gate now consults
+  the shared pre-call pipeline (see Fixed below), and that pipeline awaits, so
+  the wrapped function is `async` even around a synchronous tool. Every
+  framework this wrapper targets awaits the value it gets back — LangChain
+  (`await this._call` into `this.func`), Vercel AI (`await executeToolCall`),
+  the OpenAI tool runner (`await fn.function`), `@openai/agents` (an async
+  `invoke`), MCP (async by protocol), and LlamaIndex, whose tool return type is
+  declared `JSONValue | Promise<JSONValue>` — so a tool used THROUGH a framework
+  needs no change. Migration applies to code that invokes a wrapped tool
+  directly: `await tool.execute(args)`, and catch a refusal with
+  `await expect(...).rejects` / `try { await ... }` rather than a synchronous
+  `try`/`catch`. Python's `govern_tool` is unaffected and stays synchronous; its
+  pipeline does not await.
+  ([`03d5a18`](https://github.com/obsvr-dev/obsvr-sdk/commit/03d5a18))
+
 ### Fixed
+
+- **The TypeScript tool governor evaluates policy, closing the largest
+  functional difference between the two SDKs.** `obsvrGovernTool` reached its
+  audit step without consulting the shared pre-call pipeline, so on that surface
+  the anti-tamper floor, the customer rule set, the PII policy, the pre-call
+  hook and the external policy backend were all inert, while Python's
+  `govern_tool` consulted every one of them: measured on a single rule set, a
+  tool call whose arguments matched a block rule was refused in Python and
+  executed in TypeScript. It now routes through the same `applyPreCallPolicy`
+  every other TypeScript surface uses, so the same rules over the same arguments
+  yield the same verdict in both SDKs. A synchronous entry point was measured as
+  the alternative and rejected — every `await` in that function sits behind an
+  opt-in, but they are interleaved with the deterministic layers rather than
+  bookending them, so a synchronous path would carry a second copy of the
+  orchestration — which is what makes the wrapped function async (see BREAKING
+  above). One consequence worth stating: a view-only PII hit on tool arguments
+  now escalates to a block on this surface, as it already did on `wrap()` and
+  MCP, so an obfuscated payload no longer reaches the tool.
+  ([`03d5a18`](https://github.com/obsvr-dev/obsvr-sdk/commit/03d5a18))
 
 - **An `allowed` verdict now carries evidence that a policy pipeline evaluated
   the call.** The enforcement suites police "blocked implies not executed" —
