@@ -240,21 +240,35 @@ describe('review fix 4: MCP event stamps and stored copies', () => {
     expect(ev.metadata.response_blocked).toBe(true);
   });
 
-  it('observe path (obsvrGovernTool): a view-only hit stores the placeholder, not the payload', async () => {
+  it('obsvrGovernTool: a view-only hit refuses the tool and stores the placeholder', async () => {
+    // This asserted that the tool RAN and only its stored copy was redacted,
+    // because the tool boundary reached the observe step directly and the
+    // pre-call pipeline never saw the arguments. Now that it does, the
+    // documented view-only rule applies here as it already did on wrap() and
+    // MCP: a redact verdict with no locatable span escalates to a block, so
+    // the obfuscated payload never reaches the tool at all.
     init({
       api_key: 'k',
       ingest_url: 'https://x',
       pii_policy: { default: 'redact' },
       deobfuscation: { enabled: true },
     });
+    let ran = false;
     const tool = obsvrGovernTool({
       name: 'lookup',
-      execute: async (_input: unknown) => 'done',
+      execute: async (_input: unknown) => {
+        ran = true;
+        return 'done';
+      },
     });
-    await tool.execute({ query: B64_SSN });
+    await expect(tool.execute({ query: B64_SSN })).rejects.toThrow(/\[obsvr\] Tool blocked/);
+    expect(ran).toBe(false);
     await waitForEvents(1);
     const ev = sentEvents.find((e) => e.operation === 'tool.call');
     expect(ev).toBeDefined();
+    expect(ev.action_taken).toBe('blocked');
+    // The half that has not changed, and the reason this test exists: the
+    // record carries the placeholder, never the payload.
     expect(ev.prompt).toBe(OBFUSCATED_REDACTION_PLACEHOLDER);
     expect(JSON.stringify(ev)).not.toContain(B64_SSN);
   });

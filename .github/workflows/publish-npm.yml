@@ -45,6 +45,13 @@ jobs:
         run: npm run build
         working-directory: sdk-typescript
 
+      # The suite's Rego parity assertions require opa and fail without it
+      # (see the same step in ci.yml). `prepublishOnly` re-runs the suite at
+      # publish time as well, so the binary has to be here regardless of the
+      # explicit Test step below.
+      - name: Install opa (arms the Rego parity assertions)
+        run: scripts/install-opa.sh
+
       - name: Test
         run: npm test
         working-directory: sdk-typescript

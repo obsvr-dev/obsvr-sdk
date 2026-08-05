@@ -6,10 +6,14 @@ import { exportToRego } from '../../src/policy/rego-export';
 import { evaluatePolicyRules, derivePolicyVersion, type PolicyRule, type PolicyEvalContext } from '../../src/policy/rules';
 
 /**
- * One-way Rego export. Structural checks run always; a byte-for-byte behavioral
- * PARITY check runs the generated bundle through `opa eval` and compares its
- * decision to the SDK evaluator — skipped gracefully when opa is not installed
- * (it will run in CI where opa is present).
+ * One-way Rego export. Structural checks run always; a behavioral PARITY check
+ * runs the generated bundle through `opa eval` and compares its decision to the
+ * SDK evaluator.
+ *
+ * The parity half REQUIRES opa and fails without it — see the comment above
+ * that describe block for why it is not allowed to skip quietly.
+ * `scripts/install-opa.sh` installs the pinned binary; CI calls it wherever the
+ * suite runs.
  */
 
 function rule(p: Partial<PolicyRule> & Pick<PolicyRule, 'id' | 'type'>): PolicyRule {
@@ -83,7 +87,7 @@ describe('exportToRego — structure', () => {
   });
 });
 
-// --- behavioral parity via opa eval (skipped when opa absent) -----------------
+// --- behavioral parity via opa eval ------------------------------------------
 function opaAvailable(): boolean {
   try {
     execFileSync('opa', ['version'], { stdio: 'ignore' });
@@ -93,14 +97,52 @@ function opaAvailable(): boolean {
   }
 }
 const HAS_OPA = opaAvailable();
-const parityIt = HAS_OPA ? it : it.skip;
 
+/**
+ * The documented local opt-out, and the ONLY way this block goes quiet.
+ * Nothing in CI sets it, so deleting the opa install step turns the parity
+ * check red rather than silent.
+ */
+const PARITY_OPTIONAL = process.env.OBSVR_SKIP_OPA_PARITY === '1';
+
+/** Proof the parity body was entered, not merely declared. See below. */
+let opaEvaluations = 0;
+
+/**
+ * WHY THIS BLOCK IS NOT ALLOWED TO SKIP QUIETLY.
+ *
+ * These are the only assertions anywhere that the Rego bundle an operator
+ * exports and the SDK's own evaluator reach the SAME verdict. Everything above
+ * checks the bundle's STRUCTURE — that a rule was emitted, that a stateful one
+ * was delegated — which a semantically wrong matcher passes cleanly.
+ *
+ * The block used to degrade, when opa was absent, to a test named "SKIPPED"
+ * whose body was `expect(true).toBe(true)`, carrying a comment that parity
+ * "runs in CI where opa is present". opa was installed in no workflow, no
+ * script and no manifest, so the check had never executed anywhere while
+ * reporting a pass on every run — a green tick standing in for a check that
+ * did not exist.
+ *
+ * So a missing opa is a FAILURE here. A check that cannot run must not look
+ * like a check that passed; the honest states are ran, skipped, or red, and
+ * "absent" is not allowed to render as the first one.
+ */
 describe('exportToRego — behavioral parity with the SDK evaluator (opa eval)', () => {
-  if (!HAS_OPA) {
-    it('SKIPPED: opa not installed (parity runs in CI where opa is present)', () => {
-      expect(true).toBe(true);
-    });
-  }
+  (PARITY_OPTIONAL ? it.skip : it)('has opa on PATH, so the parity cases below actually run', () => {
+    if (!HAS_OPA) {
+      throw new Error(
+        'opa is not on PATH, so the Rego parity cases below did not run.\n' +
+          'They are the only check that the exported bundle and the SDK evaluator agree, ' +
+          'and they must not report green without executing.\n' +
+          'Install it with scripts/install-opa.sh (CI does), or set OBSVR_SKIP_OPA_PARITY=1 ' +
+          'to opt this local tree out — CI never sets it.',
+      );
+    }
+  });
+
+  // Honest skip, never a fake pass: an absent opa leaves these reported as
+  // skipped while the gate above goes red.
+  const parityIt = HAS_OPA ? it : it.skip;
 
   const bundle = exportToRego(RULES);
 
@@ -115,6 +157,7 @@ describe('exportToRego — behavioral parity with the SDK evaluator (opa eval)',
         ['eval', '-d', join(dir, 'p.rego'), '-d', join(dir, 'data.json'), '-i', join(dir, 'input.json'), 'data.obsvr.policy.decision'],
         { encoding: 'utf8' },
       );
+      opaEvaluations += 1;
       return JSON.parse(out).result[0].expressions[0].value.decision;
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -126,12 +169,31 @@ describe('exportToRego — behavioral parity with the SDK evaluator (opa eval)',
   const exportedRuleIds = new Set(JSON.parse(bundle.data).obsvr.rules.map((r: any) => r.id));
   const sdkRules = RULES.filter((r) => exportedRuleIds.has(r.id));
 
+  /**
+   * THE CORPUS HAS TO BE ABLE TO DISAGREE, WHICH THE FIRST FIVE COULD NOT.
+   *
+   * Every original case was lowercase on both sides, so the exported matchers
+   * and the SDK evaluator returned the same verdict whether or not the Rego
+   * folded case at all: rewriting `contains(_lower(input.text), _lower(kw))`
+   * to `contains(input.text, kw)` left all five green. That is a real semantic
+   * divergence — an operator's exported bundle would miss `SECRET` where the
+   * SDK blocks it — passing a check written to catch exactly this.
+   *
+   * The MIXED-CASE rows below are what make the folding load-bearing, one per
+   * matcher the structural assertions claim is case-insensitive (keyword,
+   * topic_allow, model_gate). The response-target row exercises the other
+   * value of `input.target`, which nothing else here varied.
+   */
   const cases: Array<[string, string, 'prompt' | 'response', PolicyEvalContext]> = [
     ['keyword blocks', 'this is a secret', 'prompt', {}],
     ['topic_allow short-circuits', 'the weather is nice', 'prompt', {}],
     ['no match allows', 'hello world', 'prompt', {}],
     ['regex ssn blocks', 'ssn 123-45-6789', 'prompt', {}],
     ['model_gate deny blocks', 'anything', 'prompt', { model: 'gpt-3-turbo' } as PolicyEvalContext],
+    ['keyword folds case', 'this is a SECRET', 'prompt', {}],
+    ['topic_allow folds case', 'The WEATHER is nice', 'prompt', {}],
+    ['model_gate folds case', 'anything', 'prompt', { model: 'GPT-3-Turbo' } as PolicyEvalContext],
+    ['regex blocks on the response target too', 'ssn 123-45-6789', 'response', {}],
   ];
 
   for (const [label, text, target, context] of cases) {
@@ -140,4 +202,27 @@ describe('exportToRego — behavioral parity with the SDK evaluator (opa eval)',
       expect(opaDecision(text, target, context)).toBe(sdk);
     });
   }
+
+  // Declared last so it observes the cases above (jest runs a describe body's
+  // tests in declaration order). An assertion loop that silently iterates an
+  // empty corpus is the same failure as the placeholder this file removed:
+  // zero comparisons, reported green. This counts the opa invocations that
+  // actually happened, so the corpus cannot shrink to nothing unnoticed.
+  parityIt('evaluated every case in the corpus through opa', () => {
+    expect(cases.length).toBeGreaterThanOrEqual(9);
+    expect(opaEvaluations).toBe(cases.length);
+  });
+
+  // Parity over a corpus this small only means something if the corpus can
+  // DISAGREE. If the two engines returned 'allow' everywhere, every assertion
+  // above would hold while proving nothing about the exported matchers.
+  parityIt('covers both verdicts, so agreement is not agreement on one answer', () => {
+    const verdicts = new Set(
+      cases.map(([, text, target, context]) =>
+        evaluatePolicyRules(sdkRules, text, target, context, { checkOnly: true }).decision,
+      ),
+    );
+    expect(verdicts.has('block')).toBe(true);
+    expect(verdicts.has('allow')).toBe(true);
+  });
 });

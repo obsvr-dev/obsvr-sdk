@@ -6,9 +6,15 @@
  * that every invocation of that tool is governed at the point of execution:
  *
  *   1. allow/deny against `agentPolicy` (deniedTools / allowedTools) — a denied
- *      tool THROWS before its function runs, blocking it;
- *   2. built-in PII scan on the tool arguments (redacted in the signed record);
- *   3. a signed `tool.call` audit event (RFC-chained like every obsvr event).
+ *      tool is refused before its function runs;
+ *   2. `requirePrincipal`, then the session-taint latch (with the destructive-
+ *      capability gate for a tainted session);
+ *   3. the shared pre-call pipeline on the tool ARGUMENTS — the anti-tamper
+ *      floor, the customer rule set, the PII policy, the pre-call hook and the
+ *      external policy backend — so a tool call is judged by the same policy an
+ *      LLM call is, and a matching rule refuses it before it runs;
+ *   4. a signed `tool.call` audit event (RFC-chained like every obsvr event),
+ *      carrying the decision-input hash that evidences step 3 ran.
  *
  * This works regardless of whether the framework surfaces tool calls through a
  * callback/hook (many don't, or change across versions) because it governs the
@@ -18,12 +24,20 @@
  *   import { obsvrGovernTool } from "@obsvr/sdk";
  *   const safeCalc = obsvrGovernTool(calculatorTool, { name: "calculator" });
  *
+ * THE WRAPPED FUNCTION IS ASYNC, EVEN AROUND A SYNCHRONOUS TOOL. Step 3 awaits,
+ * so the gate awaits, so the value handed back is a Promise. Every framework
+ * this wrapper targets awaits the value it gets from a tool, so this is
+ * invisible through a framework; code that invokes a wrapped tool DIRECTLY has
+ * to await it, including to observe a refusal, which now rejects rather than
+ * throwing synchronously.
+ *
  * @packageDocumentation
  */
 import {
   emitIntegrationEvent,
   redactForStorage,
   applyObservePolicy,
+  applyPreCallPolicy,
   tryGetConfig,
   setupExitHandlers,
   destructiveSourceLabel,
@@ -111,13 +125,23 @@ const BLOCKED_COMPLIANCE: ComplianceInfo = {
   blocked_types: [],
 };
 
-/** Verdict for an allowed tool call (typed as tool_call, not llm_call). */
+/**
+ * Verdict for an allowed tool call that NO pre-call policy layer judged —
+ * the fallback used only when nothing the shared pipeline enforces was
+ * configured, so there was no evaluation to evidence.
+ *
+ * `action_source` is "unknown" rather than "policy_rules" for exactly that
+ * reason: this permit is not the rules engine's, and naming that layer here
+ * credited a verdict it had never issued. The layers this file enforces on its
+ * own (the allow/deny gate, requirePrincipal, the taint latch) speak through
+ * their own compliance records when they refuse.
+ */
 const TOOL_CALL_COMPLIANCE: ComplianceInfo = {
   event_type: "tool_call",
   policy_version: "none",
   action_taken: "allowed",
   action_reason: "none",
-  action_source: "policy_rules",
+  action_source: "unknown",
   redacted_types: [],
   blocked_types: [],
 };
@@ -216,7 +240,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
   const cfgAtWrap = tryGetConfig();
   if (cfgAtWrap) setupExitHandlers(cfgAtWrap);
 
-  const gated = function (this: unknown, ...args: unknown[]): unknown {
+  const gated = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
     const config = tryGetConfig();
     if (config) {
       // Tool input position differs by framework: Vercel `execute(input, opts)`,
@@ -269,17 +293,61 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         }
       }
 
+      // 1.15) The enforcing identity view, resolved ONCE for every gate below.
+      //
+      // A principal reaches this boundary by three channels — per-call
+      // metadata, the wrap-time option, the ambient useSubject() scope — and
+      // each gate below has to enforce on the same one. Resolving per gate is
+      // how they drift: the require-principal gate read all three while the
+      // taint key read the raw metadata object alone, so a caller who
+      // attributed through either of the other two satisfied the gate and was
+      // then keyed to the 'global' taint bucket. core.ts SETS the taint under
+      // the resolved principal, so SET and ENFORCE disagreed and the latch
+      // never fired for that caller — on the most side-effecting egress the
+      // SDK governs.
+      //
+      // Precedence is this surface's existing contract (per-call metadata,
+      // then the wrap-time option, then the ambient subject), matching the
+      // signed principal in buildAuditEvent so the view that ENFORCES and the
+      // view that is RECORDED name the same caller. Twin of Python's
+      // `_identity_meta`, which folded these three the same way.
+      //
+      // A FUNCTION, not a value, because the two consumers below need
+      // different postures toward a metadata object that throws when read —
+      // and a hostile object is a real vector here, not a hypothetical. The
+      // require-principal gate calls it defensively (unreadable counts as
+      // absent, matching core.ts's pre-guard read); the taint layer calls it
+      // inside its own guard so the same defect is recorded as a detector
+      // failure and resolved by failMode. One resolution, two dispositions.
+      const enforcingIdentity = (): Record<string, unknown> => {
+        const ambient = getCurrentSubject();
+        const view: Record<string, unknown> = {
+          ...((options.metadata ?? {}) as Record<string, unknown>),
+        };
+        const userId = view.user_id ?? options.user_id ?? ambient?.user_id;
+        const serviceName = view.service_name ?? options.service_name ?? ambient?.service_name;
+        const tenantId = view.tenant_id ?? ambient?.tenant_id;
+        if (userId !== undefined) view.user_id = userId;
+        if (serviceName !== undefined) view.service_name = serviceName;
+        if (tenantId !== undefined) view.tenant_id = tenantId;
+        return view;
+      };
+
       // 1.2) Required principal (opt-in): an unattributed tool call is
       // refused before any scanning layer runs — the refusal is about
-      // attribution, not content. The identity read here is the one the
-      // taint key and the emitted events resolve: per-call metadata, then
-      // the wrap-time option, then the ambient subject. An empty string is
-      // a supplied principal; only an absent one refuses (Python parity:
-      // the same gate inside the shared pre-call pipeline).
+      // attribution, not content. An empty string is a supplied principal;
+      // only an absent one refuses (Python parity: the same gate inside the
+      // shared pre-call pipeline). A metadata object that throws on read is
+      // an ABSENT principal, not a readable one: this gate runs ahead of the
+      // detector guard, and refusing an unattributed call is the safe answer
+      // when the attribution cannot be read at all.
       if (config.requirePrincipal === true) {
-        const identityMeta = (options.metadata ?? {}) as Record<string, unknown>;
-        const principal =
-          identityMeta.user_id ?? options.user_id ?? getCurrentSubject()?.user_id;
+        let principal: unknown;
+        try {
+          principal = enforcingIdentity().user_id;
+        } catch {
+          principal = undefined;
+        }
         if (principal == null) {
           emitIntegrationEvent({
             config,
@@ -312,9 +380,10 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
 
       // 1.5) Session taint latch: tool execution is a real, side-effecting
       // egress — the MOST dangerous one — so a session compromised on an
-      // earlier turn has its tool calls escalated. Keyed on options.metadata
-      // identity (same derivation as every other egress). block mode refuses
-      // the tool before it runs; flag mode records it on the event.
+      // earlier turn has its tool calls escalated. Keyed on the resolved
+      // identity above, which is the derivation core.ts uses to SET the taint;
+      // deriveSessionKey's contract is that SET and ENFORCE agree. block mode
+      // refuses the tool before it runs; flag mode records it on the event.
       //
       // Guarded: a defect in the taint layer resolves here instead of
       // escaping into the host's own tool call. The INTENDED block travels
@@ -325,9 +394,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
       try {
         const taintCfg = resolveSessionTaint(config);
         if (taintCfg && sessionTaintSize() > 0) {
-          const taintKey = deriveSessionKey(
-            (options.metadata ?? {}) as Record<string, unknown>,
-          );
+          const taintKey = deriveSessionKey(enforcingIdentity());
           // Tool-aware: a tainted session in flag mode still loses its
           // DESTRUCTIVE capabilities — the composition that stops indirect
           // injection without bricking the session. One set-membership test
@@ -402,13 +469,112 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         throw new Error(toolBlock.message);
       }
 
+      // 1.8) The shared pre-call pipeline: the PII policy, the customer rule
+      // set, the anti-tamper floor, the pre-call hook, the external backend.
+      //
+      // This boundary reached section 2 directly, so all of them were silently
+      // inert on a governed tool call: a tool whose arguments matched a block
+      // rule executed, returned its result to the caller, and recorded a
+      // permit the rule set had never been asked for. Python's `_gate` has
+      // always consulted its pipeline here; this was the largest remaining
+      // functional divergence between the two SDKs.
+      //
+      // WHY THIS GATE IS ASYNC, WHICH IT DID NOT USE TO BE.
+      //
+      // The pipeline awaits, so consulting it means awaiting, so the wrapped
+      // tool returns a Promise even when the tool it wraps is synchronous.
+      // That is a breaking contract change, and it was taken deliberately over
+      // the alternative of a second synchronous entry point: the awaited
+      // layers (Presidio, the approval wait, the customer hook, the external
+      // backend) are interleaved with the deterministic ones rather than
+      // bookending them, so a synchronous path would have to re-implement the
+      // ORCHESTRATION — precedence, floor-over-rules, monitor conversion,
+      // reason-code resolution — and two copies of that rule disagreeing is
+      // the defect class this repository keeps finding.
+      //
+      // The cost was measured before it was accepted: every framework whose
+      // tool shape `resolveExecKey` resolves awaits the value it gets back —
+      // LangChain (`await this._call` into `this.func`), Vercel AI
+      // (`await executeToolCall`), the OpenAI tool runner
+      // (`await fn.function`), `@openai/agents` (an async `invoke`), MCP
+      // (async by protocol), and LlamaIndex whose tool return type is
+      // declared `JSONValue | Promise<JSONValue>`. What breaks is code that
+      // calls a wrapped tool directly and does not await it.
+      //
+      // The layers this file already enforced ABOVE are omitted from the
+      // arming list so nothing is evaluated twice: requirePrincipal (1.2) and
+      // the session-taint latch (1.5) both refuse before this point.
+      let preCallCompliance: ComplianceInfo | undefined;
+      let recordedPrompt = inputText;
+      if (
+        (config.policyFloor && config.policyFloor.length > 0) ||
+        (config.policyRules && config.policyRules.length > 0) ||
+        config.pii_policy ||
+        config.on_pre_call ||
+        config.external_policy_backend
+      ) {
+        const identity = enforcingIdentity();
+        const policyResult = await applyPreCallPolicy(inputText, {
+          config,
+          provider: "unknown",
+          operation: "tool.call",
+          userId: identity.user_id as string | undefined,
+          serviceName: identity.service_name as string | undefined,
+          toolName,
+          toolDeclaredDestructive: declaresDestructive(t),
+          metadata: identity,
+        });
+        preCallCompliance = policyResult.compliance;
+        recordedPrompt = policyResult.redactedPrompt;
+
+        if (policyResult.decision === "block") {
+          emitIntegrationEvent({
+            config,
+            provider: "unknown",
+            model: "unknown",
+            operation: "tool.call",
+            source: SOURCE,
+            prompt: policyResult.redactedPrompt,
+            response: "",
+            success: false,
+            statusCode: 403,
+            metadata: {
+              tool_name: toolName,
+              // Sealed provenance after the tool fields, so a caller key
+              // collision can never displace it (same precedence as MCP).
+              ...(policyResult.securityNormalized !== undefined
+                ? { security_normalized: policyResult.securityNormalized }
+                : {}),
+              ...(policyResult.canaryTelemetry !== undefined ||
+              policyResult.floorTelemetry !== undefined
+                ? {
+                    obsvr_telemetry: {
+                      ...(policyResult.canaryTelemetry ?? {}),
+                      ...(policyResult.floorTelemetry ?? {}),
+                    },
+                  }
+                : {}),
+              ...toolContentMeta,
+            },
+            compliance: policyResult.compliance,
+            options,
+          });
+          throw new Error(
+            `[obsvr] Tool blocked by policy: ${toolName}` +
+              (policyResult.compliance.policy_reason
+                ? ` (${policyResult.compliance.policy_reason})`
+                : ""),
+          );
+        }
+      }
+
       // 2) PII scan on the arguments; redact in the stored record. A
       // view-only hit (storedRedactionVia) has no locatable span, so the
       // stored copy becomes a whole-text placeholder via redactForStorage.
-      const { shouldRedactStored, storedRedactionVia } = applyObservePolicy(inputText, config);
+      const { shouldRedactStored, storedRedactionVia } = applyObservePolicy(recordedPrompt, config);
       const recordedArgs = shouldRedactStored
-        ? redactForStorage(inputText, storedRedactionVia)
-        : inputText;
+        ? redactForStorage(recordedPrompt, storedRedactionVia)
+        : recordedPrompt;
 
       // 3) signed tool.call audit event.
       emitIntegrationEvent({
@@ -420,15 +586,22 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         prompt: recordedArgs,
         response: "",
         metadata: { tool_name: toolName, ...toolContentMeta },
+        // The pipeline's own verdict when it ran: it carries the
+        // decision_input_hash and engine_version that EVIDENCE the evaluation,
+        // so an `allowed` tool call can be told apart from one nothing judged.
+        // The fallback is reached only when no policy the pipeline enforces was
+        // configured, and it names no deciding layer rather than crediting
+        // `policy_rules` for a permit it never issued. The taint flag rides on
+        // top when the latch flagged the call, because that latch also ran.
         compliance: toolTaintFlag !== undefined
           ? {
-              ...TOOL_CALL_COMPLIANCE,
+              ...(preCallCompliance ?? TOOL_CALL_COMPLIANCE),
               event_type: "policy_flag",
               action_reason: "policy_violation",
               rule_id: "sdk:session_tainted",
               policy_reason: `Session previously compromised (${toolTaintFlag}); tool call flagged`,
             }
-          : TOOL_CALL_COMPLIANCE,
+          : (preCallCompliance ?? TOOL_CALL_COMPLIANCE),
         options,
       });
     }

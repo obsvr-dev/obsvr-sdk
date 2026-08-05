@@ -159,6 +159,10 @@ jobs:
       # here.
       - run: npm run build
         working-directory: sdk-typescript
+      # The Rego parity assertions in the suite below require opa and fail
+      # without it (see the same step in ci.yml). This job runs the whole
+      # suite, so it needs the binary for the same reason the PR gate does.
+      - run: scripts/install-opa.sh
       - run: npm test
         working-directory: sdk-typescript
       - run: python -m pip install --quiet -e ".[dev]"

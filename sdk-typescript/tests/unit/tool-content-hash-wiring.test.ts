@@ -213,7 +213,7 @@ describe('tool_content_hash on the framework tool boundary', () => {
     });
     const governed = obsvrGovernTool(calculator);
     // The gate throws synchronously, before the tool's own promise exists.
-    expect(() => governed.execute({ a: 1 })).toThrow(/\[obsvr\]/);
+    await expect(governed.execute({ a: 1 })).rejects.toThrow(/\[obsvr\]/);
     await waitForEvents(1);
 
     const ev = sentEvents.find((e) => e.event_type === 'blocked_call');

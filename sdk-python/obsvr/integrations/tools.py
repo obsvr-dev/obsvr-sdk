@@ -593,13 +593,19 @@ def _gate(
             "tool_name": tool_name,
             **content_meta,
         },
+        # The pipeline's own verdict when it ran — it carries the
+        # decision_input_hash that EVIDENCES the evaluation, so an `allowed`
+        # tool call can be told apart from one nothing looked at. The fallback
+        # is reached only when no policy the pipeline enforces was configured,
+        # and it names NO deciding layer: "policy_rules" here credited the
+        # rules engine with a permit it was never asked for.
         compliance=compliance_out
         or {
             "event_type": "tool_call",
             "policy_version": "none",
             "action_taken": "allowed",
             "action_reason": "none",
-            "action_source": "policy_rules",
+            "action_source": "unknown",
             "redacted_types": [],
             "blocked_types": [],
         },

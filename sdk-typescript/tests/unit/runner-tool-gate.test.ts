@@ -89,8 +89,10 @@ function anthropicRunnable(name: string, entered: string[]) {
   };
 }
 
-/** The one place the gated callback is actually invoked, per shape. */
-function invoke(entry: Record<string, unknown>, input: unknown): unknown {
+/** The one place the gated callback is actually invoked, per shape.
+ *  Async because the gate is: it consults the pre-call pipeline, so every
+ *  runner shape hands back a Promise (each real runner awaits it). */
+async function invoke(entry: Record<string, unknown>, input: unknown): Promise<unknown> {
   if (typeof entry.$callback === 'function') {
     return (entry.$callback as (a: unknown) => unknown)(input);
   }
@@ -136,7 +138,7 @@ describe.each([
   ['openai schema helper', openaiAutoParseable],
   ['anthropic runnable', anthropicRunnable],
 ])('%s', (_label, make) => {
-  it('refuses a denied tool before its callback is entered', () => {
+  it('refuses a denied tool before its callback is entered', async () => {
     const entered: string[] = [];
     const config = configWith({ agent_policy: { deniedTools: ['send_money'] } });
 
@@ -144,13 +146,13 @@ describe.each([
     expect(result.report.installed).toBe(true);
     expect(result.report.gated).toEqual(['send_money']);
 
-    expect(() => invoke(gatedTools(result)[0], { amount: 500 })).toThrow(
+    await expect(invoke(gatedTools(result)[0], { amount: 500 })).rejects.toThrow(
       /Tool blocked by agent policy: send_money/,
     );
     expect(entered).toEqual([]);
   });
 
-  it('CONTROL: the same callback runs with no policy naming it', () => {
+  it('CONTROL: the same callback runs with no policy naming it', async () => {
     const entered: string[] = [];
     const config = configWith({ agent_policy: { deniedTools: ['something_else'] } });
 
@@ -158,7 +160,7 @@ describe.each([
     // The gate IS installed here — otherwise this control would pass because
     // nothing was gating, which proves nothing about the refusal above.
     expect(result.report.installed).toBe(true);
-    expect(invoke(gatedTools(result)[0], { amount: 500 })).toContain('ran send_money');
+    expect(await invoke(gatedTools(result)[0], { amount: 500 })).toContain('ran send_money');
     expect(entered).toEqual(['send_money']);
   });
 });
@@ -170,18 +172,18 @@ describe('a tainted session under action: "flag"', () => {
     return configWith({ sessionTaint: { enabled: true, action: 'flag', destructiveTools: ['send_money'] } });
   }
 
-  it('loses its destructive capability instead of executing it', () => {
+  it('loses its destructive capability instead of executing it', async () => {
     const entered: string[] = [];
     const config = taintCfg();
     markTainted('u-1', 'prompt_injection', Date.now());
 
     const result = gate(config, [anthropicRunnable('send_money', entered)], { user_id: 'u-1' });
 
-    expect(() => invoke(gatedTools(result)[0], { amount: 500 })).toThrow(/obsvr/);
+    await expect(invoke(gatedTools(result)[0], { amount: 500 })).rejects.toThrow(/obsvr/);
     expect(entered).toEqual([]);
   });
 
-  it('CONTROL: an UNTAINTED session executes the same tool', () => {
+  it('CONTROL: an UNTAINTED session executes the same tool', async () => {
     const entered: string[] = [];
     const config = taintCfg();
     markTainted('someone-else', 'prompt_injection', Date.now());
@@ -189,11 +191,11 @@ describe('a tainted session under action: "flag"', () => {
     const result = gate(config, [anthropicRunnable('send_money', entered)], { user_id: 'u-1' });
 
     expect(result.report.installed).toBe(true);
-    expect(invoke(gatedTools(result)[0], { amount: 500 })).toContain('ran send_money');
+    expect(await invoke(gatedTools(result)[0], { amount: 500 })).toContain('ran send_money');
     expect(entered).toEqual(['send_money']);
   });
 
-  it('CONTROL: a tainted session keeps a NON-destructive tool', () => {
+  it('CONTROL: a tainted session keeps a NON-destructive tool', async () => {
     const entered: string[] = [];
     const config = taintCfg();
     markTainted('u-1', 'prompt_injection', Date.now());
@@ -201,11 +203,11 @@ describe('a tainted session under action: "flag"', () => {
     const result = gate(config, [anthropicRunnable('get_weather', entered)], { user_id: 'u-1' });
 
     expect(result.report.installed).toBe(true);
-    expect(invoke(gatedTools(result)[0], { city: 'NYC' })).toContain('ran get_weather');
+    expect(await invoke(gatedTools(result)[0], { city: 'NYC' })).toContain('ran get_weather');
     expect(entered).toEqual(['get_weather']);
   });
 
-  it('keys the latch on the identity the wrapper resolved, not on a fresh guess', () => {
+  it('keys the latch on the identity the wrapper resolved, not on a fresh guess', async () => {
     // THE DIVERGENCE TRAP. `deriveSessionKey`'s own contract is that SET and
     // ENFORCE must agree on the identity or the latch silently no-ops. The
     // runner path is a second egress point, so it is handed the identity
@@ -220,7 +222,7 @@ describe('a tainted session under action: "flag"', () => {
       tenant_id: 'tenant-9',
     });
 
-    expect(() => invoke(gatedTools(result)[0], { amount: 1 })).toThrow(/obsvr/);
+    await expect(invoke(gatedTools(result)[0], { amount: 1 })).rejects.toThrow(/obsvr/);
     expect(entered).toEqual([]);
   });
 });
@@ -228,7 +230,7 @@ describe('a tainted session under action: "flag"', () => {
 // ── the report, and what it is for ──────────────────────────────────────────
 
 describe('the gate report', () => {
-  it('is not installed when no tool-level control is configured', () => {
+  it('is not installed when no tool-level control is configured', async () => {
     const config = cfg();
     const entered: string[] = [];
     const result = gate(config, [openaiRunnable('send_money', entered)]);
@@ -242,7 +244,7 @@ describe('the gate report', () => {
     // Untouched by identity: a deployment that configured nothing gets exactly
     // the arguments it passed, and no per-tool event recording a verdict it
     // never asked for.
-    expect(invoke(gatedTools(result)[0], {})).toContain('ran send_money');
+    expect(await invoke(gatedTools(result)[0], {})).toContain('ran send_money');
     expect(entered).toEqual(['send_money']);
   });
 
@@ -275,7 +277,7 @@ describe('the gate report', () => {
 // ── the caller's own objects are not written to ──────────────────────────────
 
 describe('the caller keeps its request', () => {
-  it('does not mutate the tools array or the entries in it', () => {
+  it('does not mutate the tools array or the entries in it', async () => {
     const config = configWith({ agent_policy: { deniedTools: ['send_money'] } });
 
     const entered: string[] = [];
@@ -293,7 +295,7 @@ describe('the caller keeps its request', () => {
     expect(entry.run).toBe(originalRun);
 
     // And the caller's own copy still runs, because it was never gated.
-    expect(entry.run({ amount: 1 })).toContain('ran send_money');
+    expect(await entry.run({ amount: 1 })).toContain('ran send_money');
     expect(entered).toEqual(['send_money']);
   });
 
@@ -315,7 +317,7 @@ describe('the record', () => {
     const entered: string[] = [];
 
     const result = gate(config, [anthropicRunnable('send_money', entered)]);
-    expect(() => invoke(gatedTools(result)[0], { amount: 500 })).toThrow();
+    await expect(invoke(gatedTools(result)[0], { amount: 500 })).rejects.toThrow();
 
     await new Promise((r) => setTimeout(r, 10));
     await flushQueue(config);

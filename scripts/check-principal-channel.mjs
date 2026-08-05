@@ -87,6 +87,27 @@ const SURFACES = [
       },
     ],
   },
+  {
+    // The tool boundary governs the most side-effecting egress there is, and
+    // it resolves identity itself rather than inheriting core.ts's view — its
+    // gates run before any call reaches that seam. So it needs the same
+    // single-resolution property, held here for the same reason.
+    file: "sdk-typescript/src/integrations/tools.ts",
+    channel: /options\.metadata/,
+    view: "enforcingIdentity()",
+    allowed: [
+      {
+        // The one line inside enforcingIdentity() that seeds the view from
+        // the per-call channel. It is the view's own reader, and the only
+        // legitimate raw read on this surface — the audit events here build
+        // their metadata from the tool fields, never by spreading the
+        // caller's object, so there is no "recorded channel" exemption to
+        // make and none is granted.
+        why: "seeds the resolved view from the per-call channel",
+        match: /^\s*\.\.\.\(\(options\.metadata \?\? \{\}\) as Record<string, unknown>\),$/,
+      },
+    ],
+  },
 ];
 
 /**

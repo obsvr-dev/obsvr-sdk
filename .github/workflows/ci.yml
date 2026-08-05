@@ -41,6 +41,23 @@ jobs:
         run: npm run build
         working-directory: sdk-typescript
 
+      # WHAT THIS UNBLOCKS, AND WHY IT IS A STEP RATHER THAN A COMMENT.
+      #
+      # tests/unit/rego-export.test.ts holds the only assertions that the Rego
+      # bundle `exportToRego()` hands an operator produces the SAME verdict as
+      # the SDK's own evaluator. Those assertions need `opa` on PATH. opa was
+      # installed in no workflow, no script and no manifest, and the test
+      # degraded without it to a green placeholder whose comment claimed the
+      # parity ran "in CI where opa is present" — so the check had never
+      # executed anywhere while reporting a pass on every run.
+      #
+      # It now FAILS when opa is absent, which is what makes this step
+      # load-bearing: delete it and the suite goes red rather than quiet. The
+      # binary is version-pinned and digest-verified in the script, matching
+      # how every action here is SHA-pinned.
+      - name: Install opa (arms the Rego parity assertions)
+        run: scripts/install-opa.sh
+
       - name: Test
         run: npm test
         working-directory: sdk-typescript
@@ -254,6 +271,29 @@ jobs:
         env:
           NODE_ENV: test
 
+      # THE REVERSE OF THE TWO STEPS ABOVE, AND THE HOLE THEY CANNOT SEE.
+      #
+      # "blocked implies not executed" grades refusals. A gate that stops
+      # running never claims `blocked`, so every assertion in those steps holds
+      # while the surface enforces nothing — which is exactly how a rule set
+      # that did not arm the pre-call pipeline let a matching call execute,
+      # return its result, and record `allowed`. These grade the PERMIT: an
+      # `allowed` verdict has to carry the decision-input hash that evidences
+      # an evaluation, and a surface that could not consult a configured layer
+      # has to say `not_evaluated` instead of claiming a permit.
+      #
+      # Separate release-gate steps, beside their counterparts, for the same
+      # reason those are: a reviewer should be able to point at the check.
+      - name: Allowed-implies-evaluated invariant (Python half)
+        run: python -m pytest tests/test_allowed_implies_evaluated.py -q
+        working-directory: sdk-python
+
+      - name: Allowed-implies-evaluated invariant (TypeScript half)
+        run: npm test -- tests/unit/allowed-implies-evaluated.test.ts tests/unit/mcp-allowed-implies-evaluated.test.ts
+        working-directory: sdk-typescript
+        env:
+          NODE_ENV: test
+
       # Both obsvr-verify CLIs, driven over ONE export built from the shared
       # signing vectors. Each language's own suite can agree with itself
       # forever while disagreeing with the other; only this catches that.
@@ -448,6 +488,76 @@ jobs:
       - name: Smoke the benchmark matrix
         run: bench/run-all.sh --quick
 
+  # WHAT THIS RUNS THAT NOTHING ELSE HERE DOES.
+  #
+  # Every other TypeScript job imports the SDK's own source and stubs the
+  # boundary. This one installs the REAL provider client libraries — `openai`,
+  # `together-ai`, the Bedrock client, the MCP SDK — constructs real client and
+  # server objects, points them at local stubs, and lets the SDK's
+  # auto-discovery find them through the package's export map. It then asserts
+  # what came out: the signed schema, the HMAC chain, the policy decision, and
+  # whether the governed operation actually ran.
+  #
+  # That difference is not academic. Every defect found in the week before this
+  # job existed was invisible to 2,070 Python and 2,269 TypeScript unit tests,
+  # all green throughout, and to all eighteen jobs here — and visible to these
+  # suites. More unit tests of the same kind would have caught none of them.
+  #
+  # WHY THE SUITES ARE VENDORED RATHER THAN CHECKED OUT.
+  #
+  # They come from a harness that lives outside this repository and is larger:
+  # it also drives live providers and real agent frameworks against real
+  # credentials. Reaching that copy from a runner would need it published — it
+  # has no remote — so the three options that depend on a URL (its own
+  # checkout, a submodule, a package) are not available, and a job wired to a
+  # repository that does not exist is a job that silently no-ops, which is
+  # worse than no job.
+  #
+  # So the keyless half is vendored, at integration-harness/. Only the keyless
+  # half: it is the only part with the three properties a merge gate needs —
+  # no credentials, no network, deterministic. The cost is stated in that
+  # directory's README rather than hidden: a vendored copy can drift from its
+  # source, and nothing here can detect that.
+  integration-harness:
+    name: Integration harness (keyless suites, real client libraries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Use Node.js 22.x
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: |
+            sdk-typescript/package-lock.json
+            integration-harness/package-lock.json
+
+      - name: Install TypeScript SDK deps
+        run: npm ci
+        working-directory: sdk-typescript
+
+      # The suites import @obsvr/sdk through its export map, which points into
+      # dist/, and the device-seal suite additionally runs the shipped
+      # cli-verify.js. Both need the build, not the source.
+      - name: Build the SDK the suites will import
+        run: npm run build
+        working-directory: sdk-typescript
+
+      # `file:../sdk-typescript` resolves to the checkout, so these drive the
+      # tree under test rather than a published package.
+      - name: Install harness deps (real provider client libraries)
+        run: npm ci
+        working-directory: integration-harness
+
+      # The runner exits non-zero on any failing check AND on a suite that is
+      # declared but not present — a governance surface that quietly vanished
+      # from the run is the failure this gate exists to prevent.
+      - name: Run the keyless suites
+        run: node run.mjs offline
+        working-directory: integration-harness
+
   ci-complete:
     name: CI complete
     runs-on: ubuntu-latest
@@ -458,6 +568,7 @@ jobs:
         install-path-python,
         install-path-npm,
         conformance,
+        integration-harness,
         lint,
         version-consistency,
         supply-chain,

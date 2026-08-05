@@ -7,6 +7,7 @@ import { applyPreCallPolicy } from '../../src/integrations/core';
 import { obsvrGovernTool } from '../../src/integrations/tools';
 import { mintCanary, _resetCanaries } from '../../src/policy/canary';
 import { sessionTaintSize, markTainted, _resetSessionTaint } from '../../src/policy/session-taint';
+import { useSubject } from '../../src/proxy/subject';
 
 /**
  * End-to-end session taint latch wiring. Twin:
@@ -129,7 +130,7 @@ describe('session taint: SET on injection, ENFORCE on later egress', () => {
 });
 
 describe('session taint: tool EXECUTION egress (the most dangerous one)', () => {
-  it('block mode: a tainted session\'s governed tool call is refused before the side-effect runs', () => {
+  it('block mode: a tainted session\'s governed tool call is refused before the side-effect runs', async () => {
     init({
       api_key: 'k',
       ingest_url: 'https://x',
@@ -141,11 +142,11 @@ describe('session taint: tool EXECUTION egress (the most dangerous one)', () => 
       { name: 't', execute: (_i: unknown) => { ran = true; return 'done'; } },
       { metadata: { user_id: 'alice' } },
     );
-    expect(() => tool.execute({ x: 1 })).toThrow(/session tainted/i);
+    await expect(tool.execute({ x: 1 })).rejects.toThrow(/session tainted/i);
     expect(ran).toBe(false); // the tool side-effect never executed
   });
 
-  it('an untainted session\'s tool call runs normally', () => {
+  it('an untainted session\'s tool call runs normally', async () => {
     init({
       api_key: 'k',
       ingest_url: 'https://x',
@@ -157,8 +158,95 @@ describe('session taint: tool EXECUTION egress (the most dangerous one)', () => 
       { name: 't', execute: (_i: unknown) => { ran = true; return 'done'; } },
       { metadata: { user_id: 'bob' } }, // different session
     );
-    expect(tool.execute({ x: 1 })).toBe('done');
+    expect(await tool.execute({ x: 1 })).toBe('done');
     expect(ran).toBe(true);
+  });
+});
+
+/**
+ * The tool boundary's OTHER two identity channels.
+ *
+ * Every test above hands the principal in on `metadata.user_id`, which is one
+ * of three channels this surface accepts — the require-principal gate reads
+ * per-call metadata, then the wrap-time option, then the ambient subject, and
+ * its comment says the taint key resolves the same way. It did not: the key
+ * was derived from the raw `options.metadata` object alone, so a caller who
+ * attributed through either of the other two channels was keyed to the
+ * 'global' bucket while core.ts SET the taint under their real principal.
+ *
+ * SET and ENFORCE disagreeing is the whole failure: the latch silently never
+ * fires for that caller, on the most side-effecting egress the SDK governs.
+ * Both channels are pinned here, each with a negative control so a fix that
+ * simply taints everything fails too.
+ */
+describe('session taint: the tool gate keys on the RESOLVED principal, not the raw metadata', () => {
+  const taintedTool = (options: Record<string, unknown>) => {
+    let ran = false;
+    const tool = obsvrGovernTool(
+      { name: 't', execute: (_i: unknown) => { ran = true; return 'done'; } },
+      options,
+    );
+    return { tool, didRun: () => ran };
+  };
+
+  beforeEach(() => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+    markTainted('alice', 'prompt_injection', Date.now());
+  });
+
+  it('wrap-time user_id: the tainted caller\'s tool call is refused', async () => {
+    const { tool, didRun } = taintedTool({ user_id: 'alice' });
+    await expect(tool.execute({ x: 1 })).rejects.toThrow(/session tainted/i);
+    expect(didRun()).toBe(false);
+  });
+
+  it('wrap-time user_id: an UNtainted caller on the same channel still runs', async () => {
+    const { tool, didRun } = taintedTool({ user_id: 'bob' });
+    expect(await tool.execute({ x: 1 })).toBe('done');
+    expect(didRun()).toBe(true);
+  });
+
+  it('ambient useSubject: the tainted caller\'s tool call is refused', async () => {
+    const { tool, didRun } = taintedTool({});
+    await useSubject('user:alice', async () => {
+      await expect(tool.execute({ x: 1 })).rejects.toThrow(/session tainted/i);
+    });
+    expect(didRun()).toBe(false);
+  });
+
+  it('ambient useSubject: an UNtainted subject on the same channel still runs', async () => {
+    const { tool, didRun } = taintedTool({});
+    await useSubject('user:bob', async () => {
+      expect(await tool.execute({ x: 1 })).toBe('done');
+    });
+    expect(didRun()).toBe(true);
+  });
+
+  it('per-call metadata still outranks the wrap-time option, as the gate above reads it', async () => {
+    // Precedence is the surface's existing contract, not a free choice: the
+    // require-principal gate resolves metadata FIRST. The taint key now
+    // resolves identically, so an explicit per-call principal is the one both
+    // of them enforce on.
+    const { tool, didRun } = taintedTool({ user_id: 'bob', metadata: { user_id: 'alice' } });
+    await expect(tool.execute({ x: 1 })).rejects.toThrow(/session tainted/i);
+    expect(didRun()).toBe(false);
+  });
+
+  it('tenant_id from the ambient subject keys the latch when no user_id is supplied', async () => {
+    // deriveSessionKey falls back user_id -> session_id -> tenant_id, so the
+    // resolved view has to carry tenant_id too or the fallback lands on
+    // 'global' for a tenant-scoped caller.
+    _resetSessionTaint();
+    markTainted('acme', 'prompt_injection', Date.now());
+    const { tool, didRun } = taintedTool({});
+    await useSubject('tenant:acme', async () => {
+      await expect(tool.execute({ x: 1 })).rejects.toThrow(/session tainted/i);
+    });
+    expect(didRun()).toBe(false);
   });
 });
 
@@ -221,7 +309,7 @@ describe('session taint: wrapper end-to-end (per-session keying, not the global 
 });
 
 describe('session taint: destructive-capability gate (flag mode still refuses the set)', () => {
-  it('a tainted flag-mode session loses its destructive tool but keeps ordinary ones', () => {
+  it('a tainted flag-mode session loses its destructive tool but keeps ordinary ones', async () => {
     init({
       api_key: 'k',
       ingest_url: 'https://x',
@@ -235,7 +323,7 @@ describe('session taint: destructive-capability gate (flag mode still refuses th
       { name: 'send_money', execute: (_i: unknown) => { ranMoney = true; return 'sent'; } },
       { metadata: { user_id: 'alice' } },
     );
-    expect(() => money.execute({ amount: 100 })).toThrow(/destructive capability denied/i);
+    await expect(money.execute({ amount: 100 })).rejects.toThrow(/destructive capability denied/i);
     expect(ranMoney).toBe(false);
 
     // ...while an ordinary tool in the SAME tainted session still runs (flag).
@@ -244,7 +332,7 @@ describe('session taint: destructive-capability gate (flag mode still refuses th
       { name: 'read_file', execute: (_i: unknown) => { ranRead = true; return 'ok'; } },
       { metadata: { user_id: 'alice' } },
     );
-    expect(read.execute({ path: '/tmp/x' })).toBe('ok');
+    expect(await read.execute({ path: '/tmp/x' })).toBe('ok');
     expect(ranRead).toBe(true);
   });
 

@@ -290,7 +290,7 @@ describe('pre-call guard: obsvrGovernTool (the tool-execution path)', () => {
 
     // The refusal is raised before the tool function is entered, so it
     // surfaces synchronously - the same shape the allow/deny gate uses.
-    expect(() => governed(hostileMetadata()).execute('2+2')).toThrow(
+    await expect(governed(hostileMetadata()).execute('2+2')).rejects.toThrow(
       /session_taint detector failed/i,
     );
     expect(getDetectorErrorCount()).toBe(1);
@@ -305,7 +305,7 @@ describe('pre-call guard: obsvrGovernTool (the tool-execution path)', () => {
     });
     markTainted('u1', 'canary_leak', Date.now());
 
-    expect(() => governed({ user_id: 'u1' }).execute('2+2')).toThrow(
+    await expect(governed({ user_id: 'u1' }).execute('2+2')).rejects.toThrow(
       /session tainted \(canary_leak\)/i,
     );
     expect(getDetectorErrorCount()).toBe(0);

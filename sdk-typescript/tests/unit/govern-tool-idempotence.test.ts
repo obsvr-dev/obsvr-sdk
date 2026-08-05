@@ -98,9 +98,9 @@ describe('obsvrGovernTool idempotence', () => {
     };
     const governed = obsvrGovernTool(tool);
     expect(governed).not.toBe(tool);
-    // The refusal precedes the body, so the gate throws synchronously even
-    // for an async tool.
-    expect(() => (governed as any).execute({})).toThrow(/blocked by agent policy/);
+    // The refusal precedes the body, so it reaches the caller as a rejection
+    // rather than the tool's own error — the body never runs either way.
+    await expect((governed as any).execute({})).rejects.toThrow(/blocked by agent policy/);
   });
 
   it('mutation-check: a marker claimed without an installed gate disables governance', async () => {
