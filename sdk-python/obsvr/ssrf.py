@@ -17,6 +17,7 @@ Stdlib only (``ipaddress`` + ``socket``) to keep the core dependency-free.
 """
 
 import ipaddress
+import re
 import socket
 from typing import Callable, List, Optional
 from urllib.parse import urlsplit
@@ -26,11 +27,58 @@ class SsrfError(Exception):
     """Raised when a backend URL fails the SSRF guard."""
 
 
-def _parse_ip(ip: str) -> Optional[ipaddress._BaseAddress]:
-    try:
-        return ipaddress.ip_address(ip.strip().strip("[]"))
-    except ValueError:
+#: An IPv4 address written entirely in numeric parts, in any radix, with the
+#: 1-, 2- and 3-part short forms allowed: ``2852039166``, ``0251.0376.0251.0376``,
+#: ``0xa9.0xfe.0xa9.0xfe``, ``0xa9fea9fe``. Every part must be a numeric literal,
+#: so a real hostname (any part carrying a non-hex letter, or a label that is not
+#: a number at all) never matches and is left to DNS resolution.
+_IPV4_NUMERIC = re.compile(
+    r"^(?:0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)"
+    r"(?:\.(?:0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)){0,3}\.?$"
+)
+
+
+def _parse_ipv4_numeric(host: str) -> Optional[ipaddress.IPv4Address]:
+    """A NON-CANONICAL IPv4 literal, normalized to its dotted-quad address.
+
+    ``ipaddress.ip_address`` accepts dotted-quad only, so every other spelling
+    of the same address fell through this module as though it were a hostname
+    and skipped the range check entirely. Measured before this existed: with
+    ``169.254.169.254`` refused, ``https://2852039166/``,
+    ``https://0251.0376.0251.0376/``, ``https://0xa9.0xfe.0xa9.0xfe/`` and
+    ``https://0xa9fea9fe/`` were all ACCEPTED -- four spellings of the cloud
+    metadata endpoint past a guard whose whole purpose is that endpoint, plus
+    ``https://2130706433/`` for loopback. The resolver reads all of them as the
+    address they encode, so the connection went where the guard said it would
+    not.
+
+    This is the same defect ``_unwrap`` documents for IPv6: one spelling of an
+    address refused while another spelling of the SAME address is admitted. The
+    arithmetic is delegated to ``inet_aton``, which is what the platform
+    resolver itself uses, after the pattern above has established that every
+    part really is a numeric literal -- ``inet_aton`` alone is lenient about
+    trailing content on some platforms.
+
+    Twin: the TypeScript guard gets this for free from the WHATWG URL parser,
+    which normalizes these spellings before ``hostname`` is ever read; it
+    already refused all five.
+    """
+    if not _IPV4_NUMERIC.match(host):
         return None
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(host.rstrip(".")))
+    except (OSError, ipaddress.AddressValueError):
+        return None
+
+
+def _parse_ip(ip: str) -> Optional[ipaddress._BaseAddress]:
+    host = ip.strip().strip("[]")
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        # Not dotted-quad or a v6 literal - it may still be an IPv4 address in
+        # another radix, which every resolver accepts and this guard must too.
+        return _parse_ipv4_numeric(host)
 
 
 def _unwrap(addr: ipaddress._BaseAddress) -> ipaddress._BaseAddress:

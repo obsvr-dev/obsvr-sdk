@@ -39,6 +39,16 @@ METADATA_SPELLINGS = [
     "http://[64:ff9b::169.254.169.254]/",  # NAT64
     "http://[2002:a9fe:a9fe::]/",         # 6to4
     "https://[::169.254.169.254]/",       # https does not exempt it either
+    # The same address written in another radix. Every resolver reads these as
+    # 169.254.169.254; `ipaddress.ip_address` accepts dotted-quad only, so
+    # before the numeric-literal normalizer they fell through as HOSTNAMES and
+    # skipped the range check entirely. This list is what "every spelling"
+    # means, and it named only the IPv6 family until these were added.
+    "http://2852039166/",                 # decimal
+    "http://0251.0376.0251.0376/",        # dotted octal
+    "http://0xa9.0xfe.0xa9.0xfe/",        # dotted hex
+    "http://0xa9fea9fe/",                 # flat hex
+    "https://2852039166/latest/meta-data/",  # https does not exempt it either
 ]
 
 PRIVATE_LITERALS = [
@@ -56,6 +66,11 @@ ACCEPTED = [
     "http://localhost:8787",
     "http://127.0.0.1:9999",
     "http://[::1]:9999",
+    # The normalizer must CLASSIFY a numeric host, not blanket-refuse it: this
+    # is 8.8.8.8 in decimal, a public address, and it stays allowed. Without
+    # this row the metadata spellings above would also pass against a guard
+    # that had simply started refusing every all-digits host.
+    "https://134744072",       # 8.8.8.8 in decimal
 ]
 
 
@@ -107,3 +122,24 @@ def test_hostname_is_compared_parsed_not_as_a_substring():
         _init("http://localhost.evil.example.com/ingest")
     with pytest.raises(ValueError, match="must use https"):
         _init("http://evil.example.com/localhost")
+
+
+def test_the_loopback_exemption_is_spelled_literally_and_fails_closed():
+    """The two local-host exemptions read the hostname as written, not normalized.
+
+    ``127.0.0.1`` is accepted for a local collector; ``2130706433`` is the same
+    address in decimal and is REFUSED, because ``_LOCAL_HOSTNAMES`` is a literal
+    set and the decimal spelling is not in it. That asymmetry is left as it is
+    on purpose: it decides only whether a LOOPBACK exemption applies, so the
+    spelling that is not recognized is the one that gets LESS access. Widening
+    the set to normalized addresses would loosen the plaintext-http exemption
+    and the private-network allowance to buy nothing but consistency.
+
+    Pinned so the direction cannot quietly invert: if a future change makes the
+    exemption normalize, it must make this test fail and be re-argued.
+    """
+    _init("http://127.0.0.1:9999")
+    assert obsvr.is_initialized()
+
+    with pytest.raises(ValueError, match="failed the SSRF guard"):
+        _init("http://2130706433:9999")
