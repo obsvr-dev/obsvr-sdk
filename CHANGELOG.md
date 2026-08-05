@@ -13,6 +13,10 @@ Each entry links the commit that made the change.
 
 ## [Unreleased]
 
+Nothing yet. Changes land here and are renamed at the next release cut.
+
+## [0.11.0] - 2026-08-06
+
 Changes landed since 0.10.0. This section accumulates until the next release
 cut, when it is renamed to that version.
 
@@ -238,310 +242,543 @@ cut, when it is renamed to that version.
   pipeline does not await.
   ([`03d5a18`](https://github.com/obsvr-dev/obsvr-sdk/commit/03d5a18))
 
-### Fixed
 
-- **Host metadata the audit sender cannot serialize no longer reaches the
-  caller.** The sender sized caller-supplied `metadata` with a bare serializer
-  before deciding whether to trim it, so a bag carrying a throwing property
-  getter, a `BigInt`, a hostile `toJSON` or a circular reference raised out of
-  the sender into the application's own synchronous call — the one path outside
-  the guarantee that an exception inside a detector layer never reaches your
-  application. A bag that cannot be measured is now treated as **over budget**
-  and takes the trim that already exists for an oversized one, so the grouping
-  keys (`trace_id`, `agent_run_id`, the span envelope) survive and the event is
-  still delivered; a reserved key that is itself unreadable is dropped rather
-  than thrown. Python had the same defect through a cycle, which its
-  `default=str` never covered. ([`7b8c03c`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b8c03c))
+- **`install_tool_gate_hook` — Haystack refuses a denied tool before its Agent
+  dispatches the batch.** Haystack ships a `Tool` abstraction and an `Agent`,
+  and obsvr governed neither: its component gates the prompt flowing through a
+  pipeline, and nothing looked at tool calls at all, so a policy naming a
+  denied tool refused nothing on this framework. The installer registers
+  obsvr's gate as the Agent's own `before_tool` hook, which the Agent runs
+  before it resolves the pending tool calls and before it builds the executor
+  that dispatches them in parallel — so a refusal removes the denied call and
+  leaves its siblings pending, with no sibling already in flight to race.
+  Measured with a denied call and a benign one in a single reply: the denied
+  tool executes zero times, the benign one once. The gate rules on the CALL
+  rather than on a tool object, which is what makes it total here — tools
+  handed to `run(tools=...)`, tools inside a `Toolset` that respawns per run,
+  and tools rebuilt by a serialization round-trip all still arrive as a named
+  call in the Agent's own state. Refusal answers the model and the run
+  continues; `on_denial="abort"` raises instead, and `govern_tool` remains the
+  second mechanism carrying the full pre-call net. Driven live at
+  `haystack-ai` 3.0.0 through `Agent.run` and `Agent.run_async`, with the
+  payload asserted absent from what the caller received; the `before_tool`
+  hook point does not exist at 2.0.0, where the installer feature-detects the
+  dispatch half and refuses loudly rather than arming a gate nothing would
+  consult.
+  ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
 
-- **The two package READMEs no longer ship links that resolve to nothing.** They
-  carried ten relative links, six of them reaching above the package directory.
-  PyPI renders its long description standalone with no repository around it, so
-  every one of them 404'd for an installed reader while working perfectly under
-  GitHub review. They are now absolute to the repository, and the doc-link guard
-  gained the half it was missing: a relative link in a published README fails,
-  every other relative link must name a tracked file, and the published set is
-  checked against the package manifests so it cannot go stale on its own.
-  ([`3f25744`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f25744))
+- **`is_obsvr_block(exc)` — recognising a Haystack refusal after the pipeline
+  has rewrapped it.** At haystack-ai 3.x a component's exception reaches the
+  caller of `pipeline.run()` as the host's `PipelineRuntimeError` with the
+  original demoted to `__cause__`, and an async pipeline wraps a second time,
+  so `except ObsvrHaystackBlocked` around `pipeline.run()` catches nothing.
+  The refusal is still there and the run still stopped; only the type at the
+  top changed. The helper walks the cause chain so one branch covers both that
+  shape and the unwrapped error an Agent raises directly.
+  ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
+- **`govern_agent` — LlamaIndex refuses a denied tool before it runs (Python).**
+  This surface carried no tool gate of any kind, and the documented reason was
+  wrong: it said a callback is the wrong place for a gate, when the operative
+  fact is that no tool callback is dispatched here at all —
+  `CBEventType.FUNCTION_CALL` has zero dispatch sites at any current version,
+  and the instrumentation dispatcher that replaced those events swallows every
+  handler exception, so nothing raised from one reaches the run. The gate
+  therefore lives on the tools. `govern_agent(agent)` binds to `get_tools`,
+  where a workflow agent assembles the tools for a turn, and governs each
+  through `govern_tool` with the full pre-call net. Binding at ASSEMBLY rather
+  than to the caller's list is what makes it complete: measured live with the
+  tool denied, a tool supplied per turn by a `tool_retriever` and a tool whose
+  governed copy was discarded while the agent kept the original both RAN under
+  a hand-applied wrapper and are refused here. Driven live at llama-index-core
+  0.14.5 and 0.14.23 on the plain, ReAct, tool-retriever and
+  multi-agent-handoff routes: zero side-effect writes on every deny leg, the
+  payload absent from the `ToolCallResult` the caller received, paired allow
+  controls at exactly one. The framework converts the refusal into an error
+  tool result rather than raising, so the run continues and the signed record
+  is what reports the refusal — below core 0.14.8 it is the only thing that
+  can, because `ToolOutput` carries no exception there and a refusal is
+  indistinguishable from a crash to the caller. Two routes are out of scope and
+  say so: `CodeActAgent`'s generated code, and tools invoked outside an agent.
 
-- **The per-integration tool-policy grading table is read back against the
-  tree.** It is the table the documentation points a reader at before they put a
-  destructive capability behind a policy, and no test read it — a row flipped to
-  the wrong grade, or a surface that lost its gate while the row kept claiming
-  one, was caught by nothing offline. Each SDK now parses the table and grades
-  its own column with the same source predicate its enforcement-invariant suite
-  already uses. Coverage runs both ways: an unparseable cell, a row with no
-  source mapping, and a gated file with no row all fail.
-  ([`7144341`](https://github.com/obsvr-dev/obsvr-sdk/commit/7144341))
+- **`install_tool_gate()` — AutoGen refuses a denied tool on the routes that
+  never send a message (Python).** The existing send hook enforces and keeps
+  doing so, but it governs the outgoing MESSAGE, and
+  `_process_message_before_send` has exactly two call sites in the framework.
+  Measured live with the hook installed, three public routes reached the tool
+  without either — a tool-call dict handed to `generate_reply`, to `receive`,
+  or to `execute_function` — and two of them returned the tool's payload to the
+  caller. So does an agent the caller never constructs: `run()` builds a hidden
+  executor holding every callable and no hooks, and group and swarm chats build
+  their own. The new gate wraps `ConversableAgent.execute_function` /
+  `a_execute_function` on the class, which is the only scope that reaches those
+  internal executors, and governs the `_function_map` entry the call is about
+  to run — read fresh at call time at every version in the supported range.
+  Refusal is the framework's own failed-tool contract: the raise happens inside
+  the callable, `execute_function` reports `is_exec_success=False`, and the
+  conversation continues, where the send hook instead stops the chat. Driven
+  live at ag2 0.3.2 and 0.9.9, zero side-effect writes on every deny leg with
+  paired allow controls at one. `RealtimeAgent` (a separate tool registry no
+  executor reads) and code-execution replies (code from message content, not a
+  `tool_calls` array) are out of scope and say so.
+
+- **`attach_tool_gate` / `attachToolGate` — OpenAI Agents now refuses a denied
+  tool before it runs, in both languages.** The framework consults each
+  function tool's own input guardrails BEFORE invoking it, and the new
+  installer puts obsvr's guardrail there, walking every function tool
+  reachable from an agent (handoff targets included, by tool object). A
+  denied tool is refused by the guardrail contract's returned sentinel
+  (`reject_content` / `rejectContent`) — the model receives the block message
+  as the tool's result, the run continues, and the `blocked`/`TOOL_DENIED`
+  record is true at the point it is written. The tool governor
+  (`govern_tool` / `obsvrGovernTool`) is the second, independent mechanism on
+  this surface with the opposite run semantics: its refusal raises out of the
+  tool's own callable, which the framework converts to a run abort
+  (`UserError` in Python, `ToolCallError` in TypeScript) carrying obsvr's
+  typed denial. Both mechanisms driven live with a side-effect-counting tool
+  and the payload asserted absent from what the caller received — Python at
+  openai-agents 0.19.0 and 0.19.2 on the plain, streamed and handoff routes;
+  TypeScript at @openai/agents 0.13.0, 0.13.4 and 0.14.2 on the plain and
+  streamed routes — with paired allow controls at exactly one write and the
+  two mechanisms reddening independently under mutation. Installation
+  feature-detects the framework's guardrail surface by attribute presence and
+  refuses loudly where no executor would consult it; the tracing processor
+  defers to any gate governing a name instead of stamping `not_evaluated`
+  beside the gate's own verdict.
+  ([`9e1d085`](https://github.com/obsvr-dev/obsvr-sdk/commit/9e1d085),
+  [`f84d838`](https://github.com/obsvr-dev/obsvr-sdk/commit/f84d838),
+  [`703e3d2`](https://github.com/obsvr-dev/obsvr-sdk/commit/703e3d2))
+- **`govern_tool` / `govern_tools` — framework-agnostic tool governance,
+  the Python twin of `obsvrGovernTool`.** Wraps a tool object's own execute
+  callable (resolved across `on_invoke_tool`, `_run`/`_arun` with `func`
+  co-gated, `execute`, `call`/`acall`, `invoke`/`ainvoke`, `run`/`arun`, and
+  bare callables; sync and async as a pair, one verdict and one audit event
+  per invocation) so a denied tool raises the typed `ObsvrPolicyError` before
+  its body runs on any framework, whatever hook APIs it has or lacks. The
+  gated call runs the FULL pre-call pipeline — rules, floor, PII, canary,
+  session-taint destructive gate — and every event carries the sealed
+  tool-content digest. Exported from the package root, matching the
+  TypeScript entry point. CrewAI dispatch driven live on both executor paths
+  and measured per version across the supported range; the other frameworks'
+  shapes are pinned offline.
+  ([`46946c4`](https://github.com/obsvr-dev/obsvr-sdk/commit/46946c4))
+- **The MCP tool gate is now driven against the real `mcp` package in CI, in
+  both languages — and every other integration test is labelled as what it is.**
+  This is a decision about which asymmetry to keep, so both halves are stated.
+
+  No integration test in either language had ever run against a real upstream
+  framework. They drive hand-written fakes, which pin this SDK's own logic and
+  its assumptions about a shape, but cannot see an upstream release that renames
+  the method being wrapped or stops delivering a callback. Every finding of that
+  kind in this project's history came from a live probe, never from the suites.
+
+  `mcp` is now the one exception, because `SECURITY.md` names that gate as the
+  surface to put a destructive capability behind. A real client, a real server
+  and the package's own in-memory transport, with the refusal graded on whether
+  the SERVER executed the tool body rather than on the caller's exception.
+  Python gains `mcp` in its `dev` extra at the same specifier the `mcp` extra
+  already declares; TypeScript needed no new dependency at all — the package was
+  already a devDependency that no test imported. Runtime dependencies stay at
+  zero in both packages, and the blocking dependency audit is unaffected: it
+  covers declared runtime dependencies, and the audit that sees test
+  dependencies is report-only.
+
+  **What prompted it, measured rather than argued.** With the real deny check
+  replaced by "allow everything", `sdk-typescript/tests/unit/mcp-integration.test.ts`
+  still passes 18 of 18 — it carries its own copy of the policy check, annotated
+  *"mirrors mcp.ts logic"*, and drives the copy instead of the module. Across
+  that whole suite only three pre-existing tests notice; in Python, six do. The
+  new files add four and three more.
+
+  The rest of the asymmetry is not being closed, and `tests/README.md` in each
+  SDK now says so plainly: which upstream packages are real in CI, which
+  surfaces are fakes, and what a green run on a faked surface does and does not
+  establish. A reader who assumed the integration suites exercised the
+  frameworks they name was previously left to discover otherwise.
+- **The severity axis is now stated where the limitations are.** A reader could
+  see a handful of itemised defects disclosed in `SECURITY.md` without the rule
+  that decides which of them would block a release at all. The README's
+  known-limitations section now leads with it: a record asserting an enforcement
+  that did not happen blocks a release, while a control that does not fire and
+  emits nothing gets documented and ships. A documented non-enforcing gate is
+  honest; a fabricated denial is not.
+- **The enforcement-reporting invariant now covers TypeScript as well.** A table
+  over the TypeScript tool gates, written against those implementations rather
+  than translated from the Python results — which matters, because the two SDKs
+  do not agree. Offline and deterministic, same as the Python half, and it went
+  red on a real defect on its first run.
+- **An invariant binding what the audit trail claims to what actually
+  happened.** For every event where `action_taken == "blocked"`, the governed
+  operation did not execute. Nothing in the tree asserted that, and two separate
+  false-record defects reached `main` as a result — both found by hand against
+  live providers, which is to say found once. The check is a table over all six
+  Python surfaces that carry a tool gate: a spy tool records whether it was
+  entered, each driver models the framework's real invocation ordering rather
+  than a convenient one, and both halves are asserted — the tool did not run AND
+  the record says so. Every row declares its grade, so a surface that quietly
+  stops enforcing fails its row, and one that starts enforcing also fails and
+  has to be regraded on purpose. Table coverage is itself a test: a new
+  integration that ships a tool gate without a row fails the suite.
+
+  Offline and deterministic by design — no provider, no key, no network — and
+  wired into CI as its own named step. Its ability to fail is tested on every
+  run rather than demonstrated once: one test points an enforcing gate at a
+  no-op and requires the assertion to break, and two more require it to reject a
+  fabricated denial and a silent refusal. Written before the fixes it prompted,
+  and it went red on both of them first.
+- **Known limitation, stated rather than left to be discovered: blocked-call
+  attribution on `ai` below 5.0.0.** Enforcement is fully correct across the
+  supported range — the call is blocked, `status_code` is 403, the reason code
+  and blocked types are right. On `ai` 3.3.28–4.x the blocked *event* carries
+  `provider: "unknown"` and `model: "unknown"`, so per-provider or per-model
+  reporting **over blocked calls** is unavailable there. Every other event is
+  unaffected, and from `ai` 5.0.0 blocked events are fully attributed.
+
+  This is upstream and not recoverable inside the SDK: at language-model spec v1
+  `transformParams` receives `{ params, type }` and no model, the middleware
+  object exposes no wrap-time hook that could supply one, and obsvr never calls
+  `wrapLanguageModel` itself — the caller does. A block is thrown from
+  `transformParams` before `wrapGenerate` runs, so a cached model would still
+  leave the first call unattributed. Fixing it would mean adding a public option
+  for the caller to declare the model, which is not worth new API surface for a
+  version range where enforcement already works.
+
+- **Declared peer floors now name releases the code can actually work with.**
+  Every floor below was checked by building a throwaway environment per
+  candidate version, installing that version alone, and importing the exact
+  symbol the integration binds — not by reading a changelog. A floor that is
+  merely *safe* was rejected the same as one that is wrong, so these are the
+  lowest working versions rather than the lowest convenient ones.
+
+  | Package | Was | Now | Why the old floor was false |
+  | --- | --- | --- | --- |
+  | `ai` | `>=3.0.0` | `>=3.3.28` | the middleware API `obsvrMiddleware()` attaches to does not exist below 3.3.28 — roughly 130 advertised releases where the integration cannot be constructed at all |
+  | `llamaindex` | `>=0.5.0` | `>=0.5.9` | 0.5.0 and 0.5.8 register the handler and emit **no audit events at all**: the call succeeds, the provider returns usage, and nothing is recorded |
+  | `@aws-sdk/client-bedrock-runtime` | `>=3.422.0` | `>=3.587.0` | `ConverseCommand` / `ConverseStreamCommand` — two of the four commands the integration dispatches on — are **absent at 3.422.0 and present at 3.1096.0** by introspection, and that is the whole of the evidence. **This floor is a position taken, not a located edge:** nothing between those two points was tested, so the real boundary is unknown across the 386 published releases that sit between them. It is stated at a release that exists — the line has gaps, and a floor naming a version the registry never carried would assert a boundary nobody could have tested ([`bc3970c`](https://github.com/obsvr-dev/obsvr-sdk/commit/bc3970c)) |
+  | `pydantic-ai-slim` | `>=0.0.14` | `>=0.4.4` | `pydantic_ai.toolsets.WrapperToolset` does not exist below 0.4.4; below it `govern_toolset()` still returns an object, so denied-tool policy, per-tool auditing and step limits are silently inert |
+  | `google-adk` | `>=0.1.0` | `>=1.2.0` | all thirteen releases below 1.2.0 install but cannot import (`google.adk.models` raises `ModuleNotFoundError: deprecated`, reached through the OpenTelemetry stack) |
+  | `semantic-kernel` | `>=1.0.0` | `>=1.16.0` | 1.14.0 and 1.15.0 install but cannot import against any modern pydantic; below 1.14.0 CPython 3.13 has no candidate at all |
+  | `llama-index-core` | `>=0.10.0` | `>=0.11.23` | the declared floor emits no audit event at all; **this floor is the lowest release VERIFIED working live rather than the first known-good one** — the 0.10.x line could not be measured, so versions below are excluded for being unverifiable, not for being proven broken ([`0bdfbc1`](https://github.com/obsvr-dev/obsvr-sdk/commit/0bdfbc1)) |
+  | `agent-framework` | `>=1.0.0` | `>=1.11.0` | all sixteen releases below 1.11.0 fail dependency resolution outright — the meta-package pins `agent-framework-core` to its own version exactly, while a sibling reached through that package's `all` extra requires `>=1.11.0` — so the extra named sixteen releases a plain install cannot produce ([`dc0f1bf`](https://github.com/obsvr-dev/obsvr-sdk/commit/dc0f1bf)) |
+  | `smolagents` | `>=1.0.0` | `>=1.4.0,!=1.5.0` | below 1.4.0 the import fails against a current `transformers`; 1.5.0 does not pull `transformers` in at all, and 1.5.1 restored it. The hole is excluded rather than rounded up, because 1.4.x genuinely works |
+
+  Most of these are upstream packaging problems rather than obsvr renames, but
+  a declaration that advertises a release the integration cannot bind on is
+  obsvr's to correct either way. **Migration:** none, unless you pinned a
+  version inside one of the removed ranges — in which case the integration was
+  not working there, silently, and the resolver now refuses the install rather
+  than resolving to a version nothing binds on.
+  ([`5342720`](https://github.com/obsvr-dev/obsvr-sdk/commit/5342720))
+
+- **The two direct-provider floors now name releases that carry an auditable
+  method.** The floors above were corrected for failing to *bind*; these two
+  bound perfectly well and governed nothing, which is the quieter failure and
+  the harder one to notice from outside. Both were re-established by an
+  exhaustive walk — one throwaway environment per published release, 326 for
+  `openai` and 197 for `anthropic`, no bisect anywhere — so every boundary
+  named is an adjacent tested pair rather than an interpolation, and each
+  boundary was then re-run live and graded on the captured event.
+
+  | Package | Was | Now | Why the old floor was false |
+  | --- | --- | --- | --- |
+  | `anthropic` | `>=0.3.0` | `>=0.16.0` | the declared floor governs **nothing**. 0.3.x exposes only `completions.create`, which is not an auditable method, so an operator who resolved that floor built a client, wired obsvr, sent traffic and got **zero audit events with nothing raising**. Confirmed live rather than read off a shape: 0.7.8 grades `NO_AUDIT` because no auditable path exists on the client at all. `beta.messages.create` arrives at 0.8.0, and `messages.create` — the path the support table is about — at 0.16.0 |
+  | `openai` | `>=1.0.0` | `>=1.66.0` | honest for exactly **one of the seven** declared auditable paths. 1.0.0 through 1.65.5 carry `chat.completions.create` and nothing else; `responses.create` and `responses.parse` both arrive at 1.66.0 |
+
+  **`>=1.66.0` still does not promise every path, and the manifest now states
+  the reality per path rather than per range.**
+  `beta.chat.completions.parse` arrives at 1.40.0, `chat.completions.parse` and
+  `beta.chat.completions.create` at 1.92.0, and `beta.responses.create` only at
+  2.45.0 — six releases out of the 326 walked. The floor was deliberately not
+  raised to 2.45.0 to cover that last path, because a range standing for six
+  releases would misdescribe the 141 on which the `responses` paths do work.
+  For `anthropic`, `messages.parse` arrives at 0.77.0 and is likewise not
+  promised by the range.
+
+  Two non-monotonic rows in the walks are upstream history, not obsvr
+  regressions, and are recorded that way: `openai` 1.99.0 ships a broken
+  `openai.types.responses`, so both `responses` paths read absent for a single
+  day until 1.99.1; and `anthropic`'s `beta.messages` is absent from 0.16.0
+  through 0.35.0 because the beta namespace was removed outright when that API
+  graduated, returning at 0.36.0. **Raise the floor to `>=0.36.0` if the beta
+  namespace has to be covered too.**
+
+  **Not marked BREAKING, and the reason is that nothing has been published
+  from this repository yet** — no installed consumer can be depending on the
+  old floors. **Migration:** none, unless you pinned a version inside a removed
+  range, where the extra declared a client on which no auditable path exists.
+
+- **`content_provenance` on audit events: where inside the payload the content
+  came from.** `source` names the integration that emitted an event ("mcp",
+  "langchain"); this names the position the text occupied within the call —
+  `user_turn`, `system`, `retrieved`, `tool_result`, `memory`, `unknown`. It
+  exists for triage: a `prompt_injection` found in a user turn is someone
+  probing your bot, and the identical finding in a tool result means an upstream
+  data source is already compromised. Set **only where an integration genuinely
+  knows** and absent everywhere else — today that is the MCP tool-result events
+  and LangChain's `tool.result`, all as `tool_result`. Never inferred from the
+  operation name or the payload shape, because a wrong value gets read as
+  evidence in exactly the incident where being wrong costs the most.
+  **Audit-record completeness only, deliberately not a policy input:** nothing
+  in detection, scoring, or gating reads it, since obsvr gates on session-taint
+  reachability rather than on classifying how far to trust a source. **Not
+  sealed:** the Merkle leaf, the `sdk_sig` preimage and the decision-input
+  document are each closed lists of named fields and this is in none of them, so
+  it sits outside the integrity proof and can be altered without breaking chain
+  or root verification — treat it as a triage hint, not as evidence. Optional
+  and absent by default; callers that ignore it see no change. Because ingest
+  has no column for the name yet, it also rides reserved
+  `metadata.obsvr_content_provenance`, the route `obsvr_tool_content_hash`
+  already takes.
+- **BREAKING: a 14th rule type, `protocol_facet`, matching parsed statement
+  structure.** A rule can now address `sql.verb`, `sql.target`, `sql.tables`,
+  `sql.functions` and `sql.multiple_statements` instead of matching characters:
+  `{ type: "protocol_facet", conditions: { facet: "sql.verb", facet_not_in:
+  ["select"] } }`. A comment between `DROP` and `TABLE` defeats a regex and
+  does not defeat this, and it does not fire on prose that merely mentions the
+  word. **Read this before adopting it: the failure direction is the opposite
+  of every other rule type.** Text the decomposer cannot decompose MATCHES, so
+  a facet rule refuses rather than permits what it could not read — an attacker
+  who can make a statement unparseable would otherwise have found the bypass.
+  The decomposition is stdlib-only and lexical rather than a full grammar (this
+  package ships no runtime dependencies), and is explicit about what it does
+  not handle: subquery scopes, CTEs, dialect syntax, precedence. Bounded at 8
+  KiB and 2,048 tokens, beyond which it reports unparseable. BREAKING only in
+  that the new reason code `PROTOCOL_FACET_MATCHED` is an addition to a closed
+  enum; nothing existing changes meaning. Pinned by
+  `conformance/fixtures/protocol_facets.json`. **Migration:** nothing is
+  required to keep working — no existing rule changes behavior, and the new
+  type only applies to rules that ask for it. If you exhaustively switch over
+  the rule-type union or the reason-code registry in TypeScript, add a
+  `protocol_facet` / `PROTOCOL_FACET_MATCHED` case; a JavaScript or Python
+  consumer needs no change.
+  ([`13b71dc`](https://github.com/obsvr-dev/obsvr-sdk/commit/13b71dc))
+- **BREAKING: rot13 is decoded before the scanners run.** With `deobfuscation`
+  enabled, a `rot13` view is now derived from any text carrying at least eight
+  ASCII letters, so an injection payload the scanners already recognise no
+  longer walks past them rotated. The view is derived last and outside the
+  decoded-candidate cap, so it displaces nothing and never changes an existing
+  detection's `via` attribution. BREAKING only in that `"rot13"` is an addition
+  to the closed `via` / `CanaryVia` value sets, which breaks an exhaustive
+  switch over them. **Note the cost, which is deliberate:** rot13 is applied
+  speculatively rather than gated on the text looking encoded, because deciding
+  that first would be a heuristic in front of a deterministic decision path — so
+  every scanned text pays one extra linear pass. Character substitution (leet)
+  is deliberately not decoded; the reasoning is in the deobfuscation module in
+  both SDKs. **Migration:** nothing is required unless you exhaustively switch
+  over `via` or `CanaryVia` in TypeScript, where a `"rot13"` case must be
+  added. Detections that already fired keep their existing `via` attribution
+  unchanged; a JavaScript or Python consumer needs no change. To opt out of the
+  extra pass, disable `deobfuscation` — there is no rot13-specific switch,
+  because a per-transform opt-out is a bypass an attacker can aim for.
+  ([`f5a5583`](https://github.com/obsvr-dev/obsvr-sdk/commit/f5a5583))
+- **Layered call cost (`costPolicy` / `cost_policy`), off by default.** Three
+  layers, each overriding the one before and all three retained on the record:
+  what the caller said a call would cost (`metadata.cost_estimate_micros`),
+  what you declare it costs, and the metered figure from provider-reported
+  usage at your own rates. The signed gap between the estimate and the metered
+  value rides `metadata.obsvr_cost`, because an estimator that is persistently
+  an order of magnitude out is only visible if both numbers survive. **No
+  provider price list ships in this package** — prices change on the vendor's
+  schedule and a stale rate baked into a release seals a wrong number, which
+  cannot be reissued — so rates are yours to declare. Every amount is an
+  integer count of millionths of a currency unit with a half-up rounding rule
+  written out in both languages, because money in binary floating point does
+  not agree between two runtimes at the edges. With no cost policy configured,
+  events are unchanged. Pinned by `conformance/fixtures/cost.json`.
+  ([`34659b2`](https://github.com/obsvr-dev/obsvr-sdk/commit/34659b2))
+- **CloudEvents v1.0 export.** `toCloudEvent` / `to_cloud_event` project an
+  audit event onto a CloudEvents envelope, and `serializeCloudEvent` /
+  `serialize_cloud_event` produce its canonical string form, byte-identical
+  across both SDKs and pinned by `conformance/fixtures/cloudevents.json`. The
+  envelope's dedup key `(source, id)` is mapped onto the audit chain
+  coordinate `(sdk_session_id, seq_no)`, so a CNCF-ecosystem sink dedupes on
+  the same identity the ledger does; an event that never entered the chain
+  falls back to `request_id`. `datacontenttype` is `application/json`,
+  `dataschema` is `urn:obsvr:schema:audit-event:1`, and two extension
+  attributes (`obsvraction`, `obsvrenv`) let a sink route without opening the
+  payload. Purely additive: nothing calls it unless you do, and the event is
+  carried verbatim as `data`. The serializer refuses values the two runtimes
+  cannot render identically rather than emit bytes that quietly differ; use
+  `safeSerializeCloudEvent` / `safe_serialize_cloud_event` to skip those.
+  ([`d856c17`](https://github.com/obsvr-dev/obsvr-sdk/commit/d856c17))
+- **Python agent-run controls: loop detection and delegation tracking.**
+  `obsvr.LoopDetector` / `obsvr.DelegationTracker` (and their `create_*`
+  factories) are the twins of the TypeScript controls, with identical
+  thresholds, check order, and violation messages, pinned by the new
+  `conformance/fixtures/agent_controls.json`. Loop detection is driven for you
+  by the LangChain and OpenAI-Agents integrations when
+  `agent_policy={"loop_detection": {"max_iterations": N, "window_ms": M,
+  "action": "block"}}` is configured; a run past the limit emits a
+  `LOOP_DETECTED` event and stops. Opt-in: with no `loop_detection` block, an
+  agent run behaves exactly as before. Delegation tracking is a library you
+  drive from your own handoff path, as in TypeScript.
+  ([`36696bc`](https://github.com/obsvr-dev/obsvr-sdk/commit/36696bc))
+- **`sessionTaint.destructiveTools`: a tainted session loses its dangerous
+  capabilities.** An exact-name tool set a tainted session may never invoke,
+  enforced at every tool boundary (governed tools, MCP, framework wrappers)
+  even under the default `action: "flag"` — ordinary egress stays merely
+  flagged while `send_money`-class capabilities go dark, which is the
+  composition that actually stops indirect injection. One set-membership test
+  at the tool gate; decisions pinned as `(tool_name, taint_state) → decision`
+  in `conformance/fixtures/session_taint.json`.
+  ([`e350ab9`](https://github.com/obsvr-dev/obsvr-sdk/commit/e350ab9))
+- **Every audit event carries a `reason_code`.** The registry code for the
+  classification the decision rests on — the deciding layer's fine-grained
+  code (the rules engine's `KEYWORD_BLOCKED`, `MODEL_GATE_BLOCKED`, ...),
+  `PERMITTED` on a clean allow — and always the same code the thrown
+  `ObsvrPolicyError` carries, resolved once for both. Previously the engine's
+  code was discarded at the throw site and re-derived as one of four coarse
+  categories, and the event had no such field at all.
+  ([`b8848a1`](https://github.com/obsvr-dev/obsvr-sdk/commit/b8848a1))
+- **The seven dormant reason codes are emitted.** `INJECTION_DETECTED` (single-
+  and multi-turn injection blocks, which previously surfaced as `PII_DETECTED`
+  or `POLICY_VIOLATION`), `TRANSMISSION_BLOCKED` (taint-gated egress refusals),
+  `TOOL_DENIED` (agent-policy tool refusals on every integration),
+  `MCP_TOOL_DENIED` / `MCP_RESULT_BLOCKED` (the MCP gates), and
+  `LOOP_DETECTED` / `DELEGATION_BLOCKED`. Both suites now run a
+  reachability gate: every registry code must be emitted by an exercised path,
+  pinned in a named suite, or explicitly reserved — and as of the Python
+  agent-run controls below, nothing is reserved in either language.
+  ([`2f3b5a4`](https://github.com/obsvr-dev/obsvr-sdk/commit/2f3b5a4))
+- **MCP tool descriptors are content-inspected at discovery.** The poisoning
+  scan now also reads JSON Schema `description` / `default` strings at any
+  depth, matches over a comment-stripped view (a directive split by HTML
+  comments reads whole to the model and fragmented to a scanner) and — with
+  `deobfuscation` enabled — the decoded views; bidi controls are flagged on
+  presence, concealment is its own signal, and a truncated schema walk says
+  so. Reasons pinned exactly by `conformance/fixtures/tool_descriptor_scan.json`.
+  ([`ca0c209`](https://github.com/obsvr-dev/obsvr-sdk/commit/ca0c209))
+- **Cross-SDK bookkeeping is validated data.** Every conformance case now
+  carries per-language `sdk_support` (`required` / `optional` / `skip`) — 418
+  entries across 25 of the 26 fixtures — so a gap shows as a recorded skip
+  rather than a missing test. `claimable` is resolved on all 26 and enforced
+  bidirectionally against the public docs. The known-divergences table became
+  the schema-checked `conformance/known-divergences.json`, and the spec's seven
+  uncovered EV statements are a checked partition in `eval_semantics.json`
+  rather than a prose admission. **A support level is enforced, not
+  decorative:** both suites reject a non-`required` level whose consuming
+  harness does not read the field, so a `skip` nothing would act on fails the
+  bookkeeping rather than surfacing later as a confusing case-level failure. If
+  you consume the corpus, `required` is the level you can assume is exercised
+  everywhere; `optional` today means only the two signed-policy vectors that
+  need an Ed25519 backend Python resolves optionally.
+  ([`2585ce0`](https://github.com/obsvr-dev/obsvr-sdk/commit/2585ce0),
+  [`97d82dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/97d82dd),
+  [`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
+  [`dd914c8`](https://github.com/obsvr-dev/obsvr-sdk/commit/dd914c8),
+  [`aff2949`](https://github.com/obsvr-dev/obsvr-sdk/commit/aff2949),
+  [`662d63e`](https://github.com/obsvr-dev/obsvr-sdk/commit/662d63e),
+  [`f00e883`](https://github.com/obsvr-dev/obsvr-sdk/commit/f00e883))
+- **Dropped events are declared in the signed chain.** A bounded-queue overflow
+  now signs a **gap marker** at the chain position where events were lost,
+  stating how many. The count lives in the signature preimage, so editing it
+  down breaks verification. Previously drops preceded sequence assignment, so a
+  burst that lost most of its events still verified clean. Both verifiers gained
+  `gapMarkers` / `eventsDeclaredLost` (`gap_markers` / `events_declared_lost`),
+  and the format is pinned by `conformance/fixtures/audit_gap.json`.
+  ([`6e824fc`](https://github.com/obsvr-dev/obsvr-sdk/commit/6e824fc))
+- **`obsvr-verify` exit code 3: valid but incomplete.** A chain declaring
+  dropped events now exits `3` rather than `0`, so `obsvr-verify chain.json &&
+deploy` no longer passes on a record missing most of its events. **If you gate
+  on the exit status, a previously passing chain that declares loss will now
+  fail**; `--allow-gaps` maps `3` back to `0`, suppressing the status only and
+  never the printed disclosure.
+  ([`d5db27f`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5db27f))
+- **Typed policy-block error.** A refused call now raises `ObsvrPolicyError` in
+  both SDKs with a stable `type`, a registry `reason_code`, the deciding
+  `rule_id`, and decision metadata, so a deliberate refusal is distinguishable
+  from a transport failure. An unrecognized reason category yields
+  `ObsvrUnknownPolicyError` rather than an untyped error. Message text is
+  unchanged; Python still subclasses `RuntimeError`.
+  ([`6dfa8c7`](https://github.com/obsvr-dev/obsvr-sdk/commit/6dfa8c7))
+- **Duplicate-instance guard.** With the SDK installed twice in one process, the
+  first copy to `init()` governs and the second stands down with a warning. A
+  copy that stood down passes clients through unwrapped, so the warning names
+  the fix: deduplicate the dependency.
+  ([`71caea2`](https://github.com/obsvr-dev/obsvr-sdk/commit/71caea2))
+- **Python chain verification.** `obsvr.verify_chain(events, api_key)` verifies
+  an exported chain offline, checking every signature plus sequence continuity,
+  linkage, session consistency, and timestamp monotonicity, with the same
+  verdicts as the TypeScript `verifyAuditChain`.
+  ([`fea31b3`](https://github.com/obsvr-dev/obsvr-sdk/commit/fea31b3))
+- **`dropped_rejected` delivery counter.** Events a server refuses individually
+  inside a 2xx batch now get their own counter and poll-header key; they were
+  previously counted as sent. The `dropped` aggregate still means
+  never-delivered.
+  ([`5b9a941`](https://github.com/obsvr-dev/obsvr-sdk/commit/5b9a941),
+  [`8d9066e`](https://github.com/obsvr-dev/obsvr-sdk/commit/8d9066e))
+- **`tool_content_hash` is pinned by a shared fixture.**
+  `conformance/fixtures/tool_content_hash.json` fixes the canonical document and
+  digest for sixteen cases, including the numbers that must refuse to hash
+  rather than seal a value the two languages format differently, and pins that
+  this hash is not the descriptor-pinning hash.
+  ([`cf6c958`](https://github.com/obsvr-dev/obsvr-sdk/commit/cf6c958))
+- **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` installs a console
+  script with the same tiers, exit codes, bundle shapes, and verdicts as the npm
+  CLI, so a Python-only team can verify its own evidence without a Node
+  toolchain. CI drives both binaries over one export so they cannot drift.
+  ([`1756930`](https://github.com/obsvr-dev/obsvr-sdk/commit/1756930))
+- **Tool-call events carry `tool_content_hash`.** Events from an MCP tool
+  boundary (both SDKs) or `obsvrGovernTool` (TypeScript) carry a digest binding
+  the tool name, the descriptor the caller held, and the call arguments, so a
+  descriptor swap is attributable after the fact. Blocked tool calls are
+  stamped too, and the digest is omitted rather than guessed when a value
+  cannot be canonicalized identically in both languages.
+  ([`407186f`](https://github.com/obsvr-dev/obsvr-sdk/commit/407186f),
+  [`5ab19ec`](https://github.com/obsvr-dev/obsvr-sdk/commit/5ab19ec),
+  [`fd05442`](https://github.com/obsvr-dev/obsvr-sdk/commit/fd05442))
+- **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** A retry that
+  raced a lost 2xx was dead-lettered, fabricating a coverage gap for an event
+  the server had already sealed. Only that code: `409 sequence_fork` stays a
+  failure, and an unreadable 409 body is never absorbed.
+  ([`4dd99b4`](https://github.com/obsvr-dev/obsvr-sdk/commit/4dd99b4))
+- **The Python sender reads batch responses.** It previously discarded the body,
+  so events a server refused inside a 2xx batch counted as sent. Per-event
+  rejects now increment `dropped_rejected`, are excluded from `sent`, and arm no
+  backoff. An unparseable body means "no rejects reported", never a failed
+  delivery.
+  ([`8d9066e`](https://github.com/obsvr-dev/obsvr-sdk/commit/8d9066e))
+- **The shared conformance corpus is hash-pinned.** `conformance/MANIFEST.sha256`
+  hashes every file, and each package pins the corpus its suite was written
+  against. CI fails on an unregenerated pin, disagreeing pins, or a fixture with
+  no consumer. What this closes is a forked fixture: a copy drifts, both suites
+  keep passing, and the shared contract stops being shared.
+  ([`7a329ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/7a329ef))
+- **CSS-hidden and aria-hidden content is stripped from the scan view, in both
+  SDKs.** Hidden markup could break a phrase apart so it read as an injection
+  to the model and as unrelated fragments to a scanner. Elements hidden via
+  `display:none`, `visibility:hidden`, or `aria-hidden="true"` are now removed
+  from the canonical view, tag and content. Raw text is still scanned first, so
+  a payload hidden whole was always caught; this closes the split-phrase case.
+  Detection-only, and off unless `deobfuscation: { enabled: true }`.
+  ([`9916800`](https://github.com/obsvr-dev/obsvr-sdk/commit/9916800),
+  [`ad34f66`](https://github.com/obsvr-dev/obsvr-sdk/commit/ad34f66))
+- **Python signed-policy VERIFIER.** `policy_verify.py` implements the same
+  checks and refusal reasons TypeScript uses, against the same shared vectors.
+  The backend is optional (`pip install "obsvr-sdk[crypto]"`); with a key pinned
+  and none installed the policy is refused and the events say so.
+  **This entry originally said `obsvr.init(policy_public_key=...)` pins a key
+  and the SDK checks a fetched policy's signature. It did not: these two commits
+  added the verifier and nothing called it.** See the Fixed entry below for when
+  it was actually wired to the poll.
+  ([`6783b26`](https://github.com/obsvr-dev/obsvr-sdk/commit/6783b26),
+  [`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5))
+- **Failure-disposition registry.** Every governance layer declares what it does
+  in each failure state (timeout, error, degraded) in one table per language,
+  pinned by `conformance/fixtures/fail_mode.json`. Descriptive when it landed:
+  no call path read it and no behavior changed.
+  ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
 
 
-- **The TypeScript tool governor evaluates policy, closing the largest
-  functional difference between the two SDKs.** `obsvrGovernTool` reached its
-  audit step without consulting the shared pre-call pipeline, so on that surface
-  the anti-tamper floor, the customer rule set, the PII policy, the pre-call
-  hook and the external policy backend were all inert, while Python's
-  `govern_tool` consulted every one of them: measured on a single rule set, a
-  tool call whose arguments matched a block rule was refused in Python and
-  executed in TypeScript. It now routes through the same `applyPreCallPolicy`
-  every other TypeScript surface uses, so the same rules over the same arguments
-  yield the same verdict in both SDKs. A synchronous entry point was measured as
-  the alternative and rejected — every `await` in that function sits behind an
-  opt-in, but they are interleaved with the deterministic layers rather than
-  bookending them, so a synchronous path would carry a second copy of the
-  orchestration — which is what makes the wrapped function async (see BREAKING
-  above). One consequence worth stating: a view-only PII hit on tool arguments
-  now escalates to a block on this surface, as it already did on `wrap()` and
-  MCP, so an obfuscated payload no longer reaches the tool.
-  ([`03d5a18`](https://github.com/obsvr-dev/obsvr-sdk/commit/03d5a18))
-
-- **An `allowed` verdict now carries evidence that a policy pipeline evaluated
-  the call.** The enforcement suites police "blocked implies not executed" —
-  that a refusal is real. Nothing policed the reverse, and a gate that stops
-  running never claims `blocked`, so every refusal-grading assertion holds
-  while a surface enforces nothing; that is the shape a rule set which failed
-  to arm the pre-call pipeline hid in. An event claiming `allowed` must now
-  carry the decision-input hash produced inside that pipeline, and a surface
-  that could not consult a configured layer records `not_evaluated` and names
-  the layer. Three false records were found by holding all four boundaries to
-  it: both tool gates stamped `action_source: "policy_rules"` on permits the
-  rules engine was never asked for, and both MCP boundaries recorded `allowed`
-  when the policy engine had crashed and `fail_mode: "open"` let the call
-  proceed — the call proceeding is documented, claiming a gate permitted it was
-  not. The TypeScript tool gate is synchronous and cannot await the async
-  pre-call pipeline, so those layers genuinely do not run there; that remains a
-  coverage gap, and the record now reports it as one instead of as a permit.
-  ([`7b0247e`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b0247e))
-
-- **The tool boundary's session-taint latch keys on the resolved principal.**
-  A principal reaches a governed tool by three channels — per-call metadata,
-  the wrap-time option, the ambient subject scope — and the require-principal
-  gate there reads all three. The taint key was derived from the raw metadata
-  object alone, so a caller who attributed through either of the other two
-  satisfied the gate and was then keyed to the `global` bucket, while the LLM
-  path set the taint under their real principal: SET and ENFORCE disagreed, and
-  the latch never fired for that caller on the most side-effecting egress the
-  SDK governs. Both consumers now read one resolution.
-  `scripts/check-principal-channel.mjs` covers this surface, so the next
-  consumer written the old way fails there rather than in review.
-  ([`8ea57f6`](https://github.com/obsvr-dev/obsvr-sdk/commit/8ea57f6))
-
-- **The signed principal is the principal the decision was made for, on the
-  `wrap()` path in both languages.** A principal reaches a wrapped call by
-  three channels — per-call metadata, the wrap-time option, and the ambient
-  subject scope — and the enforcing resolution reads the per-call channel
-  first, so a call carrying a per-call override is evaluated, metered and
-  taint-keyed under that override. The event builders resolved the signed user
-  from the wrap-time options alone, so such a call was decided for one user and
-  recorded against another: an auditor reading the named user's history saw a
-  call that user never made, and the call that was made appeared under no
-  history at all. Measured before the repair with a per-user quota: the
-  override was metered in its own bucket while the record named the wrap-time
-  user. Each builder now reads the same channel in the same order its own
-  enforcing resolution reads. The ambient channel was already reconciled; this
-  was the per-call channel on the other side of that fix.
-  `scripts/check-principal-channel.mjs` now covers the signing sites as well as
-  the enforcement reads — the surface scans it already ran hold enforcement to
-  one view and say nothing about what the record carries.
-  ([`0e9d7a8`](https://github.com/obsvr-dev/obsvr-sdk/commit/0e9d7a8))
-
-- **The TypeScript MCP gate binds every client route into `tools/call`.** It
-  binds `request`, the path `callTool` is a convenience over, so the frame is
-  judged wherever it was built rather than only when the convenience method
-  built it. Two other public routes reach that frame: one a caller assembles
-  and hands to `request` directly, and the task API's `callToolStream`, which
-  arrives through `requestStream`. Driven against a real server over in-memory
-  JSON-RPC with the tool denied and the client governed, both executed the
-  tool's body and returned its result to the caller, recording nothing — a
-  bypass on a documented enforcement surface, and on the raw route a payload
-  disclosure as well. Both now refuse at zero executions with the result absent
-  and one blocked event recorded, allow controls unchanged at one execution
-  each, and a non-`tools/call` frame still passes through ungoverned. An
-  async-local guard keeps the frame `callTool` issues from being judged twice,
-  which also holds when the same client is governed more than once. This is the
-  route class the Python SDK closed at `send_request`; the two are still
-  measured independently rather than read across. One route is uncovered and
-  carries a test that pins it: an experimental-task facade a caller reads off
-  the raw client BEFORE governing it holds that object directly, and an
-  instance wrapper cannot reach into a reference the caller already has.
-  ([`acb5148`](https://github.com/obsvr-dev/obsvr-sdk/commit/acb5148),
-  [`6eea0cc`](https://github.com/obsvr-dev/obsvr-sdk/commit/6eea0cc))
-
-- **Every layer that consumes a principal reads the same resolved channel.** A
-  principal reaches a governed call by three channels — per-call metadata, the
-  wrap-time option, and the ambient `useSubject()` scope — and the TypeScript
-  proxy path now resolves them once and hands every layer below the same view.
-  Two measured consequences of the layers resolving separately: a
-  `quota_scope: "user_id"` rule metered the `default` bucket for any principal
-  that arrived by option or ambient scope, so a per-user limit behaved as a
-  global one and refused an unrelated user's first call, and the approval
-  request filed for a human reviewer carried no `user_id` while the blocked
-  event for that same call named one — a reviewer asked to authorise an action
-  without being told who asked, and an issuer with nothing to bind a
-  user-scoped grant to. The taint key, multi-turn session key, floor and rules
-  contexts, external backend and decision-input scope id all read that view;
-  Python already resolved this at the head of `apply_pre_call_policy`. A CI
-  guard now holds each surface to one resolution.
-  ([`2494ac6`](https://github.com/obsvr-dev/obsvr-sdk/commit/2494ac6),
-  [`3555c99`](https://github.com/obsvr-dev/obsvr-sdk/commit/3555c99))
-
-- **`wrap()` options survive on an already-governed client.** Auto-instrumentation
-  patches the provider client class, so a client constructed after `init()` is
-  already governed and `wrap(client, user_id=...)` /
-  `wrap(client, { user_id })` is the documented way to attribute it. The guard
-  that stops a second wrap from stacking a second audit layer returned the
-  client unchanged and discarded the options with it, so that path recorded no
-  principal — and under `require_principal` refused a call the caller had
-  attributed. Both SDKs now rebuild around the client's underlying instance
-  with the options merged, later winning: one governance layer, one audit
-  event per call, and the attribution kept.
-  ([`687c573`](https://github.com/obsvr-dev/obsvr-sdk/commit/687c573))
-
-- **`govern_tool`'s identity kwargs now scope enforcement.** The `user_id=` /
-  `service_name=` wrap-time kwargs reach the enforcing metadata channel, so
-  user-scoped quota buckets, the session-taint key, approval binding and the
-  decision-input hash resolve the same principal the signed event carries.
-  Previously the kwargs reached only the signed record while enforcement
-  metered shared buckets — a signed principal with none of the enforcement
-  bound to it. A tree scan now requires every pre-call surface to thread the
-  fold.
-  ([`9947431`](https://github.com/obsvr-dev/obsvr-sdk/commit/9947431))
-
-- **A non-string `user_id` signs identically in both SDKs.** Both event
-  boundaries coerce booleans and finite numbers to one canonical scalar string
-  under the shared canonical-JSON rules, so an export signed by either SDK
-  reaches the same verdict under both offline verifiers; a Python export
-  carrying a float or boolean `user_id` previously verified under the Python
-  CLI and failed under the TypeScript CLI. Non-scalars record as absent, and
-  `None` stays absent — never a rendered string. Exports signed before this
-  change with a raw non-string value verify only under the emitting language's
-  CLI; that residual is stated in the fixture, since re-normalising the digest
-  layer would break verification of existing evidence.
-  ([`e178486`](https://github.com/obsvr-dev/obsvr-sdk/commit/e178486))
-
-- **Governing a tool twice yields one gate.** `govern_tool` /
-  `obsvrGovernTool` answer an idempotence marker from the governed object, set
-  only when a gate verifiably installed, so double-wrapping no longer
-  evaluates and audits every invocation twice — and a tool where nothing was
-  gateable stays unmarked, so a later legitimate attempt still installs.
-  ([`36d972e`](https://github.com/obsvr-dev/obsvr-sdk/commit/36d972e))
-
-- **The `obsvr-verify` success banner states the format-3 preimage boundary.**
-  Content, order, and the eight decision/attribution fields are covered by the
-  client signature; `tenant_id`, token counts, `metadata`, `operation` and
-  `content_provenance` are sealed by the server countersignature; chains
-  signed under formats 1 and 2 bind content and order only, and the banner
-  says so. This aligns the CLI with SECURITY.md's statement of the same
-  position, in both languages, and the TypeScript verifier docs carry the
-  format vocabulary already corrected in Python.
-  ([`d1d1ffe`](https://github.com/obsvr-dev/obsvr-sdk/commit/d1d1ffe),
-  [`f945577`](https://github.com/obsvr-dev/obsvr-sdk/commit/f945577))
-
-- **The keyless structural tier requires `prev_sig` linkage.** Every event
-  after the first must carry its predecessor link, so an unsigned insertion
-  with a plausible `seq_no` and a well-formed `sdk_sig` no longer passes the
-  structural check by omitting the field, in either language.
-  ([`6698b0b`](https://github.com/obsvr-dev/obsvr-sdk/commit/6698b0b))
-
-- **Constant-time signature comparison in the TypeScript verifier.**
-  `verifyAuditChain` compares recomputed signatures with `timingSafeEqual`
-  behind a length guard, matching the Python verifier's posture for library
-  use against caller-supplied chains.
-  ([`740c8f8`](https://github.com/obsvr-dev/obsvr-sdk/commit/740c8f8))
-
-- **The post-call hook is budgeted from `post_call_timeout_ms`.** The Python
-  path previously accepted the key and read `hook_timeout_ms` instead, so the
-  declared budget was never in force and the SDKs diverged on timing-visible
-  behaviour; TypeScript already honoured its twin. The failure-disposition
-  registry also now describes the response-phase hook in its own row —
-  timeout and error keep the already-rendered decision, since the provider
-  has already answered — while the request-phase row keeps its
-  operator-chosen `fail_mode`.
-  ([`14f1930`](https://github.com/obsvr-dev/obsvr-sdk/commit/14f1930),
-  [`e1dae22`](https://github.com/obsvr-dev/obsvr-sdk/commit/e1dae22))
-
-- **Both ReDoS guards refuse the fixed-brace multiplication shape.** A fixed
-  `{n}` repetition applied to a group carrying its own growth quantifier or
-  alternation multiplies that group's backtracking states — `(.*a){20}b`
-  stalled evaluation for minutes in both languages while neighbouring hostile
-  shapes were contained in microseconds. Both structural scans now refuse
-  `{n>=2}` over a rep- or alternation-bearing group; `{1}` and a fixed brace
-  on a plain group stay allowed.
-  ([`33a4e98`](https://github.com/obsvr-dev/obsvr-sdk/commit/33a4e98))
-
-- **An expired approval hold states only what it can know.** The grant channel
-  carries grants, not verdicts — the parser keeps an entry only with a
-  `rule_id` and `expires_at`, and the request POST's response is never read —
-  so an explicit human *denial* is indistinguishable from *no decision* in the
-  SDK today, and both surface as `APPROVAL_TIMEOUT`. The `APPROVAL_TIMEOUT`
-  registry text and the timeout record's reason now say the two are
-  indistinguishable rather than implying nobody answered; no `APPROVAL_DENIED`
-  code is minted, because a code whose emission path cannot know the fact it
-  asserts would be a fabricated record. `SECURITY.md` specifies the
-  approval-status endpoint ingest must expose before a distinct denial code
-  can exist.
-  ([`0482085`](https://github.com/obsvr-dev/obsvr-sdk/commit/0482085))
-
-### Removed
-
-- **Four framework integrations withdrawn before first publish.** The modules
-  (`obsvr/integrations/{agent_framework,semantic_kernel,adk,smolagents}.py`),
-  their extras (`agent-framework`, `semantic-kernel`, `adk`, `smolagents`),
-  their tests, and every reference to them in this repository are gone in one
-  change — a documented integration whose module does not exist is worse than
-  either state alone.
-  **Not marked BREAKING:** none of these shipped in a release, so nothing
-  depended on them.
-
-  **The basis is breadth versus evidence, not brokenness.** Each was verified
-  only far enough to prove it binds and blocks, and the supported surface is
-  being narrowed to what is backed by live evidence rather than widened to what
-  compiles. Worth stating plainly, though: three of the four also had floors
-  that no ordinary install could reach — every `agent-framework` release below
-  1.11.0 fails dependency resolution outright, every `google-adk` release below
-  1.2.0 installs but cannot import, and `semantic-kernel` has no candidate at
-  all below 1.14.0 on CPython 3.13.
-
-  The code is preserved on a local branch and can return with the evidence
-  behind it.
-
-
-- **The ASGI middleware withdrawn.** The module
-  (`obsvr/integrations/fastapi.py`, holding `ObsvrASGIMiddleware` and
-  `instrument_fastapi`), the `fastapi` extra and its `starlette` pin, its test,
-  and its rows in `README.md`, `sdk-python/README.md`, `COMPATIBILITY.md` and
-  `sdk-python/tests/README.md` are gone in one change.
-  **Not marked BREAKING:** it never shipped in a release, so nothing depended
-  on it.
-
-  **It governed nothing.** It emitted a signed `http.request` execution span
-  per request, which put an inbound request on the same tamper-evident chain as
-  the calls made while handling it — real, but not governance: no policy ran on
-  that path and no call could be refused there. Listing it in the coverage table
-  beside the tool gates implied a gate that was never designed, because an ASGI
-  application has no tool abstraction to gate.
-
-  The span behaviour is not lost. `span()` stays public, so a request still
-  becomes the root of a signed chain for anyone who opens that context manager
-  in their own middleware; what goes is a thin convenience over an API that
-  already ships. An inbound request is in any case a network-level event, and
-  an application author who can delete a call can equally delete a middleware
-  registration — so attesting that boundary is not something a code-level SDK
-  can promise.
-
-  Note the earlier entry recording that this middleware "was measured … under a
-  real server over a real socket" stands as written. What was measured was the
-  span, and it did emit; the span alone was never the coverage the table implied.
-
-
-- **BREAKING: the manual-tracking client is gone.** `ObsvrClient`,
-  `trackCompletion`, `trackBatch`, the deprecated `LLMAuditClient` alias, their
-  parameter types, and the `@obsvr/sdk/client` subpath export are removed. That
-  path posted events straight to ingest with no PII scan, no policy evaluation,
-  and no chain signature — a second ingestion path in a package whose whole
-  claim is that there is one, and the weaker of the two was a root export.
-  **Migration:** use `obsvr.wrap()` around your provider client, which produces
-  the same events with the controls applied and the chain signed. There is no
-  supported way to enqueue an unsigned event, which is the point.
-  ([`ebd2b33`](https://github.com/obsvr-dev/obsvr-sdk/commit/ebd2b33))
+- **`wrap()` says so when it governed nothing.** Wrapping a client whose shape
+  carries no auditable method returned a proxy that forwarded every call
+  through — no policy, no event, and nothing said — so a caller reasonably
+  concluded they were covered. `wrap()` now probes the client for every path
+  the proxy can intercept and reports a miss once per client on the existing
+  warning channel; `requireGovernedSurface` / `require_governed_surface` raises
+  instead, for a deployment that wants an ungoverned client to fail at startup.
+  The proxy is still returned either way, so a client that worked before still
+  works.
+  ([`d5ec1fa`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5ec1fa))
 
 ### Changed
 
@@ -1111,534 +1348,354 @@ cut, when it is renamed to that version.
   before, minus the slot, and the control is that a live scope's real
   consumption is still reported exactly.
 
-### Added
 
-- **`install_tool_gate_hook` — Haystack refuses a denied tool before its Agent
-  dispatches the batch.** Haystack ships a `Tool` abstraction and an `Agent`,
-  and obsvr governed neither: its component gates the prompt flowing through a
-  pipeline, and nothing looked at tool calls at all, so a policy naming a
-  denied tool refused nothing on this framework. The installer registers
-  obsvr's gate as the Agent's own `before_tool` hook, which the Agent runs
-  before it resolves the pending tool calls and before it builds the executor
-  that dispatches them in parallel — so a refusal removes the denied call and
-  leaves its siblings pending, with no sibling already in flight to race.
-  Measured with a denied call and a benign one in a single reply: the denied
-  tool executes zero times, the benign one once. The gate rules on the CALL
-  rather than on a tool object, which is what makes it total here — tools
-  handed to `run(tools=...)`, tools inside a `Toolset` that respawns per run,
-  and tools rebuilt by a serialization round-trip all still arrive as a named
-  call in the Agent's own state. Refusal answers the model and the run
-  continues; `on_denial="abort"` raises instead, and `govern_tool` remains the
-  second mechanism carrying the full pre-call net. Driven live at
-  `haystack-ai` 3.0.0 through `Agent.run` and `Agent.run_async`, with the
-  payload asserted absent from what the caller received; the `before_tool`
-  hook point does not exist at 2.0.0, where the installer feature-detects the
-  dispatch half and refuses loudly rather than arming a gate nothing would
-  consult.
-  ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
+- **A Python-computed `policy_version` changes value for rule sets containing
+  certain numbers.** The canonicalizer fix described under Fixed is listed here
+  as well because of what depends on that hash. Approvals are pinned to the rule
+  hash, and the `/policies` poll sends `X-Obsvr-Rules-Hash`, so a rule set
+  containing a whole-valued float, negative zero, an exponent-form number, an
+  unpaired surrogate, or an astral object key hashes to a different value in
+  Python than it did before — to the value TypeScript was already producing. No
+  hash the two SDKs agreed on has changed. _Migration: if a Python process holds
+  outstanding approvals for such a rule set, they are void and must be
+  re-granted; a mixed-language fleet stops reporting two different versions for
+  one policy._
+  ([`87c593d`](https://github.com/obsvr-dev/obsvr-sdk/commit/87c593d))
 
-- **`is_obsvr_block(exc)` — recognising a Haystack refusal after the pipeline
-  has rewrapped it.** At haystack-ai 3.x a component's exception reaches the
-  caller of `pipeline.run()` as the host's `PipelineRuntimeError` with the
-  original demoted to `__cause__`, and an async pipeline wraps a second time,
-  so `except ObsvrHaystackBlocked` around `pipeline.run()` catches nothing.
-  The refusal is still there and the run still stopped; only the type at the
-  top changed. The helper walks the cause chain so one branch covers both that
-  shape and the unwrapped error an Agent raises directly.
-  ([`f0de20c`](https://github.com/obsvr-dev/obsvr-sdk/commit/f0de20c))
-- **`govern_agent` — LlamaIndex refuses a denied tool before it runs (Python).**
-  This surface carried no tool gate of any kind, and the documented reason was
-  wrong: it said a callback is the wrong place for a gate, when the operative
-  fact is that no tool callback is dispatched here at all —
-  `CBEventType.FUNCTION_CALL` has zero dispatch sites at any current version,
-  and the instrumentation dispatcher that replaced those events swallows every
-  handler exception, so nothing raised from one reaches the run. The gate
-  therefore lives on the tools. `govern_agent(agent)` binds to `get_tools`,
-  where a workflow agent assembles the tools for a turn, and governs each
-  through `govern_tool` with the full pre-call net. Binding at ASSEMBLY rather
-  than to the caller's list is what makes it complete: measured live with the
-  tool denied, a tool supplied per turn by a `tool_retriever` and a tool whose
-  governed copy was discarded while the agent kept the original both RAN under
-  a hand-applied wrapper and are refused here. Driven live at llama-index-core
-  0.14.5 and 0.14.23 on the plain, ReAct, tool-retriever and
-  multi-agent-handoff routes: zero side-effect writes on every deny leg, the
-  payload absent from the `ToolCallResult` the caller received, paired allow
-  controls at exactly one. The framework converts the refusal into an error
-  tool result rather than raising, so the run continues and the signed record
-  is what reports the refusal — below core 0.14.8 it is the only thing that
-  can, because `ToolOutput` carries no exception there and a refusal is
-  indistinguishable from a crash to the caller. Two routes are out of scope and
-  say so: `CodeActAgent`'s generated code, and tools invoked outside an agent.
+- **BREAKING: `QUOTA_UNMETERED` added to the closed `ReasonCode` registry.**
+  A quota rule whose scope the bounded meter has no counter slot for is not
+  enforced on that call, and now says so: the verdict carries
+  `metered: false`, the call's event carries
+  `metadata.obsvr_telemetry.quota_unmetered` (the channel `detector_failure`
+  and canary evidence already use), and `failMode` decides whether the call
+  proceeds — `open` (the default) allows it, `closed` blocks it with the new
+  code. Previously such a call was allowed with no signal at all and was
+  byte-identical on the wire to one that had been counted and found under
+  limit, so an auditor replaying it read a quota rule that was in force and
+  never exceeded. The `policyFloor` always resolves closed here, floor-class
+  rules being non-overridable; shadow rules never do, being non-decisional.
+  _Migration: this is additive to a closed enum, so an exhaustive `switch` over
+  `ReasonCode` in consumer code needs a `QUOTA_UNMETERED` arm. Operators
+  running `failMode: "closed"` should note that a saturated quota store now
+  blocks new scopes rather than admitting them unmetered._
+  ([`750e5f9`](https://github.com/obsvr-dev/obsvr-sdk/commit/750e5f9),
+  [`7e22b4b`](https://github.com/obsvr-dev/obsvr-sdk/commit/7e22b4b))
 
-- **`install_tool_gate()` — AutoGen refuses a denied tool on the routes that
-  never send a message (Python).** The existing send hook enforces and keeps
-  doing so, but it governs the outgoing MESSAGE, and
-  `_process_message_before_send` has exactly two call sites in the framework.
-  Measured live with the hook installed, three public routes reached the tool
-  without either — a tool-call dict handed to `generate_reply`, to `receive`,
-  or to `execute_function` — and two of them returned the tool's payload to the
-  caller. So does an agent the caller never constructs: `run()` builds a hidden
-  executor holding every callable and no hooks, and group and swarm chats build
-  their own. The new gate wraps `ConversableAgent.execute_function` /
-  `a_execute_function` on the class, which is the only scope that reaches those
-  internal executors, and governs the `_function_map` entry the call is about
-  to run — read fresh at call time at every version in the supported range.
-  Refusal is the framework's own failed-tool contract: the raise happens inside
-  the callable, `execute_function` reports `is_exec_success=False`, and the
-  conversation continues, where the send hook instead stops the chat. Driven
-  live at ag2 0.3.2 and 0.9.9, zero side-effect writes on every deny leg with
-  paired allow controls at one. `RealtimeAgent` (a separate tool registry no
-  executor reads) and code-execution replies (code from message content, not a
-  `tool_calls` array) are out of scope and say so.
-
-- **`attach_tool_gate` / `attachToolGate` — OpenAI Agents now refuses a denied
-  tool before it runs, in both languages.** The framework consults each
-  function tool's own input guardrails BEFORE invoking it, and the new
-  installer puts obsvr's guardrail there, walking every function tool
-  reachable from an agent (handoff targets included, by tool object). A
-  denied tool is refused by the guardrail contract's returned sentinel
-  (`reject_content` / `rejectContent`) — the model receives the block message
-  as the tool's result, the run continues, and the `blocked`/`TOOL_DENIED`
-  record is true at the point it is written. The tool governor
-  (`govern_tool` / `obsvrGovernTool`) is the second, independent mechanism on
-  this surface with the opposite run semantics: its refusal raises out of the
-  tool's own callable, which the framework converts to a run abort
-  (`UserError` in Python, `ToolCallError` in TypeScript) carrying obsvr's
-  typed denial. Both mechanisms driven live with a side-effect-counting tool
-  and the payload asserted absent from what the caller received — Python at
-  openai-agents 0.19.0 and 0.19.2 on the plain, streamed and handoff routes;
-  TypeScript at @openai/agents 0.13.0, 0.13.4 and 0.14.2 on the plain and
-  streamed routes — with paired allow controls at exactly one write and the
-  two mechanisms reddening independently under mutation. Installation
-  feature-detects the framework's guardrail surface by attribute presence and
-  refuses loudly where no executor would consult it; the tracing processor
-  defers to any gate governing a name instead of stamping `not_evaluated`
-  beside the gate's own verdict.
-  ([`9e1d085`](https://github.com/obsvr-dev/obsvr-sdk/commit/9e1d085),
-  [`f84d838`](https://github.com/obsvr-dev/obsvr-sdk/commit/f84d838),
-  [`703e3d2`](https://github.com/obsvr-dev/obsvr-sdk/commit/703e3d2))
-- **`govern_tool` / `govern_tools` — framework-agnostic tool governance,
-  the Python twin of `obsvrGovernTool`.** Wraps a tool object's own execute
-  callable (resolved across `on_invoke_tool`, `_run`/`_arun` with `func`
-  co-gated, `execute`, `call`/`acall`, `invoke`/`ainvoke`, `run`/`arun`, and
-  bare callables; sync and async as a pair, one verdict and one audit event
-  per invocation) so a denied tool raises the typed `ObsvrPolicyError` before
-  its body runs on any framework, whatever hook APIs it has or lacks. The
-  gated call runs the FULL pre-call pipeline — rules, floor, PII, canary,
-  session-taint destructive gate — and every event carries the sealed
-  tool-content digest. Exported from the package root, matching the
-  TypeScript entry point. CrewAI dispatch driven live on both executor paths
-  and measured per version across the supported range; the other frameworks'
-  shapes are pinned offline.
-  ([`46946c4`](https://github.com/obsvr-dev/obsvr-sdk/commit/46946c4))
-- **The MCP tool gate is now driven against the real `mcp` package in CI, in
-  both languages — and every other integration test is labelled as what it is.**
-  This is a decision about which asymmetry to keep, so both halves are stated.
-
-  No integration test in either language had ever run against a real upstream
-  framework. They drive hand-written fakes, which pin this SDK's own logic and
-  its assumptions about a shape, but cannot see an upstream release that renames
-  the method being wrapped or stops delivering a callback. Every finding of that
-  kind in this project's history came from a live probe, never from the suites.
-
-  `mcp` is now the one exception, because `SECURITY.md` names that gate as the
-  surface to put a destructive capability behind. A real client, a real server
-  and the package's own in-memory transport, with the refusal graded on whether
-  the SERVER executed the tool body rather than on the caller's exception.
-  Python gains `mcp` in its `dev` extra at the same specifier the `mcp` extra
-  already declares; TypeScript needed no new dependency at all — the package was
-  already a devDependency that no test imported. Runtime dependencies stay at
-  zero in both packages, and the blocking dependency audit is unaffected: it
-  covers declared runtime dependencies, and the audit that sees test
-  dependencies is report-only.
-
-  **What prompted it, measured rather than argued.** With the real deny check
-  replaced by "allow everything", `sdk-typescript/tests/unit/mcp-integration.test.ts`
-  still passes 18 of 18 — it carries its own copy of the policy check, annotated
-  *"mirrors mcp.ts logic"*, and drives the copy instead of the module. Across
-  that whole suite only three pre-existing tests notice; in Python, six do. The
-  new files add four and three more.
-
-  The rest of the asymmetry is not being closed, and `tests/README.md` in each
-  SDK now says so plainly: which upstream packages are real in CI, which
-  surfaces are fakes, and what a green run on a faked surface does and does not
-  establish. A reader who assumed the integration suites exercised the
-  frameworks they name was previously left to discover otherwise.
-- **The severity axis is now stated where the limitations are.** A reader could
-  see a handful of itemised defects disclosed in `SECURITY.md` without the rule
-  that decides which of them would block a release at all. The README's
-  known-limitations section now leads with it: a record asserting an enforcement
-  that did not happen blocks a release, while a control that does not fire and
-  emits nothing gets documented and ships. A documented non-enforcing gate is
-  honest; a fabricated denial is not.
-- **The enforcement-reporting invariant now covers TypeScript as well.** A table
-  over the TypeScript tool gates, written against those implementations rather
-  than translated from the Python results — which matters, because the two SDKs
-  do not agree. Offline and deterministic, same as the Python half, and it went
-  red on a real defect on its first run.
-- **An invariant binding what the audit trail claims to what actually
-  happened.** For every event where `action_taken == "blocked"`, the governed
-  operation did not execute. Nothing in the tree asserted that, and two separate
-  false-record defects reached `main` as a result — both found by hand against
-  live providers, which is to say found once. The check is a table over all six
-  Python surfaces that carry a tool gate: a spy tool records whether it was
-  entered, each driver models the framework's real invocation ordering rather
-  than a convenient one, and both halves are asserted — the tool did not run AND
-  the record says so. Every row declares its grade, so a surface that quietly
-  stops enforcing fails its row, and one that starts enforcing also fails and
-  has to be regraded on purpose. Table coverage is itself a test: a new
-  integration that ships a tool gate without a row fails the suite.
-
-  Offline and deterministic by design — no provider, no key, no network — and
-  wired into CI as its own named step. Its ability to fail is tested on every
-  run rather than demonstrated once: one test points an enforcing gate at a
-  no-op and requires the assertion to break, and two more require it to reject a
-  fabricated denial and a silent refusal. Written before the fixes it prompted,
-  and it went red on both of them first.
-- **Known limitation, stated rather than left to be discovered: blocked-call
-  attribution on `ai` below 5.0.0.** Enforcement is fully correct across the
-  supported range — the call is blocked, `status_code` is 403, the reason code
-  and blocked types are right. On `ai` 3.3.28–4.x the blocked *event* carries
-  `provider: "unknown"` and `model: "unknown"`, so per-provider or per-model
-  reporting **over blocked calls** is unavailable there. Every other event is
-  unaffected, and from `ai` 5.0.0 blocked events are fully attributed.
-
-  This is upstream and not recoverable inside the SDK: at language-model spec v1
-  `transformParams` receives `{ params, type }` and no model, the middleware
-  object exposes no wrap-time hook that could supply one, and obsvr never calls
-  `wrapLanguageModel` itself — the caller does. A block is thrown from
-  `transformParams` before `wrapGenerate` runs, so a cached model would still
-  leave the first call unattributed. Fixing it would mean adding a public option
-  for the caller to declare the model, which is not worth new API surface for a
-  version range where enforcement already works.
-
-- **Declared peer floors now name releases the code can actually work with.**
-  Every floor below was checked by building a throwaway environment per
-  candidate version, installing that version alone, and importing the exact
-  symbol the integration binds — not by reading a changelog. A floor that is
-  merely *safe* was rejected the same as one that is wrong, so these are the
-  lowest working versions rather than the lowest convenient ones.
-
-  | Package | Was | Now | Why the old floor was false |
-  | --- | --- | --- | --- |
-  | `ai` | `>=3.0.0` | `>=3.3.28` | the middleware API `obsvrMiddleware()` attaches to does not exist below 3.3.28 — roughly 130 advertised releases where the integration cannot be constructed at all |
-  | `llamaindex` | `>=0.5.0` | `>=0.5.9` | 0.5.0 and 0.5.8 register the handler and emit **no audit events at all**: the call succeeds, the provider returns usage, and nothing is recorded |
-  | `@aws-sdk/client-bedrock-runtime` | `>=3.422.0` | `>=3.587.0` | `ConverseCommand` / `ConverseStreamCommand` — two of the four commands the integration dispatches on — are **absent at 3.422.0 and present at 3.1096.0** by introspection, and that is the whole of the evidence. **This floor is a position taken, not a located edge:** nothing between those two points was tested, so the real boundary is unknown across the 386 published releases that sit between them. It is stated at a release that exists — the line has gaps, and a floor naming a version the registry never carried would assert a boundary nobody could have tested ([`bc3970c`](https://github.com/obsvr-dev/obsvr-sdk/commit/bc3970c)) |
-  | `pydantic-ai-slim` | `>=0.0.14` | `>=0.4.4` | `pydantic_ai.toolsets.WrapperToolset` does not exist below 0.4.4; below it `govern_toolset()` still returns an object, so denied-tool policy, per-tool auditing and step limits are silently inert |
-  | `google-adk` | `>=0.1.0` | `>=1.2.0` | all thirteen releases below 1.2.0 install but cannot import (`google.adk.models` raises `ModuleNotFoundError: deprecated`, reached through the OpenTelemetry stack) |
-  | `semantic-kernel` | `>=1.0.0` | `>=1.16.0` | 1.14.0 and 1.15.0 install but cannot import against any modern pydantic; below 1.14.0 CPython 3.13 has no candidate at all |
-  | `llama-index-core` | `>=0.10.0` | `>=0.11.23` | the declared floor emits no audit event at all; **this floor is the lowest release VERIFIED working live rather than the first known-good one** — the 0.10.x line could not be measured, so versions below are excluded for being unverifiable, not for being proven broken ([`0bdfbc1`](https://github.com/obsvr-dev/obsvr-sdk/commit/0bdfbc1)) |
-  | `agent-framework` | `>=1.0.0` | `>=1.11.0` | all sixteen releases below 1.11.0 fail dependency resolution outright — the meta-package pins `agent-framework-core` to its own version exactly, while a sibling reached through that package's `all` extra requires `>=1.11.0` — so the extra named sixteen releases a plain install cannot produce ([`dc0f1bf`](https://github.com/obsvr-dev/obsvr-sdk/commit/dc0f1bf)) |
-  | `smolagents` | `>=1.0.0` | `>=1.4.0,!=1.5.0` | below 1.4.0 the import fails against a current `transformers`; 1.5.0 does not pull `transformers` in at all, and 1.5.1 restored it. The hole is excluded rather than rounded up, because 1.4.x genuinely works |
-
-  Most of these are upstream packaging problems rather than obsvr renames, but
-  a declaration that advertises a release the integration cannot bind on is
-  obsvr's to correct either way. **Migration:** none, unless you pinned a
-  version inside one of the removed ranges — in which case the integration was
-  not working there, silently, and the resolver now refuses the install rather
-  than resolving to a version nothing binds on.
-  ([`5342720`](https://github.com/obsvr-dev/obsvr-sdk/commit/5342720))
-
-- **The two direct-provider floors now name releases that carry an auditable
-  method.** The floors above were corrected for failing to *bind*; these two
-  bound perfectly well and governed nothing, which is the quieter failure and
-  the harder one to notice from outside. Both were re-established by an
-  exhaustive walk — one throwaway environment per published release, 326 for
-  `openai` and 197 for `anthropic`, no bisect anywhere — so every boundary
-  named is an adjacent tested pair rather than an interpolation, and each
-  boundary was then re-run live and graded on the captured event.
-
-  | Package | Was | Now | Why the old floor was false |
-  | --- | --- | --- | --- |
-  | `anthropic` | `>=0.3.0` | `>=0.16.0` | the declared floor governs **nothing**. 0.3.x exposes only `completions.create`, which is not an auditable method, so an operator who resolved that floor built a client, wired obsvr, sent traffic and got **zero audit events with nothing raising**. Confirmed live rather than read off a shape: 0.7.8 grades `NO_AUDIT` because no auditable path exists on the client at all. `beta.messages.create` arrives at 0.8.0, and `messages.create` — the path the support table is about — at 0.16.0 |
-  | `openai` | `>=1.0.0` | `>=1.66.0` | honest for exactly **one of the seven** declared auditable paths. 1.0.0 through 1.65.5 carry `chat.completions.create` and nothing else; `responses.create` and `responses.parse` both arrive at 1.66.0 |
-
-  **`>=1.66.0` still does not promise every path, and the manifest now states
-  the reality per path rather than per range.**
-  `beta.chat.completions.parse` arrives at 1.40.0, `chat.completions.parse` and
-  `beta.chat.completions.create` at 1.92.0, and `beta.responses.create` only at
-  2.45.0 — six releases out of the 326 walked. The floor was deliberately not
-  raised to 2.45.0 to cover that last path, because a range standing for six
-  releases would misdescribe the 141 on which the `responses` paths do work.
-  For `anthropic`, `messages.parse` arrives at 0.77.0 and is likewise not
-  promised by the range.
-
-  Two non-monotonic rows in the walks are upstream history, not obsvr
-  regressions, and are recorded that way: `openai` 1.99.0 ships a broken
-  `openai.types.responses`, so both `responses` paths read absent for a single
-  day until 1.99.1; and `anthropic`'s `beta.messages` is absent from 0.16.0
-  through 0.35.0 because the beta namespace was removed outright when that API
-  graduated, returning at 0.36.0. **Raise the floor to `>=0.36.0` if the beta
-  namespace has to be covered too.**
-
-  **Not marked BREAKING, and the reason is that nothing has been published
-  from this repository yet** — no installed consumer can be depending on the
-  old floors. **Migration:** none, unless you pinned a version inside a removed
-  range, where the extra declared a client on which no auditable path exists.
-
-- **`content_provenance` on audit events: where inside the payload the content
-  came from.** `source` names the integration that emitted an event ("mcp",
-  "langchain"); this names the position the text occupied within the call —
-  `user_turn`, `system`, `retrieved`, `tool_result`, `memory`, `unknown`. It
-  exists for triage: a `prompt_injection` found in a user turn is someone
-  probing your bot, and the identical finding in a tool result means an upstream
-  data source is already compromised. Set **only where an integration genuinely
-  knows** and absent everywhere else — today that is the MCP tool-result events
-  and LangChain's `tool.result`, all as `tool_result`. Never inferred from the
-  operation name or the payload shape, because a wrong value gets read as
-  evidence in exactly the incident where being wrong costs the most.
-  **Audit-record completeness only, deliberately not a policy input:** nothing
-  in detection, scoring, or gating reads it, since obsvr gates on session-taint
-  reachability rather than on classifying how far to trust a source. **Not
-  sealed:** the Merkle leaf, the `sdk_sig` preimage and the decision-input
-  document are each closed lists of named fields and this is in none of them, so
-  it sits outside the integrity proof and can be altered without breaking chain
-  or root verification — treat it as a triage hint, not as evidence. Optional
-  and absent by default; callers that ignore it see no change. Because ingest
-  has no column for the name yet, it also rides reserved
-  `metadata.obsvr_content_provenance`, the route `obsvr_tool_content_hash`
-  already takes.
-- **BREAKING: a 14th rule type, `protocol_facet`, matching parsed statement
-  structure.** A rule can now address `sql.verb`, `sql.target`, `sql.tables`,
-  `sql.functions` and `sql.multiple_statements` instead of matching characters:
-  `{ type: "protocol_facet", conditions: { facet: "sql.verb", facet_not_in:
-  ["select"] } }`. A comment between `DROP` and `TABLE` defeats a regex and
-  does not defeat this, and it does not fire on prose that merely mentions the
-  word. **Read this before adopting it: the failure direction is the opposite
-  of every other rule type.** Text the decomposer cannot decompose MATCHES, so
-  a facet rule refuses rather than permits what it could not read — an attacker
-  who can make a statement unparseable would otherwise have found the bypass.
-  The decomposition is stdlib-only and lexical rather than a full grammar (this
-  package ships no runtime dependencies), and is explicit about what it does
-  not handle: subquery scopes, CTEs, dialect syntax, precedence. Bounded at 8
-  KiB and 2,048 tokens, beyond which it reports unparseable. BREAKING only in
-  that the new reason code `PROTOCOL_FACET_MATCHED` is an addition to a closed
-  enum; nothing existing changes meaning. Pinned by
-  `conformance/fixtures/protocol_facets.json`. **Migration:** nothing is
-  required to keep working — no existing rule changes behavior, and the new
-  type only applies to rules that ask for it. If you exhaustively switch over
-  the rule-type union or the reason-code registry in TypeScript, add a
-  `protocol_facet` / `PROTOCOL_FACET_MATCHED` case; a JavaScript or Python
-  consumer needs no change.
-  ([`13b71dc`](https://github.com/obsvr-dev/obsvr-sdk/commit/13b71dc))
-- **BREAKING: rot13 is decoded before the scanners run.** With `deobfuscation`
-  enabled, a `rot13` view is now derived from any text carrying at least eight
-  ASCII letters, so an injection payload the scanners already recognise no
-  longer walks past them rotated. The view is derived last and outside the
-  decoded-candidate cap, so it displaces nothing and never changes an existing
-  detection's `via` attribution. BREAKING only in that `"rot13"` is an addition
-  to the closed `via` / `CanaryVia` value sets, which breaks an exhaustive
-  switch over them. **Note the cost, which is deliberate:** rot13 is applied
-  speculatively rather than gated on the text looking encoded, because deciding
-  that first would be a heuristic in front of a deterministic decision path — so
-  every scanned text pays one extra linear pass. Character substitution (leet)
-  is deliberately not decoded; the reasoning is in the deobfuscation module in
-  both SDKs. **Migration:** nothing is required unless you exhaustively switch
-  over `via` or `CanaryVia` in TypeScript, where a `"rot13"` case must be
-  added. Detections that already fired keep their existing `via` attribution
-  unchanged; a JavaScript or Python consumer needs no change. To opt out of the
-  extra pass, disable `deobfuscation` — there is no rot13-specific switch,
-  because a per-transform opt-out is a bypass an attacker can aim for.
-  ([`f5a5583`](https://github.com/obsvr-dev/obsvr-sdk/commit/f5a5583))
-- **Layered call cost (`costPolicy` / `cost_policy`), off by default.** Three
-  layers, each overriding the one before and all three retained on the record:
-  what the caller said a call would cost (`metadata.cost_estimate_micros`),
-  what you declare it costs, and the metered figure from provider-reported
-  usage at your own rates. The signed gap between the estimate and the metered
-  value rides `metadata.obsvr_cost`, because an estimator that is persistently
-  an order of magnitude out is only visible if both numbers survive. **No
-  provider price list ships in this package** — prices change on the vendor's
-  schedule and a stale rate baked into a release seals a wrong number, which
-  cannot be reissued — so rates are yours to declare. Every amount is an
-  integer count of millionths of a currency unit with a half-up rounding rule
-  written out in both languages, because money in binary floating point does
-  not agree between two runtimes at the edges. With no cost policy configured,
-  events are unchanged. Pinned by `conformance/fixtures/cost.json`.
-  ([`34659b2`](https://github.com/obsvr-dev/obsvr-sdk/commit/34659b2))
-- **CloudEvents v1.0 export.** `toCloudEvent` / `to_cloud_event` project an
-  audit event onto a CloudEvents envelope, and `serializeCloudEvent` /
-  `serialize_cloud_event` produce its canonical string form, byte-identical
-  across both SDKs and pinned by `conformance/fixtures/cloudevents.json`. The
-  envelope's dedup key `(source, id)` is mapped onto the audit chain
-  coordinate `(sdk_session_id, seq_no)`, so a CNCF-ecosystem sink dedupes on
-  the same identity the ledger does; an event that never entered the chain
-  falls back to `request_id`. `datacontenttype` is `application/json`,
-  `dataschema` is `urn:obsvr:schema:audit-event:1`, and two extension
-  attributes (`obsvraction`, `obsvrenv`) let a sink route without opening the
-  payload. Purely additive: nothing calls it unless you do, and the event is
-  carried verbatim as `data`. The serializer refuses values the two runtimes
-  cannot render identically rather than emit bytes that quietly differ; use
-  `safeSerializeCloudEvent` / `safe_serialize_cloud_event` to skip those.
-  ([`d856c17`](https://github.com/obsvr-dev/obsvr-sdk/commit/d856c17))
-- **Python agent-run controls: loop detection and delegation tracking.**
-  `obsvr.LoopDetector` / `obsvr.DelegationTracker` (and their `create_*`
-  factories) are the twins of the TypeScript controls, with identical
-  thresholds, check order, and violation messages, pinned by the new
-  `conformance/fixtures/agent_controls.json`. Loop detection is driven for you
-  by the LangChain and OpenAI-Agents integrations when
-  `agent_policy={"loop_detection": {"max_iterations": N, "window_ms": M,
-  "action": "block"}}` is configured; a run past the limit emits a
-  `LOOP_DETECTED` event and stops. Opt-in: with no `loop_detection` block, an
-  agent run behaves exactly as before. Delegation tracking is a library you
-  drive from your own handoff path, as in TypeScript.
-  ([`36696bc`](https://github.com/obsvr-dev/obsvr-sdk/commit/36696bc))
-- **`sessionTaint.destructiveTools`: a tainted session loses its dangerous
-  capabilities.** An exact-name tool set a tainted session may never invoke,
-  enforced at every tool boundary (governed tools, MCP, framework wrappers)
-  even under the default `action: "flag"` — ordinary egress stays merely
-  flagged while `send_money`-class capabilities go dark, which is the
-  composition that actually stops indirect injection. One set-membership test
-  at the tool gate; decisions pinned as `(tool_name, taint_state) → decision`
-  in `conformance/fixtures/session_taint.json`.
-  ([`e350ab9`](https://github.com/obsvr-dev/obsvr-sdk/commit/e350ab9))
-- **Every audit event carries a `reason_code`.** The registry code for the
-  classification the decision rests on — the deciding layer's fine-grained
-  code (the rules engine's `KEYWORD_BLOCKED`, `MODEL_GATE_BLOCKED`, ...),
-  `PERMITTED` on a clean allow — and always the same code the thrown
-  `ObsvrPolicyError` carries, resolved once for both. Previously the engine's
-  code was discarded at the throw site and re-derived as one of four coarse
-  categories, and the event had no such field at all.
-  ([`b8848a1`](https://github.com/obsvr-dev/obsvr-sdk/commit/b8848a1))
-- **The seven dormant reason codes are emitted.** `INJECTION_DETECTED` (single-
-  and multi-turn injection blocks, which previously surfaced as `PII_DETECTED`
-  or `POLICY_VIOLATION`), `TRANSMISSION_BLOCKED` (taint-gated egress refusals),
-  `TOOL_DENIED` (agent-policy tool refusals on every integration),
-  `MCP_TOOL_DENIED` / `MCP_RESULT_BLOCKED` (the MCP gates), and
-  `LOOP_DETECTED` / `DELEGATION_BLOCKED`. Both suites now run a
-  reachability gate: every registry code must be emitted by an exercised path,
-  pinned in a named suite, or explicitly reserved — and as of the Python
-  agent-run controls below, nothing is reserved in either language.
-  ([`2f3b5a4`](https://github.com/obsvr-dev/obsvr-sdk/commit/2f3b5a4))
-- **MCP tool descriptors are content-inspected at discovery.** The poisoning
-  scan now also reads JSON Schema `description` / `default` strings at any
-  depth, matches over a comment-stripped view (a directive split by HTML
-  comments reads whole to the model and fragmented to a scanner) and — with
-  `deobfuscation` enabled — the decoded views; bidi controls are flagged on
-  presence, concealment is its own signal, and a truncated schema walk says
-  so. Reasons pinned exactly by `conformance/fixtures/tool_descriptor_scan.json`.
-  ([`ca0c209`](https://github.com/obsvr-dev/obsvr-sdk/commit/ca0c209))
-- **Cross-SDK bookkeeping is validated data.** Every conformance case now
-  carries per-language `sdk_support` (`required` / `optional` / `skip`) — 418
-  entries across 25 of the 26 fixtures — so a gap shows as a recorded skip
-  rather than a missing test. `claimable` is resolved on all 26 and enforced
-  bidirectionally against the public docs. The known-divergences table became
-  the schema-checked `conformance/known-divergences.json`, and the spec's seven
-  uncovered EV statements are a checked partition in `eval_semantics.json`
-  rather than a prose admission. **A support level is enforced, not
-  decorative:** both suites reject a non-`required` level whose consuming
-  harness does not read the field, so a `skip` nothing would act on fails the
-  bookkeeping rather than surfacing later as a confusing case-level failure. If
-  you consume the corpus, `required` is the level you can assume is exercised
-  everywhere; `optional` today means only the two signed-policy vectors that
-  need an Ed25519 backend Python resolves optionally.
-  ([`2585ce0`](https://github.com/obsvr-dev/obsvr-sdk/commit/2585ce0),
-  [`97d82dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/97d82dd),
-  [`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
+- **BREAKING (Python): `ingest_url` no longer defaults to
+  `http://localhost:3000`.** Unset, it is now empty: the SDK logs a loud
+  no-delivery warning at `init()` and delivers nothing, matching the TypeScript
+  SDK on the same misconfiguration. Previously a Python process with no
+  `ingest_url` streamed governed events - including redacted prompt text on
+  blocked calls - to whatever was listening on local port 3000. _Migration: if
+  you relied on the localhost default in development, pass
+  `ingest_url="http://localhost:3000"` explicitly._ Governance itself is
+  unaffected either way; only delivery stops.
+  ([`07413f7`](https://github.com/obsvr-dev/obsvr-sdk/commit/07413f7))
+- An unusable ingest URL is now a delivery failure in Python rather than an
+  exception: the sender and the policy poll both count it as retryable instead
+  of raising inside their background threads.
+  ([`07413f7`](https://github.com/obsvr-dev/obsvr-sdk/commit/07413f7))
+- The normative evaluation-semantics specification (EV-1 through EV-23) now
+  lives at `conformance/SPEC-evaluation.md`, beside the fixtures that pin it.
+  Semantics are unchanged.
+  ([`3b0f13d`](https://github.com/obsvr-dev/obsvr-sdk/commit/3b0f13d))
+- `conformance/fixtures/signing_vectors.json` gained a `chain_verification`
+  block: tamper cases with the verdict both verifiers must produce. It landed
+  with thirteen and now holds twenty, the chain-format change above having
+  added the format-1, format-2, and mixed-chain cases. Consumers of the
+  existing `events` and key material are unaffected.
+  ([`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
+- `conformance/fixtures/eval_semantics.json` gained dedicated cases for EV-3,
+  EV-14, and EV-22 — statements `conformance/SPEC-evaluation.md` listed as
+  covered but which no fixture actually pinned — shrinking the uncovered list
+  from nine to seven. Cases now declare a `mode`: `rules` (the default),
+  `pipeline`, or `explain`. Semantics are unchanged; this pins behavior that
+  was already specified.
+  ([`4d1c423`](https://github.com/obsvr-dev/obsvr-sdk/commit/4d1c423))
+- **The conformance corpus hash changed — re-pin if you pinned it.**
+  `conformance/MANIFEST.sha256` moved from `corpus_sha256 = 1120116f…` to
+  `9afde624…`, and both `conformance.pin` files with it. That span is no longer
+  a single change. The bookkeeping pass described under Added — the per-case
+  `sdk_support` and per-fixture `claimable` keys, one divergence entry's
+  `tracking` text, one fixture's `description` — moved no vector, digest,
+  canonical form, or expected value, and carried the hash only as far as
+  `8c48c249…`
+  ([`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
   [`dd914c8`](https://github.com/obsvr-dev/obsvr-sdk/commit/dd914c8),
-  [`aff2949`](https://github.com/obsvr-dev/obsvr-sdk/commit/aff2949),
-  [`662d63e`](https://github.com/obsvr-dev/obsvr-sdk/commit/662d63e),
-  [`f00e883`](https://github.com/obsvr-dev/obsvr-sdk/commit/f00e883))
-- **Dropped events are declared in the signed chain.** A bounded-queue overflow
-  now signs a **gap marker** at the chain position where events were lost,
-  stating how many. The count lives in the signature preimage, so editing it
-  down breaks verification. Previously drops preceded sequence assignment, so a
-  burst that lost most of its events still verified clean. Both verifiers gained
-  `gapMarkers` / `eventsDeclaredLost` (`gap_markers` / `events_declared_lost`),
-  and the format is pinned by `conformance/fixtures/audit_gap.json`.
-  ([`6e824fc`](https://github.com/obsvr-dev/obsvr-sdk/commit/6e824fc))
-- **`obsvr-verify` exit code 3: valid but incomplete.** A chain declaring
-  dropped events now exits `3` rather than `0`, so `obsvr-verify chain.json &&
-deploy` no longer passes on a record missing most of its events. **If you gate
-  on the exit status, a previously passing chain that declares loss will now
-  fail**; `--allow-gaps` maps `3` back to `0`, suppressing the status only and
-  never the printed disclosure.
-  ([`d5db27f`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5db27f))
-- **Typed policy-block error.** A refused call now raises `ObsvrPolicyError` in
-  both SDKs with a stable `type`, a registry `reason_code`, the deciding
-  `rule_id`, and decision metadata, so a deliberate refusal is distinguishable
-  from a transport failure. An unrecognized reason category yields
-  `ObsvrUnknownPolicyError` rather than an untyped error. Message text is
-  unchanged; Python still subclasses `RuntimeError`.
-  ([`6dfa8c7`](https://github.com/obsvr-dev/obsvr-sdk/commit/6dfa8c7))
-- **Duplicate-instance guard.** With the SDK installed twice in one process, the
-  first copy to `init()` governs and the second stands down with a warning. A
-  copy that stood down passes clients through unwrapped, so the warning names
-  the fix: deduplicate the dependency.
-  ([`71caea2`](https://github.com/obsvr-dev/obsvr-sdk/commit/71caea2))
-- **Python chain verification.** `obsvr.verify_chain(events, api_key)` verifies
-  an exported chain offline, checking every signature plus sequence continuity,
-  linkage, session consistency, and timestamp monotonicity, with the same
-  verdicts as the TypeScript `verifyAuditChain`.
-  ([`fea31b3`](https://github.com/obsvr-dev/obsvr-sdk/commit/fea31b3))
-- **`dropped_rejected` delivery counter.** Events a server refuses individually
-  inside a 2xx batch now get their own counter and poll-header key; they were
-  previously counted as sent. The `dropped` aggregate still means
-  never-delivered.
-  ([`5b9a941`](https://github.com/obsvr-dev/obsvr-sdk/commit/5b9a941),
-  [`8d9066e`](https://github.com/obsvr-dev/obsvr-sdk/commit/8d9066e))
-- **`tool_content_hash` is pinned by a shared fixture.**
-  `conformance/fixtures/tool_content_hash.json` fixes the canonical document and
-  digest for sixteen cases, including the numbers that must refuse to hash
-  rather than seal a value the two languages format differently, and pins that
-  this hash is not the descriptor-pinning hash.
-  ([`cf6c958`](https://github.com/obsvr-dev/obsvr-sdk/commit/cf6c958))
-- **`obsvr-verify` ships for Python.** `pip install obsvr-sdk` installs a console
-  script with the same tiers, exit codes, bundle shapes, and verdicts as the npm
-  CLI, so a Python-only team can verify its own evidence without a Node
-  toolchain. CI drives both binaries over one export so they cannot drift.
-  ([`1756930`](https://github.com/obsvr-dev/obsvr-sdk/commit/1756930))
-- **Tool-call events carry `tool_content_hash`.** Events from an MCP tool
-  boundary (both SDKs) or `obsvrGovernTool` (TypeScript) carry a digest binding
-  the tool name, the descriptor the caller held, and the call arguments, so a
-  descriptor swap is attributable after the fact. Blocked tool calls are
-  stamped too, and the digest is omitted rather than guessed when a value
-  cannot be canonicalized identically in both languages.
-  ([`407186f`](https://github.com/obsvr-dev/obsvr-sdk/commit/407186f),
-  [`5ab19ec`](https://github.com/obsvr-dev/obsvr-sdk/commit/5ab19ec),
-  [`fd05442`](https://github.com/obsvr-dev/obsvr-sdk/commit/fd05442))
-- **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** A retry that
-  raced a lost 2xx was dead-lettered, fabricating a coverage gap for an event
-  the server had already sealed. Only that code: `409 sequence_fork` stays a
-  failure, and an unreadable 409 body is never absorbed.
-  ([`4dd99b4`](https://github.com/obsvr-dev/obsvr-sdk/commit/4dd99b4))
-- **The Python sender reads batch responses.** It previously discarded the body,
-  so events a server refused inside a 2xx batch counted as sent. Per-event
-  rejects now increment `dropped_rejected`, are excluded from `sent`, and arm no
-  backoff. An unparseable body means "no rejects reported", never a failed
-  delivery.
-  ([`8d9066e`](https://github.com/obsvr-dev/obsvr-sdk/commit/8d9066e))
-- **The shared conformance corpus is hash-pinned.** `conformance/MANIFEST.sha256`
-  hashes every file, and each package pins the corpus its suite was written
-  against. CI fails on an unregenerated pin, disagreeing pins, or a fixture with
-  no consumer. What this closes is a forked fixture: a copy drifts, both suites
-  keep passing, and the shared contract stops being shared.
-  ([`7a329ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/7a329ef))
-- **CSS-hidden and aria-hidden content is stripped from the scan view, in both
-  SDKs.** Hidden markup could break a phrase apart so it read as an injection
-  to the model and as unrelated fragments to a scanner. Elements hidden via
-  `display:none`, `visibility:hidden`, or `aria-hidden="true"` are now removed
-  from the canonical view, tag and content. Raw text is still scanned first, so
-  a payload hidden whole was always caught; this closes the split-phrase case.
-  Detection-only, and off unless `deobfuscation: { enabled: true }`.
-  ([`9916800`](https://github.com/obsvr-dev/obsvr-sdk/commit/9916800),
-  [`ad34f66`](https://github.com/obsvr-dev/obsvr-sdk/commit/ad34f66))
-- **Python signed-policy VERIFIER.** `policy_verify.py` implements the same
-  checks and refusal reasons TypeScript uses, against the same shared vectors.
-  The backend is optional (`pip install "obsvr-sdk[crypto]"`); with a key pinned
-  and none installed the policy is refused and the events say so.
-  **This entry originally said `obsvr.init(policy_public_key=...)` pins a key
-  and the SDK checks a fetched policy's signature. It did not: these two commits
-  added the verifier and nothing called it.** See the Fixed entry below for when
-  it was actually wired to the poll.
-  ([`6783b26`](https://github.com/obsvr-dev/obsvr-sdk/commit/6783b26),
-  [`9c479d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/9c479d5))
-- **Failure-disposition registry.** Every governance layer declares what it does
-  in each failure state (timeout, error, degraded) in one table per language,
-  pinned by `conformance/fixtures/fail_mode.json`. Descriptive when it landed:
-  no call path read it and no behavior changed.
-  ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
+  [`f3947d9`](https://github.com/obsvr-dev/obsvr-sdk/commit/f3947d9),
+  [`6767aa4`](https://github.com/obsvr-dev/obsvr-sdk/commit/6767aa4)).
+  **Everything after that did change expected values**, so re-pinning is not
+  the whole of the work: the `protocol_facet`, CloudEvents, cost and
+  evaluation-context fixtures are new, `reason_codes.json` gained
+  `PROTOCOL_FACET_MATCHED`, `otel_attributes.json` moved to schema 2 with a
+  `conditional_keys` set, and the approvals, session-taint, de-obfuscation and
+  fail-mode fixtures all grew cases. Each is described in its own entry above;
+  re-read the ones whose fixtures you consume.
+- **The published GitHub Action pins its own dependency to a commit.** Its
+  `setup-node` step used a mutable tag, which every consumer's CI inherited
+  with no way to see or override it. It is now pinned to a commit SHA with the
+  version in a trailing comment.
+  ([`030dc8c`](https://github.com/obsvr-dev/obsvr-sdk/commit/030dc8c))
+
+
+- **BREAKING: a regex rule means one thing on both SDKs.** The shorthand
+  classes and anchors read differently in Python `re` and JavaScript `RegExp`,
+  so a customer rule could block a call on one SDK and allow it on the other
+  with nothing on the record to say so — measured, an SSN pattern matched
+  Arabic-Indic digits in Python and not in TypeScript. ECMAScript's meaning is
+  now the meaning, rewritten into the Python pattern at that SDK's one compile
+  call. Measured per codepoint across the BMP: `re.ASCII` closes three families
+  and makes whitespace worse, so whitespace is rewritten to an explicit class
+  instead. **Migration:** a rule using `\d` `\w` `\s` `\b` `$` or `.` now
+  matches ASCII/ECMAScript semantics in Python, and `\S` inside a character
+  class that does not also hold `\s` is refused in both languages. Nothing was
+  published to npm or PyPI before this release, so no installed build carries
+  the old behaviour and there is no deployed rule to re-verify — which is why
+  this lands now rather than after the first release.
+  ([`6cb9cc9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6cb9cc9))
 
 ### Fixed
+
+- **Host metadata the audit sender cannot serialize no longer reaches the
+  caller.** The sender sized caller-supplied `metadata` with a bare serializer
+  before deciding whether to trim it, so a bag carrying a throwing property
+  getter, a `BigInt`, a hostile `toJSON` or a circular reference raised out of
+  the sender into the application's own synchronous call — the one path outside
+  the guarantee that an exception inside a detector layer never reaches your
+  application. A bag that cannot be measured is now treated as **over budget**
+  and takes the trim that already exists for an oversized one, so the grouping
+  keys (`trace_id`, `agent_run_id`, the span envelope) survive and the event is
+  still delivered; a reserved key that is itself unreadable is dropped rather
+  than thrown. Python had the same defect through a cycle, which its
+  `default=str` never covered. ([`7b8c03c`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b8c03c))
+
+- **The two package READMEs no longer ship links that resolve to nothing.** They
+  carried ten relative links, six of them reaching above the package directory.
+  PyPI renders its long description standalone with no repository around it, so
+  every one of them 404'd for an installed reader while working perfectly under
+  GitHub review. They are now absolute to the repository, and the doc-link guard
+  gained the half it was missing: a relative link in a published README fails,
+  every other relative link must name a tracked file, and the published set is
+  checked against the package manifests so it cannot go stale on its own.
+  ([`3f25744`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f25744))
+
+- **The per-integration tool-policy grading table is read back against the
+  tree.** It is the table the documentation points a reader at before they put a
+  destructive capability behind a policy, and no test read it — a row flipped to
+  the wrong grade, or a surface that lost its gate while the row kept claiming
+  one, was caught by nothing offline. Each SDK now parses the table and grades
+  its own column with the same source predicate its enforcement-invariant suite
+  already uses. Coverage runs both ways: an unparseable cell, a row with no
+  source mapping, and a gated file with no row all fail.
+  ([`7144341`](https://github.com/obsvr-dev/obsvr-sdk/commit/7144341))
+
+
+- **The TypeScript tool governor evaluates policy, closing the largest
+  functional difference between the two SDKs.** `obsvrGovernTool` reached its
+  audit step without consulting the shared pre-call pipeline, so on that surface
+  the anti-tamper floor, the customer rule set, the PII policy, the pre-call
+  hook and the external policy backend were all inert, while Python's
+  `govern_tool` consulted every one of them: measured on a single rule set, a
+  tool call whose arguments matched a block rule was refused in Python and
+  executed in TypeScript. It now routes through the same `applyPreCallPolicy`
+  every other TypeScript surface uses, so the same rules over the same arguments
+  yield the same verdict in both SDKs. A synchronous entry point was measured as
+  the alternative and rejected — every `await` in that function sits behind an
+  opt-in, but they are interleaved with the deterministic layers rather than
+  bookending them, so a synchronous path would carry a second copy of the
+  orchestration — which is what makes the wrapped function async (see BREAKING
+  above). One consequence worth stating: a view-only PII hit on tool arguments
+  now escalates to a block on this surface, as it already did on `wrap()` and
+  MCP, so an obfuscated payload no longer reaches the tool.
+  ([`03d5a18`](https://github.com/obsvr-dev/obsvr-sdk/commit/03d5a18))
+
+- **An `allowed` verdict now carries evidence that a policy pipeline evaluated
+  the call.** The enforcement suites police "blocked implies not executed" —
+  that a refusal is real. Nothing policed the reverse, and a gate that stops
+  running never claims `blocked`, so every refusal-grading assertion holds
+  while a surface enforces nothing; that is the shape a rule set which failed
+  to arm the pre-call pipeline hid in. An event claiming `allowed` must now
+  carry the decision-input hash produced inside that pipeline, and a surface
+  that could not consult a configured layer records `not_evaluated` and names
+  the layer. Three false records were found by holding all four boundaries to
+  it: both tool gates stamped `action_source: "policy_rules"` on permits the
+  rules engine was never asked for, and both MCP boundaries recorded `allowed`
+  when the policy engine had crashed and `fail_mode: "open"` let the call
+  proceed — the call proceeding is documented, claiming a gate permitted it was
+  not. The TypeScript tool gate is synchronous and cannot await the async
+  pre-call pipeline, so those layers genuinely do not run there; that remains a
+  coverage gap, and the record now reports it as one instead of as a permit.
+  ([`7b0247e`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b0247e))
+
+- **The tool boundary's session-taint latch keys on the resolved principal.**
+  A principal reaches a governed tool by three channels — per-call metadata,
+  the wrap-time option, the ambient subject scope — and the require-principal
+  gate there reads all three. The taint key was derived from the raw metadata
+  object alone, so a caller who attributed through either of the other two
+  satisfied the gate and was then keyed to the `global` bucket, while the LLM
+  path set the taint under their real principal: SET and ENFORCE disagreed, and
+  the latch never fired for that caller on the most side-effecting egress the
+  SDK governs. Both consumers now read one resolution.
+  `scripts/check-principal-channel.mjs` covers this surface, so the next
+  consumer written the old way fails there rather than in review.
+  ([`8ea57f6`](https://github.com/obsvr-dev/obsvr-sdk/commit/8ea57f6))
+
+- **The signed principal is the principal the decision was made for, on the
+  `wrap()` path in both languages.** A principal reaches a wrapped call by
+  three channels — per-call metadata, the wrap-time option, and the ambient
+  subject scope — and the enforcing resolution reads the per-call channel
+  first, so a call carrying a per-call override is evaluated, metered and
+  taint-keyed under that override. The event builders resolved the signed user
+  from the wrap-time options alone, so such a call was decided for one user and
+  recorded against another: an auditor reading the named user's history saw a
+  call that user never made, and the call that was made appeared under no
+  history at all. Measured before the repair with a per-user quota: the
+  override was metered in its own bucket while the record named the wrap-time
+  user. Each builder now reads the same channel in the same order its own
+  enforcing resolution reads. The ambient channel was already reconciled; this
+  was the per-call channel on the other side of that fix.
+  `scripts/check-principal-channel.mjs` now covers the signing sites as well as
+  the enforcement reads — the surface scans it already ran hold enforcement to
+  one view and say nothing about what the record carries.
+  ([`0e9d7a8`](https://github.com/obsvr-dev/obsvr-sdk/commit/0e9d7a8))
+
+- **The TypeScript MCP gate binds every client route into `tools/call`.** It
+  binds `request`, the path `callTool` is a convenience over, so the frame is
+  judged wherever it was built rather than only when the convenience method
+  built it. Two other public routes reach that frame: one a caller assembles
+  and hands to `request` directly, and the task API's `callToolStream`, which
+  arrives through `requestStream`. Driven against a real server over in-memory
+  JSON-RPC with the tool denied and the client governed, both executed the
+  tool's body and returned its result to the caller, recording nothing — a
+  bypass on a documented enforcement surface, and on the raw route a payload
+  disclosure as well. Both now refuse at zero executions with the result absent
+  and one blocked event recorded, allow controls unchanged at one execution
+  each, and a non-`tools/call` frame still passes through ungoverned. An
+  async-local guard keeps the frame `callTool` issues from being judged twice,
+  which also holds when the same client is governed more than once. This is the
+  route class the Python SDK closed at `send_request`; the two are still
+  measured independently rather than read across. One route is uncovered and
+  carries a test that pins it: an experimental-task facade a caller reads off
+  the raw client BEFORE governing it holds that object directly, and an
+  instance wrapper cannot reach into a reference the caller already has.
+  ([`acb5148`](https://github.com/obsvr-dev/obsvr-sdk/commit/acb5148),
+  [`6eea0cc`](https://github.com/obsvr-dev/obsvr-sdk/commit/6eea0cc))
+
+- **Every layer that consumes a principal reads the same resolved channel.** A
+  principal reaches a governed call by three channels — per-call metadata, the
+  wrap-time option, and the ambient `useSubject()` scope — and the TypeScript
+  proxy path now resolves them once and hands every layer below the same view.
+  Two measured consequences of the layers resolving separately: a
+  `quota_scope: "user_id"` rule metered the `default` bucket for any principal
+  that arrived by option or ambient scope, so a per-user limit behaved as a
+  global one and refused an unrelated user's first call, and the approval
+  request filed for a human reviewer carried no `user_id` while the blocked
+  event for that same call named one — a reviewer asked to authorise an action
+  without being told who asked, and an issuer with nothing to bind a
+  user-scoped grant to. The taint key, multi-turn session key, floor and rules
+  contexts, external backend and decision-input scope id all read that view;
+  Python already resolved this at the head of `apply_pre_call_policy`. A CI
+  guard now holds each surface to one resolution.
+  ([`2494ac6`](https://github.com/obsvr-dev/obsvr-sdk/commit/2494ac6),
+  [`3555c99`](https://github.com/obsvr-dev/obsvr-sdk/commit/3555c99))
+
+- **`wrap()` options survive on an already-governed client.** Auto-instrumentation
+  patches the provider client class, so a client constructed after `init()` is
+  already governed and `wrap(client, user_id=...)` /
+  `wrap(client, { user_id })` is the documented way to attribute it. The guard
+  that stops a second wrap from stacking a second audit layer returned the
+  client unchanged and discarded the options with it, so that path recorded no
+  principal — and under `require_principal` refused a call the caller had
+  attributed. Both SDKs now rebuild around the client's underlying instance
+  with the options merged, later winning: one governance layer, one audit
+  event per call, and the attribution kept.
+  ([`687c573`](https://github.com/obsvr-dev/obsvr-sdk/commit/687c573))
+
+- **`govern_tool`'s identity kwargs now scope enforcement.** The `user_id=` /
+  `service_name=` wrap-time kwargs reach the enforcing metadata channel, so
+  user-scoped quota buckets, the session-taint key, approval binding and the
+  decision-input hash resolve the same principal the signed event carries.
+  Previously the kwargs reached only the signed record while enforcement
+  metered shared buckets — a signed principal with none of the enforcement
+  bound to it. A tree scan now requires every pre-call surface to thread the
+  fold.
+  ([`9947431`](https://github.com/obsvr-dev/obsvr-sdk/commit/9947431))
+
+- **A non-string `user_id` signs identically in both SDKs.** Both event
+  boundaries coerce booleans and finite numbers to one canonical scalar string
+  under the shared canonical-JSON rules, so an export signed by either SDK
+  reaches the same verdict under both offline verifiers; a Python export
+  carrying a float or boolean `user_id` previously verified under the Python
+  CLI and failed under the TypeScript CLI. Non-scalars record as absent, and
+  `None` stays absent — never a rendered string. Exports signed before this
+  change with a raw non-string value verify only under the emitting language's
+  CLI; that residual is stated in the fixture, since re-normalising the digest
+  layer would break verification of existing evidence.
+  ([`e178486`](https://github.com/obsvr-dev/obsvr-sdk/commit/e178486))
+
+- **Governing a tool twice yields one gate.** `govern_tool` /
+  `obsvrGovernTool` answer an idempotence marker from the governed object, set
+  only when a gate verifiably installed, so double-wrapping no longer
+  evaluates and audits every invocation twice — and a tool where nothing was
+  gateable stays unmarked, so a later legitimate attempt still installs.
+  ([`36d972e`](https://github.com/obsvr-dev/obsvr-sdk/commit/36d972e))
+
+- **The `obsvr-verify` success banner states the format-3 preimage boundary.**
+  Content, order, and the eight decision/attribution fields are covered by the
+  client signature; `tenant_id`, token counts, `metadata`, `operation` and
+  `content_provenance` are sealed by the server countersignature; chains
+  signed under formats 1 and 2 bind content and order only, and the banner
+  says so. This aligns the CLI with SECURITY.md's statement of the same
+  position, in both languages, and the TypeScript verifier docs carry the
+  format vocabulary already corrected in Python.
+  ([`d1d1ffe`](https://github.com/obsvr-dev/obsvr-sdk/commit/d1d1ffe),
+  [`f945577`](https://github.com/obsvr-dev/obsvr-sdk/commit/f945577))
+
+- **The keyless structural tier requires `prev_sig` linkage.** Every event
+  after the first must carry its predecessor link, so an unsigned insertion
+  with a plausible `seq_no` and a well-formed `sdk_sig` no longer passes the
+  structural check by omitting the field, in either language.
+  ([`6698b0b`](https://github.com/obsvr-dev/obsvr-sdk/commit/6698b0b))
+
+- **Constant-time signature comparison in the TypeScript verifier.**
+  `verifyAuditChain` compares recomputed signatures with `timingSafeEqual`
+  behind a length guard, matching the Python verifier's posture for library
+  use against caller-supplied chains.
+  ([`740c8f8`](https://github.com/obsvr-dev/obsvr-sdk/commit/740c8f8))
+
+- **The post-call hook is budgeted from `post_call_timeout_ms`.** The Python
+  path previously accepted the key and read `hook_timeout_ms` instead, so the
+  declared budget was never in force and the SDKs diverged on timing-visible
+  behaviour; TypeScript already honoured its twin. The failure-disposition
+  registry also now describes the response-phase hook in its own row —
+  timeout and error keep the already-rendered decision, since the provider
+  has already answered — while the request-phase row keeps its
+  operator-chosen `fail_mode`.
+  ([`14f1930`](https://github.com/obsvr-dev/obsvr-sdk/commit/14f1930),
+  [`e1dae22`](https://github.com/obsvr-dev/obsvr-sdk/commit/e1dae22))
+
+- **Both ReDoS guards refuse the fixed-brace multiplication shape.** A fixed
+  `{n}` repetition applied to a group carrying its own growth quantifier or
+  alternation multiplies that group's backtracking states — `(.*a){20}b`
+  stalled evaluation for minutes in both languages while neighbouring hostile
+  shapes were contained in microseconds. Both structural scans now refuse
+  `{n>=2}` over a rep- or alternation-bearing group; `{1}` and a fixed brace
+  on a plain group stay allowed.
+  ([`33a4e98`](https://github.com/obsvr-dev/obsvr-sdk/commit/33a4e98))
+
+- **An expired approval hold states only what it can know.** The grant channel
+  carries grants, not verdicts — the parser keeps an entry only with a
+  `rule_id` and `expires_at`, and the request POST's response is never read —
+  so an explicit human *denial* is indistinguishable from *no decision* in the
+  SDK today, and both surface as `APPROVAL_TIMEOUT`. The `APPROVAL_TIMEOUT`
+  registry text and the timeout record's reason now say the two are
+  indistinguishable rather than implying nobody answered; no `APPROVAL_DENIED`
+  code is minted, because a code whose emission path cannot know the fact it
+  asserts would be a fabricated record. `SECURITY.md` specifies the
+  approval-status endpoint ingest must expose before a distinct denial code
+  can exist.
+  ([`0482085`](https://github.com/obsvr-dev/obsvr-sdk/commit/0482085))
+
 
 - **LangChain (TypeScript): one legacy-callback dispatch disarmed the tool gate
   for every later run on the same handler.** The Python twin of this was fixed
@@ -2771,95 +2828,115 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   version, and the version-consistency check covers `action/action.yml`.
   ([`bb2125a`](https://github.com/obsvr-dev/obsvr-sdk/commit/bb2125a))
 
-### Changed
 
-- **A Python-computed `policy_version` changes value for rule sets containing
-  certain numbers.** The canonicalizer fix described under Fixed is listed here
-  as well because of what depends on that hash. Approvals are pinned to the rule
-  hash, and the `/policies` poll sends `X-Obsvr-Rules-Hash`, so a rule set
-  containing a whole-valued float, negative zero, an exponent-form number, an
-  unpaired surrogate, or an astral object key hashes to a different value in
-  Python than it did before — to the value TypeScript was already producing. No
-  hash the two SDKs agreed on has changed. _Migration: if a Python process holds
-  outstanding approvals for such a rule set, they are void and must be
-  re-granted; a mixed-language fleet stops reporting two different versions for
-  one policy._
-  ([`87c593d`](https://github.com/obsvr-dev/obsvr-sdk/commit/87c593d))
+- **The Python queue drains on SIGTERM, not only on `atexit`.** The Python
+  sender flushed from `atexit` alone, which a default-disposition SIGTERM never
+  reaches, so every container stop dropped whatever the bounded queue still
+  held — a gap in the chain on each rolling deploy. The TypeScript handler is
+  the reference and its ownership rules are ported rather than reinvented:
+  chain to any prior handler, flush within the existing shutdown budget, and
+  restore the default disposition and re-deliver only when nothing else owned
+  the signal. A POSIX disposition is a single slot where Node keeps a listener
+  list, so ownership is decided at install time here rather than at signal
+  time; that residual is stated in both READMEs and the divergence history.
+  ([`cd5679c`](https://github.com/obsvr-dev/obsvr-sdk/commit/cd5679c))
 
-- **BREAKING: `QUOTA_UNMETERED` added to the closed `ReasonCode` registry.**
-  A quota rule whose scope the bounded meter has no counter slot for is not
-  enforced on that call, and now says so: the verdict carries
-  `metered: false`, the call's event carries
-  `metadata.obsvr_telemetry.quota_unmetered` (the channel `detector_failure`
-  and canary evidence already use), and `failMode` decides whether the call
-  proceeds — `open` (the default) allows it, `closed` blocks it with the new
-  code. Previously such a call was allowed with no signal at all and was
-  byte-identical on the wire to one that had been counted and found under
-  limit, so an auditor replaying it read a quota rule that was in force and
-  never exceeded. The `policyFloor` always resolves closed here, floor-class
-  rules being non-overridable; shadow rules never do, being non-decisional.
-  _Migration: this is additive to a closed enum, so an exhaustive `switch` over
-  `ReasonCode` in consumer code needs a `QUOTA_UNMETERED` arm. Operators
-  running `failMode: "closed"` should note that a saturated quota store now
-  blocks new scopes rather than admitting them unmetered._
-  ([`750e5f9`](https://github.com/obsvr-dev/obsvr-sdk/commit/750e5f9),
-  [`7e22b4b`](https://github.com/obsvr-dev/obsvr-sdk/commit/7e22b4b))
+- **Metadata the sender cannot measure is treated as over budget.** The audit
+  sender sized host-supplied metadata with a bare serializer before deciding
+  whether to trim it, so a bag carrying a throwing getter, a BigInt, a hostile
+  `toJSON` or a circular reference raised out of the sender into the caller's
+  own synchronous call — the one path outside the guarantee that an exception
+  inside a detector layer never reaches the application. A bag that cannot be
+  measured now takes the trim that already exists for an oversized one, keeping
+  the grouping keys and delivering the event, and a reserved key that is itself
+  unreadable is dropped rather than thrown. Python had the same class of defect
+  through a cycle, which `default=str` never covered.
+  ([`7b8c03c`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b8c03c))
 
-- **BREAKING (Python): `ingest_url` no longer defaults to
-  `http://localhost:3000`.** Unset, it is now empty: the SDK logs a loud
-  no-delivery warning at `init()` and delivers nothing, matching the TypeScript
-  SDK on the same misconfiguration. Previously a Python process with no
-  `ingest_url` streamed governed events - including redacted prompt text on
-  blocked calls - to whatever was listening on local port 3000. _Migration: if
-  you relied on the localhost default in development, pass
-  `ingest_url="http://localhost:3000"` explicitly._ Governance itself is
-  unaffected either way; only delivery stops.
-  ([`07413f7`](https://github.com/obsvr-dev/obsvr-sdk/commit/07413f7))
-- An unusable ingest URL is now a delivery failure in Python rather than an
-  exception: the sender and the policy poll both count it as retryable instead
-  of raising inside their background threads.
-  ([`07413f7`](https://github.com/obsvr-dev/obsvr-sdk/commit/07413f7))
-- The normative evaluation-semantics specification (EV-1 through EV-23) now
-  lives at `conformance/SPEC-evaluation.md`, beside the fixtures that pin it.
-  Semantics are unchanged.
-  ([`3b0f13d`](https://github.com/obsvr-dev/obsvr-sdk/commit/3b0f13d))
-- `conformance/fixtures/signing_vectors.json` gained a `chain_verification`
-  block: tamper cases with the verdict both verifiers must produce. It landed
-  with thirteen and now holds twenty, the chain-format change above having
-  added the format-1, format-2, and mixed-chain cases. Consumers of the
-  existing `events` and key material are unaffected.
-  ([`763b5ef`](https://github.com/obsvr-dev/obsvr-sdk/commit/763b5ef))
-- `conformance/fixtures/eval_semantics.json` gained dedicated cases for EV-3,
-  EV-14, and EV-22 — statements `conformance/SPEC-evaluation.md` listed as
-  covered but which no fixture actually pinned — shrinking the uncovered list
-  from nine to seven. Cases now declare a `mode`: `rules` (the default),
-  `pipeline`, or `explain`. Semantics are unchanged; this pins behavior that
-  was already specified.
-  ([`4d1c423`](https://github.com/obsvr-dev/obsvr-sdk/commit/4d1c423))
-- **The conformance corpus hash changed — re-pin if you pinned it.**
-  `conformance/MANIFEST.sha256` moved from `corpus_sha256 = 1120116f…` to
-  `9afde624…`, and both `conformance.pin` files with it. That span is no longer
-  a single change. The bookkeeping pass described under Added — the per-case
-  `sdk_support` and per-fixture `claimable` keys, one divergence entry's
-  `tracking` text, one fixture's `description` — moved no vector, digest,
-  canonical form, or expected value, and carried the hash only as far as
-  `8c48c249…`
-  ([`c9c4040`](https://github.com/obsvr-dev/obsvr-sdk/commit/c9c4040),
-  [`dd914c8`](https://github.com/obsvr-dev/obsvr-sdk/commit/dd914c8),
-  [`f3947d9`](https://github.com/obsvr-dev/obsvr-sdk/commit/f3947d9),
-  [`6767aa4`](https://github.com/obsvr-dev/obsvr-sdk/commit/6767aa4)).
-  **Everything after that did change expected values**, so re-pinning is not
-  the whole of the work: the `protocol_facet`, CloudEvents, cost and
-  evaluation-context fixtures are new, `reason_codes.json` gained
-  `PROTOCOL_FACET_MATCHED`, `otel_attributes.json` moved to schema 2 with a
-  `conditional_keys` set, and the approvals, session-taint, de-obfuscation and
-  fail-mode fixtures all grew cases. Each is described in its own entry above;
-  re-read the ones whose fixtures you consume.
-- **The published GitHub Action pins its own dependency to a commit.** Its
-  `setup-node` step used a mutable tag, which every consumer's CI inherited
-  with no way to see or override it. It is now pinned to a commit SHA with the
-  version in a trailing comment.
-  ([`030dc8c`](https://github.com/obsvr-dev/obsvr-sdk/commit/030dc8c))
+- **The shipped READMEs link to targets that survive publication.** The two
+  package READMEs carried ten relative links, six of them reaching above the
+  package directory. PyPI renders its long description standalone with no
+  repository around it, so every one resolved to nothing for an installed
+  reader while working perfectly under GitHub review. They are now absolute to
+  the repository, and the doc-link guard gained the half it was missing: a
+  relative link in a published README fails, every other relative link must
+  name a tracked file, and the published set is checked against the manifests
+  so it cannot go stale on its own.
+  ([`3f25744`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f25744))
+
+- **The per-integration enforcement grading table is read back against the
+  tree.** That table is what the documentation points a buyer at before they
+  put a destructive capability behind a policy, and no test read it — a row
+  flipped to the wrong grade, or a surface that lost its gate while the row
+  kept claiming one, was caught by nothing offline. Each SDK now parses the
+  table and grades its own column with the same source predicate its
+  enforcement-invariant suite already uses, so the languages cannot drift
+  through a re-implementation of each other's rule. Coverage runs both ways: an
+  unparseable cell, an unmapped row, and a gated file with no row all fail.
+  ([`7144341`](https://github.com/obsvr-dev/obsvr-sdk/commit/7144341))
+
+### Removed
+
+- **Four framework integrations withdrawn before first publish.** The modules
+  (`obsvr/integrations/{agent_framework,semantic_kernel,adk,smolagents}.py`),
+  their extras (`agent-framework`, `semantic-kernel`, `adk`, `smolagents`),
+  their tests, and every reference to them in this repository are gone in one
+  change — a documented integration whose module does not exist is worse than
+  either state alone.
+  **Not marked BREAKING:** none of these shipped in a release, so nothing
+  depended on them.
+
+  **The basis is breadth versus evidence, not brokenness.** Each was verified
+  only far enough to prove it binds and blocks, and the supported surface is
+  being narrowed to what is backed by live evidence rather than widened to what
+  compiles. Worth stating plainly, though: three of the four also had floors
+  that no ordinary install could reach — every `agent-framework` release below
+  1.11.0 fails dependency resolution outright, every `google-adk` release below
+  1.2.0 installs but cannot import, and `semantic-kernel` has no candidate at
+  all below 1.14.0 on CPython 3.13.
+
+  The code is preserved on a local branch and can return with the evidence
+  behind it.
+
+
+- **The ASGI middleware withdrawn.** The module
+  (`obsvr/integrations/fastapi.py`, holding `ObsvrASGIMiddleware` and
+  `instrument_fastapi`), the `fastapi` extra and its `starlette` pin, its test,
+  and its rows in `README.md`, `sdk-python/README.md`, `COMPATIBILITY.md` and
+  `sdk-python/tests/README.md` are gone in one change.
+  **Not marked BREAKING:** it never shipped in a release, so nothing depended
+  on it.
+
+  **It governed nothing.** It emitted a signed `http.request` execution span
+  per request, which put an inbound request on the same tamper-evident chain as
+  the calls made while handling it — real, but not governance: no policy ran on
+  that path and no call could be refused there. Listing it in the coverage table
+  beside the tool gates implied a gate that was never designed, because an ASGI
+  application has no tool abstraction to gate.
+
+  The span behaviour is not lost. `span()` stays public, so a request still
+  becomes the root of a signed chain for anyone who opens that context manager
+  in their own middleware; what goes is a thin convenience over an API that
+  already ships. An inbound request is in any case a network-level event, and
+  an application author who can delete a call can equally delete a middleware
+  registration — so attesting that boundary is not something a code-level SDK
+  can promise.
+
+  Note the earlier entry recording that this middleware "was measured … under a
+  real server over a real socket" stands as written. What was measured was the
+  span, and it did emit; the span alone was never the coverage the table implied.
+
+
+- **BREAKING: the manual-tracking client is gone.** `ObsvrClient`,
+  `trackCompletion`, `trackBatch`, the deprecated `LLMAuditClient` alias, their
+  parameter types, and the `@obsvr/sdk/client` subpath export are removed. That
+  path posted events straight to ingest with no PII scan, no policy evaluation,
+  and no chain signature — a second ingestion path in a package whose whole
+  claim is that there is one, and the weaker of the two was a root export.
+  **Migration:** use `obsvr.wrap()` around your provider client, which produces
+  the same events with the controls applied and the chain signed. There is no
+  supported way to enqueue an unsigned event, which is the point.
+  ([`ebd2b33`](https://github.com/obsvr-dev/obsvr-sdk/commit/ebd2b33))
 
 ## [0.10.0] - 2026-07-20
 
