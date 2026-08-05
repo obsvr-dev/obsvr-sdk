@@ -134,7 +134,7 @@ provider, described below the table.
 | `@google/genai`                   | —                               | **not supported yet** | n/a            |
 | `@google/generative-ai`           | `>=0.1.0 <1.0.0`                | `0.1.0` – `0.24.1`    | declared       |
 | `@langchain/core`                 | `>=0.2.0`                       | `0.2.0` – `1.2.3`     | declared       |
-| `@modelcontextprotocol/sdk`       | `>=1.0.0 <1.25.0 \|\| >=1.30.0` | `1.30.0`              | declared       |
+| `@modelcontextprotocol/sdk`       | `>=1.26.0 <2.0.0`               | `1.26.0`, `1.29.0`, `1.30.0` | measured (floor) |
 | `@openai/agents`                  | `>=0.13.0 <1.0.0`               | `0.13.0`, `0.13.4`, `0.14.2` | declared  |
 | `@opentelemetry/api`              | `>=1.4.0`                       | `1.4.0` – `1.9.1`     | declared       |
 | `ai`                              | `>=3.3.28`                      | `3.4.33` – `7.0.41`   | declared       |
@@ -143,6 +143,26 @@ provider, described below the table.
 | `together-ai`                     | `>=0.6.0 <1.0.0`                | `0.6.0` – `0.44.0`    | declared       |
 
 `@google/generative-ai` is the legacy line, end-of-life 2025-08. Its replacement `@google/genai` is **not supported yet**.
+
+**The `@modelcontextprotocol/sdk` floor is a security bound, and each end of it
+names its reason.** `1.26.0` is the first release clean of all three published
+high-severity advisories against that package, which is why the floor sits
+above the release this integration would otherwise run on:
+
+| Advisory | Affects | First clean |
+| --- | --- | --- |
+| `GHSA-w48q-cv73-mx4w` — DNS rebinding protection off by default | `<1.24.0` | `1.24.0` |
+| `GHSA-8r9q-7v3j-jr4g` — ReDoS | `>=1.3.0 <1.25.2` | `1.25.2` |
+| `GHSA-345p-7cg4-v4c7` — cross-client data leak via shared transport reuse | `>=1.10.0 <=1.25.3` | `1.26.0` |
+
+The upper bound is the next major, per this project's version policy: a major
+is a capability boundary and is admitted only once driven. The Observed column
+is live: the floor `1.26.0`, the mid-range `1.29.0` and the installed `1.30.0`
+each ran the MCP gate suite — denied tool at zero executions with the payload
+absent from what the caller received, on every client route into `tools/call`.
+The row is `measured (floor)` rather than `matrix` because no release below the
+floor was driven; the label is about locating an edge, and the edge here is set
+by the advisories rather than by a capability.
 
 The `@openai/agents` row's Observed versions are live tool-gate legs, not
 resolver output: the declared floor `0.13.0`, the harness-installed `0.13.4`,

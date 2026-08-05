@@ -158,7 +158,7 @@
     "@google-cloud/vertexai": ">=1.0.0",
     "@google/generative-ai": ">=0.1.0 <1.0.0",
     "@langchain/core": ">=0.2.0",
-    "@modelcontextprotocol/sdk": ">=1.0.0 <1.25.0 || >=1.30.0",
+    "@modelcontextprotocol/sdk": ">=1.26.0 <2.0.0",
     "@openai/agents": ">=0.13.0 <1.0.0",
     "@opentelemetry/api": ">=1.4.0",
     "ai": ">=3.3.28",

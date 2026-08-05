@@ -114,3 +114,73 @@ describe("README accuracy", () => {
     }
   });
 });
+
+/**
+ * The MCP peer range is a SECURITY bound, and it is asserted as one.
+ *
+ * It previously read `>=1.0.0 <1.25.0 || >=1.30.0`, which is the inverse of
+ * what it was meant to encode: the first clause admitted the whole vulnerable
+ * span, and the excluded window `[1.25.0, 1.30.0)` contained exactly the
+ * releases that had been PATCHED — so a consumer who upgraded away from the
+ * advisories could no longer install this package, and one who had not was
+ * waved through.
+ *
+ * Version literals rather than a re-derived range: the point is to pin the
+ * advisory boundaries themselves, so that widening the range to admit a
+ * vulnerable release has to fail here and be argued.
+ */
+describe("the @modelcontextprotocol/sdk peer range excludes the advisory window", () => {
+  const range: string = pkg.peerDependencies["@modelcontextprotocol/sdk"];
+
+  /**
+   * Minimal matcher for the ONE range shape this bound is allowed to take:
+   * `>=A <B`. Anything else throws rather than returning a verdict, so a
+   * rewritten range cannot quietly pass this file by being unparseable — the
+   * previous range was a two-clause `||` and that is exactly the shape that
+   * hid the inversion.
+   */
+  const num = (v: string) => v.split(".").map(Number);
+  const cmp = (a: string, b: string) => {
+    const [x, y] = [num(a), num(b)];
+    for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
+    return 0;
+  };
+  const satisfies = (v: string): boolean => {
+    const m = /^>=(\d+\.\d+\.\d+) <(\d+\.\d+\.\d+)$/.exec(range.trim());
+    if (!m) {
+      throw new Error(
+        `the MCP peer range is no longer a single ">=A <B" bound (${range}). ` +
+          "Re-derive it from the advisories and update this test deliberately.",
+      );
+    }
+    return cmp(v, m[1]) >= 0 && cmp(v, m[2]) < 0;
+  };
+
+  // Affected by at least one of GHSA-w48q-cv73-mx4w (<1.24.0),
+  // GHSA-8r9q-7v3j-jr4g (>=1.3.0 <1.25.2), GHSA-345p-7cg4-v4c7 (<=1.25.3).
+  const VULNERABLE = [
+    "1.0.0", "1.3.0", "1.10.0", "1.20.0", "1.23.1",
+    "1.24.0", "1.24.3", "1.25.0", "1.25.1", "1.25.2", "1.25.3",
+  ];
+  // Clean of all three.
+  const PATCHED = ["1.26.0", "1.27.0", "1.27.1", "1.28.0", "1.29.0", "1.30.0"];
+
+  it.each(VULNERABLE)("refuses %s", (v) => {
+    expect(satisfies(v)).toBe(false);
+  });
+
+  it.each(PATCHED)("admits %s", (v) => {
+    // The other half, and the one the old range failed: a consumer who
+    // patched must still be able to install.
+    expect(satisfies(v)).toBe(true);
+  });
+
+  it("stops below the next major, which has not been driven", () => {
+    expect(satisfies("2.0.0")).toBe(false);
+  });
+
+  it("the development pin is inside the range it declares", () => {
+    const dev: string = pkg.devDependencies["@modelcontextprotocol/sdk"];
+    expect(satisfies(dev.replace(/^[\^~]/, ""))).toBe(true);
+  });
+});
