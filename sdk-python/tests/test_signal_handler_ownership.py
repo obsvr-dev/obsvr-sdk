@@ -31,32 +31,72 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def run_child(body: str, sig: signal.Signals, wait_for: str = "ready"):
-    """Start a child running ``body``, signal it once it prints ``wait_for``."""
-    src = "import os, signal, sys, time\n" + textwrap.dedent(body)
+# ── driving a child: the two protections every signalled row needs ──────────
+#
+# A marker read off the pipe says the child STARTED that write, not that it
+# finished it and released the writer. Signalling into that window runs the
+# child's handler while its own ``print`` still holds the stdout lock, and a
+# ``print`` from the handler then re-enters the same buffered writer — which
+# raises ``RuntimeError: reentrant call`` inside the handler, where obsvr's
+# ``except Exception: pass`` absorbs it. The line the row asserts on is then
+# simply never written, and nothing is written to stderr either.
+#
+# Both protections below are load-bearing and neither substitutes for the
+# other: the settle keeps the child out of that window, ``mark`` makes landing
+# in it harmless. They live here, on the one helper every signalled row goes
+# through, so no row can be added without them.
+
+#: Handler output goes through ``os.write``, which reaches the fd directly and
+#: takes no lock. Every child in this file is given ``mark``; every child-side
+#: signal handler in this file uses it in place of ``print``.
+MARK = 'def mark(text):\n    os.write(1, text.encode() + b"\\n")\n'
+
+#: How long to let a marker line settle before delivering the signal.
+SETTLE_BEFORE_SIGNAL_S = 0.15
+
+
+def _drive_child(src, steps, timeout=20):
+    """Run ``src`` as a child, delivering a signal at each step.
+
+    ``steps`` is a list of ``(marker, signal_or_None)``: wait for the child to
+    print ``marker``, then deliver ``signal``. Returns
+    ``(returncode, output, stderr)``.
+    """
     proc = subprocess.Popen(
         [sys.executable, "-c", src],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    deadline = time.time() + 20
     # Every line, not only the marker: a row may assert on something the child
     # printed BEFORE it was ready, and dropping those reads as a silent absence.
     seen = []
-    while time.time() < deadline:
-        line = proc.stdout.readline()
-        seen.append(line)
-        if wait_for in line:
-            break
-        if proc.poll() is not None:
-            break
-    else:  # pragma: no cover - only on a hung child
-        proc.kill()
-        pytest.fail("child never reported ready")
-    proc.send_signal(sig)
-    out, err = proc.communicate(timeout=20)
+    try:
+        for marker, sig in steps:
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                line = proc.stdout.readline()
+                seen.append(line)
+                if marker in line or proc.poll() is not None:
+                    break
+            else:  # pragma: no cover - only on a hung child
+                proc.kill()
+                pytest.fail("child never printed %r" % marker)
+            if sig is not None:
+                time.sleep(SETTLE_BEFORE_SIGNAL_S)
+                proc.send_signal(sig)
+        out, err = proc.communicate(timeout=timeout)
+    finally:
+        if proc.poll() is None:  # pragma: no cover - only on a hung child
+            proc.kill()
+            out, err = proc.communicate(timeout=5)
     return proc.returncode, "".join(seen) + out, err
+
+
+def run_child(body: str, sig: signal.Signals, wait_for: str = "ready"):
+    """Start a child running ``body``, signal it once it prints ``wait_for``."""
+    src = "import os, signal, sys, time\n" + MARK + textwrap.dedent(body)
+    return _drive_child(src, [(wait_for, sig)])
 
 
 # ── the three ownership rows ────────────────────────────────────────────────
@@ -76,7 +116,7 @@ def test_sigterm_with_no_prior_handler_flushes_and_dies_by_the_signal():
 
     real = sender.flush
     def spy(timeout=5.0):
-        print("FLUSH", timeout, flush=True)
+        mark("FLUSH " + str(timeout))    # runs from obsvr's handler
         return real(0.01)
     sender.flush = spy
 
@@ -108,12 +148,12 @@ def test_sigterm_flushes_the_queue_before_it_lets_go():
     real = sender.flush
     def spy(timeout=5.0):
         seen.append(timeout)
-        print("FLUSH", timeout, flush=True)
+        mark("FLUSH " + str(timeout))    # runs from obsvr's handler
         return real(0.01)
     sender.flush = spy
 
     def prior(signum, frame):
-        print("HOST", flush=True)
+        mark("HOST")
         os._exit(0)
     signal.signal(signal.SIGTERM, prior)
 
@@ -143,10 +183,10 @@ def test_a_prior_handler_owns_termination_and_obsvr_does_not_exit():
     from obsvr import sender
 
     def prior(signum, frame):
-        print("HOST", flush=True)
+        mark("HOST")
         # A real drain: obsvr must not have ended the process before this.
         time.sleep(0.3)
-        print("HOST DONE", flush=True)
+        mark("HOST DONE")
         os._exit(7)
     signal.signal(signal.SIGTERM, prior)
 
@@ -172,7 +212,7 @@ def test_a_host_handler_that_returns_leaves_the_process_running():
     from obsvr import sender
 
     def prior(signum, frame):
-        print("HOST SAW IT", flush=True)
+        mark("HOST SAW IT")
     signal.signal(signal.SIGTERM, prior)
 
     obsvr.init(api_key="k", ingest_url="https://example.invalid")
@@ -391,15 +431,6 @@ RECORDING_INGEST = """
 """
 
 
-#: Signal handlers in these rows write with `os.write` rather than `print`.
-#: The parent delivers each signal as soon as it reads a marker LINE, so the
-#: child can still be inside that `print` when the handler runs, and `print`
-#: from a handler then re-enters the same buffered writer. `os.write` goes
-#: straight to the fd and takes no lock. The nine rows above are unaffected:
-#: they signal into a `time.sleep`, not into a print.
-MARK = 'def mark(text):\n    os.write(1, text.encode() + b"\\n")\n'
-
-
 def _emit(request_id):
     """Child source enqueuing one governed event with a known request_id."""
     return (
@@ -415,9 +446,9 @@ def run_recording_child(
 ):
     """Run a child with a recording ingest, signaling it at each step.
 
-    `steps` is a list of `(marker, signal_or_None)`: wait for the child to
-    print `marker`, then deliver `signal`. Returns
-    `(returncode, output, stderr, accepted_events)`.
+    Signalling itself is ``_drive_child``'s, same as every other row's; what
+    this adds is the loopback ingest and the file of what it durably accepted.
+    Returns `(returncode, output, stderr, accepted_events)`.
     """
     import json
     import tempfile
@@ -431,40 +462,14 @@ def run_recording_child(
         + MARK
         + textwrap.dedent(body)
     )
-    proc = subprocess.Popen(
-        [sys.executable, "-c", src],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    seen = []
-    try:
-        for marker, sig in steps:
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                line = proc.stdout.readline()
-                seen.append(line)
-                if marker in line or proc.poll() is not None:
-                    break
-            else:  # pragma: no cover - only on a hung child
-                proc.kill()
-                pytest.fail("child never printed %r" % marker)
-            if sig is not None:
-                # The marker is a LINE; the child may still be flushing it.
-                time.sleep(0.15)
-                proc.send_signal(sig)
-        out, err = proc.communicate(timeout=timeout)
-    finally:
-        if proc.poll() is None:  # pragma: no cover - only on a hung child
-            proc.kill()
-            out, err = proc.communicate(timeout=5)
+    code, out, err = _drive_child(src, steps, timeout=timeout)
     accepted = []
     with open(dump_path, encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
                 accepted.append(json.loads(line))
     os.unlink(dump_path)
-    return proc.returncode, "".join(seen) + out, err, accepted
+    return code, out, err, accepted
 
 
 def assert_one_delivery_each(accepted, expected_ids, where):
