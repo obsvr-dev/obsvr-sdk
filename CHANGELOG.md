@@ -22,33 +22,6 @@ cut, when it is renamed to that version.
 
 ### Added
 
-- **BREAKING: a customer `regex` rule means one thing on both SDKs.** `\d` `\w`
-  `\s` `\b` `$` and `.` read differently in Python `re` and JavaScript
-  `RegExp`, so the same rule could block a call on one SDK and allow it on the
-  other with nothing on the record to say so — measured, `^\d{3}-\d{2}-\d{4}$`
-  matched Arabic-Indic digits in Python and not in TypeScript. **ECMAScript's
-  meaning is now the meaning**, rewritten into the pattern at the Python SDK's
-  one compile call; the TypeScript engine is untouched. The direction is forced
-  rather than preferred: Python can express ECMAScript's semantics exactly while
-  a Unicode-aware `\b` has no JavaScript spelling that does not also change
-  which syntax the engine accepts. Measured per codepoint across the whole BMP:
-  `re.ASCII` alone closes `\d` `\w` `\b` exactly and makes `\s` *worse* (6
-  disagreeing codepoints to 19), so `\s` is rewritten to an explicit class
-  instead. Two residuals are named rather than folded in: `\S` inside a
-  character class that does not also hold `\s` is now **refused** in both
-  languages (a negated shorthand is not expressible inside a positive class;
-  `[\s\S]` stays legal and provably means every character in both engines), and
-  the code-unit/code-point model — JavaScript matches UTF-16 code units, Python
-  matches code points — which no escape rewrite reaches. Pinned by
-  `conformance/fixtures/regex_dialect.json` and by a new CI job driving 3,000
-  pattern/input pairs through both real matchers.
-  **Migration: none.** Nothing has been published to npm or PyPI from this
-  repository, so no installed build carries the old behaviour and there is no
-  deployed rule to re-verify — which is why the change is made now rather than
-  after the first release. If you are running from source with a rule that
-  relied on Python's Unicode `\d`/`\w`, write the class out explicitly.
-  ([`6cb9cc9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6cb9cc9))
-
 - **`wrap()` says when it governed nothing.** Wrapping a client whose shape
   carries no auditable method returned a proxy that forwarded every call
   through: no policy, no event, and nothing said, so a caller reasonably
@@ -769,18 +742,34 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   ([`b1a33dd`](https://github.com/obsvr-dev/obsvr-sdk/commit/b1a33dd))
 
 
-- **`wrap()` says so when it governed nothing.** Wrapping a client whose shape
-  carries no auditable method returned a proxy that forwarded every call
-  through — no policy, no event, and nothing said — so a caller reasonably
-  concluded they were covered. `wrap()` now probes the client for every path
-  the proxy can intercept and reports a miss once per client on the existing
-  warning channel; `requireGovernedSurface` / `require_governed_surface` raises
-  instead, for a deployment that wants an ungoverned client to fail at startup.
-  The proxy is still returned either way, so a client that worked before still
-  works.
-  ([`d5ec1fa`](https://github.com/obsvr-dev/obsvr-sdk/commit/d5ec1fa))
-
 ### Changed
+
+- **BREAKING: a customer `regex` rule means one thing on both SDKs.** `\d` `\w`
+  `\s` `\b` `$` and `.` read differently in Python `re` and JavaScript
+  `RegExp`, so the same rule could block a call on one SDK and allow it on the
+  other with nothing on the record to say so — measured, `^\d{3}-\d{2}-\d{4}$`
+  matched Arabic-Indic digits in Python and not in TypeScript. **ECMAScript's
+  meaning is now the meaning**, rewritten into the pattern at the Python SDK's
+  one compile call; the TypeScript engine is untouched. The direction is forced
+  rather than preferred: Python can express ECMAScript's semantics exactly while
+  a Unicode-aware `\b` has no JavaScript spelling that does not also change
+  which syntax the engine accepts. Measured per codepoint across the whole BMP:
+  `re.ASCII` alone closes `\d` `\w` `\b` exactly and makes `\s` *worse* (6
+  disagreeing codepoints to 19), so `\s` is rewritten to an explicit class
+  instead. Two residuals are named rather than folded in: `\S` inside a
+  character class that does not also hold `\s` is now **refused** in both
+  languages (a negated shorthand is not expressible inside a positive class;
+  `[\s\S]` stays legal and provably means every character in both engines), and
+  the code-unit/code-point model — JavaScript matches UTF-16 code units, Python
+  matches code points — which no escape rewrite reaches. Pinned by
+  `conformance/fixtures/regex_dialect.json` and by a new CI job driving 3,000
+  pattern/input pairs through both real matchers.
+  **Migration: none.** Nothing has been published to npm or PyPI from this
+  repository, so no installed build carries the old behaviour and there is no
+  deployed rule to re-verify — which is why the change is made now rather than
+  after the first release. If you are running from source with a rule that
+  relied on Python's Unicode `\d`/`\w`, write the class out explicitly.
+  ([`6cb9cc9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6cb9cc9))
 
 - **Python 3.14 is advertised and tested.** The classifier list reached 3.13
   and no matrix leg covered 3.14 while `requires-python` already admitted it,
@@ -1437,22 +1426,6 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   version in a trailing comment.
   ([`030dc8c`](https://github.com/obsvr-dev/obsvr-sdk/commit/030dc8c))
 
-
-- **BREAKING: a regex rule means one thing on both SDKs.** The shorthand
-  classes and anchors read differently in Python `re` and JavaScript `RegExp`,
-  so a customer rule could block a call on one SDK and allow it on the other
-  with nothing on the record to say so — measured, an SSN pattern matched
-  Arabic-Indic digits in Python and not in TypeScript. ECMAScript's meaning is
-  now the meaning, rewritten into the Python pattern at that SDK's one compile
-  call. Measured per codepoint across the BMP: `re.ASCII` closes three families
-  and makes whitespace worse, so whitespace is rewritten to an explicit class
-  instead. **Migration:** a rule using `\d` `\w` `\s` `\b` `$` or `.` now
-  matches ASCII/ECMAScript semantics in Python, and `\S` inside a character
-  class that does not also hold `\s` is refused in both languages. Nothing was
-  published to npm or PyPI before this release, so no installed build carries
-  the old behaviour and there is no deployed rule to re-verify — which is why
-  this lands now rather than after the first release.
-  ([`6cb9cc9`](https://github.com/obsvr-dev/obsvr-sdk/commit/6cb9cc9))
 
 ### Fixed
 
@@ -2828,52 +2801,6 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   version, and the version-consistency check covers `action/action.yml`.
   ([`bb2125a`](https://github.com/obsvr-dev/obsvr-sdk/commit/bb2125a))
 
-
-- **The Python queue drains on SIGTERM, not only on `atexit`.** The Python
-  sender flushed from `atexit` alone, which a default-disposition SIGTERM never
-  reaches, so every container stop dropped whatever the bounded queue still
-  held — a gap in the chain on each rolling deploy. The TypeScript handler is
-  the reference and its ownership rules are ported rather than reinvented:
-  chain to any prior handler, flush within the existing shutdown budget, and
-  restore the default disposition and re-deliver only when nothing else owned
-  the signal. A POSIX disposition is a single slot where Node keeps a listener
-  list, so ownership is decided at install time here rather than at signal
-  time; that residual is stated in both READMEs and the divergence history.
-  ([`cd5679c`](https://github.com/obsvr-dev/obsvr-sdk/commit/cd5679c))
-
-- **Metadata the sender cannot measure is treated as over budget.** The audit
-  sender sized host-supplied metadata with a bare serializer before deciding
-  whether to trim it, so a bag carrying a throwing getter, a BigInt, a hostile
-  `toJSON` or a circular reference raised out of the sender into the caller's
-  own synchronous call — the one path outside the guarantee that an exception
-  inside a detector layer never reaches the application. A bag that cannot be
-  measured now takes the trim that already exists for an oversized one, keeping
-  the grouping keys and delivering the event, and a reserved key that is itself
-  unreadable is dropped rather than thrown. Python had the same class of defect
-  through a cycle, which `default=str` never covered.
-  ([`7b8c03c`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b8c03c))
-
-- **The shipped READMEs link to targets that survive publication.** The two
-  package READMEs carried ten relative links, six of them reaching above the
-  package directory. PyPI renders its long description standalone with no
-  repository around it, so every one resolved to nothing for an installed
-  reader while working perfectly under GitHub review. They are now absolute to
-  the repository, and the doc-link guard gained the half it was missing: a
-  relative link in a published README fails, every other relative link must
-  name a tracked file, and the published set is checked against the manifests
-  so it cannot go stale on its own.
-  ([`3f25744`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f25744))
-
-- **The per-integration enforcement grading table is read back against the
-  tree.** That table is what the documentation points a buyer at before they
-  put a destructive capability behind a policy, and no test read it — a row
-  flipped to the wrong grade, or a surface that lost its gate while the row
-  kept claiming one, was caught by nothing offline. Each SDK now parses the
-  table and grades its own column with the same source predicate its
-  enforcement-invariant suite already uses, so the languages cannot drift
-  through a re-implementation of each other's rule. Coverage runs both ways: an
-  unparseable cell, an unmapped row, and a gated file with no row all fail.
-  ([`7144341`](https://github.com/obsvr-dev/obsvr-sdk/commit/7144341))
 
 ### Removed
 

@@ -1,6 +1,6 @@
 {
   "name": "@obsvr/sdk",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Obsvr SDK - LLM governance and audit tracking with auto-instrumentation",
   "main": "dist/index.js",
   "module": "dist/index.js",
