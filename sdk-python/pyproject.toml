@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "obsvr-sdk"
 dynamic = ["version"]  # single source: obsvr/_version.py
-description = "obsvr LLM audit SDK for Python — fire-and-forget signed audit events with built-in PII policy, deterministic rule enforcement, and framework auto-instrumentation"
+description = "Secure and prove AI agents and LLMs — enforce policy in real time, block sensitive data, and reconstruct exactly what governed it"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

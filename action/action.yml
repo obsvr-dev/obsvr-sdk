@@ -28,7 +28,7 @@ inputs:
       Version of @obsvr/sdk to install. The obsvr-verify CLI ships inside this
       package; pin an exact version for reproducible CI checks.
     required: false
-    default: '0.11.0'
+    default: '0.11.1'
   node-version:
     description: 'Node.js version used to run obsvr-verify.'
     required: false
