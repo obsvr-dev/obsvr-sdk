@@ -156,6 +156,81 @@ class TestGovernedResponse:
         ev = [e for e in captured if e.get("success")][0]
         assert ev["action_taken"] == "redacted"
 
+    def test_a_sanitizer_that_could_not_run_is_not_recorded_as_a_redaction(
+        self, monkeypatch
+    ):
+        """The result the caller receives is the instrument.
+
+        A content item whose ``text`` cannot be assigned left the raw SSN on
+        the result while the sanitizer returned normally — its per-item
+        ``except Exception: pass`` swallowed the failure — and the event was
+        stamped ``redacted`` over it. Under fail_mode=open the result is still
+        delivered, which is what open means; what it must not do is claim a
+        redaction that did not happen.
+        """
+        _init(pii_policy={"rules": {"ssn": "redact"}}, fail_mode="open")
+        captured = _captured(monkeypatch)
+
+        class FrozenTextContent:
+            __slots__ = ("_text",)
+
+            def __init__(self, text):
+                object.__setattr__(self, "_text", text)
+
+            @property
+            def text(self):
+                return self._text  # no setter: assignment raises
+
+        class FrozenResult:
+            def __init__(self, text):
+                self.content = [FrozenTextContent(text)]
+
+        class Session:
+            async def call_tool(self, name, arguments=None):
+                return FrozenResult("user ssn 123-45-6789 leaked")
+
+        patch_mcp(Session)
+        result = _run(Session().call_tool("lookup", {"id": 1}))
+
+        # Ground truth: the redaction did NOT happen.
+        assert "123-45-6789" in result.content[0].text
+
+        ev = [e for e in captured if e.get("success")][0]
+        assert ev["action_taken"] != "redacted", (
+            "the event claimed a redaction the caller's result disproves"
+        )
+        assert ev["redacted_types"] == []
+
+    def test_a_sanitizer_that_could_not_run_fails_closed_when_asked_to(
+        self, monkeypatch
+    ):
+        """The same failure under fail_mode="closed" withholds the result,
+        which is available here because it has not reached the caller yet."""
+        _init(pii_policy={"rules": {"ssn": "redact"}}, fail_mode="closed")
+        _captured(monkeypatch)
+
+        class FrozenTextContent:
+            __slots__ = ("_text",)
+
+            def __init__(self, text):
+                object.__setattr__(self, "_text", text)
+
+            @property
+            def text(self):
+                return self._text
+
+        class FrozenResult:
+            def __init__(self, text):
+                self.content = [FrozenTextContent(text)]
+
+        class Session:
+            async def call_tool(self, name, arguments=None):
+                return FrozenResult("user ssn 123-45-6789 leaked")
+
+        patch_mcp(Session)
+        with pytest.raises(McpToolBlockedError, match="sanitizer failed"):
+            _run(Session().call_tool("lookup", {"id": 1}))
+
     def test_blocks_result_with_blocked_pattern(self, monkeypatch):
         _init(pii_policy={"rules": {"ssn": "block"}})
         captured = _captured(monkeypatch)

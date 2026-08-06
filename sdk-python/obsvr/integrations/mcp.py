@@ -952,10 +952,13 @@ def _build_governed_mcp_callables(
         # closed withholds it, and that IS available here because the sanitized
         # value has not reached the caller yet.
         final_result = result_obj
+        sanitized = False
+        sanitizer_failure = None
         if resp_scan["action"] == "sanitize":
             try:
                 final_result = sanitize_mcp_result(result_obj)
                 response_text = _render_result_text(final_result)
+                sanitized = True
             except Exception as _sanitize_exc:  # noqa: BLE001 - deliberate catch-all
                 from ..policy import record_detector_failure
 
@@ -965,6 +968,13 @@ def _build_governed_mcp_callables(
                         "(tool_result_scan sanitizer failed, fail_mode=closed)"
                     ) from None
                 final_result = result_obj
+                sanitizer_failure = {
+                    "layer": "tool_result_scan",
+                    "error": f"{type(_sanitize_exc).__name__}: {_sanitize_exc}"[:200],
+                    "resolution": "open",
+                    "floor_class": False,
+                    "phase": "enforcement_application",
+                }
 
         event_compliance = compliance or {
             "event_type": "tool_call",
@@ -977,7 +987,13 @@ def _build_governed_mcp_callables(
         }
         if event_compliance.get("event_type") == "llm_call":
             event_compliance["event_type"] = "tool_call"
-        if resp_scan["action"] == "sanitize" and event_compliance.get("action_taken") != "blocked":
+        # ``sanitized``, not ``action == "sanitize"``: the scan ASKING for a
+        # redaction is not the redaction happening. Under fail_mode=open a
+        # sanitizer that raised leaves the raw result on its way to the model,
+        # and this branch used to stamp ``redacted`` over it anyway — an event
+        # asserting a redaction that did not happen, which is the one thing the
+        # applied-redaction rule refuses to produce.
+        if sanitized and event_compliance.get("action_taken") != "blocked":
             event_compliance["action_taken"] = "redacted"
             if event_compliance.get("action_reason") in (None, "none"):
                 event_compliance["action_reason"] = resp_scan["action_reason"]
@@ -992,6 +1008,20 @@ def _build_governed_mcp_callables(
                 event_compliance["rule_id"] = resp_scan["rule_id"]
             if not event_compliance.get("policy_reason"):
                 event_compliance["policy_reason"] = resp_scan["policy_reason"]
+        elif sanitizer_failure is not None and event_compliance.get("action_taken") != "blocked":
+            # The scan found something and the removal did not happen. Record
+            # exactly that: no redaction claim, the types filed as DETECTED,
+            # and the lost layer named on this call's own event.
+            event_compliance["event_type"] = "policy_flag"
+            event_compliance["action_reason"] = resp_scan["action_reason"]
+            event_compliance["action_source"] = resp_scan["action_source"]
+            event_compliance["redacted_types"] = []
+            event_compliance["rule_id"] = "sdk:detector_error"
+            event_compliance["policy_reason"] = (
+                "Tool-result redaction could not be applied: the sanitizer raised; "
+                "the result was delivered unsanitized"
+            )[:256]
+            event_compliance["detector_failure"] = sanitizer_failure
 
         event_metadata = {"tool_name": tool_name}
         if resp_scan["detected_types"]:

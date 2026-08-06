@@ -213,10 +213,16 @@ def sanitize_mcp_result(result: Any) -> Any:
         for item in content:
             text = getattr(item, "text", None)
             if isinstance(text, str):
-                try:
-                    item.text = redact_builtin_pii(text)
-                except Exception:
-                    pass
+                # Deliberately unguarded, and it used to be guarded by
+                # ``except Exception: pass``. A frozen or slotted item whose
+                # ``text`` cannot be assigned left the RAW text on the result
+                # while this function returned normally, and the caller then
+                # stamped the event ``redacted`` — the one outcome the
+                # applied-redaction rule exists to rule out. The sibling
+                # branch below never swallowed anything, so the two halves of
+                # this loop disagreed about the same failure. The caller has a
+                # guard that resolves this by fail_mode; let it.
+                item.text = redact_builtin_pii(text)
             elif isinstance(item, dict) and isinstance(item.get("text"), str):
                 item["text"] = redact_builtin_pii(item["text"])
     return result
