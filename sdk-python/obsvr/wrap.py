@@ -1475,7 +1475,7 @@ class _ObsvrProxy:
         method_path = ".".join(path + [name])
 
         if method_path in AUDITABLE_METHODS and callable(value):
-            if inspect.iscoroutinefunction(value):
+            if _is_async_callable(value):
                 async def async_intercepted(*args: Any, **kwargs: Any) -> Any:
                     return await _governed_call_async(
                         value, target, provider, method_path, options, args, kwargs
@@ -1509,6 +1509,32 @@ class _ObsvrProxy:
 
     def __repr__(self) -> str:
         return f"<obsvr-wrapped {object.__getattribute__(self, '_obsvr_target')!r}>"
+
+
+def _is_async_callable(value: Any) -> bool:
+    """Whether calling ``value`` produces a coroutine.
+
+    ``inspect.iscoroutinefunction`` alone answers this WRONG for the async
+    clients, and wrong in the direction that fabricates evidence. Both provider
+    SDKs decorate ``create`` with a ``@required_args`` validator that is itself
+    a plain function, so the async ``messages.create`` and
+    ``chat.completions.create`` report False — the SYNC pipeline then ran on an
+    async client and emitted an event with ``success: True``, an empty response
+    and zero latency at the moment the coroutine was CONSTRUCTED, before the
+    provider had been contacted and while the call could still fail. Nothing
+    later corrected it. ``responses.create`` carries no such decorator, which is
+    why that path was right and its siblings were not.
+
+    ``inspect.unwrap`` follows the ``functools.wraps`` chain to the real
+    coroutine function underneath. It is asked SECOND, so a genuinely
+    synchronous method wrapped in a synchronous decorator still answers False.
+    """
+    if inspect.iscoroutinefunction(value):
+        return True
+    try:
+        return inspect.iscoroutinefunction(inspect.unwrap(value))
+    except Exception:  # noqa: BLE001 - a wrapper cycle is not an async method
+        return False
 
 
 def _resolves_to_callable(client: Any, path: str) -> bool:

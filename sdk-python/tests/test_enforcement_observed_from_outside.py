@@ -17,6 +17,8 @@ happened is by reading an obsvr event, it does not belong here — find the
 instrument outside the SDK, or say plainly that the claim is unproven.
 """
 
+import asyncio
+import functools
 import json
 import sys
 import threading
@@ -410,6 +412,88 @@ def test_the_stream_helper_still_yields_its_text(no_delivery):
         model="m", max_tokens=8, messages=[{"role": "user", "content": "hi"}]
     ) as stream:
         assert "".join(stream.text_stream) == "ok"
+
+
+# ── An un-awaited coroutine is the instrument ───────────────────────────────
+#
+# The callee is the ground truth here and the record is the claim under test,
+# which is the one direction the rule at the top of this file permits: the
+# event is not being asked to VOUCH for anything, it is being checked for
+# asserting something the world disagrees with.
+
+
+class _AsyncRecordingProvider:
+    """Reproduces the shape both provider SDKs actually ship.
+
+    Their async ``create`` is decorated by a ``@required_args`` validator that
+    is a plain function, so ``inspect.iscoroutinefunction`` answers False about
+    a method that returns a coroutine. The decorator is spelled out rather than
+    mocked away, because it is the whole defect.
+    """
+
+    class _Messages:
+        def __init__(self, entered):
+            self._entered = entered
+
+            async def _create(**kwargs):
+                entered.append(kwargs)
+                return _RecordingProvider._Response()
+
+            @functools.wraps(_create)
+            def _required_args(**kwargs):  # deliberately NOT async
+                return _create(**kwargs)
+
+            self.create = _required_args
+
+    def __init__(self, entered):
+        self.messages = self._Messages(entered)
+
+
+def test_no_event_describes_a_call_that_has_not_happened(monkeypatch):
+    """A coroutine that is constructed and never awaited has contacted nobody.
+
+    The sync pipeline ran on the async client, so an event with
+    ``success: True``, an empty response and zero latency was written at
+    construction time — before the provider was reached, and while the call
+    could still fail. The un-awaited coroutine is what makes the disagreement
+    checkable: the callee provably did not run.
+    """
+    emitted = []
+    monkeypatch.setattr(WRAP_MODULE, "send_audit_async", lambda c, e: emitted.append(e))
+    entered = []
+    _init()
+
+    client = obsvr.wrap(_AsyncRecordingProvider(entered))
+    coro = client.messages.create(
+        model="m", max_tokens=8, messages=[{"role": "user", "content": "hi"}]
+    )
+    try:
+        assert entered == [], "the provider ran before the coroutine was awaited"
+        assert emitted == [], (
+            "an audit event described a call the provider never received"
+        )
+    finally:
+        coro.close()
+
+
+def test_the_async_path_still_records_the_call_it_did_make(monkeypatch):
+    """The control. Without it the assertion above is satisfied by a wrapper
+    that stopped emitting altogether."""
+    emitted = []
+    monkeypatch.setattr(WRAP_MODULE, "send_audit_async", lambda c, e: emitted.append(e))
+    entered = []
+    _init()
+
+    client = obsvr.wrap(_AsyncRecordingProvider(entered))
+    asyncio.run(
+        client.messages.create(
+            model="m", max_tokens=8, messages=[{"role": "user", "content": "hi"}]
+        )
+    )
+
+    assert len(entered) == 1
+    assert len(emitted) == 1
+    assert emitted[0]["response"] == "ok"
 
 
 # ── A real ingest server is the instrument ──────────────────────────────────
