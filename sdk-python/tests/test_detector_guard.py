@@ -663,7 +663,15 @@ class TestCheckOnlyAndProvenanceSurfaces:
 
     def test_a_broken_shadow_rule_cannot_block_even_fail_closed(self, monkeypatch):
         """fail_mode='closed' is the strong case: a shadow rule that blocked
-        would break the one promise shadow mode makes."""
+        would break the one promise shadow mode makes.
+
+        The rule itself is VALID and the shadow EVALUATION is what raises,
+        which is the case this asserts. It used to stand in a duck-typed object
+        with no ``conditions`` — a rule the engine cannot evaluate at all,
+        which now fails closed on the active pass in its own right
+        (``test_a_rule_that_is_not_a_rule_fails_closed`` below). The two are
+        different failures and the fixture was conflating them.
+        """
         import obsvr
         from obsvr import rules as rules_mod
         from obsvr.policy import apply_pre_call_policy, get_detector_error_count
@@ -680,17 +688,15 @@ class TestCheckOnlyAndProvenanceSurfaces:
             cfg,
             "policy_rules",
             [
-                type(
-                    "R",
-                    (),
-                    {
-                        "enabled": True,
-                        "mode": "shadow",
-                        "id": "s1",
-                        "type": "keyword",
-                        "action": "block",
-                    },
-                )()
+                rules_mod.PolicyRule(
+                    id="s1",
+                    name="s1",
+                    enabled=True,
+                    action="block",
+                    type="keyword",
+                    conditions={"keywords": ["hello"]},
+                    mode="shadow",
+                )
             ],
         )
 
@@ -700,4 +706,31 @@ class TestCheckOnlyAndProvenanceSurfaces:
         assert res["decision"] != "block", "a shadow rule must never block"
         assert res["compliance"]["shadow_outcome"] is None
         assert get_detector_error_count() >= 1
+        _reset()
+
+    def test_a_rule_that_is_not_a_rule_fails_closed(self):
+        """fail_mode='open' is the strong case here, and the reason this class
+        is carved out of it.
+
+        ``fail_mode`` prices a detector CRASHING on some input. A rule the
+        engine cannot read is not that — there is no input for which it would
+        have worked — so it resolves closed whatever fail_mode says. Reached
+        by writing straight to the resolved config, because ``init()`` refuses
+        this rule outright; both guards exist and this one is the backstop.
+        """
+        import obsvr
+        from obsvr.policy import apply_pre_call_policy
+
+        _reset()
+        obsvr.init(api_key="test", fail_mode="open")
+        cfg = get_config()
+        object.__setattr__(cfg, "policy_rules", ["not-a-rule"])
+
+        res = apply_pre_call_policy(
+            "hello", cfg, provider="openai", operation="chat"
+        )
+        assert res["decision"] == "block", (
+            "a declared rule the engine cannot evaluate resolved OPEN"
+        )
+        assert res["compliance"]["detector_failure"]["resolution"] == "closed"
         _reset()

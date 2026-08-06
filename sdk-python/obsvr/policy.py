@@ -814,14 +814,22 @@ def record_detector_failure(
     """Count and log one detector failure; return True if it resolves CLOSED.
 
     The single resolution point for the rule: every internal failure resolves
-    by fail_mode, EXCEPT the floor class, which is by definition the thing
-    fail_mode cannot move. Both the pre-call guard and the response-scan guard
-    come here, so the rule exists once rather than per call site.
+    by fail_mode, EXCEPT two classes fail_mode does not speak for — the floor,
+    which is by definition the thing fail_mode cannot move, and a rule that is
+    not a rule (see rules.MalformedPolicyRule). Both the pre-call guard and the
+    response-scan guard come here, so the rule exists once rather than per call
+    site.
     """
+    from .rules import MalformedPolicyRule
+
     global _detector_errors
     _detector_errors += 1
 
-    fail_closed = layer in _FLOOR_CLASS_LAYERS or getattr(config, "fail_mode", "open") == "closed"
+    fail_closed = (
+        layer in _FLOOR_CLASS_LAYERS
+        or isinstance(exc, MalformedPolicyRule)
+        or getattr(config, "fail_mode", "open") == "closed"
+    )
     logging.getLogger("obsvr").error(
         "obsvr detector layer %r failed (%s: %s); resolving %s. The call was %s. "
         "This is an SDK defect - please report it.",

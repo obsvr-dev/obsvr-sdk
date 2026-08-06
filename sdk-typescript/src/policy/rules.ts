@@ -174,6 +174,31 @@ export function ensureRuleResolution(resolution?: string): RuleResolution | unde
   return resolution as RuleResolution | undefined;
 }
 
+/**
+ * A declared rule the engine cannot evaluate at all.
+ *
+ * Separated from every other exception the detector guard sees because the two
+ * resolve differently. `failMode` is the operator's answer to "a detector
+ * crashed on this input" — a runtime hazard they get to price. A rule that is
+ * not a rule is not that: it is the configuration itself being unreadable, and
+ * there is no input for which it would have worked. So this resolves CLOSED
+ * whatever failMode says (see recordDetectorFailure), on the same reasoning the
+ * floor class uses — a control that CANNOT RUN is the strongest form of
+ * "cannot guarantee".
+ *
+ * `init()` refuses these outright (invalidPolicyRuleReason), so reaching the
+ * engine means the rule set was assembled some other way. This is the backstop,
+ * not the primary guard.
+ *
+ * Twin: sdk-python/obsvr/rules.py (`MalformedPolicyRule`).
+ */
+export class MalformedPolicyRule extends TypeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MalformedPolicyRule';
+  }
+}
+
 /** Per-call evaluation options (EV-22 checkOnly, failure posture, resolution). */
 export interface EvaluateRulesOptions {
   /** Check-only evaluation (EV-22): identical decision logic but no
@@ -314,6 +339,19 @@ function ruleOutcome(
   denyWins: boolean,
 ): PolicyDecisionResult | undefined {
   {
+    // Before the truth test below, because `!rule.enabled` cannot tell "the
+    // operator switched this rule off" from "this is not a rule and has no
+    // such field". The first is a decision; the second was silence.
+    if (rule === null || typeof rule !== 'object') {
+      throw new MalformedPolicyRule(
+        `a policy rule must be an object, got ${rule === null ? 'null' : typeof rule}`,
+      );
+    }
+    if (typeof rule.enabled !== 'boolean') {
+      throw new MalformedPolicyRule(
+        `policy rule ${JSON.stringify((rule as PolicyRule).id ?? '<no id>')} has no enabled flag`,
+      );
+    }
     if (!rule.enabled) return undefined;
     // Shadow rules are inert in active evaluation (EV-20); they run only
     // through evaluateShadowRules after the active decision is final.

@@ -58,13 +58,15 @@ _poll_stop = threading.Event()
 _grants: List[Dict[str, Any]] = []
 _grants_lock = threading.Lock()
 
-_VALID_ACTIONS = {"block", "redact", "flag"}
-_VALID_TYPES = {
-    "keyword", "regex", "topic_deny", "topic_allow", "pii", "action_gate",
-    "namespace_isolation", "cross_tenant_block", "destructive_op_gate",
-    "source_grounding", "environment_gate", "quota", "model_gate",
-    "protocol_facet",
-}
+# The rule schema lives in rules.py, next to the engine that reads it, and is
+# re-exported here under the names this module has always used. It was defined
+# here, which meant the SERVER tier was schema-checked and the tier an operator
+# declares in init() was not checked at all — so a rule this validator would
+# have refused was accepted from code and lost its enforcement at evaluation
+# time instead. Same standard for both tiers now; they differ only in what an
+# invalid rule COSTS (see config.py: the poll drops it, init() refuses).
+from .rules import VALID_RULE_TYPES as _VALID_TYPES
+from .rules import is_valid_rule as _valid_rule
 
 # Reported on the /policies poll (fleet status) and stamped on every signed
 # event. Single-sourced from obsvr/_version.py (shared with __version__ and
@@ -84,38 +86,6 @@ SDK_CAPABILITIES = ",".join(
     # OPA/Cedar backend, merged DENY-WINS with local rules (ADR-4).
     + ["shadow_mode", "approval_pinning", "rules_hash", "quota_escrow", "external_policy_backend"]
 )
-
-
-#: Rule-id namespaces the SDK mints for its OWN verdicts - ``sdk:`` for the
-#: built-in governance layers (sdk:canary_leak, sdk:session_tainted, ...) and
-#: ``backend:`` for external-policy-backend verdicts. Reserved: an operator-
-#: or server-supplied rule claiming either prefix is invalid, because a forged
-#: ``sdk:*`` rule would be indistinguishable from the SDK's own governance
-#: verdicts on the audit record. Pinned by the ``reserved_rule_id_rejected``
-#: case in conformance/fixtures/eval_semantics.json (parity with the TS
-#: RESERVED_RULE_ID_PREFIXES).
-RESERVED_RULE_ID_PREFIXES = ("sdk:", "backend:")
-
-
-def _valid_rule(raw: Any) -> bool:
-    if not isinstance(raw, dict):
-        return False
-    # mode is optional; when present it must be a known value. A typo'd
-    # mode must invalidate the rule (EV-12), never silently ENFORCE a
-    # rule the author meant to shadow.
-    if raw.get("mode") is not None and raw.get("mode") not in ("enforce", "shadow"):
-        return False
-    return (
-        isinstance(raw.get("id"), str) and raw["id"] != ""
-        # A rule cannot claim the SDK's own verdict namespace (see
-        # RESERVED_RULE_ID_PREFIXES above).
-        and not raw["id"].startswith(RESERVED_RULE_ID_PREFIXES)
-        and isinstance(raw.get("name"), str)
-        and isinstance(raw.get("enabled"), bool)
-        and raw.get("action") in _VALID_ACTIONS
-        and raw.get("type") in _VALID_TYPES
-        and isinstance(raw.get("conditions"), dict)
-    )
 
 
 def _parse_escrow_map(raw: Any) -> Optional[Dict[str, Dict[str, Any]]]:

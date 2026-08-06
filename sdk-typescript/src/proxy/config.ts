@@ -391,6 +391,29 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       throw new Error(`obsvr.init(): ${(err as Error).message}`);
     }
   }
+  // Declared rule lists are schema-checked HERE, at the boundary that accepts
+  // them, against the same standard the `/policies` poll has always applied.
+  // Only the poll tier was checked, so a rule this validator refuses could be
+  // declared in code and enforce nothing: the engine reads `enabled` as a
+  // truth value and matches on `type`, so a rule missing the one or misspelling
+  // the other is skipped in silence. A throw, not a warning — there is no
+  // later moment at which an unreadable rule becomes readable, and this is the
+  // only point at which the author can still be told.
+  for (const [name, list] of [
+    ["policyRules", config.policy_rules],
+    ["policyFloor", config.policyFloor],
+  ] as const) {
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) {
+      throw new Error(`obsvr.init(): ${name} must be an array of rules`);
+    }
+    list.forEach((rule, i) => {
+      const why = invalidPolicyRuleReason(rule);
+      if (why !== undefined) {
+        throw new Error(`obsvr.init(): ${name}[${i}] is not a usable rule: ${why}`);
+      }
+    });
+  }
   const refreshMs = config.policy_refresh_interval_ms;
   if (refreshMs !== undefined && (typeof refreshMs !== "number" || refreshMs < 0)) {
     throw new Error(`obsvr.init(): policyRefreshIntervalMs must be >= 0, got ${String(refreshMs)}`);
@@ -843,41 +866,69 @@ export const SDK_CAPABILITIES: string = [
 export const RESERVED_RULE_ID_PREFIXES = ["sdk:", "backend:"] as const;
 
 /**
- * Validate that a server-fetched object has the minimum required PolicyRule fields.
- * Prevents malformed or pathological rules from being applied.
- * Regex rules additionally pass through the ReDoS pattern validator so a
- * catastrophic-backtracking pattern can never be installed from the server.
+ * Why `rule` is not a usable PolicyRule, or undefined if it is one.
+ *
+ * The reason string exists because the two tiers of rule report differently:
+ * a `/policies` poll DROPS an invalid rule (one bad rule must not brick a
+ * fleet) while `init()` REFUSES it, and a refusal has to say what was wrong.
+ * Both tiers ask this one function, so "a rule" cannot come to mean two
+ * things — it used to, and the tier that went unchecked was the one an
+ * operator writes by hand.
+ *
+ * Regex rules additionally pass through the ReDoS pattern validator, so a
+ * catastrophic-backtracking pattern can never be installed from either tier.
  */
-export function isValidPolicyRule(rule: unknown): rule is PolicyRule {
-  if (!rule || typeof rule !== "object") return false;
+export function invalidPolicyRuleReason(rule: unknown): string | undefined {
+  if (!rule || typeof rule !== "object") {
+    return `expected a rule object, got ${rule === null ? "null" : typeof rule}`;
+  }
   const r = rule as Record<string, unknown>;
-  const structureOk =
-    typeof r.id === "string" &&
-    r.id.length > 0 &&
-    typeof r.name === "string" &&
-    typeof r.enabled === "boolean" &&
-    VALID_RULE_ACTIONS.has(r.action as string) &&
-    VALID_RULE_TYPES.has(r.type as string) &&
-    typeof r.conditions === "object" &&
-    r.conditions !== null;
-  if (!structureOk) return false;
-
+  if (typeof r.id !== "string" || r.id.length === 0) return "id must be a non-empty string";
   // A rule cannot claim the SDK's own verdict namespace (see
   // RESERVED_RULE_ID_PREFIXES above).
-  if (RESERVED_RULE_ID_PREFIXES.some((p) => (r.id as string).startsWith(p))) return false;
-
+  if (RESERVED_RULE_ID_PREFIXES.some((p) => (r.id as string).startsWith(p))) {
+    return `id "${r.id}" claims a reserved prefix (${RESERVED_RULE_ID_PREFIXES.join(", ")})`;
+  }
+  if (typeof r.name !== "string") return "name must be a string";
+  // The silent-inertness case: the engine reads `enabled` as a truth value,
+  // so a rule that omits it is skipped rather than enforced.
+  if (typeof r.enabled !== "boolean") return "enabled must be a boolean";
+  if (!VALID_RULE_ACTIONS.has(r.action as string)) {
+    return `action must be one of ${[...VALID_RULE_ACTIONS].sort().join(", ")}, got ${JSON.stringify(r.action)}`;
+  }
+  // The other silent-inertness case: the matcher has no branch for an unknown
+  // type, so it never matches and the rule enforces nothing.
+  if (!VALID_RULE_TYPES.has(r.type as string)) {
+    return `type must be one of ${[...VALID_RULE_TYPES].sort().join(", ")}, got ${JSON.stringify(r.type)}`;
+  }
+  if (typeof r.conditions !== "object" || r.conditions === null) {
+    return "conditions must be an object";
+  }
   // mode is optional; when present it must be a known value. A typo'd
   // mode must invalidate the rule (EV-12), never silently ENFORCE a rule
   // the author meant to shadow.
-  if (r.mode !== undefined && r.mode !== "enforce" && r.mode !== "shadow") return false;
-
+  if (r.mode !== undefined && r.mode !== "enforce" && r.mode !== "shadow") {
+    return `mode must be "enforce" or "shadow", got ${JSON.stringify(r.mode)}`;
+  }
   if (r.type === "regex") {
     const pattern = (r.conditions as Record<string, unknown>).pattern;
-    if (typeof pattern !== "string") return false;
+    if (typeof pattern !== "string") {
+      return "a regex rule needs conditions.pattern as a string";
+    }
     const verdict = validateRegexPattern(pattern);
-    if (!verdict.ok) return false;
+    if (!verdict.ok) {
+      return `conditions.pattern was refused by the ReDoS guard (${verdict.reason})`;
+    }
   }
-  return true;
+  return undefined;
+}
+
+/**
+ * Validate that an object has the minimum required PolicyRule fields.
+ * Prevents malformed or pathological rules from being applied.
+ */
+export function isValidPolicyRule(rule: unknown): rule is PolicyRule {
+  return invalidPolicyRuleReason(rule) === undefined;
 }
 
 // ── Remote policy sync health ────────────────────────────────────────────────

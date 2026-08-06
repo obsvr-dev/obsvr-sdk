@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 from .escrow import has_escrow, peek_escrow_share, spend_escrow_share
 from .normalize import normalize_for_matching
 from .reason_codes import ReasonCode, rule_type_to_reason_code
-from .safe_regex import safe_regex_search
+from .safe_regex import safe_regex_search, validate_regex_pattern
 
 
 @dataclass
@@ -36,6 +36,108 @@ class PolicyRule:
     # "shadow" rules never affect the decision; they only record what they
     # would have done (EV-20/21). None == "enforce".
     mode: Optional[str] = None
+
+
+#: What a rule may DO and what it may BE. Single-sourced here rather than in
+#: the poll parser that used to own them, because both tiers of rule — the set
+#: an operator declares in ``init()`` and the set a ``/policies`` poll delivers
+#: — have to mean the same thing by "a rule". Re-exported by remote.py under
+#: its historical private names.
+VALID_RULE_ACTIONS = {"block", "redact", "flag"}
+VALID_RULE_TYPES = {
+    "keyword", "regex", "topic_deny", "topic_allow", "pii", "action_gate",
+    "namespace_isolation", "cross_tenant_block", "destructive_op_gate",
+    "source_grounding", "environment_gate", "quota", "model_gate",
+    "protocol_facet",
+}
+
+#: Rule-id namespaces the SDK mints for its OWN verdicts - ``sdk:`` for the
+#: built-in governance layers (sdk:canary_leak, sdk:session_tainted, ...) and
+#: ``backend:`` for external-policy-backend verdicts. Reserved: an operator-
+#: or server-supplied rule claiming either prefix is invalid, because a forged
+#: ``sdk:*`` rule would be indistinguishable from the SDK's own governance
+#: verdicts on the audit record. Pinned by the ``reserved_rule_id_rejected``
+#: case in conformance/fixtures/eval_semantics.json (parity with the TS
+#: RESERVED_RULE_ID_PREFIXES).
+RESERVED_RULE_ID_PREFIXES = ("sdk:", "backend:")
+
+
+def invalid_rule_reason(raw: Any) -> Optional[str]:
+    """Why ``raw`` is not a usable rule, or None if it is one.
+
+    The reason string exists because the two tiers report differently: the
+    poll drops an invalid rule (one bad rule must not brick a fleet), while
+    ``init()`` refuses it outright, and a refusal has to say what was wrong.
+    """
+    if isinstance(raw, PolicyRule):
+        raw = dataclasses.asdict(raw)
+    if not isinstance(raw, dict):
+        return f"expected a PolicyRule or a mapping, got {type(raw).__name__}"
+    # mode is optional; when present it must be a known value. A typo'd
+    # mode must invalidate the rule (EV-12), never silently ENFORCE a
+    # rule the author meant to shadow.
+    if raw.get("mode") is not None and raw.get("mode") not in ("enforce", "shadow"):
+        return f"mode must be 'enforce' or 'shadow', got {raw.get('mode')!r}"
+    if not isinstance(raw.get("id"), str) or raw["id"] == "":
+        return "id must be a non-empty string"
+    # A rule cannot claim the SDK's own verdict namespace (see
+    # RESERVED_RULE_ID_PREFIXES above).
+    if raw["id"].startswith(RESERVED_RULE_ID_PREFIXES):
+        return (
+            f"id {raw['id']!r} claims a reserved prefix "
+            f"({', '.join(RESERVED_RULE_ID_PREFIXES)})"
+        )
+    if not isinstance(raw.get("name"), str):
+        return "name must be a string"
+    if not isinstance(raw.get("enabled"), bool):
+        # The silent-inertness case: the engine reads `enabled` as a truth
+        # value, so a rule that omits it is skipped rather than enforced.
+        return "enabled must be a bool"
+    if raw.get("action") not in VALID_RULE_ACTIONS:
+        return f"action must be one of {sorted(VALID_RULE_ACTIONS)}, got {raw.get('action')!r}"
+    if raw.get("type") not in VALID_RULE_TYPES:
+        # The other silent-inertness case: the matcher has no branch for an
+        # unknown type, so it never matches and the rule enforces nothing.
+        return f"type must be one of {sorted(VALID_RULE_TYPES)}, got {raw.get('type')!r}"
+    if not isinstance(raw.get("conditions"), dict):
+        return "conditions must be a mapping"
+    if raw["type"] == "regex":
+        # Parity with the TS validator, which has always run the ReDoS check
+        # here. A pattern this refuses is treated as no-match by the matcher
+        # (rules.py, safe_regex_search) — indistinguishable at the verdict from
+        # a rule that ran and found nothing. Naming it at the boundary that
+        # parses the rule is the only place the difference is still visible.
+        pattern = raw["conditions"].get("pattern")
+        if not isinstance(pattern, str):
+            return "a regex rule needs conditions.pattern as a string"
+        ok, why = validate_regex_pattern(pattern)
+        if not ok:
+            return f"conditions.pattern was refused by the ReDoS guard ({why})"
+    return None
+
+
+def is_valid_rule(raw: Any) -> bool:
+    """Schema check for one rule. Used by the poll parser to DROP, and by
+    ``init()`` to REFUSE."""
+    return invalid_rule_reason(raw) is None
+
+
+class MalformedPolicyRule(TypeError):
+    """A declared rule the engine cannot evaluate at all.
+
+    Separated from every other exception the detector guard sees because the
+    two resolve differently. ``fail_mode`` is the operator's answer to "a
+    detector crashed on this input" — a runtime hazard they get to price. A
+    rule that is not a rule is not that: it is the configuration itself being
+    unreadable, and there is no input for which it would have worked. So this
+    resolves CLOSED whatever fail_mode says (policy.record_detector_failure),
+    on the same reasoning the floor class uses — a control that CANNOT RUN is
+    the strongest form of "cannot guarantee".
+
+    Subclasses TypeError, which is what the coercion used to raise, so a
+    caller already catching TypeError around rule construction still catches
+    it.
+    """
 
 
 # ── Conflict-resolution semantics for the enabled rule set ──────────────────
@@ -99,6 +201,13 @@ def evaluate_policy_rules(
     Returns PolicyDecisionResult dict.
     """
     ensure_rule_resolution(resolution)
+    # Coerce at the engine's front door, not only at init(). The engine reads
+    # rules by attribute, so an entry it cannot read raises INSIDE the caller's
+    # detector guard, where fail_mode resolves it open -- an operator's block
+    # rule silently not blocking. Mappings become PolicyRule here; anything
+    # that cannot be one raises MalformedPolicyRule, which that guard resolves
+    # closed. Already-PolicyRule entries pass through by identity.
+    rules = coerce_policy_rules(rules)
     # The unmetered record is collected here and attached to whatever verdict
     # comes out, including one produced by a LATER rule: the fact "this call's
     # quota rule did not run" is true of the call regardless of what decided
@@ -1164,6 +1273,12 @@ def derive_policy_version(
         ensure_rule_resolution(resolution)
         if not rules:
             return "none"
+        # Same coercion the matcher applies, so the version stamped on the
+        # event describes the rules that actually ran. Without it a declared
+        # ruleset in mapping form hashed to "unknown" while the matcher (which
+        # coerces) enforced it — a provenance field disagreeing with the
+        # decision it is supposed to describe.
+        rules = coerce_policy_rules(rules)
         enabled = [r for r in rules if r.enabled]
         if not enabled:
             return "none"
@@ -1199,23 +1314,43 @@ def derive_rule_hash(rule: PolicyRule) -> str:
 
 
 def _as_policy_rule(r: Any) -> PolicyRule:
-    """Coerce a floor rule to a PolicyRule instance. The TS SDK accepts plain
-    objects for policyFloor (object spread), config.py types policy_floor as
-    List[Any], and the TS docs use object literals — so a Python caller
-    mirroring them may pass dicts. Without coercion the dataclasses.replace()
-    in the floor functions raises TypeError, and under failMode=open a raised
-    floor eval could be swallowed, silently un-enforcing a security baseline
-    (fail-OPEN). Coerce so the floor stays fail-CLOSED and at TS parity.
-    Already-PolicyRule instances pass through unchanged, so the conformance
-    fixtures (which build dataclasses) hash byte-identically."""
+    """Coerce one declared rule to a PolicyRule instance. The TS SDK accepts
+    plain objects for policyRules and policyFloor (object spread), config.py
+    types both as List[Any], and the TS docs use object literals — so a Python
+    caller mirroring them may pass dicts. Without coercion the engine's
+    attribute reads raise inside the caller's detector guard, and under
+    fail_mode=open that guard resolves the raise OPEN, silently un-enforcing a
+    control the operator declared. Coerce so both tiers stay enforcing and at
+    TS parity. Already-PolicyRule instances pass through unchanged, so the
+    conformance fixtures (which build dataclasses) hash byte-identically."""
     if isinstance(r, PolicyRule):
         return r
     if isinstance(r, dict):
         allowed = {f.name for f in dataclasses.fields(PolicyRule)}
-        return PolicyRule(**{k: v for k, v in r.items() if k in allowed})
-    raise TypeError(
-        f"policy_floor entries must be a PolicyRule or dict, got {type(r).__name__}"
+        try:
+            return PolicyRule(**{k: v for k, v in r.items() if k in allowed})
+        except TypeError as exc:
+            # A mapping missing a required field. Named rather than passed
+            # through as the dataclass's own "missing argument" text, because
+            # the reader needs to know WHICH rule and that it was a rule.
+            raise MalformedPolicyRule(
+                f"policy rule {r.get('id', '<no id>')!r} is missing a required "
+                f"field: {exc}"
+            ) from exc
+    raise MalformedPolicyRule(
+        f"a policy rule must be a PolicyRule or a mapping, got {type(r).__name__}"
     )
+
+
+def coerce_policy_rules(rules: Optional[List[Any]]) -> List[PolicyRule]:
+    """Coerce a declared rule LIST. Identity on a list that is already all
+    PolicyRule, which is the hot path — every call through a governed client
+    re-enters the engine, and init() has normally coerced already."""
+    if not rules:
+        return []
+    if all(isinstance(r, PolicyRule) for r in rules):
+        return rules if isinstance(rules, list) else list(rules)
+    return [_as_policy_rule(r) for r in rules]
 
 
 def evaluate_floor(
@@ -1279,6 +1414,7 @@ def evaluate_shadow_rules(
     consumption, EV-20/22); the result is a would-have record
     {rule_id, would, reason}, never a decision. None when nothing matched.
     Parity with TS evaluateShadowRules."""
+    rules = coerce_policy_rules(rules)
     shadow_rules = [r for r in rules if r.enabled and getattr(r, "mode", None) == "shadow"]
     if not shadow_rules:
         return None

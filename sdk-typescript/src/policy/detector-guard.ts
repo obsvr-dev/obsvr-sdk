@@ -89,7 +89,13 @@ export function recordDetectorFailure(
 ): boolean {
   detectorErrors += 1;
   const failClosed =
-    FLOOR_CLASS_LAYERS.has(layer) || (config?.failMode ?? "open") === "closed";
+    FLOOR_CLASS_LAYERS.has(layer) ||
+    // A rule that is not a rule is not a detector crash, so failMode does not
+    // speak for it (see MalformedPolicyRule). Matched by name rather than by
+    // `instanceof` so a copy of the class from a duplicate package instance
+    // still resolves closed — the permissive direction is the one that costs.
+    (err instanceof Error && err.name === "MalformedPolicyRule") ||
+    (config?.failMode ?? "open") === "closed";
   // eslint-disable-next-line no-console
   console.error(
     `[obsvr] detector layer "${layer || "unknown"}" failed (${describeError(err)}); ` +

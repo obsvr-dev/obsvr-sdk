@@ -574,6 +574,36 @@ def init(
                     f"obsvr.init(): {_pname} failed the SSRF guard: {e}"
                 )
 
+    # Declared rule lists are coerced HERE, at the boundary that accepts them.
+    #
+    # The engine reads a rule by attribute, so a mapping reached it as an
+    # AttributeError raised inside the caller's detector guard — where
+    # fail_mode resolves it open. A `policy_rules` block written as a dict
+    # therefore did not block: the call went to the provider with only a
+    # stderr notice behind it. Mappings are the natural spelling here (the TS
+    # twin takes object literals, both parameters are typed List[Any], and
+    # `policy_floor` has always accepted them), so the fix is to accept them
+    # rather than to require the dataclass.
+    #
+    # A ValueError at init(), not a warning: a rule that cannot be built is
+    # the operator's configuration being unreadable, and there is no later
+    # moment at which it becomes readable. Raising here is the only point at
+    # which they can still be told before a governed call depends on it.
+    from .rules import coerce_policy_rules as _coerce_policy_rules
+    from .rules import invalid_rule_reason as _invalid_rule_reason
+
+    _coerced: Dict[str, List[Any]] = {}
+    for _rname, _rlist in (("policy_rules", policy_rules), ("policy_floor", policy_floor)):
+        for _i, _raw in enumerate(_rlist or []):
+            _why = _invalid_rule_reason(_raw)
+            if _why is not None:
+                raise ValueError(f"obsvr.init(): {_rname}[{_i}] is not a usable rule: {_why}")
+        _coerced[_rname] = _coerce_policy_rules(_rlist)
+    # None and [] stay distinguishable: "no rules declared" and "an empty rule
+    # set was declared" read the same to the engine but not to every caller.
+    policy_rules = None if policy_rules is None else _coerced["policy_rules"]
+    policy_floor = None if policy_floor is None else _coerced["policy_floor"]
+
     rate = 1.0 if sample_rate is None else float(sample_rate)
     if rate < 0:
         rate = 0.0

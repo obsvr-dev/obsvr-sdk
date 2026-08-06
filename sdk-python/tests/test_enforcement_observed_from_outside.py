@@ -18,6 +18,7 @@ instrument outside the SDK, or say plainly that the claim is unproven.
 """
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -25,8 +26,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 import obsvr
+import obsvr.wrap  # noqa: F401 - load the module; the package attr shadows it
 from obsvr import sender
 from obsvr.integrations.tools import govern_tool
+
+#: The module, not the ``obsvr.wrap`` function that shadows it in the package
+#: namespace. Needed to reach the sender binding it imported at load time.
+WRAP_MODULE = sys.modules["obsvr.wrap"]
 
 RAW_EMAIL = "marcus.webb@fastmail.com"
 REDACT_EMAIL_POLICY = {"default": "detect_only", "rules": {"email": "redact"}}
@@ -75,8 +81,18 @@ def no_delivery(monkeypatch):
     test's event — which then travels the batch path and answers a different
     question than the one being asked. The policy pipeline and the gate are
     untouched: only the transport is.
+
+    Both bindings, not just the module: ``wrap.py`` imported the symbol at
+    module load, so patching ``sender`` alone left the governed-client path
+    delivering for real. Its events then queued against the unreachable URL and
+    landed in the next test's counters — which is the exact confusion the
+    docstring above describes, arriving through the one path the fixture did
+    not cover.
     """
     monkeypatch.setattr(sender, "send_audit_async", lambda config, event: None)
+    monkeypatch.setattr(
+        WRAP_MODULE, "send_audit_async", lambda config, event: None
+    )
 
 
 def _init(**kwargs):
@@ -183,6 +199,125 @@ def test_the_audited_payload_is_the_declared_surface_not_the_call_frame(no_deliv
     assert received["order_id"] == "A-3390"
     assert received["run_manager"] is manager
     assert received["config"] is graph_config
+
+
+# ── The provider client is the instrument ───────────────────────────────────
+#
+# What a governed client hands its provider is the only thing that decides
+# whether a block blocked. These record it and are asked afterwards; nothing
+# here reads an obsvr event, and the control proves the recorder can see a
+# leak when one happens.
+
+
+BLOCKED_KEYWORD = "zarquon"
+
+KEYWORD_BLOCK_RULE = {
+    "id": "no-zarquon",
+    "name": "Block zarquon",
+    "enabled": True,
+    "action": "block",
+    "type": "keyword",
+    "conditions": {"keywords": [BLOCKED_KEYWORD]},
+}
+
+
+class _RecordingProvider:
+    """Duck-types an Anthropic client down to what wrap() traverses. Every
+    call appends the prompt text it was handed, so 'the provider was never
+    reached' and 'the provider was reached without the keyword' are separate,
+    checkable claims."""
+
+    class _Response:
+        class _Block:
+            type = "text"
+            text = "ok"
+
+        class _Usage:
+            input_tokens = 1
+            output_tokens = 1
+
+        content = [_Block()]
+        usage = _Usage()
+
+    class _Messages:
+        def __init__(self, received):
+            self._received = received
+
+        def create(self, **kwargs):
+            self._received.append(json.dumps(kwargs.get("messages", "")))
+            return _RecordingProvider._Response()
+
+    def __init__(self, received):
+        self.messages = self._Messages(received)
+
+
+def _drive_governed_call(**init_kwargs):
+    """One governed call through a recording provider. Returns what the
+    provider received."""
+    received = []
+    _init(**init_kwargs)
+    client = obsvr.wrap(_RecordingProvider(received))
+    try:
+        client.messages.create(
+            model="m",
+            max_tokens=8,
+            messages=[{"role": "user", "content": f"The password is {BLOCKED_KEYWORD}."}],
+        )
+    except Exception:
+        pass
+    return received
+
+
+def test_the_control_reaches_the_provider_with_the_keyword(no_delivery):
+    """Without the rule the call lands and the keyword is in what the provider
+    was handed. Every assertion below is satisfied by a broken recorder
+    without this."""
+    received = _drive_governed_call()
+    assert len(received) == 1
+    assert BLOCKED_KEYWORD in received[0]
+
+
+def test_a_block_rule_written_as_a_mapping_stops_the_call(no_delivery):
+    """The same rule in the spelling the docs' object literals invite. It
+    reached the engine uncoerced, raised on the first attribute read, and the
+    detector guard resolved that open — so the provider got the call and the
+    keyword, behind a stderr notice."""
+    received = _drive_governed_call(policy_rules=[dict(KEYWORD_BLOCK_RULE)])
+    assert received == [], "a mapping-form block rule let the call through"
+
+
+def test_a_block_rule_written_as_a_dataclass_stops_the_call(no_delivery):
+    """The spelling that already worked. Paired with the one above so the two
+    are pinned to the same outcome rather than each to its own."""
+    from obsvr.rules import PolicyRule
+
+    received = _drive_governed_call(policy_rules=[PolicyRule(**KEYWORD_BLOCK_RULE)])
+    assert received == [], "a dataclass-form block rule let the call through"
+
+
+def test_a_floor_rule_written_as_a_mapping_stops_the_call(no_delivery):
+    """The floor tier, same spelling. It accepted mappings before the other
+    tier did, which is most of why a caller expected both to."""
+    received = _drive_governed_call(policy_floor=[dict(KEYWORD_BLOCK_RULE)])
+    assert received == [], "a mapping-form floor rule let the call through"
+
+
+@pytest.mark.parametrize(
+    "bad,why",
+    [
+        ("not-a-rule", "not a mapping at all"),
+        ({k: v for k, v in KEYWORD_BLOCK_RULE.items() if k != "enabled"}, "no enabled"),
+        ({**KEYWORD_BLOCK_RULE, "type": "keywrod"}, "typo'd type"),
+        ({**KEYWORD_BLOCK_RULE, "id": "sdk:forged"}, "reserved id prefix"),
+    ],
+)
+def test_a_rule_the_engine_cannot_use_is_refused_at_init(bad, why, no_delivery):
+    """Each of these was accepted by init() and then enforced nothing — two
+    by raising into a fail-open guard, two by evaluating to a rule that never
+    matches. The instrument is init() itself: it either refuses or it does
+    not."""
+    with pytest.raises(ValueError, match="is not a usable rule"):
+        _init(policy_rules=[bad])
 
 
 # ── A real ingest server is the instrument ──────────────────────────────────
