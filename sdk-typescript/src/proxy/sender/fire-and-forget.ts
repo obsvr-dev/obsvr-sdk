@@ -38,7 +38,7 @@ import {
 
 /** Delivery verdict per request (failure taxonomy, E31): retrying a
  * permanent failure only burns quota and hides the bug. */
-type SendVerdict = "ok" | "retryable" | "permanent";
+type SendVerdict = "ok" | "rejected" | "retryable" | "permanent";
 
 /**
  * Structured delivery counters (E33): loss must be VISIBLE in the fleet
@@ -71,14 +71,62 @@ export function getSenderStats(): typeof senderStats {
   return { ...senderStats };
 }
 
-/** Classify an HTTP status (twin of the Python sender's _classify_status). */
+/**
+ * Classify an HTTP status (twin of the Python sender's _classify_status).
+ *
+ * ONLY A 2xx IS A DELIVERY. A 403 on the single-event path used to classify
+ * "ok", on the reasoning that a server-side policy refusal is a final verdict
+ * rather than something to retry. Final it is; delivered it is not, and "ok" is
+ * the verdict that increments `sent`. The batch path had it right all along —
+ * it reads the response body and books per-event refusals as `dropped_rejected`
+ * — so the same 403 was counted as a delivery or as a loss depending only on
+ * how many events happened to be queued behind it. Worse, the status is shared:
+ * a server that answers 403 for `invalid_sdk_signature` produced a run where
+ * the SDK reported 100% delivery and the sink had stored nothing.
+ *
+ * "rejected" is its own verdict rather than "permanent" because the server saw
+ * the event and said no, which is a different audit story from never having
+ * reached it — the same distinction `dropped_rejected` already draws.
+ *
+ * 3xx is permanent: `fetch` follows redirects by default and a 301/302/303 on a
+ * POST is re-issued as a body-less GET, so the event is discarded in the client
+ * and the redirect target's 200 is what this would otherwise see. The redirect
+ * is refused at the call site instead (`redirect: "manual"`), and an ingest URL
+ * that redirects is a misconfiguration to fix, not a condition to retry around.
+ */
 function classifyStatus(status: number, path: string): SendVerdict {
   if (status >= 200 && status < 300) return "ok";
-  // Server-side policy block on the single-event path: final verdict.
-  if (status === 403 && path === INGEST_PATH) return "ok";
+  if (status === 403 && path === INGEST_PATH) return "rejected";
   if (status === 408 || status === 429 || status >= 500) return "retryable";
-  if (status >= 400 && status < 500) return "permanent";
+  if (status >= 300 && status < 500) return "permanent";
   return "retryable";
+}
+
+/** Seconds between loss warnings; the first loss speaks immediately. */
+const LOSS_WARN_INTERVAL_MS = 60_000;
+let lossWarnedAt = 0;
+
+/**
+ * Say out loud, at DEFAULT settings, that audit events were lost.
+ *
+ * Everything else on this path speaks only under `debug: true`, and that is how
+ * a run that delivered nothing looked like a run that delivered everything: the
+ * counters knew, the counters are not exported, and the process that held them
+ * exited. The same principle the config module states for configuration —
+ * silent misconfiguration of a governance SDK is itself a governance failure —
+ * applies at least as strongly to silent loss of the evidence, so this one is a
+ * warning nobody has to opt into. Rate-limited rather than once-per-process: a
+ * second outage an hour later is news again, and a burst is not.
+ */
+function warnEventsLost(count: number, reason: string): void {
+  const now = Date.now();
+  if (lossWarnedAt && now - lossWarnedAt < LOSS_WARN_INTERVAL_MS) return;
+  lossWarnedAt = now;
+  console.warn(
+    `[obsvr] ${count} audit event(s) were NOT recorded (${reason}). The audit ` +
+      `trail for this process is incomplete; getSenderStats() has the counts, ` +
+      `and debug: true logs each one.`,
+  );
 }
 
 /** The reject code ingest returns for an event it has already recorded. */
@@ -223,15 +271,21 @@ function resetBackoff(): void {
 }
 
 /**
- * Send a single audit event to the backend
+ * Send a single audit event to the backend.
+ *
+ * Returns the per-event refusal count alongside the verdict, exactly as the
+ * batch path does. This path used to read no response body at all, so a 200
+ * carrying `{"rejected": [...]}` counted as a clean delivery of the event the
+ * server had just refused in that very response.
  */
 async function sendEvent(
   config: ResolvedConfig,
   event: AuditEvent
-): Promise<SendVerdict> {
+): Promise<{ verdict: SendVerdict; rejected: number }> {
   const url = `${config.ingest_url}${INGEST_PATH}`;
 
   let verdict: SendVerdict;
+  let rejected = 0;
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), config.timeout);
@@ -245,6 +299,9 @@ async function sendEvent(
       },
       body: JSON.stringify(event),
       signal: controller.signal,
+      // Never let a redirect turn an audit POST into a body-less GET. See
+      // classifyStatus: the 3xx surfaces here and classifies permanent.
+      redirect: "manual",
     });
 
     clearTimeout(timeoutId);
@@ -253,6 +310,7 @@ async function sendEvent(
       verdict = "ok";
       debugLog(config, "info", `Audit event already recorded (duplicate): ${event.request_id}`);
     } else if (verdict === "ok") {
+      rejected = await countRejects(config, response, [event]);
       debugLog(config, "info", `Audit event sent: ${event.request_id}`);
     } else {
       debugLog(config, "warn", `Audit request failed (${verdict}): ${response.status}`);
@@ -270,9 +328,70 @@ async function sendEvent(
     }
     verdict = "retryable";
   }
-  if (verdict === "ok") resetBackoff();
+  // The server answered on both "ok" and "rejected". The transport is healthy
+  // whichever way it ruled, so the backoff window is cleared for both.
+  if (verdict === "ok" || verdict === "rejected") resetBackoff();
   else if (verdict === "retryable") applyBackoff();
-  return verdict;
+  return { verdict, rejected };
+}
+
+/**
+ * Per-event refusals inside an ACCEPTED response, for one event or a batch.
+ *
+ * The request succeeded; the server refused individual events (policy_blocked,
+ * duplicate_event, ...). Those refusals are final — never retried — but they
+ * are also not deliveries, so counting them as sent would overstate coverage.
+ * Shape: `{count?, rejected?: [{index, error, message?}]}`. Twin of the Python
+ * sender's `_count_rejects`.
+ */
+async function countRejects(
+  config: ResolvedConfig,
+  response: { json(): Promise<unknown> },
+  events: AuditEvent[],
+): Promise<number> {
+  let body: { count?: number; rejected?: Array<{ index: number; error: string }> };
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    // Absent, truncated, or not JSON means no rejects were reported, never a
+    // failed delivery.
+    debugLog(config, "info", `Audit batch sent: ${events.length} events`);
+    return 0;
+  }
+  let drops = 0;
+  let duplicates = 0;
+  for (const entry of body?.rejected ?? []) {
+    const id = events[entry.index]?.request_id ?? `index ${entry.index}`;
+    if (entry.error === DUPLICATE_EVENT_ERROR) {
+      duplicates++;
+      debugLog(config, "info", `Audit event already recorded (duplicate): ${id}`);
+      continue;
+    }
+    drops++;
+    debugLog(config, "warn", `Audit event rejected by server (${entry.error}) - dropping: ${id}`);
+  }
+  // RECONCILE AGAINST THE ACCEPTED COUNT. The response states how many it took;
+  // a server that took fewer than it was sent has refused the rest whether or
+  // not it enumerated them, and crediting the difference to `sent` would
+  // overstate coverage on the strength of a field the sender read and then
+  // ignored. A duplicate counts toward the delivered side, not the shortfall:
+  // the server did not take it because it already had it.
+  if (typeof body?.count === "number" && Number.isFinite(body.count)) {
+    const shortfall = events.length - body.count - duplicates;
+    if (shortfall > drops) {
+      debugLog(
+        config,
+        "warn",
+        `Ingest accepted ${body.count} of ${events.length} audit events and enumerated ` +
+          `${drops} refusal(s); counting the ${shortfall - drops} unaccounted event(s) as dropped`,
+      );
+      drops = shortfall;
+    }
+  }
+  debugLog(config, "info", `Audit batch sent: ${body?.count ?? events.length} accepted`);
+  // Never exceed the batch, and never below zero: a malformed body cannot
+  // inflate the counter or manufacture deliveries.
+  return Math.max(0, Math.min(drops, events.length));
 }
 
 /**
@@ -304,6 +423,9 @@ async function sendEventBatch(
       },
       body: JSON.stringify(events),
       signal: controller.signal,
+      // Same reason as the single-event path: a followed redirect re-issues
+      // the POST as a body-less GET and the target's 200 reads as delivery.
+      redirect: "manual",
     });
 
     clearTimeout(timeoutId);
@@ -311,34 +433,11 @@ async function sendEventBatch(
 
     if (verdict === "ok") {
       // Per-event rejects (policy_blocked, duplicate_event, ...) are final -
-      // log them, never retry them.
-      try {
-        const body = (await response.json()) as {
-          count?: number;
-          rejected?: Array<{ index: number; error: string; message?: string }>;
-        };
-        if (body.rejected && body.rejected.length > 0) {
-          // Count them, do not just log them: SECURITY.md promises every drop
-          // is visible in the per-client delivery counters, and a reject that
-          // only reaches the debug log is an invisible one. Duplicates are the
-          // one exception - the event is already recorded, so it counts as
-          // sent and must never land in the drop bucket.
-          const drops = body.rejected.filter((r) => r.error !== DUPLICATE_EVENT_ERROR);
-          rejected = Math.min(drops.length, events.length);
-          for (const r of body.rejected) {
-            const ev = events[r.index];
-            const id = ev?.request_id ?? `index ${r.index}`;
-            if (r.error === DUPLICATE_EVENT_ERROR) {
-              debugLog(config, "info", `Audit event already recorded (duplicate): ${id}`);
-            } else {
-              debugLog(config, "warn", `Audit event rejected by server (${r.error}) - dropping: ${id}`);
-            }
-          }
-        }
-        debugLog(config, "info", `Audit batch sent: ${body.count ?? events.length} accepted`);
-      } catch {
-        debugLog(config, "info", `Audit batch sent: ${events.length} events`);
-      }
+      // count them, never retry them. Counted rather than only logged:
+      // SECURITY.md promises every drop is visible in the per-client delivery
+      // counters, and a reject that only reaches the debug log is an invisible
+      // one.
+      rejected = await countRejects(config, response, events);
     } else if (response.status === 409 && (await isDuplicateResponse(response))) {
       // A re-submitted batch is itself the duplicate: every event in it was
       // already recorded on the earlier attempt.
@@ -360,7 +459,7 @@ async function sendEventBatch(
     }
     verdict = "retryable";
   }
-  if (verdict === "ok") resetBackoff();
+  if (verdict === "ok" || verdict === "rejected") resetBackoff();
   else if (verdict === "retryable") applyBackoff();
   return { verdict, rejected };
 }
@@ -385,6 +484,7 @@ function requeueFront(config: ResolvedConfig, items: QueueItem[]): void {
         "warn",
         `Audit event dropped after ${item.retries} retries: ${item.event.request_id} (total dropped: ${droppedCount})`
       );
+      warnEventsLost(1, "retry budget exhausted");
     }
   }
 }
@@ -431,7 +531,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
 
       const { verdict, rejected } =
         items.length === 1
-          ? { verdict: await sendEvent(config, items[0].event), rejected: 0 }
+          ? await sendEvent(config, items[0].event)
           : await sendEventBatch(config, items.map((i) => i.event));
 
       if (verdict === "ok") {
@@ -441,7 +541,20 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
         if (rejected > 0) {
           senderStats.dropped_rejected += rejected;
           droppedCount += rejected;
+          warnEventsLost(rejected, "refused by the ingest service");
         }
+      } else if (verdict === "rejected") {
+        // The server saw the request and refused it outright. Final, so never
+        // retried — and never counted as sent, because nothing was stored at
+        // the other end.
+        droppedCount += items.length;
+        senderStats.dropped_rejected += items.length;
+        debugLog(
+          config,
+          "warn",
+          `Audit request refused by the ingest service: ${items.length} event(s) (total dropped: ${droppedCount})`
+        );
+        warnEventsLost(items.length, "refused by the ingest service");
       } else if (verdict === "permanent") {
         // The same bytes will always fail (bad key, malformed event, body
         // too large): dead-letter now, loudly, instead of burning retries.
@@ -452,6 +565,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           "warn",
           `Audit batch dead-lettered after permanent failure: ${items.length} event(s) (total dropped: ${droppedCount})`
         );
+        warnEventsLost(items.length, "permanently undeliverable to the ingest service");
       } else {
         requeueFront(config, items);
       }
