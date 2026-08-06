@@ -20,6 +20,90 @@ DEFAULT_INGEST_URL = ""
 DEFAULT_TIMEOUT_S = 5.0
 DEFAULT_MAX_PAYLOAD_CHARS = 100000
 
+#: The environments the ingest service accepts. It enforces this set as an enum
+#: and answers 400 to every event carrying anything else, so a value outside it
+#: is not a cosmetic mistake — it is the whole audit trail, silently.
+VALID_ENVIRONMENTS = ("development", "staging", "production")
+
+#: Options whose enforcement lives on SOME surfaces and not others, and the
+#: surfaces that actually read each one.
+#:
+#: An option accepted at init and consumed by nothing is dead config that reads
+#: as a control. ``agent_policy["max_steps"]`` is the measured case: a step
+#: budget set alongside ``denied_tools`` looks like one policy, but only the
+#: framework callback integrations count steps — the generic tool governor and
+#: the MCP boundary implement the allow/deny gate and no budget, so a deployment
+#: whose only wiring is ``govern_tool`` has a limit nothing will ever consult.
+#:
+#: This drives a WARNING, never a refusal: the option is legitimate, and whether
+#: a consuming surface gets wired is not knowable at init — a caller may import
+#: an integration later in the process. What is knowable is that none is
+#: importable at all, and saying so is the difference between a control and a
+#: comment. Same principle as the strict validation above, one step weaker
+#: because the evidence is one step weaker.
+#: The probe is on the FRAMEWORK package, not on obsvr's own integration module.
+#: Every integration module here ships in this package and always imports, so
+#: asking whether obsvr can import its own code answers nothing; what decides
+#: the question is whether the framework that would drive it is installed at
+#: all. Absent, the option is inert with certainty. Present, it MIGHT be
+#: consumed — the caller still has to wire the handler — and a warning that
+#: cannot tell the two apart is one an operator learns to ignore, so the
+#: uncertain case stays silent.
+_SURFACE_SCOPED_OPTIONS = {
+    "agent_policy.max_steps": (
+        ("langchain_core", "LangChain callback handler"),
+        ("crewai", "CrewAI step callbacks"),
+        ("autogen", "AutoGen register_obsvr"),
+        ("agents", "OpenAI Agents tracing processor"),
+    ),
+    "agent_policy.loop_detection": (
+        ("langchain_core", "LangChain callback handler"),
+        ("crewai", "CrewAI step callbacks"),
+        ("autogen", "AutoGen register_obsvr"),
+        ("agents", "OpenAI Agents tracing processor"),
+    ),
+    "agent_policy.allow_pii_access": (
+        ("crewai", "CrewAI step callbacks"),
+        ("autogen", "AutoGen register_obsvr"),
+    ),
+}
+
+
+def _warn_unconsumed_options(agent_policy: Optional[Dict[str, Any]]) -> List[str]:
+    """Name every configured option no importable surface will read.
+
+    Returns the warnings emitted, so a caller (and a test) can assert on them
+    rather than on log capture. Never raises: a misconfiguration report that can
+    break init is worse than the misconfiguration.
+    """
+    import importlib.util
+
+    warnings: List[str] = []
+    policy = agent_policy or {}
+    for key, consumers in _SURFACE_SCOPED_OPTIONS.items():
+        option = key.split(".", 1)[1]
+        if policy.get(option) is None:
+            continue
+        available = []
+        for module, label in consumers:
+            try:
+                if importlib.util.find_spec(module) is not None:
+                    available.append(label)
+            except (ImportError, ValueError):  # noqa: PERF203 - probe, not a gate
+                continue
+        if available:
+            continue
+        message = (
+            f"obsvr.init(): agent_policy[{option!r}] is set, but nothing that "
+            "consumes it is wired. It is enforced by the framework callback "
+            f"integrations ({', '.join(label for _, label in consumers)}) and "
+            "NOT by govern_tool or the MCP boundary, which implement the "
+            "allow/deny gate only. As configured this value governs nothing."
+        )
+        logging.getLogger("obsvr").warning(message)
+        warnings.append(message)
+    return warnings
+
 #: Identifies THIS copy of the package inside the process (see instance_guard).
 _MODULE_INSTANCE_ID = f"obsvr-{uuid.uuid4().hex[:12]}"
 
@@ -339,6 +423,19 @@ def init(
             'obsvr.init(): enforcement_mode must be "enforce" or "monitor", got '
             f"{enforcement_mode!r}"
         )
+    # The environment is an ENUM at ingest, and the SDK used to accept any
+    # string for it. A value outside the set is rejected there with a 400 on
+    # EVERY event, so a single typo costs the entire audit trail of the run
+    # while the application sees nothing — the same class of silent failure a
+    # typo'd fail_mode is refused for, with a larger blast radius. Refused at
+    # init, where the operator can still read the message.
+    if environment is not None and environment not in VALID_ENVIRONMENTS:
+        raise ValueError(
+            "obsvr.init(): environment must be one of "
+            f"{', '.join(VALID_ENVIRONMENTS)}, got {environment!r}. The ingest "
+            "service enforces this set and rejects every event carrying "
+            "anything else, so the audit trail would not be recorded at all."
+        )
     # A governance flag must be a real boolean: a truthy string like "false"
     # silently enabling (or a falsy 0 silently disabling) an attribution
     # requirement is exactly the misconfiguration strict init exists to catch.
@@ -617,6 +714,12 @@ def init(
     # already-recorded and the call dropped.
     from .dedupe import _reset_dedupe as _clear_emission_memory
     _clear_emission_memory()
+
+    # Dead config reads as a control. Say so now, while the operator is looking
+    # at the init call, rather than leaving them to infer it from a limit that
+    # never fires.
+    if not cfg.disabled:
+        _warn_unconsumed_options(cfg.agent_policy)
 
     # Auto-instrumentation: wire frameworks with clean global registration
     # (providers, openai-agents, llamaindex). On by default; opt out with

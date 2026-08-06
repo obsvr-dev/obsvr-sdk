@@ -63,6 +63,13 @@ let policyPollIntervalId: ReturnType<typeof setInterval> | null = null;
  * drift is a key silently dropped — the exact defect the warning exists to make
  * visible. Where a name is identical in both shapes it appears on both sides.
  */
+/**
+ * The environments the ingest service accepts. It enforces this set as an enum
+ * and answers 400 to every event carrying anything else, so a value outside it
+ * is not a cosmetic mistake — it is the whole audit trail, silently.
+ */
+const VALID_ENVIRONMENTS = ["development", "staging", "production"] as const;
+
 const CONFIG_KEY_MAP: Record<string, string> = {
   apiKey: "api_key",
   ingestUrl: "ingest_url",
@@ -344,6 +351,23 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): requireGovernedSurface must be a boolean, got ${String(config.require_governed_surface)}`,
     );
   }
+  // The environment is an ENUM at ingest, and this block validated every other
+  // constrained field while skipping the one field with a declared set. A value
+  // outside it is rejected there with a 400 on EVERY event, so a single typo
+  // costs the entire audit trail of the run while the application sees nothing.
+  // The compile-time union is not a guard: a JS caller, a config loaded from
+  // JSON or YAML, and any `as any` all reach here unchecked.
+  if (
+    config.environment !== undefined &&
+    !VALID_ENVIRONMENTS.includes(config.environment as (typeof VALID_ENVIRONMENTS)[number])
+  ) {
+    throw new Error(
+      `obsvr.init(): environment must be one of ${VALID_ENVIRONMENTS.join(", ")}, ` +
+        `got ${String(config.environment)}. The ingest service enforces this set ` +
+        `and rejects every event carrying anything else, so the audit trail would ` +
+        `not be recorded at all.`,
+    );
+  }
   if (config.device_signing_key_file !== undefined) {
     // Loud at init: the operator asked for non-repudiation, so a key that
     // cannot be read or cannot sign must refuse now — shipping unsigned
@@ -462,6 +486,11 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     streaming_mode: config.streaming_mode ?? "wrap",
     default_region: config.default_region,
     default_source: config.default_source,
+    // Declared on both the init and resolved shapes, read at five sites in the
+    // wrapper, and never assigned here — so it was permanently `undefined` and
+    // a caller who set it got the unattributed default on every event. The
+    // Python twin has always assigned it.
+    default_service_name: config.default_service_name,
     on_pre_call: config.on_pre_call,
     hookTimeoutMs: config.hook_timeout_ms,
     hookTrigger: config.hook_trigger,
