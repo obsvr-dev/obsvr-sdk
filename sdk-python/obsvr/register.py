@@ -22,6 +22,7 @@ OBSVR_API_KEY (required), OBSVR_INGEST_URL, OBSVR_ENVIRONMENT.
 """
 
 import logging
+import sys
 import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -199,6 +200,7 @@ def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
         return []
 
     done: List[str] = []
+    governed_by_original: Dict[int, type] = {}
     for cls, names in _client_classes_by_name(module, module_name, seeds):
         pending = [n for n in names if f"{module_name}.{n}" not in _installed]
         if not pending:
@@ -219,6 +221,72 @@ def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
                 )
                 continue
             originals[label] = cls
+            _installed.append(label)
+            done.append(label)
+        governed_by_original[id(cls)] = governed
+    done.extend(_rebind_stale_aliases(module_name, governed_by_original))
+    return done
+
+
+def _rebind_stale_aliases(
+    provider_module: str, governed_by_original: Dict[int, type]
+) -> List[str]:
+    """Reach the copies of a client class that other modules already took.
+
+    ``from openai import OpenAI`` binds the CLASS OBJECT into the importing
+    module. Rebinding ``openai.OpenAI`` afterwards cannot reach that binding,
+    so a framework imported before ``init(auto=True)`` keeps constructing the
+    ungoverned class — while the report names every provider alias as
+    intercepted and nothing warns, because each write on the provider module
+    genuinely took. That is the shape the alias sweep exists to close, one
+    scope out: the same class under a second name, held somewhere else.
+
+    Measured on crewai, ag2, LlamaIndex, Haystack and openai-agents: all five
+    hold such a binding, and three of them acquire it on the bare top-level
+    import. A framework imported AFTER init() needs none of this — it imports
+    the governed class directly.
+
+    Resolved by IDENTITY against the original class object, never by name, so
+    an unrelated attribute that happens to be called ``OpenAI`` is untouched.
+    Each write is read back, on the same discipline as the provider sweep.
+    """
+    if not governed_by_original:
+        return []
+    done: List[str] = []
+    # A snapshot: importing during the sweep would mutate sys.modules, and a
+    # module imported after this point picks up the governed class anyway.
+    for mod_name, module in list(sys.modules.items()):
+        if module is None or mod_name == provider_module:
+            continue
+        # obsvr holds the originals deliberately (see `originals`), and the
+        # provider's own submodules are the provider.
+        if mod_name.startswith(("obsvr.", "obsvr")) or mod_name.startswith(provider_module + "."):
+            continue
+        try:
+            attrs = vars(module)
+        except Exception:  # noqa: BLE001 - an exotic module object is not a namespace
+            continue
+        for attr, value in list(attrs.items()):
+            governed = governed_by_original.get(id(value))
+            if governed is None or value is governed:
+                continue
+            label = f"{mod_name}.{attr}"
+            if label in _installed:
+                continue
+            try:
+                setattr(module, attr, governed)
+                took = getattr(module, attr, None) is governed
+            except Exception:  # noqa: BLE001 - a module that vetoes the write
+                took = False
+            if not took:
+                logging.getLogger("obsvr").warning(
+                    "register: %s holds its own reference to a provider client "
+                    "class and could not be intercepted - construction through "
+                    "that name is NOT governed; use obsvr.wrap() on the client",
+                    label,
+                )
+                continue
+            originals[label] = value
             _installed.append(label)
             done.append(label)
     return done

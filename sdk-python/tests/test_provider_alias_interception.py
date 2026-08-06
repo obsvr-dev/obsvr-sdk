@@ -214,3 +214,59 @@ def test_real_package_constructs_governed_through_every_alias(module_name, names
         assert type(client).__name__ == "_ObsvrProxy", (
             f"{module_name}.{name}() escaped construct interception"
         )
+
+
+# ── The same defect one scope out: a name held by ANOTHER module ────────────
+
+
+def test_a_framework_that_already_imported_the_class_is_reached(monkeypatch):
+    """``from openai import OpenAI`` binds the CLASS OBJECT into the importing
+    module, so rebinding ``openai.OpenAI`` afterwards cannot reach it.
+
+    A framework imported before ``init(auto=True)`` therefore kept constructing
+    the ungoverned class while the report named every provider alias as
+    intercepted and nothing warned — each write on the provider module
+    genuinely took. Measured on crewai, ag2, LlamaIndex, Haystack and
+    openai-agents: all five hold such a binding, three of them from the bare
+    top-level import.
+    """
+    _synthetic_provider(monkeypatch, "anthropic", "Anthropic", ["Client"])
+    provider = sys.modules["anthropic"]
+
+    framework = types.ModuleType("pretend_framework")
+    # Exactly what `from anthropic import Anthropic` leaves behind.
+    framework.Anthropic = provider.Anthropic
+    framework.SomethingElse = object()
+    monkeypatch.setitem(sys.modules, "pretend_framework", framework)
+
+    _init()
+    labels = install(providers=["anthropic"])
+
+    assert getattr(framework.Anthropic, "_obsvr_governed_client_class", False), (
+        "the framework's own binding still points at the ungoverned class"
+    )
+    assert "pretend_framework.Anthropic" in labels, (
+        "the report did not name the binding it reached"
+    )
+    assert type(framework.Anthropic(api_key="sk-fake")).__name__ == "_ObsvrProxy"
+
+
+def test_an_unrelated_class_of_the_same_name_is_left_alone(monkeypatch):
+    """Resolved by IDENTITY, never by name. LlamaIndex exports its own
+    ``OpenAI`` LLM class alongside the provider client it holds; rebinding that
+    one would replace a framework's public API with a provider proxy."""
+    _synthetic_provider(monkeypatch, "anthropic", "Anthropic", ["Client"])
+
+    class Anthropic:  # same name, unrelated object
+        pass
+
+    framework = types.ModuleType("pretend_framework")
+    framework.Anthropic = Anthropic
+    monkeypatch.setitem(sys.modules, "pretend_framework", framework)
+
+    _init()
+    install(providers=["anthropic"])
+
+    assert framework.Anthropic is Anthropic, (
+        "an unrelated class was rebound because it shared a name"
+    )
