@@ -8,7 +8,7 @@ Intercept model and tool calls at the provider-call boundary. Enforce determinis
 
 ![Status](https://img.shields.io/badge/status-beta-6d4aff)
 ![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)
-![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?label=pypi&color=3776ab)
+![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-typescript%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
