@@ -230,3 +230,46 @@ describe('raw PII does not reach the ingest service from the tracing processor',
     expect(delivered.length).toBeGreaterThan(0);
   });
 });
+
+// ── init() itself is the instrument ────────────────────────────────────────
+
+describe('every customer-configured outbound URL is refused if it is a metadata address', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+  });
+  afterEach(() => _reset());
+
+  // `hardDeletion.endpoint` was the fourth such URL and the one outside the
+  // guard, while the security notes say every one of them is validated. It
+  // carries a DELETE with the X-API-Key header.
+  const METADATA = 'http://169.254.169.254/latest/meta-data/';
+
+  const endpoints: Array<[string, Record<string, unknown>]> = [
+    ['ingest_url', { ingest_url: METADATA }],
+    ['presidioAnalyzerUrl', { presidio_analyzer_url: METADATA }],
+    ['presidioAnonymizerUrl', { presidio_anonymizer_url: METADATA }],
+    // The internal spelling: this object is snake_case throughout, and
+    // mixing the two makes init() treat it as already-internal and skip
+    // camelCase normalization entirely.
+    [
+      'externalPolicyBackend.url',
+      { external_policy_backend: { type: 'opa', url: METADATA } },
+    ],
+    ['hardDeletion.endpoint', { hardDeletion: { enabled: true, endpoint: METADATA } }],
+  ];
+
+  it.each(endpoints)('refuses %s pointed at the metadata address', (_name, cfg) => {
+    expect(() => init({ api_key: 'test', ...cfg } as never)).toThrow();
+  });
+
+  it('accepts an ordinary https endpoint, so the refusals are about the address', () => {
+    expect(() =>
+      init({
+        api_key: 'test',
+        ingest_url: 'https://ingest.example.com',
+        hardDeletion: { enabled: true, endpoint: 'https://erasure.example.com' },
+      } as never),
+    ).not.toThrow();
+  });
+});

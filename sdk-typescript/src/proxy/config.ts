@@ -465,7 +465,16 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
   // `http://[::169.254.169.254]/` was ACCEPTED here and stored verbatim while
   // the `::ffff:` spelling of the same address was refused — the absolute held
   // for one spelling of it. Twin: sdk-python/obsvr/config.py.
+  // `hardDeletion.endpoint` is the fourth customer-configured outbound URL and
+  // it was outside the guard entirely, while the section that names the others
+  // says every one of them is validated. It carries a DELETE with the
+  // `X-API-Key` header, so an attacker-influenced value is both an SSRF
+  // primitive and a credential-disclosure one — the same two properties that
+  // put the other three inside the guard. Private hosts are permitted, because
+  // a retention/erasure service is normally internal; the metadata range is
+  // refused here as it is everywhere.
   for (const [name, purl] of [
+    ["hardDeletion.endpoint", config.hardDeletion?.endpoint],
     ["presidioAnalyzerUrl", config.presidio_analyzer_url],
     ["presidioAnonymizerUrl", config.presidio_anonymizer_url],
   ] as const) {
