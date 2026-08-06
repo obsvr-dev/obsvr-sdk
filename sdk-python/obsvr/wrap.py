@@ -103,24 +103,12 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 #: module-level function rather than a property on the proxied model, so no
 #: property read on the proxy ever happens).
 #:
-#: CORRECTION, and it was a real one. This comment used to list the
-#: ``.stream()`` helpers and the tool runners among the out-of-reach surfaces.
-#: That is false, and TypeScript disproves it: the obstacle was never
-#: reachability, it is that those helpers return their runner object
-#: SYNCHRONOUSLY while the audited-method wrapper is async, so listing them in
-#: a method table hands the caller a promise where the provider's contract
-#: promises a stream object. TypeScript solved it with a deferred runner that
-#: returns a stand-in immediately and reaches the provider only once governance
-#: resolves, and now governs four ``.stream()`` paths and both tool runners.
-#:
-#: So on this side they are UNBUILT, not unreachable — the equivalent mechanism
-#: has not been written here. The distinction matters because the old wording
-#: closed the question. Measured: a real ``messages.stream()`` call through a
-#: wrapped client emits ZERO events while its text accumulates normally.
-#:
-#: This is silent ABSENCE, not silent fabrication: no event is emitted, so
-#: nothing claims the call was approved. It is a coverage hole, and it does not
-#: put a false verdict on the record.
+#: The ``.stream()`` helpers are governed, in their own table below, because
+#: they return a manager rather than a response and so cannot share this one.
+#: The provider TOOL RUNNERS remain out of reach on this side: this SDK has no
+#: equivalent of the TypeScript runner gate, and ``beta.messages.tool_runner``
+#: is ungoverned here. That is a coverage AND enforcement gap, stated in the
+#: README rather than only here.
 #:
 #: The beta namespaces are enumerated rather than matched by stripping a
 #: leading ``beta.`` segment, so a provider shipping a new beta namespace does
@@ -137,6 +125,23 @@ AUDITABLE_METHODS = {
     "beta.responses.create",     # OpenAI Responses beta
     "beta.chat.completions.create",  # OpenAI chat beta
     "beta.chat.completions.parse",   # OpenAI chat beta
+}
+
+#: The ``.stream()`` helpers, which are the same request as ``create`` and
+#: return a context manager instead of a response. Their own table because the
+#: return type decides how the call is wrapped, not whether it is governed.
+#:
+#: These were outside the boundary entirely, and the consequence was not the
+#: missing audit event the old comment here described. On one wrapped client a
+#: ``pii_policy`` block refused ``create(stream=True)`` and let
+#: ``messages.stream(...)`` through — same policy, same prompt, opposite
+#: outcomes on the wire. Mirrors STREAM_RUNNER_METHODS in
+#: sdk-typescript/src/proxy/wrapper.ts.
+STREAM_HELPER_METHODS = {
+    "messages.stream",           # Anthropic
+    "beta.messages.stream",      # Anthropic beta
+    "chat.completions.stream",   # OpenAI
+    "responses.stream",          # OpenAI Responses
 }
 
 #: Attribute names that may lead to an auditable method. Everything else is
@@ -894,7 +899,212 @@ async def _wrap_stream_async(
                        "".join(parts), usage, start, metadata=metadata)
 
 
-def _governed_call(
+#: Attributes on a provider stream object that yield TEXT rather than events.
+#: Read through the accumulator so a caller who never touches the raw event
+#: stream still produces a response on the audit record.
+_STREAM_TEXT_ITERABLES = frozenset({"text_stream", "text_deltas"})
+
+#: Terminal getters that consume the remainder of a stream and return the
+#: finished object. A caller who uses one of these instead of iterating is the
+#: other documented shape, and it would otherwise record an empty response.
+_STREAM_FINAL_GETTERS = frozenset(
+    {"get_final_message", "get_final_text", "get_final_completion", "until_done"}
+)
+
+
+class _AccumulatingStream:
+    """The provider's stream object, with every text-bearing surface counted.
+
+    Delegates everything. The three surfaces it does not simply hand back are
+    the ones that carry the response: iteration, the text-only iterables, and
+    the terminal getters. Whichever the caller uses, the audit event gets a
+    response; a caller who uses none of them gets an event with an empty one,
+    which is true rather than assumed.
+    """
+
+    __slots__ = ("_obsvr_stream", "_obsvr_provider", "_obsvr_sink")
+
+    def __init__(self, stream: Any, provider: str, sink: "_StreamSink") -> None:
+        object.__setattr__(self, "_obsvr_stream", stream)
+        object.__setattr__(self, "_obsvr_provider", provider)
+        object.__setattr__(self, "_obsvr_sink", sink)
+
+    def __iter__(self) -> Any:
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        provider = object.__getattribute__(self, "_obsvr_provider")
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        for event in stream:
+            sink.note_event(provider, event)
+            yield event
+
+    async def __aiter__(self) -> Any:
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        provider = object.__getattribute__(self, "_obsvr_provider")
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        async for event in stream:
+            sink.note_event(provider, event)
+            yield event
+
+    def __getattr__(self, name: str) -> Any:
+        stream = object.__getattribute__(self, "_obsvr_stream")
+        provider = object.__getattribute__(self, "_obsvr_provider")
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        value = getattr(stream, name)
+
+        if name in _STREAM_TEXT_ITERABLES:
+            def _counted() -> Any:
+                for piece in value:
+                    sink.note_text(piece)
+                    yield piece
+
+            async def _counted_async() -> Any:
+                async for piece in value:
+                    sink.note_text(piece)
+                    yield piece
+
+            return _counted_async() if hasattr(value, "__aiter__") else _counted()
+
+        if name in _STREAM_FINAL_GETTERS and callable(value):
+            if inspect.iscoroutinefunction(value):
+                async def _final_async(*a: Any, **k: Any) -> Any:
+                    result = await value(*a, **k)
+                    sink.note_final(provider, result)
+                    return result
+                return _final_async
+
+            def _final(*a: Any, **k: Any) -> Any:
+                result = value(*a, **k)
+                sink.note_final(provider, result)
+                return result
+            return _final
+
+        return value
+
+
+class _StreamSink:
+    """Collects what a governed ``.stream()`` produced and emits ONE event.
+
+    Emission is idempotent: a caller who exits the context manager after
+    already draining the stream must not produce a second record of one call.
+    """
+
+    __slots__ = ("parts", "usage", "emitted")
+
+    def __init__(self) -> None:
+        self.parts: List[str] = []
+        self.usage: Dict[str, Optional[int]] = {
+            "input_tokens": None, "output_tokens": None, "total_tokens": None
+        }
+        self.emitted = False
+
+    def note_event(self, provider: str, event: Any) -> None:
+        text = _extract_chunk_text(provider, event)
+        if text:
+            self.parts.append(text)
+        u = _extract_chunk_usage(event)
+        if u["total_tokens"] is not None or u["input_tokens"] is not None:
+            self.usage = u
+
+    def note_text(self, piece: Any) -> None:
+        if isinstance(piece, str) and piece:
+            self.parts.append(piece)
+
+    def note_final(self, provider: str, result: Any) -> None:
+        # A terminal getter returns the assembled object, which is a better
+        # answer than the concatenation when both exist — it is what the
+        # provider says it sent.
+        if isinstance(result, str):
+            if result:
+                self.parts = [result]
+            return
+        text = _extract_response_text(provider, result)
+        if text:
+            self.parts = [text]
+        u = _extract_usage(provider, result)
+        if u["total_tokens"] is not None or u["input_tokens"] is not None:
+            self.usage = u
+
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
+class _GovernedStreamManager:
+    """A governed ``.stream()`` helper.
+
+    THE HOLE THIS CLOSES. ``messages.stream()`` and its three siblings were not
+    in the method table, so the proxy handed back the provider's own bound
+    method and the pre-call pipeline never ran. On the SAME wrapped client, a
+    ``pii_policy`` of ``{"ssn": "block"}`` refused ``create(stream=True)`` and
+    did not refuse ``messages.stream(...)``: the request left the process with
+    the SSN in it. That is an enforcement hole, not only the audit-coverage
+    hole the coverage-boundary comment described.
+
+    WHY THIS IS SO MUCH SIMPLER THAN THE TYPESCRIPT TWIN. There, the obstacle
+    is that governance is asynchronous while ``.stream()`` must return its
+    runner synchronously, so ``runner-wrapper.ts`` returns a stand-in and
+    replays onto the real runner once governance resolves. Here the pipeline is
+    synchronous and so is the helper, so the call is simply governed and then
+    made — there is no window to defer across. The two SDKs reach the same
+    guarantee by different means because the constraint is different, and this
+    is the whole of it.
+
+    Everything the provider owns is delegated: this enters and exits the real
+    manager, hands back the real stream (behind the accumulator), and forwards
+    every other attribute.
+    """
+
+    __slots__ = ("_obsvr_manager", "_obsvr_emit", "_obsvr_provider", "_obsvr_sink")
+
+    def __init__(self, manager: Any, provider: str, emit: Callable) -> None:
+        object.__setattr__(self, "_obsvr_manager", manager)
+        object.__setattr__(self, "_obsvr_provider", provider)
+        object.__setattr__(self, "_obsvr_emit", emit)
+        object.__setattr__(self, "_obsvr_sink", _StreamSink())
+
+    def _wrapped(self, stream: Any) -> "_AccumulatingStream":
+        return _AccumulatingStream(
+            stream,
+            object.__getattribute__(self, "_obsvr_provider"),
+            object.__getattribute__(self, "_obsvr_sink"),
+        )
+
+    def _settle(self, error: Any = None) -> None:
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        if sink.emitted:
+            return
+        sink.emitted = True
+        object.__getattribute__(self, "_obsvr_emit")(sink, error)
+
+    def __enter__(self) -> "_AccumulatingStream":
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        return self._wrapped(type(manager).__enter__(manager))
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        try:
+            return type(manager).__exit__(manager, *exc_info)
+        finally:
+            self._settle(exc_info[1] if len(exc_info) > 1 else None)
+
+    async def __aenter__(self) -> "_AccumulatingStream":
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        return self._wrapped(await type(manager).__aenter__(manager))
+
+    async def __aexit__(self, *exc_info: Any) -> Any:
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        try:
+            return await type(manager).__aexit__(manager, *exc_info)
+        finally:
+            self._settle(exc_info[1] if len(exc_info) > 1 else None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_obsvr_manager"), name)
+
+    def __repr__(self) -> str:
+        return f"<obsvr-governed {object.__getattribute__(self, '_obsvr_manager')!r}>"
+
+
+def _governed_stream_helper(
     original: Callable,
     target: Any,
     provider: str,
@@ -903,9 +1113,82 @@ def _governed_call(
     args: tuple,
     kwargs: dict,
 ) -> Any:
-    """Run the full governance pipeline around one provider call (sync)."""
+    """Govern one ``.stream()`` helper call, then make it."""
     config = get_config()
     operation = method_path
+
+    pre = _govern_before_call(target, provider, operation, options, args, kwargs)
+
+    start = time.monotonic()
+    try:
+        manager = original(*pre.args, **pre.kwargs)
+    except Exception as err:
+        latency_ms = (time.monotonic() - start) * 1000
+        event = build_audit_event(
+            config,
+            provider=provider, model=pre.model, operation=operation,
+            source="python_wrap", prompt=pre.stored_prompt, response="",
+            success=False, error=err, latency_ms=latency_ms,
+            options=options, compliance=pre.compliance,
+            user_input=pre.user_input, metadata=pre.metadata or None,
+        )
+        event["error_type"] = classify_error(err)
+        _emit_audit(config, event, pre.compliance)
+        raise
+
+    def _emit(sink: "_StreamSink", error: Any) -> None:
+        _emit_stream_event(
+            config, provider, pre.model, operation, options, pre.compliance,
+            pre.stored_prompt, pre.user_input, sink.text(), sink.usage, start,
+            metadata=pre.metadata, error=error,
+        )
+
+    return _GovernedStreamManager(manager, provider, _emit)
+
+
+class _PreCall:
+    """Everything the pre-call pipeline decided, for a call that is going out.
+
+    Returned only when the call is permitted: a block raises out of
+    :func:`_govern_before_call` rather than being reported here, so no caller
+    can proceed by forgetting to check a flag.
+    """
+
+    __slots__ = ("compliance", "stored_prompt", "metadata", "args", "kwargs",
+                 "model", "user_input")
+
+    def __init__(self, compliance, stored_prompt, metadata, args, kwargs, model,
+                 user_input):
+        self.compliance = compliance
+        self.stored_prompt = stored_prompt
+        self.metadata = metadata
+        self.args = args
+        self.kwargs = kwargs
+        self.model = model
+        self.user_input = user_input
+
+
+def _govern_before_call(
+    target: Any,
+    provider: str,
+    operation: str,
+    options: Dict[str, Any],
+    args: tuple,
+    kwargs: dict,
+) -> "_PreCall":
+    """Everything that must happen BEFORE the provider is contacted.
+
+    Extracted so the request-shaped entry points share one implementation
+    rather than one intention. ``create`` and the ``.stream()`` helpers are the
+    same call with different return types, and the helpers had no pipeline at
+    all — a second copy of this logic is how they would come to disagree again,
+    which is the failure this SDK keeps finding in other people's code.
+
+    Raises ``ObsvrPolicyError`` on a block or on a redaction that could not be
+    applied; in both cases the provider is never called. Returns the governed
+    arguments otherwise.
+    """
+    config = get_config()
 
     metadata = _collect_metadata(options, kwargs)
     prompt_text = _extract_prompt_text(provider, args, kwargs)
@@ -1010,6 +1293,38 @@ def _governed_call(
             raise blocked_call_error(compliance)
         args = _redacted_args
 
+    return _PreCall(
+        compliance=compliance,
+        stored_prompt=stored_prompt,
+        metadata=metadata,
+        args=args,
+        kwargs=kwargs,
+        model=model,
+        user_input=_last_user_message(kwargs),
+    )
+
+
+def _governed_call(
+    original: Callable,
+    target: Any,
+    provider: str,
+    method_path: str,
+    options: Dict[str, Any],
+    args: tuple,
+    kwargs: dict,
+) -> Any:
+    """Run the full governance pipeline around one provider call (sync)."""
+    config = get_config()
+    operation = method_path
+
+    pre = _govern_before_call(target, provider, operation, options, args, kwargs)
+    compliance = pre.compliance
+    stored_prompt = pre.stored_prompt
+    metadata = pre.metadata
+    args = pre.args
+    kwargs = pre.kwargs
+    model = pre.model
+
     start = time.monotonic()
     try:
         result = original(*args, **kwargs)
@@ -1076,100 +1391,14 @@ async def _governed_call_async(
     """Async twin of _governed_call for AsyncOpenAI / AsyncAnthropic clients."""
     config = get_config()
     operation = method_path
-    metadata = _collect_metadata(options, kwargs)
-    prompt_text = _extract_prompt_text(provider, args, kwargs)
-    model = _extract_model(provider, target, kwargs)
 
-    policy = apply_pre_call_policy(
-        prompt_text, config, provider=provider, operation=operation,
-        metadata=metadata, model=model,
-        scan_text=_last_user_message_text(provider, args, kwargs),
-    )
-    compliance = policy["compliance"]
-    security_normalized = policy.get("security_normalized")
-    if security_normalized is not None:
-        # Server-side normalizer mirror: seal which view defeated the obfuscation.
-        metadata = {**(metadata or {}), "security_normalized": security_normalized}
-    canary_telemetry = policy.get("canary_telemetry")
-    if canary_telemetry is not None:
-        _md = dict(metadata or {})
-        _md["obsvr_telemetry"] = {**(_md.get("obsvr_telemetry") or {}), **canary_telemetry}
-        metadata = _md
-    floor_telemetry = policy.get("floor_telemetry")
-    if floor_telemetry is not None:
-        _md = dict(metadata or {})
-        _md["obsvr_telemetry"] = {**(_md.get("obsvr_telemetry") or {}), **floor_telemetry}
-        metadata = _md
-    # Store the redacted prompt ONLY when we actually redacted; allowed/detect_only
-    # keep the raw prompt (parity with TS) so detect_only still surfaces content.
-    stored_prompt = policy["redacted_prompt"] if policy["decision"] == "redact" else prompt_text
-    # ... and then vet what the DECISION never looked at. The scan above sees the
-    # last user turn; `prompt_text` is every role concatenated, so system
-    # instructions, earlier turns, assistant replies and tool results reached the
-    # record raw under every configuration. This is what makes "still stored (and
-    # redacted if configured)" true. It changes no verdict and no outbound bytes.
-    stored_prompt, _stored_tel = redact_unscanned_for_storage(
-        stored_prompt, _last_user_message_text(provider, args, kwargs), config
-    )
-    if _stored_tel is not None:
-        _md = dict(metadata or {})
-        _md["obsvr_telemetry"] = {**(_md.get("obsvr_telemetry") or {}), **_stored_tel}
-        metadata = _md
-
-    if policy["decision"] == "block":
-        from .canary import CANARY_REDACTION_PLACEHOLDER
-        event = build_audit_event(
-            config, provider=provider, model=model, operation=operation,
-            source="python_wrap",
-            # A view-only hit stores a whole-text placeholder (no locatable span);
-            # a canary block stores the canary placeholder (never the raw token).
-            prompt=(
-                CANARY_REDACTION_PLACEHOLDER
-                if canary_telemetry is not None
-                else blocked_prompt_for_storage(prompt_text, compliance, security_normalized)
-            ),
-            response="", status_code=403, success=False,
-            options=options, compliance=compliance,
-            user_input=(
-                CANARY_REDACTION_PLACEHOLDER
-                if canary_telemetry is not None
-                else redact_for_storage(
-                    _last_user_message_text(provider, args, kwargs), security_normalized
-                )
-            ),
-            metadata=metadata or None,
-        )
-        _emit_audit(config, event, compliance)
-        raise blocked_call_error(compliance)
-
-    if policy["decision"] == "redact":
-        # Enforcement application: a redaction that cannot be carried out blocks
-        # the call rather than forwarding the content it was told to remove.
-        _redacted_args = args
-
-        def _apply_redaction() -> None:
-            nonlocal _redacted_args
-            _redact_messages_in_place(kwargs, redact_builtin_pii)
-            _redacted_args = _redact_positional_inputs(args, redact_builtin_pii)
-
-        _not_redacted = apply_outbound_redaction(_apply_redaction)
-        if _not_redacted is not None:
-            compliance = outbound_redaction_blocked_compliance(compliance, _not_redacted)
-            event = build_audit_event(
-                config,
-                provider=provider, model=model, operation=operation,
-                source="python_wrap",
-                prompt=blocked_prompt_for_storage(prompt_text, compliance, security_normalized),
-                response="", status_code=403, success=False,
-                options=options, compliance=compliance,
-                user_input=redact_for_storage(
-                    _last_user_message_text(provider, args, kwargs), security_normalized
-                ),
-                metadata=metadata or None,
-            )
-            _emit_audit(config, event, compliance)
-            raise blocked_call_error(compliance)
-        args = _redacted_args
+    pre = _govern_before_call(target, provider, operation, options, args, kwargs)
+    compliance = pre.compliance
+    stored_prompt = pre.stored_prompt
+    metadata = pre.metadata
+    args = pre.args
+    kwargs = pre.kwargs
+    model = pre.model
 
     start = time.monotonic()
     try:
@@ -1258,6 +1487,16 @@ class _ObsvrProxy:
                     value, target, provider, method_path, options, args, kwargs
                 )
             return intercepted
+
+        if method_path in STREAM_HELPER_METHODS and callable(value):
+            # Not split by iscoroutinefunction: the helper itself is synchronous
+            # on both the sync and async clients — it is the MANAGER it returns
+            # that differs, and _GovernedStreamManager speaks both protocols.
+            def intercepted_stream(*args: Any, **kwargs: Any) -> Any:
+                return _governed_stream_helper(
+                    value, target, provider, method_path, options, args, kwargs
+                )
+            return intercepted_stream
 
         # Keep walking only down chains that can reach an auditable method
         if name in _TRAVERSABLE and value is not None and not callable(value):

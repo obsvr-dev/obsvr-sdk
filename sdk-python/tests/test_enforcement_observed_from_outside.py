@@ -320,6 +320,98 @@ def test_a_rule_the_engine_cannot_use_is_refused_at_init(bad, why, no_delivery):
         _init(policy_rules=[bad])
 
 
+RAW_SSN = "412-55-9087"
+SSN_BLOCK_POLICY = {"rules": {"ssn": "block"}}
+
+
+class _RecordingStreamProvider:
+    """Duck-types a client exposing BOTH streaming entry points, recording
+    what each hands the provider. One object, so the two paths cannot be
+    compared under accidentally different conditions."""
+
+    class _Stream:
+        def __iter__(self):
+            return iter([])
+
+        @property
+        def text_stream(self):
+            yield "ok"
+
+    class _Manager:
+        def __enter__(self):
+            return _RecordingStreamProvider._Stream()
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Messages:
+        def __init__(self, received):
+            self._received = received
+
+        def create(self, **kwargs):
+            self._received.append(json.dumps(kwargs.get("messages", "")))
+            return _RecordingProvider._Response()
+
+        def stream(self, **kwargs):
+            self._received.append(json.dumps(kwargs.get("messages", "")))
+            return _RecordingStreamProvider._Manager()
+
+    def __init__(self, received):
+        self.messages = self._Messages(received)
+
+
+def _drive_stream(entry_point, **init_kwargs):
+    received = []
+    _init(**init_kwargs)
+    client = obsvr.wrap(_RecordingStreamProvider(received))
+    messages = [{"role": "user", "content": f"Repeat verbatim: SSN {RAW_SSN}"}]
+    try:
+        if entry_point == "create":
+            client.messages.create(model="m", max_tokens=64, messages=messages, stream=True)
+        else:
+            with client.messages.stream(model="m", max_tokens=64, messages=messages) as s:
+                for _ in s.text_stream:
+                    pass
+    except Exception:
+        pass
+    return received
+
+
+def test_a_streaming_block_holds_on_the_create_form(no_delivery):
+    """The path that already enforced. Its pair below is the finding."""
+    assert _drive_stream("create", pii_policy=SSN_BLOCK_POLICY) == []
+
+
+def test_a_streaming_block_holds_on_the_stream_helper(no_delivery):
+    """Same client, same policy, the other documented streaming entry point.
+
+    ``messages.stream`` was not in the method table, so the proxy returned the
+    provider's own bound method: the pipeline never ran and the SSN went out.
+    """
+    received = _drive_stream("stream", pii_policy=SSN_BLOCK_POLICY)
+    assert received == [], "the stream helper reached the provider under a block"
+
+
+def test_the_stream_helper_control_reaches_the_provider(no_delivery):
+    """Without the policy the helper works and the content lands — so the two
+    assertions above are about the policy and not about a helper this wrapper
+    broke."""
+    received = _drive_stream("stream")
+    assert len(received) == 1
+    assert RAW_SSN in received[0]
+
+
+def test_the_stream_helper_still_yields_its_text(no_delivery):
+    """Governing the helper must not cost the caller the stream. The value
+    read out of it is the instrument."""
+    _init()
+    client = obsvr.wrap(_RecordingStreamProvider([]))
+    with client.messages.stream(
+        model="m", max_tokens=8, messages=[{"role": "user", "content": "hi"}]
+    ) as stream:
+        assert "".join(stream.text_stream) == "ok"
+
+
 # ── A real ingest server is the instrument ──────────────────────────────────
 
 

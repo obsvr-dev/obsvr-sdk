@@ -171,11 +171,11 @@ class TestBoundaryHoldsInBothDirections:
             (["beta", "responses", "create"], 1),
             (["beta", "chat", "completions", "create"], 1),
             (["beta", "chat", "completions", "parse"], 1),
-            (["messages", "stream"], 0),
+            # The .stream() helpers moved INSIDE the boundary and are pinned by
+            # their own test below — they return a manager, so an event appears
+            # when the run ends rather than when the method is called.
             (["messages", "count_tokens"], 0),
             (["messages", "batches", "create"], 0),
-            (["chat", "completions", "stream"], 0),
-            (["responses", "stream"], 0),
             (["generate_content_stream"], 0),
             (["start_chat"], 0),
             (["embeddings", "create"], 0),
@@ -213,3 +213,55 @@ class TestBoundaryHoldsInBothDirections:
         cursor(model="m", messages=[{"role": "user", "content": "hi"}])
 
         assert len(captured) == expected_events
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ["messages", "stream"],
+            ["beta", "messages", "stream"],
+            ["chat", "completions", "stream"],
+            ["responses", "stream"],
+        ],
+    )
+    def test_the_stream_helpers_are_inside_the_boundary(self, monkeypatch, path):
+        """Each helper is governed and produces exactly one event per run.
+
+        These sat outside the table and the proxy handed back the provider's
+        own bound method, so the pipeline never ran on them at all — on the
+        same client where it ran on ``create``.
+        """
+        _init()
+        captured = _captured_events(monkeypatch)
+
+        class _Stream:
+            def __iter__(self):
+                return iter([])
+
+        class _Manager:
+            def __enter__(self):
+                return _Stream()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Leaf:
+            def __call__(self, **kwargs):
+                return _Manager()
+
+        node = _Leaf()
+        for seg in reversed(path):
+            holder = type("Node", (), {})()
+            setattr(holder, seg, node)
+            node = holder
+        if path[0] != "messages":
+            node.messages = _RecordingMessages([], "messages.create")
+
+        client = obsvr.wrap(node)
+        cursor = client
+        for seg in path:
+            cursor = getattr(cursor, seg)
+
+        with cursor(model="m", messages=[{"role": "user", "content": "hi"}]):
+            pass
+
+        assert len(captured) == 1
