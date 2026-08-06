@@ -37,7 +37,15 @@ from ..config import ResolvedConfig, get_config, try_get_config
 from ..events import build_audit_event, tool_gate_not_evaluated_compliance
 from ..mcp_fields import descriptor_field
 from ..normalize import normalize_for_matching
-from ..policy import apply_pre_call_policy
+from ..policy import (
+    apply_outbound_redaction,
+    apply_pre_call_policy,
+    assert_redaction_applied,
+    blocked_prompt_for_storage,
+    outbound_redaction_blocked_compliance,
+    redact_arguments,
+    redact_builtin_pii,
+)
 from ..reason_codes import ReasonCode
 from ..remote import is_enforcement_degraded
 from ..response_scan import sanitize_mcp_result, resolve_response_scan_failure, scan_mcp_tool_result
@@ -351,6 +359,46 @@ _gate_inflight: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
 _CALL_TOOL_METHOD = "tools/call"
 
 
+def _frame_params(request: Any) -> Any:
+    """The ``params`` object of a tools/call frame, unwrapped, or None."""
+    node = request
+    for _ in range(4):
+        if node is None:
+            return None
+        if descriptor_field(node, "method") == _CALL_TOOL_METHOD:
+            return descriptor_field(node, "params")
+        nxt = getattr(node, "root", None)
+        if nxt is None or nxt is node:
+            return None
+        node = nxt
+    return None
+
+
+def _frame_arguments(request: Any) -> Any:
+    params = _frame_params(request)
+    return None if params is None else descriptor_field(params, "arguments")
+
+
+def _set_frame_arguments(request: Any, arguments: Any) -> None:
+    """Write redacted arguments back into a tools/call frame.
+
+    Raises when the frame cannot be written — a frozen model, a shape this does
+    not recognize. That raise is the point: the caller runs it inside
+    :func:`~obsvr.policy.apply_outbound_redaction`, so a frame obsvr cannot
+    rewrite blocks the call rather than sending the values the policy said to
+    remove while the record claims they were removed.
+    """
+    params = _frame_params(request)
+    if params is None:
+        raise ValueError("tools/call frame carries no params to redact")
+    if isinstance(params, dict):
+        params["arguments"] = arguments
+        return
+    setattr(params, "arguments", arguments)
+    if descriptor_field(params, "arguments") is not arguments:
+        raise ValueError("tools/call frame did not accept the redacted arguments")
+
+
 def _tool_call_frame(request: Any) -> "Optional[tuple]":
     """``(tool_name, arguments)`` if this request frame is a tools/call, else None.
 
@@ -482,7 +530,11 @@ def _build_governed_mcp_callables(
         return principal, meta
 
     async def _governed_tool_call(
-        self: Any, name: str, arguments: Optional[Dict[str, Any]], invoke: Any
+        self: Any,
+        name: str,
+        arguments: Optional[Dict[str, Any]],
+        invoke: Any,
+        apply_arguments: Any = None,
     ) -> Any:
         """The gate itself, over an arbitrary way of performing the call.
 
@@ -689,6 +741,59 @@ def _build_governed_mcp_callables(
                 )
                 compliance = result["compliance"]
                 final_prompt = result["redacted_prompt"]
+                if result["decision"] == "redact":
+                    # ENFORCEMENT APPLICATION, not a record of one. The
+                    # pipeline's redacted copy is of the SCANNED TEXT and
+                    # cannot be handed to a server that takes arguments, so the
+                    # arguments themselves are rewritten, the MCP server
+                    # receives the scrubbed values, and the stored prompt is
+                    # then derived from THOSE. SECURITY.md names this boundary
+                    # as the one to put a destructive capability behind, and a
+                    # redaction that stopped at the audit copy was the weakest
+                    # guarantee sitting behind the strongest claim.
+                    #
+                    # Fails closed exactly as the wrap() path does: a redaction
+                    # the SDK cannot carry out blocks the call rather than
+                    # forwarding what it was told to remove, and the event drops
+                    # every "redacted" claim.
+                    redacted_state: Dict[str, Any] = {}
+
+                    def _apply_redaction() -> None:
+                        redacted_args = redact_arguments(arguments, redact_builtin_pii)
+                        assert_redaction_applied(redacted_args, compliance)
+                        if apply_arguments is not None:
+                            # The raw-frame route holds its arguments in the
+                            # request model; writing them back is part of
+                            # applying the redaction, so a frame that refuses
+                            # resolves closed here rather than after the fact.
+                            apply_arguments(redacted_args)
+                        redacted_state["arguments"] = redacted_args
+
+                    not_redacted = apply_outbound_redaction(_apply_redaction)
+                    if not_redacted is not None:
+                        compliance = outbound_redaction_blocked_compliance(
+                            compliance, not_redacted
+                        )
+                        fail_meta = {"tool_name": tool_name}
+                        fail_meta.update(tool_content_meta)
+                        _emit(
+                            cfg,
+                            provider="mcp", model="mcp", operation="mcp.tool.call",
+                            source=SOURCE,
+                            prompt=blocked_prompt_for_storage(
+                                prompt_text, compliance,
+                                result.get("security_normalized"),
+                            ),
+                            response="", success=False,
+                            metadata=fail_meta, options=event_options,
+                            compliance=compliance,
+                        )
+                        raise McpToolBlockedError(
+                            "[obsvr] MCP tool call blocked by policy: the "
+                            "redaction could not be applied to the arguments"
+                        )
+                    arguments = redacted_state["arguments"]
+                    final_prompt = _extract_mcp_prompt(tool_name, arguments)
                 if result["decision"] == "block":
                     block_meta = {"tool_name": tool_name}
                     if result.get("security_normalized") is not None:
@@ -739,7 +844,7 @@ def _build_governed_mcp_callables(
         try:
             token = _gate_inflight.set(True)
             try:
-                result_obj = await invoke()
+                result_obj = await invoke(arguments)
             finally:
                 _gate_inflight.reset(token)
         except McpToolBlockedError:
@@ -920,8 +1025,11 @@ def _build_governed_mcp_callables(
     async def governed_call_tool(
         self: Any, name: str, arguments: Optional[Dict[str, Any]] = None, **kw: Any
     ) -> Any:
-        async def invoke() -> Any:
-            return await original_call_tool(self, name, arguments, **kw)
+        async def invoke(call_arguments: Optional[Dict[str, Any]]) -> Any:
+            # `call_arguments`, not the closed-over `arguments`: under a redact
+            # verdict the gate hands back rewritten values, and the point of the
+            # rewrite is that the SERVER receives them.
+            return await original_call_tool(self, name, call_arguments, **kw)
 
         return await _governed_tool_call(self, name or "unknown", arguments, invoke)
 
@@ -947,20 +1055,32 @@ def _build_governed_mcp_callables(
         async def governed_send_request(
             self: Any, request: Any, *args: Any, **kw: Any
         ) -> Any:
-            async def invoke() -> Any:
+            async def invoke(_call_arguments: Optional[Dict[str, Any]]) -> Any:
+                # The raw-frame route carries its arguments INSIDE the request
+                # model, so a redact verdict is written back into the frame by
+                # ``apply_arguments`` below, not passed here. By the time this
+                # runs the frame already holds whatever the gate approved.
                 return await original_send_request(self, request, *args, **kw)
+
+            def apply_arguments(redacted: Optional[Dict[str, Any]]) -> None:
+                # Runs INSIDE apply_outbound_redaction, so a frame that refuses
+                # the write is a redaction that could not be applied and blocks
+                # the call — before any event claims one happened.
+                _set_frame_arguments(request, redacted)
 
             # Already inside the gate: this is the delegated call the gate
             # itself issued (call_tool -> send_request under a class patch).
             # Re-entering would evaluate the policy twice and emit two records
             # for one call.
             if _gate_inflight.get():
-                return await invoke()
+                return await invoke(None)
             parsed = _tool_call_frame(request)
             if parsed is None:
-                return await invoke()
+                return await invoke(None)
             tool_name, arguments = parsed
-            return await _governed_tool_call(self, tool_name, arguments, invoke)
+            return await _governed_tool_call(
+                self, tool_name, arguments, invoke, apply_arguments
+            )
 
     # ── Tool-poisoning defense on discovery ─────────────────────────────────
     governed_list_tools = None

@@ -61,7 +61,15 @@ from typing import Any, Dict, Optional, Tuple
 from ..config import try_get_config
 from ..binding_report import record_binding
 from ..events import emit_event, tool_denied_compliance
-from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
+from ..policy import (
+    apply_outbound_redaction,
+    apply_pre_call_policy,
+    assert_redaction_applied,
+    blocked_prompt_for_storage,
+    outbound_redaction_blocked_compliance,
+    redact_arguments,
+    redact_builtin_pii,
+)
 
 SOURCE = "pydantic_ai"
 PROVIDER = "pydantic_ai"
@@ -189,9 +197,45 @@ class ObsvrToolset(_WrapperToolset):  # type: ignore[misc]
                 f"[obsvr] Tool call blocked by policy: {tool_name}"
             )
 
+        stored_prompt = result["redacted_prompt"]
+        if result["decision"] == "redact":
+            # ENFORCEMENT APPLICATION, not a record of one. The pipeline's
+            # redacted copy is of the SCANNED TEXT and cannot be handed to a
+            # tool that takes arguments, so the arguments themselves are
+            # rewritten and the stored prompt is then derived from THOSE — the
+            # record describes what the tool received because it is built from
+            # it. Fails closed exactly as the wrap() path does.
+            redacted_state: Dict[str, Any] = {}
+
+            def _apply_redaction() -> None:
+                redacted_args = redact_arguments(tool_args, redact_builtin_pii)
+                assert_redaction_applied(redacted_args, compliance)
+                redacted_state["args"] = redacted_args
+
+            not_redacted = apply_outbound_redaction(_apply_redaction)
+            if not_redacted is not None:
+                compliance = outbound_redaction_blocked_compliance(
+                    compliance, not_redacted
+                )
+                emit_event(
+                    cfg, provider=PROVIDER, model="unknown",
+                    operation="pydantic_ai.tool.call", source=SOURCE,
+                    prompt=blocked_prompt_for_storage(
+                        prompt_text, compliance, result.get("security_normalized")
+                    ),
+                    response="", success=False, status_code=403,
+                    compliance=compliance,
+                    metadata={"tool_name": tool_name}, options=opts,
+                )
+                raise PydanticAIToolBlockedError(
+                    f"[obsvr] Tool call blocked by policy: {tool_name}"
+                )
+            tool_args = redacted_state["args"]
+            stored_prompt = _args_prompt(tool_name, tool_args)
+
         emit_event(
             cfg, provider=PROVIDER, model="unknown", operation="pydantic_ai.tool.call",
-            source=SOURCE, prompt=result["redacted_prompt"], response="",
+            source=SOURCE, prompt=stored_prompt, response="",
             compliance=compliance, metadata={"tool_name": tool_name}, options=opts,
         )
         return await wrapped.call_tool(name, tool_args, *args, **kwargs)

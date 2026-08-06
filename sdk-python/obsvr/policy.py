@@ -18,6 +18,7 @@ matching runs on the NFKC-normalized copy (§6).
 
 import bisect
 import concurrent.futures
+import json
 import logging
 import re
 import time
@@ -673,6 +674,82 @@ def apply_outbound_redaction(
                 "phase": "enforcement_application",
             },
         }
+
+
+class RedactionNotApplied(Exception):
+    """A type policy named for removal is still present after redaction.
+
+    Raised into :func:`apply_outbound_redaction`, which resolves it the way
+    every unappliable redaction resolves: closed, with the ``redacted`` claim
+    stripped from the event rather than asserted over content still in the call.
+    """
+
+
+def redact_arguments(value: Any, redact: Callable[[Optional[str]], str]) -> Any:
+    """Redact every string inside a call's ARGUMENTS, structure preserved.
+
+    :func:`apply_outbound_redaction` has always been available to the model-call
+    path, where the payload is text and the redacted copy can simply replace it.
+    The tool-shaped boundaries — the generic tool governor, the MCP
+    ``tools/call`` gate, the PydanticAI toolset — could not use it, because a
+    tool takes ARGUMENTS and the pipeline's redacted copy of the scanned text
+    cannot be handed back to a callable. So each of them took
+    ``redacted_prompt``, used it as the EVENT's prompt, and let the call proceed
+    with the values it came in with: the signed record said
+    ``action_taken: "redacted"`` while the tool wrote the raw value to a file, a
+    row, or a third-party API. This is the missing half, in one place, because
+    three boundaries drifting from ``wrap()`` independently is how the defect
+    arose.
+
+    Arguments are not flat text: a declared parameter can be a dict, a list, or
+    a nested mixture, and the callee has to receive the same SHAPE it would have
+    received unredacted or the redaction breaks the caller. Only ``str`` leaves
+    change; every other scalar comes back as it was, and containers are rebuilt
+    rather than mutated so the caller's own objects are never written through.
+
+    Dict KEYS are left alone deliberately. A key is a parameter or field name
+    the schema chose, not user content, and rewriting one would hand the callee
+    an argument it does not accept.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {key: redact_arguments(item, redact) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_arguments(item, redact) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_arguments(item, redact) for item in value)
+    return value
+
+
+def assert_redaction_applied(
+    payload: Any, compliance: Optional[Dict[str, Any]]
+) -> None:
+    """Confirm the rewritten arguments no longer carry what was to be removed.
+
+    CHECK THE OUTCOME, NOT THE INTENT. Everything upstream of this is the SDK
+    describing its own behaviour; this re-scans the values the callee is about
+    to be handed and refuses if a type the policy named is still in them. It is
+    the difference between "a redaction was requested" and "the content is
+    gone", and only the second one is worth recording.
+
+    Scoped to the types the verdict CLAIMS to have removed, so a detection the
+    policy resolved as detect-only is not turned into a block.
+    """
+    expected = list((compliance or {}).get("redacted_types") or [])
+    if not expected:
+        return
+    if isinstance(payload, str):
+        text = payload
+    else:
+        try:
+            text = json.dumps(payload if payload is not None else {}, default=str)
+        except Exception:  # noqa: BLE001 - an unserializable payload
+            text = str(payload)
+    remaining = set(run_builtin_pii_scan(text)["detected_types"])
+    survived = sorted(name for name in expected if name in remaining)
+    if survived:
+        raise RedactionNotApplied("redaction did not remove " + ", ".join(survived))
 
 
 def outbound_redaction_blocked_compliance(
