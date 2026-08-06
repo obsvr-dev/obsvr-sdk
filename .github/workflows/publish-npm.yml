@@ -2,7 +2,13 @@ name: Publish @obsvr/sdk to npm
 
 # Publishing is MANUAL ONLY. No tag or push can trigger this workflow.
 # To release: Actions tab -> this workflow -> Run workflow -> type "publish"
-# in the confirm box. Requires the NPM_TOKEN secret to be configured.
+# in the confirm box, then approve the npm-publish environment.
+#
+# Authentication is npm TRUSTED PUBLISHING (OIDC) — there is no token. npm
+# holds a trusted-publisher record naming this repository, this filename, and
+# the npm-publish environment; the OIDC claim must match all three or the
+# publish is refused. Renaming this file, or changing the environment below,
+# breaks publishing until the record on npmjs.com is updated to match.
 on:
   workflow_dispatch:
     inputs:
@@ -12,9 +18,10 @@ on:
         type: string
 
 # Deny by default; the publish job below re-grants exactly what it needs. This
-# job holds NPM_TOKEN and id-token: write, so a compromised step here could
-# publish a package carrying a VALID provenance attestation. The narrower the
-# default, the less any added step inherits.
+# job holds id-token: write, which IS the publishing credential under trusted
+# publishing, so a compromised step here could publish a package carrying a
+# VALID provenance attestation. The narrower the default, the less any added
+# step inherits.
 permissions: {}
 
 jobs:
@@ -22,7 +29,12 @@ jobs:
     name: Build and Publish
     runs-on: ubuntu-latest
     if: ${{ inputs.confirm == 'publish' }}
-    # npm provenance (attestation) requires OIDC
+    # Named in the npm trusted-publisher record, so the OIDC claim carries it.
+    # It also gates the job on the environment's required reviewers, which is
+    # what stops a stray workflow_dispatch from reaching the publish step.
+    environment: npm-publish
+    # id-token: write is the publishing credential itself under trusted
+    # publishing, not only the provenance signer.
     permissions:
       id-token: write
       contents: read
@@ -66,8 +78,10 @@ jobs:
           GITHUB_REF_TYPE: ${{ github.ref_type }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
 
+      # No --provenance flag and no NODE_AUTH_TOKEN: trusted publishing
+      # authenticates over OIDC and generates the provenance attestation on
+      # its own. The package has no private dependencies, so nothing earlier
+      # in this job needs a registry token either.
       - name: Publish
-        run: npm publish --access public --provenance
+        run: npm publish --access public
         working-directory: sdk-typescript
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
