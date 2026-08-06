@@ -24,7 +24,11 @@
 import type { ResolvedConfig } from "../proxy/types.js";
 import {
   applyPreCallPolicy,
+  assertRedactionApplied,
   emitIntegrationEvent,
+  outboundRedactionBlockedCompliance,
+  redactArguments,
+  redactBuiltinPii,
   setupExitHandlers,
   toolGateNotEvaluatedCompliance,
   tryGetConfig,
@@ -41,7 +45,10 @@ import {
   type McpPrincipal,
   type McpResponseScan,
 } from "../policy/response-scan.js";
-import { recordDetectorFailure } from "../policy/detector-guard.js";
+import {
+  applyOutboundRedaction,
+  recordDetectorFailure,
+} from "../policy/detector-guard.js";
 import { recordBinding } from "../binding-report.js";
 import { isPolicyEnforcementDegraded } from "../proxy/config.js";
 import { normalizeForMatching } from "../policy/normalize.js";
@@ -742,10 +749,16 @@ async function runGovernedCallTool(
   rest: unknown[],
   pinStore?: ToolPinStore,
   capabilityStore?: CapabilityStore,
+  /**
+   * Write redacted arguments back into the caller's own frame. Supplied by the
+   * raw-frame route, whose `callOriginal` re-sends the request object it closed
+   * over and therefore never sees the params this gate rebuilt.
+   */
+  applyArguments?: (redacted: Record<string, unknown> | undefined) => void,
 ): Promise<unknown> {
     const currentConfig = tryGetConfig() ?? config;
     const toolName = params?.name ?? "unknown";
-    const toolArgs = params?.arguments;
+    let toolArgs = params?.arguments;
 
     // Sealed evidence of WHICH tool content and arguments this call saw,
     // spread LAST into every event below so a caller metadata key collision
@@ -960,6 +973,54 @@ async function runGovernedCallTool(
 
         compliance = policyResult.compliance;
         finalPrompt = policyResult.redactedPrompt;
+
+        if (policyResult.decision === "redact") {
+          // ENFORCEMENT APPLICATION, not a record of one. `redactedPrompt` is
+          // the pipeline's redacted copy of the SCANNED TEXT and cannot be
+          // handed to a server that takes arguments, so the arguments
+          // themselves are rewritten, the MCP server receives the scrubbed
+          // values, and the stored prompt is then derived from THOSE.
+          // SECURITY.md names this boundary as the one to put a destructive
+          // capability behind, and a redaction that stopped at the audit copy
+          // was the weakest guarantee sitting behind the strongest claim.
+          //
+          // Fails closed exactly as the wrap() path does: a redaction the SDK
+          // cannot carry out blocks the call rather than forwarding what it was
+          // told to remove, and the event drops every "redacted" claim.
+          let redactedArgs: Record<string, unknown> | undefined;
+          const notRedacted = applyOutboundRedaction(() => {
+            redactedArgs = redactArguments(toolArgs, redactBuiltinPii) as
+              | Record<string, unknown>
+              | undefined;
+            assertRedactionApplied(redactedArgs, compliance);
+            // The raw-frame route holds its arguments inside the request model;
+            // writing them back is part of APPLYING the redaction, so a frame
+            // that refuses resolves closed here rather than after the fact.
+            applyArguments?.(redactedArgs);
+          });
+          if (notRedacted) {
+            const blocked = outboundRedactionBlockedCompliance(compliance, notRedacted);
+            emitIntegrationEvent({
+              config: currentConfig,
+              provider: "mcp",
+              model: "mcp",
+              operation: "mcp.tool.call",
+              source: SOURCE,
+              prompt: finalPrompt,
+              response: "",
+              success: false,
+              metadata: { tool_name: toolName, ...opts.metadata, ...toolContentMeta },
+              options: opts,
+              compliance: blocked,
+            });
+            throw new Error(
+              "[obsvr] MCP tool call blocked by policy: the redaction could not be applied to the arguments",
+            );
+          }
+          toolArgs = redactedArgs;
+          params = { ...params, arguments: redactedArgs };
+          finalPrompt = extractMcpPrompt(toolName, redactedArgs);
+        }
 
         if (policyResult.decision === "block") {
           emitIntegrationEvent({
@@ -1254,7 +1315,39 @@ async function runGovernedRequest(
     [],
     pinStore,
     capabilityStore,
+    // `invoke` re-sends the request object this route closed over, so the
+    // params the gate rebuilds never reach the wire on their own. A redact
+    // verdict has to be written into the frame itself, and a frame that refuses
+    // the write is a redaction that could not be applied — which is why this
+    // throws rather than returning false, and why it runs inside the gate's
+    // applyOutboundRedaction rather than at send time.
+    (redacted) => setFrameArguments(args[0], redacted),
   );
+}
+
+/**
+ * Write redacted arguments back into a tools/call request frame.
+ *
+ * Throws when the frame cannot be written — a frozen model, a shape this does
+ * not recognize. The caller runs it inside `applyOutboundRedaction`, so a frame
+ * obsvr cannot rewrite blocks the call rather than sending the values policy
+ * said to remove while the record claims they were removed.
+ */
+function setFrameArguments(
+  request: unknown,
+  redacted: Record<string, unknown> | undefined,
+): void {
+  if (request === null || typeof request !== "object") {
+    throw new Error("tools/call frame is not an object");
+  }
+  const params = (request as { params?: unknown }).params;
+  if (params === null || typeof params !== "object") {
+    throw new Error("tools/call frame carries no params to redact");
+  }
+  (params as { arguments?: unknown }).arguments = redacted;
+  if ((params as { arguments?: unknown }).arguments !== redacted) {
+    throw new Error("tools/call frame did not accept the redacted arguments");
+  }
 }
 
 /**

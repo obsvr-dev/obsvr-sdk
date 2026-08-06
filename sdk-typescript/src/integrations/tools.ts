@@ -41,6 +41,10 @@ import {
   tryGetConfig,
   setupExitHandlers,
   destructiveSourceLabel,
+  redactArguments,
+  redactBuiltinPii,
+  assertRedactionApplied,
+  outboundRedactionBlockedCompliance,
   type IntegrationOptions,
   type ComplianceInfo,
 } from "./core.js";
@@ -58,7 +62,11 @@ import {
 } from "../policy/tool-content-hash.js";
 import { declaresDestructive } from "../policy/capability-hints.js";
 import { getCurrentSubject } from "../proxy/subject.js";
-import { describeError, recordDetectorFailure } from "../policy/detector-guard.js";
+import {
+  applyOutboundRedaction,
+  describeError,
+  recordDetectorFailure,
+} from "../policy/detector-guard.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "obsvr_tool";
@@ -177,11 +185,35 @@ type AnyTool = Record<string, unknown>;
  *              it into the shape above by reading this property, so replacing it
  *              is what reaches execution.
  */
-function resolveExecKey(t: AnyTool): string | null {
-  for (const key of ["execute", "call", "func", "invoke", "run", "function", "$callback"]) {
-    if (typeof t[key] === "function") return key;
-  }
-  return null;
+const EXEC_KEYS = [
+  "execute",
+  "call",
+  "func",
+  "invoke",
+  "run",
+  "function",
+  "$callback",
+] as const;
+
+/**
+ * EVERY entry point this tool exposes, not the first one.
+ *
+ * Returning only the first match and gating only that property was the same
+ * defect the provider name list carried, one layer down. The `get` trap serves
+ * every OTHER property `Reflect.get(...).bind(target)` — bound to the RAW tool
+ * — so a tool object carrying two of these keys was governed through one of
+ * them and ran ungoverned through the other. The Python twin has gated the
+ * whole resolved set for exactly this reason: "entry points fan out, and the
+ * stored callable is where they converge."
+ *
+ * The FIRST match still decides where the input is read from (`execKey`), so
+ * argument-position resolution is unchanged for every shape that worked before;
+ * what changes is that the siblings are gated too instead of being handed out
+ * raw. A tool with one entry point resolves to exactly the array it used to
+ * resolve to as a scalar.
+ */
+function resolveExecKeys(t: AnyTool): string[] {
+  return EXEC_KEYS.filter((key) => typeof t[key] === "function");
 }
 
 function resolveToolName(t: AnyTool, opts: GovernToolOptions): string {
@@ -230,24 +262,30 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
   // re-gating the first proxy's gated function would evaluate and audit
   // every invocation twice.
   if ((t as Record<PropertyKey, unknown>)[GOVERNED_TOOL_MARKER] === true) return tool;
-  const execKey = resolveExecKey(t);
-  if (!execKey) return tool;
+  const execKeys = resolveExecKeys(t);
+  if (execKeys.length === 0) return tool;
 
   const toolName = resolveToolName(t, options);
-  const original = t[execKey] as (...args: unknown[]) => unknown;
   GOVERNED_TOOL_NAMES.add(toolName);
 
   const cfgAtWrap = tryGetConfig();
   if (cfgAtWrap) setupExitHandlers(cfgAtWrap);
 
-  const gated = async function (this: unknown, ...args: unknown[]): Promise<unknown> {
+  // One gate per entry point. Each closes over its OWN original, and each keeps
+  // the argument-position rule of the key it gates. Inner delegation is
+  // unaffected: the gate invokes `original.apply(t, args)` against the raw
+  // target, so a tool whose `execute` calls `this.run()` still runs one gate per
+  // external call rather than two.
+  const makeGated = (execKey: string, original: (...args: unknown[]) => unknown) =>
+    async function (this: unknown, ...args: unknown[]): Promise<unknown> {
     const config = tryGetConfig();
     if (config) {
       // Tool input position differs by framework: Vercel `execute(input, opts)`,
       // LlamaIndex `call(input)`, LangChain `func(input)` all put it at arg 0;
       // OpenAI Agents `invoke(runContext, input)` puts it at arg 1 (arg 0 is the
       // run context). Pick arg 1 for the invoke shape, else arg 0.
-      const input = execKey === "invoke" && args.length >= 2 ? args[1] : args[0];
+      const inputIndex = execKey === "invoke" && args.length >= 2 ? 1 : 0;
+      let input = args[inputIndex];
       const inputText = safeJson(input);
 
       // Sealed evidence of WHICH tool content and arguments this call saw. The
@@ -506,6 +544,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
       // the session-taint latch (1.5) both refuse before this point.
       let preCallCompliance: ComplianceInfo | undefined;
       let recordedPrompt = inputText;
+      let redactVerdict = false;
       if (
         (config.policyFloor && config.policyFloor.length > 0) ||
         (config.policyRules && config.policyRules.length > 0) ||
@@ -526,6 +565,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         });
         preCallCompliance = policyResult.compliance;
         recordedPrompt = policyResult.redactedPrompt;
+        redactVerdict = policyResult.decision === "redact";
 
         if (policyResult.decision === "block") {
           emitIntegrationEvent({
@@ -572,9 +612,56 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
       // view-only hit (storedRedactionVia) has no locatable span, so the
       // stored copy becomes a whole-text placeholder via redactForStorage.
       const { shouldRedactStored, storedRedactionVia } = applyObservePolicy(recordedPrompt, config);
-      const recordedArgs = shouldRedactStored
+      let recordedArgs = shouldRedactStored
         ? redactForStorage(recordedPrompt, storedRedactionVia)
         : recordedPrompt;
+
+      if (redactVerdict) {
+        // ENFORCEMENT APPLICATION, not a record of one. `recordedPrompt` is the
+        // pipeline's redacted copy of the SCANNED TEXT and cannot be handed to
+        // a callable that takes arguments, so the arguments themselves are
+        // rewritten, the tool body receives the scrubbed values, and the stored
+        // prompt is then derived from THOSE — the record describes what the tool
+        // received because it is built from it.
+        //
+        // Fails closed exactly as the wrap() path does: a redaction the SDK
+        // cannot carry out blocks the call rather than forwarding what it was
+        // told to remove, and the event drops every "redacted" claim.
+        let redactedInput: unknown;
+        const notRedacted = applyOutboundRedaction(() => {
+          redactedInput = redactArguments(input, redactBuiltinPii);
+          assertRedactionApplied(redactedInput, preCallCompliance);
+        });
+        if (notRedacted) {
+          const blockedCompliance = outboundRedactionBlockedCompliance(
+            preCallCompliance as ComplianceInfo,
+            notRedacted,
+          );
+          emitIntegrationEvent({
+            config,
+            provider: "unknown",
+            model: "unknown",
+            operation: "tool.call",
+            source: SOURCE,
+            prompt: recordedArgs,
+            response: "",
+            success: false,
+            statusCode: 403,
+            metadata: { tool_name: toolName, ...toolContentMeta },
+            compliance: blockedCompliance,
+            options,
+          });
+          // Same refusal shape the block branch above uses, so a caller
+          // catching one catches the other.
+          throw new Error(
+            `[obsvr] Tool blocked by policy: ${toolName} ` +
+              `(the redaction could not be applied to the arguments)`,
+          );
+        }
+        input = redactedInput;
+        args[inputIndex] = redactedInput;
+        recordedArgs = safeJson(redactedInput);
+      }
 
       // 3) signed tool.call audit event.
       emitIntegrationEvent({
@@ -609,13 +696,21 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
     return original.apply(t, args);
   };
 
+  const gatedByKey = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  for (const key of execKeys) {
+    gatedByKey.set(key, makeGated(key, t[key] as (...args: unknown[]) => unknown));
+  }
+
   return new Proxy(t, {
     get(target, prop, receiver) {
       // The idempotence marker: answered by the trap, never written onto the
       // caller's object — the proxy IS the installed gate, so its existence
       // is the verification the marker claims.
       if (prop === GOVERNED_TOOL_MARKER) return true;
-      if (prop === execKey) return gated;
+      if (typeof prop === "string") {
+        const gated = gatedByKey.get(prop);
+        if (gated) return gated;
+      }
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
     },
