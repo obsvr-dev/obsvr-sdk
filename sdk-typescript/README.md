@@ -4,11 +4,16 @@ Runtime governance for LLM applications: intercept every model and tool call, en
 
 ## Installation
 
-> Private beta — not yet published to npm. Request access at [obsvr.dev](https://obsvr.dev).
-
 ```bash
-npm install @obsvr/sdk    # private beta — not yet on npm; request access at obsvr.dev
+npm install @obsvr/sdk
 ```
+
+> **Enforcement needs no account.** Policy, PII, and agent checks run entirely
+> in your process and block calls with nothing configured but an API key.
+> Delivering the signed audit record needs an obsvr ingest service, which is in
+> private beta; you receive its URL together with your key. Until `ingestUrl` is
+> set the SDK still enforces — it warns once and delivers nothing.
+> [Request access →](https://obsvr.dev)
 
 Requires **Node.js >= 22**.
 

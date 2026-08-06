@@ -4,11 +4,16 @@ Runtime governance for LLM applications in Python: deterministic policy enforcem
 
 ## Installation
 
-> Private beta — not yet published to PyPI. Request access at [obsvr.dev](https://obsvr.dev).
-
 ```bash
 pip install obsvr-sdk
 ```
+
+> **Enforcement needs no account.** Policy, PII, and agent checks run entirely
+> in your process and block calls with nothing configured but an API key.
+> Delivering the signed audit record needs an obsvr ingest service, which is in
+> private beta; you receive its URL together with your key. Until `ingest_url`
+> is set the SDK still enforces — it warns once and delivers nothing.
+> [Request access →](https://obsvr.dev)
 
 Requires **Python >= 3.10**. No runtime dependencies.
 

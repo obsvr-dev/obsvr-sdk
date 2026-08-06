@@ -1429,6 +1429,17 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
 ### Fixed
 
+- **The package pages no longer say the package is unpublished.** Both
+  package READMEs render as the npm and PyPI project pages, and both carried
+  "not yet published to npm / PyPI"; the three install lines in the root README
+  said the same. What is gated is the ingest service, not the SDK, so each
+  README now separates them: enforcement runs in-process and needs no account,
+  the signed record needs an ingest URL, and that URL arrives with the API key.
+  The behavior stated is the measured one -- installed from the built wheel
+  with no `ingest_url` at all, a denied tool still refuses with `TOOL_DENIED`,
+  its body never runs, an allowed tool executes as the positive control, and
+  the unconfigured transport warns exactly once and delivers nothing.
+
 - **Host metadata the audit sender cannot serialize no longer reaches the
   caller.** The sender sized caller-supplied `metadata` with a bare serializer
   before deciding whether to trim it, so a bag carrying a throwing property

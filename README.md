@@ -21,7 +21,7 @@ Intercept model and tool calls at the provider-call boundary. Enforce determinis
   <img src="assets/architecture.svg" alt="obsvr runs in-process and governs the model and agent calls that reach its interception points — which calls those are is a per-integration property, documented per integration and per language: policy (13 rule types), PII and pattern-based injection, and agent/budget checks yield an allow / block / redact / review verdict before the request leaves your process. Each decision is signed into an HMAC chain in the SDK, then your obsvr ingest service countersigns it, folds it into a daily Merkle root, Ed25519-signs that root under a published key, and anchors it off-host — so you can verify offline with the public key alone and reconstruct the exact model and policy behind any decision months later." width="100%">
 </p>
 
-> ⚠️ **Private beta.** `@obsvr/sdk` and `obsvr-sdk` are not yet published to npm / PyPI. This repository is the source for beta participants; there is no public install yet. [Request access →](https://obsvr.dev)
+> **The SDKs are public; the ingest service is in private beta.** `@obsvr/sdk` and `obsvr-sdk` install from npm and PyPI with no gate. Enforcement runs entirely in your process and needs no account — policy, PII, and agent checks block calls with nothing configured but an API key. Delivering the signed record needs an ingest service, and you receive its URL together with your key. [Request access →](https://obsvr.dev)
 
 Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-for-byte compatible by shared conformance fixtures. Each runs in your process, governs the model and agent calls that pass through its interception points, signs each decision into a tamper-evident chain, and hands that record to your obsvr ingest service for sealing. **Which calls those are is a per-integration property, not an SDK-wide one** — see [Framework & provider support](#framework--provider-support) for the measured state of each, in both languages.
 
@@ -109,7 +109,7 @@ flowchart TD
 **TypeScript**
 
 ```bash
-npm install @obsvr/sdk    # (private beta — request access)
+npm install @obsvr/sdk
 ```
 
 Requires **Node.js >= 22**, and the package is **ESM-only** — a CommonJS service
@@ -143,7 +143,7 @@ await openai.chat.completions.create({
 **Python**
 
 ```bash
-pip install obsvr-sdk    # (private beta — request access)
+pip install obsvr-sdk
 ```
 
 ```python
