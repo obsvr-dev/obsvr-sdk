@@ -543,6 +543,8 @@ obsvr-verify ./bundle.json --api-key <key>
 npx obsvr-verify ./bundle.json --api-key <key> --allow-gaps
 ```
 
+**The two tiers answer different questions, and only one of them is about what an event SAYS.** Keyless verification groups the bundle per `sdk_session_id` and checks each chain's linkage, `seq_no` continuity from 1, timestamp monotonicity and a constant `chain_format`. It reads no content, decision or attribution field and recomputes no signature — so an edit to `action_taken`, `reason_code`, `rule_id`, `prompt`, `response`, `model`, `provider` or `user_id` passes it, and **needs no signing key to do so**; it also cannot see an event appended after the last, or the last one removed. `obsvr-verify chain.json && deploy` therefore gates on ordering, not on integrity. Pass `--api-key` for any claim about content or verdicts; `--json` names both sets explicitly in `checked` and `notChecked`, so a CI script can assert on the scope of the pass rather than on `valid` alone. The GitHub Action defaults to the keyless tier — supply `api-key` from a secret to gate on the record itself.
+
 Exit codes — identical in both, along with the accepted bundle shapes and the verdicts:
 
 | Code | Meaning |
@@ -855,15 +857,30 @@ is marked on each.
    `google-genai`, has no adapter and is not intercepted.
    [Which one you have](#framework--provider-support).
 
-8. **The zero-code auto-register misses three things, each measured rather
-   than reasoned about.** *(TypeScript only)* A `require()` entry point (the
-   hook does not intercept CommonJS at all), a subpath import such as
-   `openai/index.mjs` or `openai/client` (the specifier table is exact-match),
-   and other client classes exported by a governed package — `AzureOpenAI`
-   and `BedrockOpenAI` ride through ungoverned. An escaped client records
-   nothing rather than recording something false, and `obsvr.wrap()` governs
-   all of them.
+8. **The zero-code auto-register misses two import shapes, each measured
+   rather than reasoned about.** *(TypeScript only)* A `require()` entry point
+   (the hook does not intercept CommonJS at all) and a subpath import such as
+   `openai/index.mjs` or `openai/client` (the specifier table is exact-match).
+   An escaped client records nothing rather than recording something false, and
+   `obsvr.wrap()` governs both.
    [Detail](sdk-typescript/README.md#zero-code-global-coverage-no-monkey-patching).
+
+   A third shape used to sit here and **was not TypeScript-only, which is how it
+   went undisclosed on the other side for as long as it did**: other client
+   classes exported by a governed package. Interception enumerated class NAMES,
+   and a provider binds one class object to several — `anthropic.Client is
+   anthropic.Anthropic` and `openai.Client is openai.OpenAI` are both True — so
+   construction through any name the list did not carry reached the original
+   class while `init(auto=True)` reported success. That is the shape
+   `langchain-anthropic` constructs through, so on Python it governed nothing
+   for every LangChain-on-Claude application. Both SDKs now cover it: Python
+   resolves the class objects and rebinds every public module attribute bound to
+   one (or to a subclass, which is what the Azure/Bedrock/Vertex flavours are),
+   and TypeScript overrides every client export the shim declares, with a test
+   that derives the expected set from the real installed package so an upstream
+   addition fails a test instead of reaching a user. The general lesson stands
+   and is worth stating plainly: **a limit measured on one SDK is a hypothesis
+   about the other, not a fact about it.**
 
 One distinction decides which of these limits would block a release and which
 ship documented, and it is worth stating before you read them: **a record that

@@ -459,12 +459,23 @@ We document enforcement limits honestly.
 ### Before you install: the five limits of the Python SDK
 
 **Scope: this list is the Python SDK only.** The two SDKs do not have the same
-limitations and neither list may be read across to the other — the TypeScript SDK
-has three of its own that do not apply here (it is ESM-only, its named
-compatibility wrappers govern one method, and its zero-code auto-register misses
-three import shapes), and one below does not apply to it. The
-combined list for both, with the scope marked on each entry, is in the
+limitations — the TypeScript SDK has three of its own that do not apply here (it
+is ESM-only, its named compatibility wrappers govern one method, and its
+zero-code auto-register misses two import shapes), and one below does not apply
+to it. The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
+
+**A limit measured on one SDK is a hypothesis about the other, not a fact about
+it.** This paragraph used to say neither list "may be read across", which reads
+as an assurance that a TypeScript limit is absent here. One of them was not:
+zero-code interception enumerated client class NAMES in both languages, and a
+provider binds one class to several of them (`anthropic.Client is
+anthropic.Anthropic` is True), so construction through an unlisted name escaped
+governance on BOTH sides while `init(auto=True)` reported success. It is fixed
+in both — Python resolves the class objects and rebinds every public name bound
+to one — and the wording is corrected here because the sentence was doing work
+it could not support. Read each list as scoped, not as a guarantee about what is
+absent elsewhere.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
    Only the MCP surface runs against the real upstream package in CI. A green
