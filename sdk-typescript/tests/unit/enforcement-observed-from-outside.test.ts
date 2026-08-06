@@ -18,9 +18,13 @@
  * find the instrument outside the SDK, or say plainly that the claim is
  * unproven.
  */
-import { init, _reset } from '../../src/proxy/config';
+import { createServer, type Server } from 'node:http';
+import { AddressInfo } from 'node:net';
+
+import { init, getConfig, _reset } from '../../src/proxy/config';
 import { wrap } from '../../src/proxy/wrapper';
-import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
+import { ObsvrTraceProcessor } from '../../src/integrations/openai-agents';
+import { _resetSender, flushQueue } from '../../src/proxy/sender/fire-and-forget';
 
 const RAW_SSN = '412-55-9087';
 const BLOCKED_KEYWORD = 'zarquon';
@@ -139,5 +143,90 @@ describe('a rule the engine cannot use is refused at init', () => {
         policy_rules: [KEYWORD_BLOCK_RULE],
       }),
     ).not.toThrow();
+  });
+});
+
+// ── A real ingest server is the instrument ─────────────────────────────────
+//
+// The stored-copy scan protects the RECORD, so the record cannot be its own
+// witness. What can be is the bytes that actually leave the process: a real
+// HTTP server, holding what it was POSTed.
+
+describe('raw PII does not reach the ingest service from the tracing processor', () => {
+  let server: Server;
+  let bodies: string[];
+  let url: string;
+
+  beforeAll(async () => {
+    bodies = [];
+    server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        bodies.push(Buffer.concat(chunks).toString('utf8'));
+        const payload = JSON.stringify({ count: 1 });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': String(payload.length),
+        });
+        res.end(payload);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+    bodies.length = 0;
+  });
+  afterEach(() => _reset());
+
+  /** A completed response span in the shape processSpan parses. */
+  function responseSpan(text: string) {
+    return {
+      trace_id: 'trace_1',
+      span_data: {
+        type: 'response',
+        ended_at: '2026-08-07T00:00:00Z',
+        _response: {
+          id: 'resp_1',
+          model: 'gpt-4o-2024-08-06',
+          output: [{ content: [{ text }] }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+        _input: [{ role: 'user', content: text }],
+      },
+    };
+  }
+
+  it('the control delivers the span content, so the server can see a leak', async () => {
+    init({ api_key: 'test', ingest_url: url, sample_rate: 1 });
+    new ObsvrTraceProcessor().processSpan(responseSpan('the weather in Lisbon') as never);
+    await flushQueue(getConfig());
+    expect(bodies.join('')).toContain('Lisbon');
+  });
+
+  it('an SSN in the span never reaches the ingest service', async () => {
+    // This processor ran no policy pipeline of any kind, so at any sample rate
+    // it wrote whatever the agent said straight into the signed event.
+    init({
+      api_key: 'test',
+      ingest_url: url,
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: 'redact' } },
+    });
+    new ObsvrTraceProcessor().processSpan(
+      responseSpan(`the customer SSN is ${RAW_SSN}`) as never,
+    );
+    await flushQueue(getConfig());
+    const delivered = bodies.join('');
+    expect(delivered).not.toContain(RAW_SSN);
+    expect(delivered.length).toBeGreaterThan(0);
   });
 });
