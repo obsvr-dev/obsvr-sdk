@@ -1,3 +1,8 @@
+# package.json "files" governs what is published; this file cannot widen it.
+# It is kept as a fallback: npm falls back to .gitignore only when this file
+# is absent, and .gitignore excludes dist/ -- so deleting this would mean a
+# broken "files" field publishes a package with no compiled output at all.
+
 # Development files
 tests/
 *.test.ts

@@ -1,0 +1,8 @@
+# The sdist exists to rebuild the wheel, nothing else. Tests are excluded
+# deliberately: the conformance suites read fixtures from conformance/ at the
+# repository root, which is outside this directory and therefore outside any
+# sdist. Shipping the tests without the data they read gives anyone who runs
+# them failures with a missing-file cause rather than a real one. Tests run in
+# CI against the repository, where the fixtures exist.
+prune tests
+exclude conformance.pin
