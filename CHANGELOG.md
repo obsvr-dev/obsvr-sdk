@@ -13,7 +13,105 @@ Each entry links the commit that made the change.
 
 ## [Unreleased]
 
-Nothing yet. Changes land here and are renamed at the next release cut.
+Changes land here and are renamed at the next release cut.
+
+### Fixed
+
+- **A `policy_rules` entry written as a mapping enforces.** It reached the rule
+  engine uncoerced and raised on the first attribute read, where the detector
+  guard resolved the raise by `failMode` — open by default — so a `block` rule
+  written that way did not block and the call went to the provider behind a
+  stderr notice. `policy_floor` had always accepted mappings, which is most of
+  why a caller expected the other tier to. Both tiers of rule now hold to one
+  schema and differ only in what an invalid rule costs: a `/policies` poll drops
+  it and fires `sdk:rule_rejected`, `init()` throws and names the index and the
+  field. That newly refuses a rule missing `enabled`, one with a misspelled
+  `type`, one claiming the reserved `sdk:` / `backend:` namespace, and a `regex`
+  pattern the ReDoS validator rejects — each of which previously produced a rule
+  the engine skipped in silence. ([`8bb0ffd`](https://github.com/obsvr-dev/obsvr-sdk/commit/8bb0ffd))
+
+- **`obsvr.wrap()` governs the `.stream()` helpers in Python.** They were
+  outside the method table, so the proxy returned the provider's own bound
+  method and no pipeline ran: on one wrapped client a `pii_policy` of
+  `{ssn: "block"}` refused `create(stream=True)` and let `messages.stream(...)`
+  through with the SSN in it. `messages.stream`, `beta.messages.stream`,
+  `chat.completions.stream` and `responses.stream` are governed now and emit one
+  event per run. The provider tool runners remain TypeScript-only.
+  ([`d7a1dde`](https://github.com/obsvr-dev/obsvr-sdk/commit/d7a1dde))
+
+- **The TypeScript OpenAI Agents tracing processor scans what it stores.** It
+  ran no policy pipeline of any kind, so at any sample rate it wrote the agent's
+  prompt and response into the signed event raw, while the Python twin ran the
+  observe-only PII net and the READMEs described the scan as running in both.
+  ([`7cb3220`](https://github.com/obsvr-dev/obsvr-sdk/commit/7cb3220))
+
+- **No event describes a provider call that has not happened.** Both provider
+  SDKs decorate their async `create` with a `@required_args` validator that is
+  itself a plain function, so `inspect.iscoroutinefunction` reported False and
+  the sync pipeline ran on an async client: an event with `success: true`, an
+  empty response and zero latency was written when the coroutine was
+  CONSTRUCTED, before the provider had been contacted and while the call could
+  still fail. Affected `messages.create` and `chat.completions.create` on the
+  async clients; `responses.create` carries no such decorator and was always
+  right. ([`e1dfc91`](https://github.com/obsvr-dev/obsvr-sdk/commit/e1dfc91))
+
+- **A tool-result redaction that could not be applied is no longer recorded as
+  applied.** A content item whose `text` could not be assigned was swallowed by
+  a per-item `except Exception: pass` inside the MCP sanitizer, so the raw
+  result travelled to the model under an event stamped `redacted`. The failure
+  now reaches the guard that exists: blocked under `failMode: "closed"`, and
+  under open the result is delivered with a `policy_flag` that files the types
+  as detected, drops the redaction claim and names the lost layer.
+  ([`947dc33`](https://github.com/obsvr-dev/obsvr-sdk/commit/947dc33))
+
+- **A `govern_tool` gate whose evaluation raised records `not_evaluated`.** It
+  recorded `allowed` — a verdict asserting a gate looked and permitted — on a
+  call where the gate raised and the tool ran ungoverned, with no trace of the
+  lost layer. Same vocabulary the MCP boundary already used for this failure.
+  ([`268510f`](https://github.com/obsvr-dev/obsvr-sdk/commit/268510f))
+
+- **The six NLP-only PII types are removed from the REQUEST, not only from the
+  record.** `name`, `person`, `address`, `location`, `medical` and
+  `national_id` have no built-in regex pattern, and Python ran the Presidio
+  anonymizer over the stored copy alone while rewriting the outbound request
+  with the regex tier — so a `redact` verdict on one of them produced an event
+  reading `redacted` with the value intact on the wire. Both that and the
+  attribution defect came from one place: the analyzer call returned an empty
+  list for "found nothing" and for "did not answer", so a 500ms timeout was
+  indistinguishable from a clean scan and `action_source` credited
+  `builtin+presidio` whenever the URL was merely configured. **Behaviour
+  change:** with Presidio configured and one of those six resolving to
+  `redact`, an anonymizer that does not answer now blocks the call.
+  ([`37d4e24`](https://github.com/obsvr-dev/obsvr-sdk/commit/37d4e24))
+
+- **`init(auto=True)` reaches a client class a framework already imported.**
+  `from openai import OpenAI` binds the class object into the importing module,
+  so rebinding the provider module afterwards could not reach it: a framework
+  imported before `init()` kept constructing the ungoverned class while the
+  report named every provider alias as intercepted and nothing warned. Driven
+  against the real packages, crewai, ag2, LlamaIndex, Haystack and
+  openai-agents were all ungoverned that way — three from the bare top-level
+  import. Resolved by identity, so a framework's own unrelated class of the
+  same name is untouched.
+  ([`0ad8258`](https://github.com/obsvr-dev/obsvr-sdk/commit/0ad8258))
+
+- **`hardDeletion.endpoint` is inside the SSRF guard.** The fourth
+  customer-configured outbound URL, carrying a DELETE with the `X-API-Key`
+  header, was outside it while the security notes said every such URL was
+  validated. ([`d7eccf4`](https://github.com/obsvr-dev/obsvr-sdk/commit/d7eccf4))
+
+### Changed
+
+- **Documentation: the coverage claims this release moved, and several that
+  were simply wrong.** "The SDK can emit only content hashes" described an
+  option that exists in neither SDK; the seventeen governed method paths are
+  the table across every provider rather than the coverage of one client, and
+  `completions.create` and the assistants surface are in no table at all;
+  Cloudflare Workers AI has no Python path; the session-taint latch never arms
+  on injection without a `piiPolicy` co-requisite that went unstated; the
+  stored-copy scrub holds on the framework integrations in TypeScript only; and
+  the package table was two releases stale.
+  ([`4cd4871`](https://github.com/obsvr-dev/obsvr-sdk/commit/4cd4871))
 
 ## [0.11.0] - 2026-08-06
 
