@@ -1467,6 +1467,19 @@ async function governCall(
     let reasonCode: string | undefined;
     let redactedTypes: string[] = [];
     let blockedTypes: string[] = [];
+    /**
+     * What the scan FOUND, before policy resolved what to do about it.
+     *
+     * `actionReason` is set from the raw detection while `redactedTypes` and
+     * `blockedTypes` are only filled by the block and redact branches, so every
+     * type that resolves to detect_only produces `reason_code: PII_DETECTED` with
+     * both lists EMPTY — a verdict carrying no evidence of what it saw. An
+     * operator grepping for PII_DETECTED got a hit with nothing in it to act on,
+     * which teaches them to ignore the signal. This carries the finding so a
+     * detect-only verdict says what it detected. Additive and emitted only when
+     * non-empty, so an event with no detection is unchanged.
+     */
+    let detectedTypesFound: string[] = [];
     let ruleIdOverride: string | undefined;
     let policyReasonOverride: string | undefined;
     // Which de-obfuscation view surfaced the PII/injection hit (absent for an
@@ -1691,6 +1704,7 @@ async function governCall(
 
         if (allTypes.length > 0) {
           actionReason = "pii_detected";
+          detectedTypesFound = [...allTypes];
           actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
           // A detected prompt-injection taints the session (later egress escalated).
           if (taintCfg && allTypes.includes("prompt_injection")) {
@@ -2538,6 +2552,9 @@ async function governCall(
         reason_code: resolvedReasonCode,
         action_source: actionSource,
         redacted_types: redactedTypes,
+        // The evidence behind a detection verdict. Present only when the scan
+        // found something, so an event with no finding keeps its shape.
+        ...(detectedTypesFound.length > 0 ? { detected_types: detectedTypesFound } : {}),
         blocked_types: blockedTypes,
         rule_id: ruleId,
         policy_reason: policyReason,

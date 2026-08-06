@@ -86,7 +86,7 @@ import {
   shouldSample,
   setupExitHandlers,
 } from "../proxy/sender/index.js";
-import { truncate } from "../utils/truncate.js";
+import { truncate, safeStringify } from "../utils/truncate.js";
 import { debugLog } from "../utils/logger.js";
 import { generateUUID } from "../utils/uuid.js";
 
@@ -387,6 +387,79 @@ export function extractLastUserText(args: unknown): string {
  * `blocked_types`, which is what they now are - the reason the call was
  * refused rather than a list of things removed.
  */
+/**
+ * A type policy named for removal is still present after redaction.
+ *
+ * Thrown into `applyOutboundRedaction`, which resolves it the way every
+ * unappliable redaction resolves: closed, with the `redacted` claim stripped
+ * from the event rather than asserted over content still in the call.
+ */
+export class RedactionNotApplied extends Error {}
+
+/**
+ * Redact every string inside a call's ARGUMENTS, structure preserved.
+ *
+ * `applyOutboundRedaction` has always been available to the model-call path,
+ * where the payload is text and the redacted copy can simply replace it. The
+ * tool-shaped boundaries — `obsvrGovernTool` and the MCP `tools/call` gate —
+ * could not use it, because a tool takes ARGUMENTS and the pipeline's redacted
+ * copy of the scanned text cannot be handed back to a callable. So each of them
+ * took `redactedPrompt`, used it as the EVENT's prompt, and let the call
+ * proceed with the values it came in with: the signed record said
+ * `action_taken: "redacted"` while the tool wrote the raw value to a file, a
+ * row, or a third-party API. This is the missing half, in one place, because
+ * two boundaries drifting from `wrap()` independently is how the defect arose.
+ *
+ * Arguments are not flat text: a declared parameter can be an object, an array,
+ * or a nested mixture, and the callee has to receive the same SHAPE it would
+ * have received unredacted or the redaction breaks the caller. Only string
+ * leaves change, and containers are rebuilt rather than mutated so the caller's
+ * own objects are never written through.
+ *
+ * Object KEYS are left alone deliberately. A key is a parameter or field name
+ * the schema chose, not user content, and rewriting one would hand the callee an
+ * argument it does not accept.
+ *
+ * Twin: sdk-python/obsvr/policy.py (`redact_arguments`).
+ */
+export function redactArguments(value: unknown, redact: (text: string) => string): unknown {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map((item) => redactArguments(item, redact));
+  if (value !== null && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = redactArguments(item, redact);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Confirm the rewritten arguments no longer carry what was to be removed.
+ *
+ * CHECK THE OUTCOME, NOT THE INTENT. Everything upstream of this is the SDK
+ * describing its own behaviour; this re-scans the values the callee is about to
+ * be handed and refuses if a type the policy named is still in them. It is the
+ * difference between "a redaction was requested" and "the content is gone", and
+ * only the second one is worth recording.
+ *
+ * Scoped to the types the verdict CLAIMS to have removed, so a detection the
+ * policy resolved as detect-only is not turned into a block.
+ *
+ * Twin: sdk-python/obsvr/policy.py (`assert_redaction_applied`).
+ */
+export function assertRedactionApplied(payload: unknown, compliance?: ComplianceInfo): void {
+  const expected = compliance?.redacted_types ?? [];
+  if (expected.length === 0) return;
+  const text = typeof payload === "string" ? payload : safeStringify(payload);
+  const remaining = new Set(runBuiltinPiiScan(text).detected_types);
+  const survived = expected.filter((name) => remaining.has(name)).sort();
+  if (survived.length > 0) {
+    throw new RedactionNotApplied(`redaction did not remove ${survived.join(", ")}`);
+  }
+}
+
 export function outboundRedactionBlockedCompliance(
   base: ComplianceInfo,
   failed: OutboundRedactionFailure,
@@ -544,6 +617,19 @@ export async function applyPreCallPolicy(
   let actionSource: ComplianceInfo["action_source"] = "unknown";
   let redactedTypes: string[] = [];
   let blockedTypes: string[] = [];
+  /**
+   * What the scan FOUND, before policy resolved what to do about it.
+   *
+   * `actionReason` is set from the raw detection while `redactedTypes` and
+   * `blockedTypes` are only filled by the block and redact branches, so every
+   * type that resolves to detect_only produces `reason_code: PII_DETECTED` with
+   * both lists EMPTY — a verdict carrying no evidence of what it saw. An
+   * operator grepping for PII_DETECTED got a hit with nothing in it to act on,
+   * which teaches them to ignore the signal. This carries the finding so a
+   * detect-only verdict says what it detected. Additive and emitted only when
+   * non-empty, so an event with no detection is unchanged.
+   */
+  let detectedTypesFound: string[] = [];
   let gateRuleId: string | undefined;
   let gatePolicyReason: string | undefined;
   // Explicit classification from a detector layer (taint, PII/injection,
@@ -724,6 +810,7 @@ export async function applyPreCallPolicy(
       }
       if (allTypes.length > 0) {
         actionReason = "pii_detected";
+        detectedTypesFound = [...allTypes];
         actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
         // A detected prompt-injection taints the session (later egress escalated).
         if (taintCfg && allTypes.includes("prompt_injection")) {
@@ -1225,6 +1312,9 @@ export async function applyPreCallPolicy(
       reason_code: resolvedReasonCode,
       action_source: actionSource,
       redacted_types: redactedTypes,
+      // The evidence behind a detection verdict. Present only when the scan
+      // found something, so an event with no finding keeps its shape.
+      ...(detectedTypesFound.length > 0 ? { detected_types: detectedTypesFound } : {}),
       blocked_types: blockedTypes,
       rule_id: resolvedRuleId,
       policy_reason: resolvedPolicyReason,

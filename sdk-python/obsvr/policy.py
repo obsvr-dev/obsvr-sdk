@@ -1060,6 +1060,18 @@ def apply_pre_call_policy(
     action_source = "unknown"
     redacted_types: List[str] = []
     blocked_types: List[str] = []
+    #: What the scan FOUND, before policy resolved what to do about it.
+    #:
+    #: ``action_reason`` is set from the raw detection while ``redacted_types``
+    #: and ``blocked_types`` are only filled by the block and redact branches,
+    #: so every type that resolves to detect_only produces
+    #: ``reason_code: PII_DETECTED`` with both lists EMPTY — a verdict carrying
+    #: no evidence of what it saw. An operator grepping for PII_DETECTED got a
+    #: hit with nothing in it to act on, which teaches them to ignore the
+    #: signal. This carries the finding so a detect-only verdict says what it
+    #: detected. Additive and emitted only when non-empty, so an event with no
+    #: detection is unchanged.
+    detected_types_found: List[str] = []
     hook_rule_id: Optional[str] = None
     hook_reason: Optional[str] = None
     hook_reason_code: Optional[str] = None
@@ -1220,6 +1232,7 @@ def apply_pre_call_policy(
                         detected_types.append(t)
             if detected_types:
                 action_reason = "pii_detected"
+                detected_types_found = list(detected_types)
                 action_source = (
                     "builtin+presidio"
                     if getattr(config, "presidio_analyzer_url", None)
@@ -1851,6 +1864,11 @@ def apply_pre_call_policy(
     # layer that did not run has to say so on the record.
     if quota_unmetered is not None:
         compliance["quota_unmetered"] = quota_unmetered
+
+    # The evidence behind a detection verdict. Emitted only when the scan found
+    # something, so an event with no detection keeps exactly the shape it had.
+    if detected_types_found:
+        compliance["detected_types"] = detected_types_found
 
     if action_taken == "blocked":
         decision = "block"
