@@ -1,7 +1,7 @@
 {
   "name": "@obsvr/sdk",
-  "version": "0.11.0",
-  "description": "Obsvr SDK - LLM governance and audit tracking with auto-instrumentation",
+  "version": "0.11.1",
+  "description": "Secure and prove AI agents and LLMs — enforce policy in real time, block sensitive data, and reconstruct exactly what governed it",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -112,6 +112,10 @@
     "lint": "eslint ."
   },
   "keywords": [
+    "agents",
+    "ai-agents",
+    "agent-governance",
+    "tool-calling",
     "llm",
     "governance",
     "audit",

@@ -49,6 +49,16 @@ jobs:
           cache: npm
           cache-dependency-path: sdk-typescript/package-lock.json
 
+      # Trusted publishing needs npm CLI >= 11.5.1; Node 22 bundles npm 10.x,
+      # which has no OIDC support and sends an UNAUTHENTICATED publish. npm
+      # answers that with 404 on a scoped package rather than 401, so the
+      # failure reads as "package not found" and looks like a broken trusted
+      # publisher record instead of a stale CLI.
+      - name: Use an npm that can do trusted publishing
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       - name: Install dependencies
         run: npm ci
         working-directory: sdk-typescript
