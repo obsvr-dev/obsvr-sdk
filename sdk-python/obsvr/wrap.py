@@ -60,7 +60,7 @@ from .policy import (
     blocked_prompt_for_storage,
     apply_outbound_redaction,
     outbound_redaction_blocked_compliance,
-    redact_builtin_pii,
+    outbound_redactor,
 )
 from .sender import send_audit_async, should_sample
 from .metering import record_token_usage_for_rules as _record_token_usage_for_rules
@@ -1268,11 +1268,16 @@ def _govern_before_call(
         # Enforcement application: a redaction that cannot be carried out blocks
         # the call rather than forwarding the content it was told to remove.
         _redacted_args = args
+        # Presidio joins the OUTBOUND rewrite when one of the six types only it
+        # can locate is what policy asked to remove. Until now it produced the
+        # stored copy alone, so those types were scrubbed from the record and
+        # forwarded to the provider under an event that said `redacted`.
+        _redactor = outbound_redactor(config, compliance.get("redacted_types"))
 
         def _apply_redaction() -> None:
             nonlocal _redacted_args
-            _redact_messages_in_place(kwargs, redact_builtin_pii)
-            _redacted_args = _redact_positional_inputs(args, redact_builtin_pii)
+            _redact_messages_in_place(kwargs, _redactor)
+            _redacted_args = _redact_positional_inputs(args, _redactor)
 
         _not_redacted = apply_outbound_redaction(_apply_redaction)
         if _not_redacted is not None:

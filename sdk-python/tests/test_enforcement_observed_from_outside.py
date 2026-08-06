@@ -536,6 +536,127 @@ def test_the_async_path_still_records_the_call_it_did_make(monkeypatch):
     assert emitted[0]["response"] == "ok"
 
 
+# ── A real Presidio sidecar is the instrument ───────────────────────────────
+#
+# Six of the nineteen PII types have no built-in regex pattern, so only the
+# NLP analyzer can locate them. What the provider receives decides whether a
+# `redact` verdict on one of those six was carried out.
+
+RAW_PERSON = "Marcus Webb"
+
+
+class _PresidioHandler(BaseHTTPRequestHandler):
+    """Answers /analyze and /anonymize, or refuses, as the test dictates."""
+
+    def log_message(self, *args):  # noqa: A003 - silence the default stderr log
+        pass
+
+    def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's spelling
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        half = "analyze" if self.path.endswith("/analyze") else "anonymize"
+        if half not in self.server.obsvr_up:
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if self.path.endswith("/analyze"):
+            text = body.get("text", "")
+            start = text.find(RAW_PERSON)
+            payload = (
+                [{"entity_type": "PERSON", "start": start,
+                  "end": start + len(RAW_PERSON), "score": 0.99}]
+                if start >= 0 else []
+            )
+        else:
+            payload = {"text": body.get("text", "").replace(RAW_PERSON, "[REDACTED_PERSON]")}
+        encoded = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+@pytest.fixture
+def presidio_server():
+    server = HTTPServer(("127.0.0.1", 0), _PresidioHandler)
+    # Which halves answer. They are controlled separately because they fail
+    # differently: an analyzer that does not answer DETECTS nothing, so no
+    # redaction is claimed and the fail-open posture applies honestly. An
+    # anonymizer that does not answer fails AFTER policy has said remove it,
+    # which is the applied-redaction case.
+    server.obsvr_up = {"analyze", "anonymize"}
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+def _drive_with_presidio(server):
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    received = []
+    _init(
+        # `name` is the internal label the analyzer's PERSON entity maps to,
+        # and one of the six with no built-in regex pattern.
+        pii_policy={"default": "detect_only", "rules": {"name": "redact"}},
+        presidio_analyzer_url=url,
+        presidio_anonymizer_url=url,
+    )
+    client = obsvr.wrap(_RecordingProvider(received))
+    raised = None
+    try:
+        client.messages.create(
+            model="m", max_tokens=8,
+            messages=[{"role": "user", "content": f"escalate to {RAW_PERSON} today"}],
+        )
+    except Exception as err:
+        raised = type(err).__name__
+    return received, raised
+
+
+def test_an_nlp_only_type_is_removed_from_what_the_provider_receives(
+    presidio_server, no_delivery
+):
+    """`person` has no built-in regex pattern, so the regex tier cannot
+    remove it. The outbound rewrite used that tier alone while the analyzer
+    produced only the STORED copy — the record read `redacted` and the name
+    went to the provider."""
+    received, raised = _drive_with_presidio(presidio_server)
+    assert raised is None, f"the allowed call was refused: {raised}"
+    assert len(received) == 1
+    assert RAW_PERSON not in received[0], "an NLP-only type reached the provider"
+    assert "[REDACTED_PERSON]" in received[0]
+
+
+def test_an_unreachable_anonymizer_blocks_rather_than_forwarding_the_name(
+    presidio_server, no_delivery
+):
+    """The applied-redaction rule. The analyzer found the name and policy said
+    remove it; the anonymizer then did not answer. The regex tier has no
+    pattern for this type, so falling back to it would forward exactly the
+    content policy named — the call is refused instead."""
+    presidio_server.obsvr_up = {"analyze"}
+    received, raised = _drive_with_presidio(presidio_server)
+    assert received == [], "the name was forwarded after the anonymizer went away"
+    assert raised == "ObsvrPolicyError"
+
+
+def test_an_unreachable_analyzer_detects_nothing_and_claims_nothing(
+    presidio_server, no_delivery
+):
+    """The other half, and it is NOT a block. An analyzer that never answered
+    detected nothing, so no redaction was ever claimed: the call proceeds under
+    the documented fail-open posture and the record does not say `redacted`.
+    Distinguishing the two is the point — the SDK used to be unable to tell a
+    detector that found nothing from one that never ran."""
+    presidio_server.obsvr_up = set()
+    received, raised = _drive_with_presidio(presidio_server)
+    assert raised is None
+    assert len(received) == 1, "the fail-open posture stopped a call it should allow"
+
+
 # ── A real ingest server is the instrument ──────────────────────────────────
 
 

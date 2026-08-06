@@ -66,30 +66,46 @@ def _post_json(url: str, payload: Dict[str, Any], timeout_s: float) -> Optional[
         return None
 
 
-def _analyze(text: str, analyzer_url: str, timeout_s: float) -> List[Dict[str, Any]]:
-    """Call /analyze; [] on any error."""
+def _analyze(
+    text: str, analyzer_url: str, timeout_s: float
+) -> Optional[List[Dict[str, Any]]]:
+    """Call /analyze. ``None`` when the analyzer did not answer, a list when it
+    did — including the empty list, which means it looked and found nothing.
+
+    Those two used to be the same value, and the sameness was load-bearing in
+    the wrong direction: a timed-out analyzer was indistinguishable from a
+    clean scan, so a caller credited a detector that never ran and a redactor
+    returned the text unchanged as though there had been nothing to remove.
+    The 500ms default makes that failure routine rather than exotic.
+    """
     data = _post_json(
         f"{analyzer_url}/analyze",
         {"text": _normalize_for_ner(text), "language": "en"},
         timeout_s,
     )
-    return data if isinstance(data, list) else []
+    return data if isinstance(data, list) else None
 
 
 def presidio_scan(
     text: str, analyzer_url: str, timeout_s: float = 0.5
-) -> Dict[str, List[str]]:
+) -> Dict[str, Any]:
     """Scan text with the Presidio analyzer.
 
-    Returns {"detected_types": [...]} using internal labels; empty on error.
+    Returns ``{"detected_types": [...], "answered": bool}`` using internal
+    labels. ``answered`` is False when the analyzer could not be reached, so a
+    caller can tell "this detector found nothing" from "this detector did not
+    run" — the difference between attributing a verdict to Presidio and
+    claiming it.
     """
     results = _analyze(text, analyzer_url, timeout_s)
+    if results is None:
+        return {"detected_types": [], "answered": False}
     seen: List[str] = []
     for r in results:
         label = PRESIDIO_TO_LABEL.get(r.get("entity_type", ""))
         if label and label not in seen:
             seen.append(label)
-    return {"detected_types": seen}
+    return {"detected_types": seen, "answered": True}
 
 
 def presidio_redact_text(
@@ -104,6 +120,11 @@ def presidio_redact_text(
     or None on failure (caller should fall back to regex redaction).
     """
     results = _analyze(text, analyzer_url, timeout_s)
+    if results is None:
+        # The analyzer did not answer. Returning ``text`` here read as "there
+        # was nothing to redact" and handed the caller its own input back as a
+        # redacted copy.
+        return None
     if not results:
         return text
     # Per-entity replace anonymizers with typed placeholders. Presidio

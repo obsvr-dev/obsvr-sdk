@@ -247,7 +247,7 @@ BUILTIN_PII_PATTERNS: List[Dict[str, Any]] = [
     },
 ]
 
-from .pii_types import BUILTIN_SEVERITY
+from .pii_types import BUILTIN_SEVERITY, PII_TYPES
 
 DEFAULT_COMPLIANCE: Dict[str, Any] = {
     "event_type": "llm_call",
@@ -785,6 +785,54 @@ def outbound_redaction_blocked_compliance(
     return merged
 
 
+#: PII types the built-in regex tier has NO pattern for, so only the Presidio
+#: analyzer can locate them. Derived from the pattern table rather than
+#: listed, because a list would drift the first time a pattern is added.
+NLP_ONLY_PII_TYPES = frozenset(PII_TYPES) - {p["label"] for p in BUILTIN_PII_PATTERNS}
+
+
+def outbound_redactor(
+    config: ResolvedConfig, redacted_types: Optional[List[str]] = None
+) -> Callable[[str], str]:
+    """The redactor that rewrites what actually leaves the process.
+
+    The regex tier alone was used here while ``presidio_redact_text`` produced
+    the STORED copy, so with Presidio configured and one of the six NLP-only
+    types resolving to ``redact``, the audit record said ``redacted`` and the
+    name or address went to the provider intact — the record describing a
+    removal from a payload that still carried it.
+
+    Presidio is asked only when a type it alone can find is in play. That keeps
+    a flaky sidecar from failing calls the regex tier could have redacted
+    completely, and it keeps the extra round trip off the common path. When it
+    IS in play and does not answer, this raises: the caller runs it through
+    ``apply_outbound_redaction``, which blocks. That is the applied-redaction
+    rule — falling back to a tier with no pattern for the type would forward
+    exactly the content policy said to remove.
+    """
+    analyzer = getattr(config, "presidio_analyzer_url", None)
+    anonymizer = getattr(config, "presidio_anonymizer_url", None)
+    if not (analyzer and anonymizer):
+        return redact_builtin_pii
+    if redacted_types is not None and not (set(redacted_types) & NLP_ONLY_PII_TYPES):
+        return redact_builtin_pii
+
+    from .presidio import presidio_redact_text
+
+    def _redact(text: str) -> str:
+        out = presidio_redact_text(text, analyzer, anonymizer)
+        if out is None:
+            raise RuntimeError(
+                "the Presidio anonymizer did not answer; an NLP-only PII type "
+                "cannot be removed by the regex tier"
+            )
+        # Both tiers, in order: Presidio locates the NLP entities and the
+        # regex table catches the structured ones it does not model.
+        return redact_builtin_pii(out)
+
+    return _redact
+
+
 def safe_policy_version(config: ResolvedConfig) -> str:
     """Derive the policy version for a failure record WITHOUT trusting the
     inputs that just failed.
@@ -1232,20 +1280,23 @@ def apply_pre_call_policy(
             pii = run_configured_pii_scan(scan, getattr(config, "deobfuscation", None))
             pii_scan_via = pii.get("via")
             detected_types = list(pii["detected_types"])
+            presidio_answered = False
             if getattr(config, "presidio_analyzer_url", None):
                 from .presidio import presidio_scan
                 nlp = presidio_scan(scan, config.presidio_analyzer_url)
+                presidio_answered = bool(nlp.get("answered"))
                 for t in nlp["detected_types"]:
                     if t not in detected_types:
                         detected_types.append(t)
             if detected_types:
                 action_reason = "pii_detected"
                 detected_types_found = list(detected_types)
-                action_source = (
-                    "builtin+presidio"
-                    if getattr(config, "presidio_analyzer_url", None)
-                    else "builtin"
-                )
+                # Attributed to what ANSWERED, not to what was configured. A
+                # 500ms budget means a cold sidecar or a GC pause routinely
+                # contributes nothing, and this field used to credit it anyway
+                # — naming a detector on the record as having participated in a
+                # verdict it never saw.
+                action_source = "builtin+presidio" if presidio_answered else "builtin"
                 # A detected prompt-injection taints the session.
                 if taint_cfg and "prompt_injection" in detected_types:
                     mark_tainted(taint_key, "prompt_injection", time.monotonic())

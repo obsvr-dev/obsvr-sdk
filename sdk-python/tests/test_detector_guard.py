@@ -545,7 +545,12 @@ class TestOutboundRedactionApplication:
         def _boom(_text):
             raise RuntimeError("redactor bug")
 
-        monkeypatch.setattr(wrap_mod, "redact_builtin_pii", _boom)
+        # The outbound rewrite now asks `outbound_redactor` which redactor the
+        # detected types require — Presidio joins it for the six types the regex
+        # tier cannot locate — so THAT is the seam, and it is the precise one:
+        # patching `redact_builtin_pii` itself also breaks the stored-copy
+        # redaction and counts three failures where this asks about one.
+        monkeypatch.setattr(wrap_mod, "outbound_redactor", lambda *_a, **_k: _boom)
 
         class _Completions:
             def create(self, **_kw):
