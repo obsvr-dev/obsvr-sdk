@@ -7,9 +7,16 @@ failing the job if the tamper-evident audit chain does not verify.
 
 Two verification tiers, chosen by whether you supply an `api-key`:
 
-- **Structural (keyless)** — `prev_sig` linkage, `seq_no` continuity, session
-  consistency, and timestamp monotonicity are checked from the events alone.
-  Detects reordering, insertion, and deletion. Cannot detect a re-signed forgery.
+- **Structural (keyless)** — events are grouped per `sdk_session_id` and each
+  chain is checked for `prev_sig` linkage, `seq_no` continuity from 1, timestamp
+  monotonicity and a constant `chain_format`, from the events alone. It reads no
+  content, decision or attribution field and recomputes no signature, so it
+  detects reordering, and insertion into or deletion from the MIDDLE of a chain.
+  **It does not detect an edit to any field** — changing `action_taken` from
+  `blocked` to `allowed` passes this tier, and needs no signing key to do it —
+  nor an event appended after the last, nor the last one removed. Gating a
+  deploy on a keyless pass gates on ordering, not on what the events say.
+  The `--json` output names both sets in `checked` and `notChecked`.
 - **Full (with `api-key`)** — every HMAC signature is recomputed from content, so
   any content tamper breaks the check. Pass the key via a secret.
 

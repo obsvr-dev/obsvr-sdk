@@ -13,12 +13,17 @@ Input: an exported obsvr evidence file - an incident evidence bundle
 (obsvr-incident-evidence-v1, ``trace.steps``), a trace evidence bundle, or a
 plain JSON array of audit events. Two verification tiers:
 
- - WITHOUT --api-key: structural chain verification. prev_sig linkage, seq_no
-   continuity, session consistency, and timestamp monotonicity are checked from
-   the events alone; every event after the first must CARRY a prev_sig, or an
-   unsigned insertion with a plausible seq_no and a well-formed sdk_sig would
-   pass this tier by simply omitting the field. Detects reordering, insertion,
-   and deletion; cannot detect a re-signed forgery (that needs the key).
+ - WITHOUT --api-key: structural chain verification. Events are grouped per
+   sdk_session_id (a chain is per session) and each chain is checked for
+   prev_sig linkage, seq_no continuity from 1, timestamp monotonicity and a
+   constant chain_format, from the events alone; every event after the first
+   must CARRY a prev_sig, or an unsigned insertion with a plausible seq_no and
+   a well-formed sdk_sig would pass this tier by simply omitting the field.
+   It reads NO content, decision or attribution field and recomputes no
+   signature, so it detects reordering, and insertion into or deletion from the
+   MIDDLE of a chain — and it does NOT detect an edit to any field (which needs
+   no key at all), an event appended after the last, or the last one removed.
+   Every claim about what an event SAYS comes from the --api-key tier.
  - WITH --api-key: HMAC re-verification (verify_chain) - every signature is
    recomputed over the content + chain preimage, so any content tamper or
    reorder breaks. Under chain format 3, the current signing format, the
@@ -118,22 +123,91 @@ def _ts(event: Dict[str, Any]) -> int:
     return value if isinstance(value, (int, float)) else 0
 
 
+#: What the keyless tier examines, and what it does not. Emitted verbatim in
+#: --json as `checked` / `notChecked`, so a machine consumer of `valid: true`
+#: can see the scope of the claim instead of inferring one. Kept identical to
+#: the TS CLI's STRUCTURAL_CHECKED / STRUCTURAL_NOT_CHECKED.
+STRUCTURAL_CHECKED = (
+    "sdk_sig_present",
+    "seq_no_continuity",
+    "chain_starts_at_one",
+    "prev_sig_linkage",
+    "timestamp_monotonicity",
+    "chain_format_consistency",
+)
+STRUCTURAL_NOT_CHECKED = (
+    "sdk_sig_recomputation",
+    "prompt",
+    "response",
+    "action_taken",
+    "action_reason",
+    "reason_code",
+    "rule_id",
+    "policy_version",
+    "model",
+    "provider",
+    "user_id",
+    "append_after_last_event",
+    "removal_of_last_event",
+)
+
+
 def verify_structure(events: Sequence[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
     """Keyless structural verification: linkage, continuity, monotonicity.
 
     Same checks in the same order as the TS CLI's verifyStructure, so the two
     reach the same verdict on the same file.
+
+    GROUPED PER SESSION, LIKE THE KEYED TIER. A chain is per ``sdk_session_id``,
+    and this used to sort every event in the bundle by ``seq_no`` and then
+    ``continue`` past any adjacent pair whose sessions differed. On a bundle
+    with more than one session the global sort INTERLEAVES them — session A's
+    seq 1, session B's seq 1, A's seq 2, B's seq 2 — so every adjacent pair was
+    cross-session and not one linkage, continuity or monotonicity check ever
+    ran. Measured on two three-event sessions with every ``prev_sig`` wrong and
+    every timestamp regressing: the tier returned valid and the CLI printed
+    "✓ STRUCTURAL verification passed". Multi-session bundles are the normal
+    shape for a fleet, so the tier was closest to a no-op exactly where it was
+    most likely to be used. The keyed path has always grouped first.
     """
+    sessions: Dict[str, List[Dict[str, Any]]] = {}
+    for event in events:
+        sessions.setdefault(str(event.get("sdk_session_id", "unknown")), []).append(
+            event
+        )
+    for sid, session_events in sessions.items():
+        ok, reason = _verify_session_structure(session_events)
+        if not ok:
+            return False, (
+                f"session {sid}: {reason}" if len(sessions) > 1 else reason
+            )
+    return True, None
+
+
+def _verify_session_structure(
+    events: Sequence[Dict[str, Any]],
+) -> Tuple[bool, Optional[str]]:
+    """The structural checks for ONE chain."""
     ordered = sorted(events, key=_seq)
     for i, event in enumerate(ordered):
         sig = event.get("sdk_sig")
         if not isinstance(sig, str) or len(sig) != 64:
             return False, "missing or malformed sdk_sig"
         if i == 0:
+            # A chain starts at 1. Without this a bundle whose leading events
+            # were deleted verifies clean, because every surviving pair still
+            # links: the loss is only visible at the head. The keyed tier has
+            # always checked the initial seq_no; this tier can check it too,
+            # from the events alone.
+            first = _seq(event)
+            if first != 1:
+                return (
+                    False,
+                    f"chain does not start at seq_no 1 (starts at {first}): "
+                    "events before it are missing from this bundle",
+                )
             continue
         prev = ordered[i - 1]
-        if event.get("sdk_session_id") != prev.get("sdk_session_id"):
-            continue  # chains are per-session
         if _seq(event) != _seq(prev) + 1:
             return False, f"seq_no gap: {prev.get('seq_no')} -> {event.get('seq_no')}"
         prev_sig = event.get("prev_sig")
@@ -155,6 +229,16 @@ def verify_structure(events: Sequence[Dict[str, Any]]) -> Tuple[bool, Optional[s
             )
         if _ts(event) < _ts(prev):
             return False, f"timestamp regression at seq {event.get('seq_no')}"
+        if event.get("chain_format") != prev.get("chain_format"):
+            # One chain is signed under one format. A format that changes
+            # mid-chain is either a forgery or two chains spliced together, and
+            # the keyed tier already refuses it.
+            return (
+                False,
+                "chain_format changes mid-chain at seq "
+                f"{event.get('seq_no')}: {prev.get('chain_format')} -> "
+                f"{event.get('chain_format')}",
+            )
     return True, None
 
 
@@ -402,6 +486,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             doc = {"mode": "structural", "valid": valid, "events": len(events)}
             if reason is not None:
                 doc["reason"] = reason
+            # What this verdict COVERS, in the machine-readable output, because
+            # a script reads `valid` and cannot see the tier's footnote. A CI
+            # job gating on `valid: true` from a keyless run is gating on
+            # ordering alone, and nothing in the document used to say so.
+            doc["checked"] = list(STRUCTURAL_CHECKED)
+            doc["notChecked"] = list(STRUCTURAL_NOT_CHECKED)
             doc["gapMarkers"] = gap_markers
             doc["eventsDeclaredLost"] = events_lost
             doc["allowGaps"] = allow_gaps
@@ -413,10 +503,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(
             "✓ STRUCTURAL verification passed: linkage, continuity, and "
             f"monotonicity hold for {len(events)} event(s).\n"
-            "  Note: without --api-key, signatures were not recomputed - a holder of the\n"
-            "  signing key could still have re-signed altered content. Pass --api-key for\n"
-            "  full HMAC re-verification, and check the daily Merkle root (git anchor /\n"
-            "  RFC 3161 token) for the no-insert/no-delete guarantee across days."
+            "  This tier reads NO content, decision or attribution field, so it does not\n"
+            "  check them. An edit to action_taken, reason_code, rule_id, prompt, response,\n"
+            "  model, provider or user_id passes here, and needs no signing key: only the\n"
+            "  ordering fields are examined. It also cannot detect an event appended after\n"
+            "  the last one, or the last one removed.\n"
+            "  Pass --api-key for full HMAC re-verification - that is the only tier that\n"
+            "  says anything about what an event CONTAINS - and check the daily Merkle root\n"
+            "  (git anchor / RFC 3161 token) for the no-insert/no-delete guarantee across days."
         )
         device_signed = sum(
             1 for event in events if isinstance(event.get("device_sig"), str)

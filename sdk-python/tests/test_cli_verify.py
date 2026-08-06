@@ -100,11 +100,121 @@ def test_tampered_content_with_api_key_exits_1(tmp_path, capsys):
 
 def test_tampered_content_is_invisible_without_the_key(tmp_path, capsys):
     """The documented limit of the keyless tier, pinned so it cannot be
-    mistaken for a passing full verification."""
+    mistaken for a passing full verification.
+
+    The summary must name a PLAIN FIELD EDIT, not only a re-signed forgery. The
+    previous wording said the tier "cannot detect a re-signed forgery (that
+    needs the key)", which a reader takes to mean an edit made WITHOUT the key
+    would be caught. It is not: no content or decision field is read at this
+    tier at all.
+    """
     chain = _chain()
     chain[1]["prompt"] = "tampered"
     assert _run([_write(tmp_path, "t.json", chain)]) == 0
-    assert "signatures were not recomputed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "reads NO content, decision or attribution field" in out
+    assert "action_taken" in out
+    assert "needs no signing key" in out
+
+
+def test_a_decision_field_edit_is_named_as_uncovered_in_json(tmp_path, capsys):
+    """A machine consumer of `valid: true` can see the scope of the claim.
+
+    The exit code and `valid` are identical for a clean chain and one whose
+    verdicts were rewritten, so the JSON has to carry what was not examined or
+    a CI gate reads an ordering check as an integrity check.
+    """
+    chain = _chain()
+    chain[1]["action_taken"] = "allowed"
+    assert _run([_write(tmp_path, "j.json", chain), "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out.strip())
+    assert doc["valid"] is True
+    assert "action_taken" in doc["notChecked"]
+    assert "sdk_sig_recomputation" in doc["notChecked"]
+    assert "prev_sig_linkage" in doc["checked"]
+
+
+# ── the keyless tier on a MULTI-SESSION bundle ──────────────────────────────
+#
+# A chain is per sdk_session_id. The tier used to sort the whole bundle by
+# seq_no and skip every adjacent pair whose sessions differed — and a global
+# sort of two sessions INTERLEAVES them, so every pair was cross-session and no
+# check ran on anything. A fleet export is exactly this shape.
+
+
+def _two_session_bundle(mutate=None):
+    """Two independent chains in one file, interleaved by seq_no on sort."""
+    events = []
+    for session in ("session-a", "session-b"):
+        previous = None
+        for seq in (1, 2, 3):
+            signature = f"{session}-{seq}".ljust(64, "0")
+            events.append(
+                {
+                    "sdk_session_id": session,
+                    "seq_no": seq,
+                    "sdk_sig": signature,
+                    "prev_sig": previous,
+                    "timestamp_sdk": 1_000 + seq,
+                    "chain_format": 3,
+                }
+            )
+            previous = signature
+    if mutate:
+        mutate(events)
+    return events
+
+
+def test_well_formed_multi_session_bundle_still_passes():
+    assert verify_structure(_two_session_bundle()) == (True, None)
+
+
+def test_broken_linkage_in_one_session_is_caught_in_a_multi_session_bundle():
+    def break_it(events):
+        for event in events:
+            if event["sdk_session_id"] == "session-b" and event["seq_no"] == 3:
+                event["prev_sig"] = "deadbeef" * 8
+
+    valid, reason = verify_structure(_two_session_bundle(break_it))
+    assert valid is False
+    assert "session-b" in reason and "prev_sig" in reason
+
+
+def test_timestamp_regression_is_caught_in_a_multi_session_bundle():
+    def break_it(events):
+        for event in events:
+            if event["sdk_session_id"] == "session-a" and event["seq_no"] == 2:
+                event["timestamp_sdk"] = 0
+
+    valid, reason = verify_structure(_two_session_bundle(break_it))
+    assert valid is False and "timestamp regression" in reason
+
+
+def test_seq_gap_is_caught_in_a_multi_session_bundle():
+    def break_it(events):
+        for event in events:
+            if event["sdk_session_id"] == "session-a" and event["seq_no"] == 3:
+                event["seq_no"] = 9
+
+    valid, reason = verify_structure(_two_session_bundle(break_it))
+    assert valid is False and "seq_no gap" in reason
+
+
+def test_deleted_chain_prefix_is_caught():
+    """Removing the head of a chain leaves every surviving pair linking."""
+    chain = [e for e in _two_session_bundle() if e["sdk_session_id"] == "session-a"]
+    valid, reason = verify_structure(chain[1:])
+    assert valid is False and "does not start at seq_no 1" in reason
+
+
+def test_chain_format_change_mid_chain_is_caught():
+    def break_it(events):
+        for event in events:
+            if event["sdk_session_id"] == "session-a" and event["seq_no"] == 2:
+                event["chain_format"] = 2
+
+    valid, reason = verify_structure(_two_session_bundle(break_it))
+    assert valid is False and "chain_format changes mid-chain" in reason
 
 
 def test_seq_gap_fails_keyless(tmp_path, capsys):

@@ -9,13 +9,22 @@
  * (obsvr-incident-evidence-v1, `trace.steps`), a trace evidence bundle, or a
  * plain JSON array of audit events. Two verification tiers:
  *
- *  - WITHOUT --api-key: structural chain verification. prev_sig linkage,
- *    seq_no continuity, session consistency, and timestamp monotonicity are
- *    checked from the events alone; every event after the first must CARRY a
- *    prev_sig, or an unsigned insertion with a plausible seq_no and a
- *    well-formed sdk_sig would pass this tier by simply omitting the field.
- *    Detects reordering, insertion, and deletion; cannot detect a re-signed
- *    forgery (that needs the key).
+ *  - WITHOUT --api-key: structural chain verification. Events are grouped per
+ *    sdk_session_id (a chain is per session) and each chain is checked for
+ *    prev_sig linkage, seq_no continuity from 1, timestamp monotonicity and a
+ *    constant chain_format, from the events alone; every event after the first
+ *    must CARRY a prev_sig, or an unsigned insertion with a plausible seq_no
+ *    and a well-formed sdk_sig would pass this tier by simply omitting the
+ *    field. It reads NO content, decision or attribution field and recomputes
+ *    no signature, so it detects reordering, and insertion into or deletion
+ *    from the MIDDLE of a chain — and it does NOT detect an edit to any field
+ *    (which needs no key at all), an event appended after the last, or the last
+ *    one removed. Every claim about what an event SAYS comes from the
+ *    --api-key tier.
+ *  - WITH --device-pubkey (repeatable; base64/hex raw key or a PEM path): the
+ *    optional non-repudiation tier. Every event must carry a device_sig by a
+ *    pinned key that verifies over the same payload the HMAC covers. Works
+ *    WITH --api-key (both seals checked) or ALONE.
  *  - WITH --api-key: HMAC re-verification (verifyAuditChain) — every signature
  *    is recomputed over the content + chain preimage, so any content tamper or
  *    reorder breaks. Under chain format 3, the current signing format, the
@@ -80,17 +89,94 @@ function extractEvents(parsed: unknown): AuditEvent[] {
   fail("Unrecognized file shape: expected an event array, or a bundle with trace.steps / steps / events", 2);
 }
 
-/** Keyless structural verification: linkage, continuity, monotonicity. */
+/**
+ * What the keyless tier examines, and what it does not. Emitted verbatim in
+ * --json as `checked` / `notChecked`, so a machine consumer of `valid: true`
+ * can see the scope of the claim instead of inferring one. Kept identical to
+ * the Python CLI's STRUCTURAL_CHECKED / STRUCTURAL_NOT_CHECKED.
+ */
+const STRUCTURAL_CHECKED = [
+  "sdk_sig_present",
+  "seq_no_continuity",
+  "chain_starts_at_one",
+  "prev_sig_linkage",
+  "timestamp_monotonicity",
+  "chain_format_consistency",
+];
+const STRUCTURAL_NOT_CHECKED = [
+  "sdk_sig_recomputation",
+  "prompt",
+  "response",
+  "action_taken",
+  "action_reason",
+  "reason_code",
+  "rule_id",
+  "policy_version",
+  "model",
+  "provider",
+  "user_id",
+  "append_after_last_event",
+  "removal_of_last_event",
+];
+
+/**
+ * Keyless structural verification: linkage, continuity, monotonicity.
+ *
+ * GROUPED PER SESSION, LIKE THE KEYED TIER. A chain is per `sdk_session_id`,
+ * and this used to sort every event in the bundle by `seq_no` and then
+ * `continue` past any adjacent pair whose sessions differed. On a bundle with
+ * more than one session the global sort INTERLEAVES them — session A's seq 1,
+ * session B's seq 1, A's seq 2, B's seq 2 — so every adjacent pair was
+ * cross-session and not one linkage, continuity or monotonicity check ever ran.
+ * Measured on two three-event sessions with every `prev_sig` wrong and every
+ * timestamp regressing: the tier returned valid and the CLI printed
+ * "✓ STRUCTURAL verification passed". Multi-session bundles are the normal
+ * shape for a fleet, so the tier was closest to a no-op exactly where it was
+ * most likely to be used. The keyed path has always grouped first.
+ */
 function verifyStructure(events: AuditEvent[]): { valid: boolean; reason?: string; at?: number } {
+  const sessions = new Map<string, AuditEvent[]>();
+  for (const e of events) {
+    const sid = String(e.sdk_session_id ?? "unknown");
+    const bucket = sessions.get(sid);
+    if (bucket) bucket.push(e);
+    else sessions.set(sid, [e]);
+  }
+  for (const [sid, sessionEvents] of sessions) {
+    const result = verifySessionStructure(sessionEvents);
+    if (!result.valid) {
+      return sessions.size > 1
+        ? { ...result, reason: `session ${sid}: ${result.reason}` }
+        : result;
+    }
+  }
+  return { valid: true };
+}
+
+/** The structural checks for ONE chain. */
+function verifySessionStructure(events: AuditEvent[]): { valid: boolean; reason?: string; at?: number } {
   const sorted = [...events].sort((a, b) => (a.seq_no ?? 0) - (b.seq_no ?? 0));
   for (let i = 0; i < sorted.length; i++) {
     const e = sorted[i];
     if (typeof e.sdk_sig !== "string" || e.sdk_sig.length !== 64) {
       return { valid: false, reason: "missing or malformed sdk_sig", at: i };
     }
-    if (i === 0) continue;
+    if (i === 0) {
+      // A chain starts at 1. Without this a bundle whose leading events were
+      // deleted verifies clean, because every surviving pair still links: the
+      // loss is only visible at the head. The keyed tier has always checked the
+      // initial seq_no; this tier can check it too, from the events alone.
+      const first = e.seq_no ?? 0;
+      if (first !== 1) {
+        return {
+          valid: false,
+          reason: `chain does not start at seq_no 1 (starts at ${first}): events before it are missing from this bundle`,
+          at: i,
+        };
+      }
+      continue;
+    }
     const prev = sorted[i - 1];
-    if (e.sdk_session_id !== prev.sdk_session_id) continue; // chains are per-session
     if ((e.seq_no ?? 0) !== (prev.seq_no ?? 0) + 1) {
       return { valid: false, reason: `seq_no gap: ${prev.seq_no} -> ${e.seq_no}`, at: i };
     }
@@ -105,6 +191,16 @@ function verifyStructure(events: AuditEvent[]): { valid: boolean; reason?: strin
     }
     if ((e.timestamp_sdk ?? 0) < (prev.timestamp_sdk ?? 0)) {
       return { valid: false, reason: `timestamp regression at seq ${e.seq_no}`, at: i };
+    }
+    if (e.chain_format !== prev.chain_format) {
+      // One chain is signed under one format. A format that changes mid-chain
+      // is either a forgery or two chains spliced together, and the keyed tier
+      // already refuses it.
+      return {
+        valid: false,
+        reason: `chain_format changes mid-chain at seq ${e.seq_no}: ${prev.chain_format} -> ${e.chain_format}`,
+        at: i,
+      };
     }
   }
   return { valid: true };
@@ -341,6 +437,12 @@ if (apiKey || deviceKeys.length > 0) {
       events: events.length,
     };
     if (result.reason !== undefined) doc.reason = result.reason;
+    // What this verdict COVERS, in the machine-readable output, because a
+    // script reads `valid` and cannot see the tier's footnote. A CI job gating
+    // on `valid: true` from a keyless run is gating on ordering alone, and
+    // nothing in the document used to say so.
+    doc.checked = STRUCTURAL_CHECKED;
+    doc.notChecked = STRUCTURAL_NOT_CHECKED;
     doc.gapMarkers = gapMarkers;
     doc.eventsDeclaredLost = eventsLost;
     doc.allowGaps = allowGaps;
@@ -351,10 +453,14 @@ if (apiKey || deviceKeys.length > 0) {
   if (!result.valid) fail(result.reason ?? "chain broken");
   console.log(
     `✓ STRUCTURAL verification passed: linkage, continuity, and monotonicity hold for ${events.length} event(s).\n` +
-      `  Note: without --api-key, signatures were not recomputed - a holder of the\n` +
-      `  signing key could still have re-signed altered content. Pass --api-key for\n` +
-      `  full HMAC re-verification, and check the daily Merkle root (git anchor /\n` +
-      `  RFC 3161 token) for the no-insert/no-delete guarantee across days.`,
+      `  This tier reads NO content, decision or attribution field, so it does not\n` +
+      `  check them. An edit to action_taken, reason_code, rule_id, prompt, response,\n` +
+      `  model, provider or user_id passes here, and needs no signing key: only the\n` +
+      `  ordering fields are examined. It also cannot detect an event appended after\n` +
+      `  the last one, or the last one removed.\n` +
+      `  Pass --api-key for full HMAC re-verification - that is the only tier that\n` +
+      `  says anything about what an event CONTAINS - and check the daily Merkle root\n` +
+      `  (git anchor / RFC 3161 token) for the no-insert/no-delete guarantee across days.`,
   );
   const deviceSigned = events.filter(
     (e) => typeof (e as { device_sig?: unknown }).device_sig === "string",
