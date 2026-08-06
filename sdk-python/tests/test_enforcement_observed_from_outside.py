@@ -414,6 +414,46 @@ def test_the_stream_helper_still_yields_its_text(no_delivery):
         assert "".join(stream.text_stream) == "ok"
 
 
+def test_a_tool_gate_that_raised_does_not_record_the_tool_as_allowed(
+    tmp_path, monkeypatch
+):
+    """The file the tool wrote proves it ran; the record must not call that
+    ``allowed``.
+
+    Under the default fail-open posture a gate whose evaluation raises lets the
+    tool run — that is what open means. What it recorded was ``allowed``, which
+    asserts a gate looked and permitted, and it carried no trace of the layer
+    that was lost. The MCP boundary already had the honest vocabulary for this
+    exact failure.
+    """
+    from obsvr.integrations import tools as tools_mod
+
+    emitted = []
+    monkeypatch.setattr(tools_mod, "emit_event", lambda c, **kw: emitted.append(kw))
+    monkeypatch.setattr(
+        tools_mod,
+        "apply_pre_call_policy",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("engine bug")),
+    )
+    _init(pii_policy=REDACT_EMAIL_POLICY, fail_mode="open")
+    path = tmp_path / "ran.txt"
+
+    def escalate(reason: str) -> str:
+        """Record an escalation."""
+        path.write_text("ran", encoding="utf-8")
+        return "ok"
+
+    govern_tool(escalate)("anything")
+
+    assert path.read_text(encoding="utf-8") == "ran", "the tool did not run"
+    compliance = emitted[0]["compliance"]
+    assert compliance["action_taken"] == "not_evaluated", (
+        "a gate that raised recorded the call as allowed"
+    )
+    assert compliance["policy_not_evaluated"]["gate"] == "govern_tool"
+    assert compliance["detector_failure"]["layer"] == "tool_gate"
+
+
 # ── An un-awaited coroutine is the instrument ───────────────────────────────
 #
 # The callee is the ground truth here and the record is the claim under test,

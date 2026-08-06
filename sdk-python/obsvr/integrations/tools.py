@@ -107,6 +107,7 @@ from ..events import (
     blocked_call_error,
     emit_event,
     tool_denied_compliance,
+    tool_gate_not_evaluated_compliance,
 )
 from ..policy import (
     apply_outbound_redaction,
@@ -856,7 +857,27 @@ def _gate(
                         "blocked_types": [],
                     }
                 ) from e
-            compliance_out = None
+            # Under the default "open" the tool runs, and the record has to say
+            # so honestly. It used to fall through to the no-policy-configured
+            # fallback below, which reads ``allowed`` — a gate asserting it
+            # looked and permitted, when in fact it raised. Same vocabulary the
+            # MCP boundary already uses for the same failure, plus the lost
+            # layer named on this call's own event.
+            from ..policy import record_detector_failure
+
+            record_detector_failure("tool_gate", e, config)
+            compliance_out = tool_gate_not_evaluated_compliance(
+                surface=SOURCE,
+                gate="govern_tool",
+                reason=f"policy evaluation raised {type(e).__name__}; tool ran ungoverned",
+            )
+            compliance_out["detector_failure"] = {
+                "layer": "tool_gate",
+                "error": f"{type(e).__name__}: {e}"[:200],
+                "resolution": "open",
+                "floor_class": False,
+                "phase": "pre_call",
+            }
             stored_prompt = input_text
 
     # 3) signed tool.call audit event.
