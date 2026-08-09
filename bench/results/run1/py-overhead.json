@@ -1,0 +1,544 @@
+{
+  "meta": {
+    "lang": "py",
+    "part": "A",
+    "sdk_version_manifest": "0.11.2",
+    "sdk_version_stamped": "python/0.11.2",
+    "python": "3.13.2",
+    "os": "macOS 26.5.2",
+    "cpu": "Apple M3 Pro",
+    "cores": 11,
+    "ram_gb": 18,
+    "date_utc": "2026-08-09T15:30:25.664179+00:00",
+    "git_rev": "dc372d5fecfb501a853ffe8a3e033cf25835eba5",
+    "args": {
+      "iters": 10000,
+      "tier": "all",
+      "payload": "both",
+      "out": "bench/results/run1/py-overhead.json",
+      "quick": false
+    },
+    "load_check": {
+      "load_avg_1m": 4.97705078125,
+      "warn": true
+    },
+    "fire_and_forget": {
+      "iters": 10000,
+      "fast_transport": {
+        "p95_us": 113.792,
+        "p50_us": 99.625,
+        "dropped_overflow": 253,
+        "chain_clean": true
+      },
+      "slow_transport_25ms": {
+        "p95_us": 96.541,
+        "p50_us": 85.75,
+        "dropped_overflow": 10494,
+        "chain_clean": true
+      },
+      "p95_ratio_slow_over_fast": 0.848
+    }
+  },
+  "rows": [
+    {
+      "tier": "U",
+      "payload": "small",
+      "governed": false,
+      "pct_us": {
+        "p50": 0.459,
+        "p95": 0.541,
+        "p99": 0.583,
+        "mean": 0.4884942,
+        "max": 46.542,
+        "min": 0.416,
+        "n": 10000
+      },
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "U",
+      "payload": "large",
+      "governed": false,
+      "pct_us": {
+        "p50": 0.5,
+        "p95": 0.542,
+        "p99": 1.292,
+        "mean": 0.5384945,
+        "max": 55.334,
+        "min": 0.416,
+        "n": 10000
+      },
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A0",
+      "payload": "small",
+      "governed": true,
+      "pct_us": {
+        "p50": 100.5,
+        "p95": 221.291,
+        "p99": 1065.292,
+        "mean": 144.3127288,
+        "max": 7219.792,
+        "min": 92.0,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 100.041,
+        "p95": 220.75,
+        "p99": 1064.7089999999998,
+        "mean": 143.8242346,
+        "max": 7173.25
+      },
+      "chain": {
+        "events": 12000,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "total_calls": 12000,
+      "enqueued": 12000,
+      "dropped_overflow": 0,
+      "gap_markers": 0,
+      "gap_events_declared": 0,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A0",
+      "payload": "large",
+      "governed": true,
+      "pct_us": {
+        "p50": 2201.625,
+        "p95": 2393.75,
+        "p99": 4744.0,
+        "mean": 2334.8249592,
+        "max": 57500.0,
+        "min": 2129.416,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 2201.125,
+        "p95": 2393.208,
+        "p99": 4742.708,
+        "mean": 2334.2864647,
+        "max": 57444.666
+      },
+      "chain": {
+        "events": 12000,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "total_calls": 12000,
+      "enqueued": 12000,
+      "dropped_overflow": 0,
+      "gap_markers": 0,
+      "gap_events_declared": 0,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A1",
+      "payload": "small",
+      "governed": true,
+      "pct_us": {
+        "p50": 164.75,
+        "p95": 180.417,
+        "p99": 190.166,
+        "mean": 178.2662667,
+        "max": 12852.833,
+        "min": 157.25,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 164.291,
+        "p95": 179.876,
+        "p99": 189.583,
+        "mean": 177.7777725,
+        "max": 12806.291000000001
+      },
+      "chain": {
+        "events": 5688,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 5688,
+        "sent": 5688,
+        "retries": 0,
+        "dropped_overflow": 6317,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 5,
+        "gap_events_declared": 6317
+      },
+      "total_calls": 12000,
+      "enqueued": 5688,
+      "dropped_overflow": 6317,
+      "gap_markers": 5,
+      "gap_events_declared": 6317,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A2",
+      "payload": "small",
+      "governed": true,
+      "pct_us": {
+        "p50": 269.166,
+        "p95": 280.25,
+        "p99": 284.125,
+        "mean": 271.4751545,
+        "max": 6609.0,
+        "min": 258.417,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 268.707,
+        "p95": 279.709,
+        "p99": 283.542,
+        "mean": 270.9866603,
+        "max": 6562.458
+      },
+      "chain": {
+        "events": 1851,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 1851,
+        "sent": 1851,
+        "retries": 0,
+        "dropped_overflow": 10153,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 4,
+        "gap_events_declared": 10153
+      },
+      "total_calls": 12000,
+      "enqueued": 1851,
+      "dropped_overflow": 10153,
+      "gap_markers": 4,
+      "gap_events_declared": 10153,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A2",
+      "payload": "large",
+      "governed": true,
+      "pct_us": {
+        "p50": 8798.208,
+        "p95": 9853.708,
+        "p99": 13573.125,
+        "mean": 9073.1533787,
+        "max": 76381.292,
+        "min": 8577.5,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 8797.708,
+        "p95": 9853.166000000001,
+        "p99": 13571.833,
+        "mean": 9072.6148842,
+        "max": 76325.958
+      },
+      "chain": {
+        "events": 12000,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "total_calls": 12000,
+      "enqueued": 12000,
+      "dropped_overflow": 0,
+      "gap_markers": 0,
+      "gap_events_declared": 0,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A3",
+      "payload": "small",
+      "governed": true,
+      "pct_us": {
+        "p50": 289.833,
+        "p95": 302.709,
+        "p99": 311.666,
+        "mean": 293.52467540000004,
+        "max": 6687.042,
+        "min": 281.833,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 289.374,
+        "p95": 302.168,
+        "p99": 311.08299999999997,
+        "mean": 293.03618120000004,
+        "max": 6640.5
+      },
+      "chain": {
+        "events": 2102,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 2102,
+        "sent": 2102,
+        "retries": 0,
+        "dropped_overflow": 9903,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 5,
+        "gap_events_declared": 9903
+      },
+      "total_calls": 12000,
+      "enqueued": 2102,
+      "dropped_overflow": 9903,
+      "gap_markers": 5,
+      "gap_events_declared": 9903,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A4",
+      "payload": "small",
+      "governed": true,
+      "pct_us": {
+        "p50": 524.75,
+        "p95": 572.666,
+        "p99": 596.375,
+        "mean": 521.399892,
+        "max": 1344.958,
+        "min": 431.375,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 524.291,
+        "p95": 572.125,
+        "p99": 595.792,
+        "mean": 520.9113978,
+        "max": 1298.4160000000002
+      },
+      "chain": {
+        "events": 12000,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "total_calls": 12000,
+      "enqueued": 12000,
+      "dropped_overflow": 0,
+      "gap_markers": 0,
+      "gap_events_declared": 0,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    },
+    {
+      "tier": "A4",
+      "payload": "large",
+      "governed": true,
+      "pct_us": {
+        "p50": 12601.291,
+        "p95": 13919.0,
+        "p99": 19285.167,
+        "mean": 12862.0363326,
+        "max": 108412.625,
+        "min": 11946.542,
+        "n": 10000
+      },
+      "delta_of_percentiles_vs_U_us": {
+        "p50": 12600.791,
+        "p95": 13918.458,
+        "p99": 19283.875,
+        "mean": 12861.4978381,
+        "max": 108357.291
+      },
+      "chain": {
+        "events": 12000,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "total_calls": 12000,
+      "enqueued": 12000,
+      "dropped_overflow": 0,
+      "gap_markers": 0,
+      "gap_events_declared": 0,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      }
+    }
+  ]
+}

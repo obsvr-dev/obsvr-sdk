@@ -445,7 +445,8 @@ def verify_signing_vectors(path: str = SIGNING_VECTORS_PATH) -> Dict[str, Any]:
     SDK's own byte-for-byte recipe."""
     import obsvr.sender as sender
 
-    result: Dict[str, Any] = {"path": path, "passed": False, "key_match": False,
+    display_path = os.path.relpath(path, PUBLIC_REPO_ROOT)
+    result: Dict[str, Any] = {"path": display_path, "passed": False, "key_match": False,
                               "events_checked": 0, "mismatches": []}
     try:
         with open(path, "r", encoding="utf-8") as f:

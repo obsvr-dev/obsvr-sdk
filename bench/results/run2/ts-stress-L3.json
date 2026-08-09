@@ -1,0 +1,237 @@
+{
+  "meta": {
+    "lang": "ts",
+    "part": "B",
+    "sdk_version_manifest": "0.11.2",
+    "sdk_version_stamped": "node/0.11.2",
+    "node": "v22.23.1",
+    "os": "macOS 26.5.2",
+    "cpu": "Apple M3 Pro",
+    "cores": 11,
+    "ram_gb": 18,
+    "date_utc": "2026-08-09T15:35:37.639Z",
+    "git_rev": "dc372d5",
+    "args": {
+      "quick": false,
+      "calls": 100000,
+      "tiers": [
+        "L3"
+      ],
+      "burst_waves": 50,
+      "gc": true
+    }
+  },
+  "rows": [
+    {
+      "tier": "L3",
+      "calls": 100000,
+      "throughput_calls_per_s": 7146.1,
+      "wall_s": 13.994,
+      "latency_us": {
+        "p50": 136.666,
+        "p95": 156.875,
+        "p99": 324.375,
+        "mean": 139.884,
+        "max": 9476.667
+      },
+      "memory": {
+        "sampled_every": 5000,
+        "gc_available": true,
+        "curve": [
+          {
+            "call": 0,
+            "rss_mb": 70.8,
+            "heap_mb": 10
+          },
+          {
+            "call": 5000,
+            "rss_mb": 123.5,
+            "heap_mb": 24
+          },
+          {
+            "call": 10000,
+            "rss_mb": 132.3,
+            "heap_mb": 38.7
+          },
+          {
+            "call": 15000,
+            "rss_mb": 141.1,
+            "heap_mb": 52.3
+          },
+          {
+            "call": 20000,
+            "rss_mb": 144.8,
+            "heap_mb": 34.5
+          },
+          {
+            "call": 25000,
+            "rss_mb": 145,
+            "heap_mb": 32.5
+          },
+          {
+            "call": 30000,
+            "rss_mb": 145,
+            "heap_mb": 45.9
+          },
+          {
+            "call": 35000,
+            "rss_mb": 145.1,
+            "heap_mb": 32.8
+          },
+          {
+            "call": 40000,
+            "rss_mb": 145.2,
+            "heap_mb": 30.4
+          },
+          {
+            "call": 45000,
+            "rss_mb": 145.2,
+            "heap_mb": 44.2
+          },
+          {
+            "call": 50000,
+            "rss_mb": 145.3,
+            "heap_mb": 31.6
+          },
+          {
+            "call": 55000,
+            "rss_mb": 145.3,
+            "heap_mb": 44.9
+          },
+          {
+            "call": 60000,
+            "rss_mb": 145.3,
+            "heap_mb": 16.7
+          },
+          {
+            "call": 65000,
+            "rss_mb": 145.4,
+            "heap_mb": 29.6
+          },
+          {
+            "call": 70000,
+            "rss_mb": 145.4,
+            "heap_mb": 43.2
+          },
+          {
+            "call": 75000,
+            "rss_mb": 145.5,
+            "heap_mb": 30.9
+          },
+          {
+            "call": 80000,
+            "rss_mb": 145.5,
+            "heap_mb": 28.9
+          },
+          {
+            "call": 85000,
+            "rss_mb": 145.6,
+            "heap_mb": 42.5
+          },
+          {
+            "call": 90000,
+            "rss_mb": 145.6,
+            "heap_mb": 29.1
+          },
+          {
+            "call": 95000,
+            "rss_mb": 145.7,
+            "heap_mb": 26.9
+          },
+          {
+            "call": 100000,
+            "rss_mb": 145.7,
+            "heap_mb": 40.2
+          },
+          {
+            "call": 100000,
+            "rss_mb": 145.5,
+            "heap_mb": 11.9
+          }
+        ],
+        "rss25_mb": 145,
+        "rss_end_seq_mb": 145.5,
+        "leak_bytes": 507904,
+        "leak_mb": 0.48,
+        "leak_threshold_mb": 30,
+        "leak_ok": true,
+        "leak_assertable": true,
+        "leak_assertable_min_calls": 25000,
+        "last_quartile_slope_bytes_per_call": 0,
+        "last_quartile_slope_positive": false,
+        "rss_after_burst_mb": 146.7
+      },
+      "chain": {
+        "events": 101002,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "cross_check": {
+        "n": 1000,
+        "official_valid": true,
+        "official_events_verified": 1000,
+        "official_reason": null,
+        "streaming_valid": true,
+        "streaming_events": 1000,
+        "agrees": true
+      },
+      "burst": {
+        "waves": 50,
+        "width": 200,
+        "made": 10000,
+        "dropped_overflow_total": 8999,
+        "gap_markers": 1,
+        "gap_events_declared": 8999,
+        "chain_valid_after_burst": true
+      },
+      "sender_stats": {
+        "enqueued": 101002,
+        "sent": 101002,
+        "retries": 0,
+        "dropped_overflow": 8999,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 1,
+        "gap_events_declared": 8999
+      },
+      "sequential_sender_stats": {
+        "enqueued": 100000,
+        "sent": 100000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "fetch_counts": {
+        "single": 100002,
+        "batch": 40,
+        "other": 0
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "drops_all_declared": true,
+        "chain_valid": true,
+        "cross_check_agrees": true,
+        "no_errors": true,
+        "leak_ok": true,
+        "leak_asserted": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    }
+  ]
+}
