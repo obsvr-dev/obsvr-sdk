@@ -1074,6 +1074,18 @@ function applyStoredContentNet(
       ...telemetry,
     },
   };
+
+  // Match the integration event builder: a canary found by the final storage
+  // net on an otherwise-clean event is a policy signal, not an allowed call
+  // with a scrubbed response and no classification.
+  if (
+    scrubbed.telemetry !== undefined &&
+    (event.action_taken === "allowed" || event.action_taken === "not_evaluated")
+  ) {
+    event.event_type = "policy_flag";
+    event.rule_id = event.rule_id ?? "sdk:canary_leak";
+    event.policy_reason = event.policy_reason ?? "Canary token leaked in emitted content";
+  }
 }
 
 
@@ -1449,13 +1461,6 @@ async function governCall(
     // Always filter audit fields from args (even if not auditing)
     // This ensures audit fields never reach the LLM provider
     const { cleaned_args, audit_fields } = filterArgs(args);
-    if (ctx.options.metadata || audit_fields.metadata) {
-      audit_fields.metadata = {
-        ...(ctx.options.metadata ?? {}),
-        ...((audit_fields.metadata as Record<string, unknown> | undefined) ?? {}),
-      };
-    }
-
     // For Google providers, extract the model name from the GenerativeModel instance.
     // target.model contains the full path e.g. "models/gemini-1.5-pro".
     const modelHint =
@@ -1626,6 +1631,16 @@ async function governCall(
     let layer = "";
     try {
       layer = "session_taint";
+      // Metadata participates in detector identity/session derivation, so its
+      // caller-controlled accessors belong inside the same failure boundary.
+      // Merging it before the guard let a hostile getter escape into the host
+      // call instead of resolving through failMode.
+      if (ctx.options.metadata || audit_fields.metadata) {
+        audit_fields.metadata = {
+          ...(ctx.options.metadata ?? {}),
+          ...((audit_fields.metadata as Record<string, unknown> | undefined) ?? {}),
+        };
+      }
       // 0.5 Session taint latch: a session compromised on an earlier turn has
       //     its later egress (this LLM call) escalated. ENFORCE runs on PRIOR
       //     taint; SET happens at this call's detection points below. The taint
