@@ -2661,7 +2661,10 @@ function createAuditedMethod(
       firstArg !== null &&
       (firstArg as Record<string, unknown>).stream === true
     ) {
-      if (config.streaming_mode === "skip") {
+      if (
+        config.streaming_mode === "skip" &&
+        !monitorModeRequiresEvidence(config)
+      ) {
         debugLog(config, "info", `Skipping streaming request: ${methodPath}`);
         return originalMethod.apply(target, cleaned_args);
       }
