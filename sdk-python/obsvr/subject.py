@@ -52,7 +52,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Iterator, Optional, Union
 
-__all__ = ["parse_subject", "use_subject", "get_current_subject"]
+__all__ = [
+    "parse_subject",
+    "use_subject",
+    "get_current_subject",
+    "has_meaningful_principal",
+]
 
 #: The ambient subject for the current context, or None outside any scope.
 #: Keys: ``user_id`` / ``tenant_id`` / ``service_name`` (same shape as the
@@ -118,3 +123,8 @@ def use_subject(subject: Union[str, Dict[str, Any]]) -> Iterator[Dict[str, str]]
 def get_current_subject() -> Optional[Dict[str, str]]:
     """The ambient subject, if a :func:`use_subject` scope is active."""
     return _current_subject.get()
+
+
+def has_meaningful_principal(value: Any) -> bool:
+    """Return true only for an attributable, non-blank principal id."""
+    return isinstance(value, str) and bool(value.strip())

@@ -18,7 +18,7 @@ import {
 } from "../proxy/extractors/telemetry.js";
 import { spanEnvelopeFor, withSpanMetadata } from "../proxy/span.js";
 import { withRunMetadata } from "../proxy/agent-run.js";
-import { getCurrentSubject } from "../proxy/subject.js";
+import { getCurrentSubject, hasMeaningfulPrincipal } from "../proxy/subject.js";
 import { createPolicyError, resolveReasonCode, type ObsvrPolicyError } from "../policy/policy-error.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 import { meterEvent } from "../governance/metering.js";
@@ -671,9 +671,7 @@ export async function applyPreCallPolicy(
   //     project keeps its own verdict and rule id. The identity read here is
   //     the one the taint key and the scoped-quota context resolve below:
   //     explicit ctx identity, else the ambient subject, else a
-  //     metadata-supplied user_id. An empty string is a supplied principal;
-  //     only an absent one refuses — the decision digest's presence byte
-  //     draws the same absent-vs-empty line (Python parity).
+  //     metadata-supplied user_id. Only a non-blank string is attributable.
   // The metadata read happens ONLY when the flag is on, and defensively: this
   // gate sits outside the guarded detector section, so a caller-supplied
   // metadata object whose property getter throws must not escape here — with
@@ -695,7 +693,7 @@ export async function applyPreCallPolicy(
   if (
     actionTaken !== "blocked" &&
     config.requirePrincipal === true &&
-    principalForGate == null
+    !hasMeaningfulPrincipal(principalForGate)
   ) {
     actionTaken = "blocked";
     actionReason = "policy_violation";

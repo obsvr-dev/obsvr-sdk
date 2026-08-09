@@ -66,3 +66,8 @@ export function useSubject<T>(subject: string | Subject, fn: () => T): T {
 export function getCurrentSubject(): Subject | undefined {
   return storage.getStore();
 }
+
+/** True only for an attributable, non-blank principal identifier. */
+export function hasMeaningfulPrincipal(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}

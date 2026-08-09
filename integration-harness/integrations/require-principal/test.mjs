@@ -31,7 +31,7 @@
  *                                        invisible to enforcement, so the SDK
  *                                        refused a call whose own event named
  *                                        the principal it called absent.
- *   empty-string userId -> admitted   <- documented boundary: an empty string
+ *   blank userId -> refused           <- blank attribution is no attribution
  *                                        is a SUPPLIED principal; only an
  *                                        absent one refuses.
  *
@@ -184,12 +184,12 @@ export async function run() {
       String(ambient.events.find((e) => e.event_type === "llm_call")?.user_id),
     );
 
-    // ── ADMIT: the documented absent-vs-empty boundary ─────────────────────
-    // An empty string is a SUPPLIED principal. Asserted positively so the
-    // distinction stays measured rather than decaying into a silent pass.
-    const empty = await attempt({ requirePrincipal: true, wrapOpts: { user_id: "" } });
-    check("gate on + EMPTY-STRING userId is a supplied principal: the call RUNS", empty.executions === 1, `executions: ${empty.executions}`);
-    check("gate on + EMPTY-STRING userId: the caller receives the provider payload", empty.payload === "PROVIDER_PAYLOAD", String(empty.payload));
+    // ── REFUSE: blank attribution ──────────────────────────────────────────
+    for (const [label, user_id] of [["empty", ""], ["whitespace", "   "]]) {
+      const blank = await attempt({ requirePrincipal: true, wrapOpts: { user_id } });
+      check(`gate on + ${label} userId: ZERO executions`, blank.executions === 0, `executions: ${blank.executions}`);
+      check(`gate on + ${label} userId: refusal is PRINCIPAL_REQUIRED`, blank.events.some((e) => e.reason_code === "PRINCIPAL_REQUIRED"));
+    }
 
     return done.results();
   } finally {

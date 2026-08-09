@@ -1172,15 +1172,14 @@ def apply_pre_call_policy(
         #     attribution, not content. Runs after the enforcement-integrity
         #     gate so a paused project keeps its own verdict and rule id, and
         #     reads the enforcing channel (metadata) that every user-scoped
-        #     control keys on. An empty string is a supplied principal; only
-        #     an absent one (None) refuses — the decision digest's presence
-        #     byte draws the same absent-vs-empty line. Monitor mode converts
+        #     control keys on. Only a non-blank string is attributable. Monitor mode converts
         #     this block like any non-integrity block: rolling the flag out
         #     in monitor first is the intended adoption path.
+        from .subject import has_meaningful_principal
         if (
             action_taken != "blocked"
             and getattr(config, "require_principal", False)
-            and (metadata or {}).get("user_id") is None
+            and not has_meaningful_principal((metadata or {}).get("user_id"))
         ):
             action_taken = "blocked"
             action_reason = "policy_violation"

@@ -51,7 +51,7 @@ import {
   touchTaint,
   sessionTaintSize,
 } from "../policy/session-taint.js";
-import { getCurrentSubject } from "./subject.js";
+import { getCurrentSubject, hasMeaningfulPrincipal } from "./subject.js";
 import { presidioScan, presidioRedactText, presidioRedactArgs } from "../policy/presidio.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
 import {
@@ -1617,12 +1617,12 @@ async function governCall(
       //     identity read is `resolvedUser` — the one resolution above, which
       //     the taint key, the rules context, the approval request and the
       //     signed event all read too, so the channel that refuses is the
-      //     channel that would have attributed. An empty string is a
-      //     supplied principal; only an absent one refuses (Python parity).
+      //     channel that would have attributed. Only a non-blank string is
+      //     attributable.
       if (
         actionTaken !== "blocked" &&
         config.requirePrincipal === true &&
-        resolvedUser == null
+        !hasMeaningfulPrincipal(resolvedUser)
       ) {
         actionTaken = "blocked";
         actionReason = "policy_violation";

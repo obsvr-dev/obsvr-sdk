@@ -1,10 +1,9 @@
 """Fail closed on a missing principal (opt-in).
 
 ``require_principal=True`` refuses a governed call whose enforcing metadata
-carries no ``user_id`` at all, with ``PRINCIPAL_REQUIRED``, before any
-scanning layer runs. An empty string is a supplied principal; only an absent
-one refuses — the decision digest's presence byte draws the same
-absent-vs-empty line. The flag arms the pre-call net by itself, the
+carries no meaningful ``user_id``, with ``PRINCIPAL_REQUIRED``, before any
+scanning layer runs. Empty and whitespace-only strings are unattributed. The
+flag arms the pre-call net by itself, the
 enforcement-integrity gate still wins outright, and monitor mode converts
 the refusal like any non-integrity block.
 """
@@ -133,15 +132,15 @@ class TestRefusal:
             assert governed._run(note="hello") == "done"
         assert tool.calls == ["hello"]
 
-    def test_an_empty_string_principal_counts_as_supplied(self, sent):
-        """The absent-vs-empty line: "" is a supplied principal. A truthiness
-        check (``if not user_id``) instead of ``is None`` fails here."""
+    @pytest.mark.parametrize("user_id", ["", "   "])
+    def test_a_blank_principal_is_refused(self, sent, user_id):
         _init(require_principal=True)
         tool = _SpyTool()
-        governed = govern_tool(tool, user_id="")
+        governed = govern_tool(tool, user_id=user_id)
 
-        assert governed._run(note="hello") == "done"
-        assert tool.calls == ["hello"]
+        with pytest.raises(ObsvrPolicyError):
+            governed._run(note="hello")
+        assert tool.calls == []
 
     def test_the_pipeline_draws_the_same_line_directly(self):
         cfg = ResolvedConfig(api_key="k", require_principal=True)
@@ -151,7 +150,9 @@ class TestRefusal:
             ReasonCode.PRINCIPAL_REQUIRED.value
         )
         empty = apply_pre_call_policy("hi", cfg, metadata={"user_id": ""})
-        assert empty["decision"] == "allow"
+        assert empty["decision"] == "block"
+        whitespace = apply_pre_call_policy("hi", cfg, metadata={"user_id": "   "})
+        assert whitespace["decision"] == "block"
 
 
 class TestAmbientReachesEnforcement:
