@@ -116,6 +116,7 @@ import {
   extractResponse as extractGeminiResponse,
   extractModel as extractGeminiModel,
   extractTokenUsage as extractGeminiTokenUsage,
+  extractLastUserText as extractGeminiLastUserText,
   unwrapGeminiResponse,
 } from "./extractors/google.js";
 import type { GeminiRequest, GeminiResponse } from "./extractors/google.js";
@@ -224,8 +225,8 @@ type ApiShape =
  *      - countTokens / messages.countTokens, which carry full prompt text but
  *        return only an integer, so half the evidence a governed event records
  *        does not exist.
- *      - Gemini generateContentStream, whose result object is not itself an
- *        async iterable, and startChat(), whose ChatSession calls a
+ *      - Legacy @google/generative-ai generateContentStream, whose result
+ *        object is not itself an async iterable, and startChat(), whose ChatSession calls a
  *        module-level generateContent rather than a property on the model —
  *        so no property read on the proxy ever happens and NO path table can
  *        reach it.
@@ -244,6 +245,8 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["messages.create", "anthropic-messages"], // Anthropic
   ["messages.parse", "anthropic-messages"], // Anthropic structured outputs
   ["generateContent", "gemini-generate"], // Google Gemini
+  ["models.generateContent", "gemini-generate"], // Maintained @google/genai
+  ["models.generateContentStream", "gemini-generate"], // Maintained @google/genai
   ["responses.create", "openai-responses"], // OpenAI Responses API
   ["responses.parse", "openai-responses"], // OpenAI Responses structured outputs
   // The beta namespaces carry exactly the payload their GA twin carries, so
@@ -465,6 +468,10 @@ function detectProvider(
   if (typeof c.generateContent === "function") {
     return "google";
   }
+  const models = c.models as Record<string, unknown> | undefined;
+  if (typeof models?.generateContent === "function") {
+    return "google";
+  }
 
   // Anthropic: messages.create (also matches other messages.create shapes, but
   // those are wrapped through dedicated modules, not the core proxy).
@@ -553,16 +560,9 @@ function extractPromptTextFromArgs(args: unknown): string {
     }
   }
 
-  if (Array.isArray(req.contents)) {
-    for (const c of req.contents as Record<string, unknown>[]) {
-      const cObj = c as Record<string, unknown>;
-      if (Array.isArray(cObj.parts)) {
-        for (const part of cObj.parts as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") parts.push(p.text);
-        }
-      }
-    }
+  if ("contents" in req) {
+    const geminiPrompt = extractGeminiPrompt(req as unknown as GeminiRequest);
+    if (geminiPrompt) parts.push(geminiPrompt);
   }
 
   // OpenAI Responses API: instructions (system) + input (string or item list)
@@ -612,16 +612,8 @@ function extractLastUserMessageText(args: unknown): string {
     }
   }
 
-  // Gemini: contents array
-  if (Array.isArray(req.contents)) {
-    for (let i = (req.contents as unknown[]).length - 1; i >= 0; i--) {
-      const c = (req.contents as Record<string, unknown>[])[i];
-      if (c.role === "user" && Array.isArray(c.parts)) {
-        return (c.parts as Record<string, unknown>[])
-          .map((p) => (typeof p.text === "string" ? p.text : ""))
-          .join(" ");
-      }
-    }
+  if ("contents" in req) {
+    return extractGeminiLastUserText(req as unknown as GeminiRequest);
   }
 
   // OpenAI Responses API: a plain-string input IS the user turn; item
@@ -686,6 +678,21 @@ function redactMessagesInPlace(args: unknown): void {
       return { ...p, text: redactBuiltinPii(p.text) };
     });
 
+  /** Redact every text carrier in the maintained SDK's ContentListUnion. */
+  const redactGeminiContent = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactGeminiContent);
+    if (!value || typeof value !== "object") return value;
+    const item = value as Record<string, unknown>;
+    if (typeof item.text === "string") {
+      return { ...item, text: redactBuiltinPii(item.text) };
+    }
+    if (Array.isArray(item.parts)) {
+      return { ...item, parts: item.parts.map(redactGeminiContent) };
+    }
+    return value;
+  };
+
   /** Redact a `.content` carrier (string or part list) into a NEW object. */
   const redactContentCarrier = (entry: unknown): unknown => {
     if (!entry || typeof entry !== "object") return entry;
@@ -707,13 +714,20 @@ function redactMessagesInPlace(args: unknown): void {
     req.messages = (req.messages as unknown[]).map(redactContentCarrier);
   }
 
-  if (Array.isArray(req.contents)) {
-    req.contents = (req.contents as unknown[]).map((c) => {
-      if (!c || typeof c !== "object") return c;
-      const cObj = c as Record<string, unknown>;
-      if (!Array.isArray(cObj.parts)) return c;
-      return { ...cObj, parts: redactTextParts(cObj.parts) };
-    });
+  if ("contents" in req) {
+    req.contents = redactGeminiContent(req.contents);
+  }
+  if ("systemInstruction" in req) {
+    req.systemInstruction = redactGeminiContent(req.systemInstruction);
+  }
+  if (req.config && typeof req.config === "object") {
+    const geminiConfig = req.config as Record<string, unknown>;
+    if ("systemInstruction" in geminiConfig) {
+      req.config = {
+        ...geminiConfig,
+        systemInstruction: redactGeminiContent(geminiConfig.systemInstruction),
+      };
+    }
   }
 
   // OpenAI Responses API: instructions + input (string or item list)

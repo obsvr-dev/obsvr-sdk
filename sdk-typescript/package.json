@@ -142,6 +142,7 @@
     "access": "public"
   },
   "devDependencies": {
+    "@google/genai": "^2.16.0",
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@openai/agents": "^0.13.4",
@@ -160,6 +161,7 @@
     "@anthropic-ai/sdk": ">=0.20.0",
     "@aws-sdk/client-bedrock-runtime": ">=3.587.0",
     "@google-cloud/vertexai": ">=1.0.0",
+    "@google/genai": ">=2.0.0 <3.0.0",
     "@google/generative-ai": ">=0.1.0 <1.0.0",
     "@langchain/core": ">=0.2.0",
     "@modelcontextprotocol/sdk": ">=1.26.0 <2.0.0",
@@ -193,6 +195,9 @@
       "optional": true
     },
     "@google-cloud/vertexai": {
+      "optional": true
+    },
+    "@google/genai": {
       "optional": true
     },
     "@google/generative-ai": {

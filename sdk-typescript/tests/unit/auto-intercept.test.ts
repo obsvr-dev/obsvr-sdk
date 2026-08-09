@@ -57,6 +57,16 @@ class FakeGoogleClient {
   }
 }
 
+/** Maintained @google/genai shape: generation methods live under `.models`. */
+class FakeMaintainedGoogleClient {
+  models = {
+    generateContent: async (req: { model: string; contents: string }) => ({
+      modelVersion: `${req.model}-001`,
+      text: `gemini says: ${req.contents}`,
+    }),
+  };
+}
+
 const SSN_PROMPT = {
   model: 'gpt-4o',
   messages: [{ role: 'user', content: 'My SSN is 123-45-6789' }],
@@ -159,6 +169,24 @@ describe('auto/interceptProviderClass', () => {
     // Clean prompts still flow
     const res = await model.generateContent('hello there');
     expect(res.response.text()).toBe('gemini says hi');
+  });
+
+  test('google: maintained client.models calls are governed', async () => {
+    const Intercepted = interceptProviderClass('google', FakeMaintainedGoogleClient);
+    init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
+
+    const genAI = new Intercepted();
+    await expect(
+      genAI.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: 'My SSN is 123-45-6789',
+      }),
+    ).rejects.toThrow();
+    const res = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: 'hello there',
+    });
+    expect(res.text).toBe('gemini says: hello there');
   });
 
   test('non-class input is returned unchanged', () => {

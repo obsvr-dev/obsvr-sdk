@@ -66,6 +66,20 @@ console.log("RESULT_JSON:" + JSON.stringify({
 }));
 `;
 
+const GOOGLE_GENAI_PROBE = `
+import { GoogleGenAI } from "@google/genai";
+const auto = await import("${PKG}/dist/auto/index.js");
+const { init } = await import("${PKG}/dist/proxy/config.js");
+const { wrap } = await import("${PKG}/dist/proxy/wrapper.js");
+init({ apiKey: "k", ingestUrl: "http://127.0.0.1:1", environment: "development" });
+const client = new GoogleGenAI({ apiKey: "test-key-not-real" });
+console.log("RESULT_JSON:" + JSON.stringify({
+  interceptionActive: auto.isInterceptionActive(),
+  wrapIsIdentity: wrap(client) === client,
+  clientUsable: typeof client.models?.generateContent === "function",
+}));
+`;
+
 describe('the register hook actually substitutes a real provider class', () => {
   it('has a built dist to test against', () => {
     // A missing dist would make every assertion below vacuous rather than
@@ -81,6 +95,13 @@ describe('the register hook actually substitutes a real provider class', () => {
     // And the substitution is the governed one, not merely some proxy.
     expect(result.wrapIsIdentity).toBe(true);
     // And the client still works as a client.
+    expect(result.clientUsable).toBe(true);
+  });
+
+  it('intercepts the maintained @google/genai client under --import', () => {
+    const result = runWithHook(GOOGLE_GENAI_PROBE);
+    expect(result.interceptionActive).toBe(true);
+    expect(result.wrapIsIdentity).toBe(true);
     expect(result.clientUsable).toBe(true);
   });
 

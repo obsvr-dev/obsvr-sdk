@@ -6,7 +6,8 @@
  *     node --import @obsvr/sdk/register app.js
  *
  * Registers module customization hooks that serve supported provider
- * packages (openai, @anthropic-ai/sdk, @google/generative-ai) behind a
+ * packages (openai, @anthropic-ai/sdk, @google/genai, and the legacy
+ * @google/generative-ai) behind a
  * construct-trap Proxy, with no monkey patching: provider prototypes,
  * classes, and module objects are never mutated, so other instrumentation
  * keeps working.
@@ -14,7 +15,7 @@
  * WHAT THIS GOVERNS, and what it does not. This comment previously said
  * "every client instance created anywhere in the process", which is not
  * true and was measured to be untrue on three counts. What is governed is
- * the DEFAULT and NAMED client export of each of the three specifiers
+ * the DEFAULT and NAMED client export of each of the four specifiers
  * above, imported by that exact specifier, from an ESM entry point.
  * Escaping it, each reproduced live against a real provider with a
  * governed control in the same run:

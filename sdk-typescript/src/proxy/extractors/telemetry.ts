@@ -103,7 +103,7 @@ export function extractCallTelemetry(
     }
 
     if (provider === "google") {
-      const gen = req.generationConfig ?? req.generation_config ?? {};
+      const gen = req.config ?? req.generationConfig ?? req.generation_config ?? {};
       const meta = res.usageMetadata ?? res.usage_metadata ?? {};
       const finish = res.candidates?.[0]?.finishReason ?? res.candidates?.[0]?.finish_reason;
       return compact({

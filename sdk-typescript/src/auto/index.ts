@@ -109,12 +109,16 @@ function lazyGovern<T extends object>(instance: T, provider: InterceptedProvider
   return proxy;
 }
 
-/**
- * Google's client hands out models via `getGenerativeModel()`; governance
- * applies to the model object (same shape `obsvr.wrap()` documents), so the
- * client proxy intercepts that one factory method and governs its result.
- */
+/** Govern either Google client shape without mutating the provider instance. */
 function interceptGoogleClient<T extends object>(client: T): T {
+  const models = (client as Record<string, unknown>).models as
+    | Record<string, unknown>
+    | undefined;
+  if (typeof models?.generateContent === "function") {
+    // Maintained @google/genai keeps generation methods under client.models.
+    return lazyGovern(client, "google");
+  }
+  // Legacy @google/generative-ai creates a separate model object.
   const proxy = new Proxy(client, {
     get(target, prop, _receiver) {
       const value = Reflect.get(target, prop, target);
