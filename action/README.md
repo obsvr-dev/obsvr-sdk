@@ -13,8 +13,9 @@ Two verification tiers, chosen by whether you supply an `api-key`:
   `chain_format`, from the events alone. It authenticates none of those fields:
   an editor can rewrite the sequence and linkage consistently and still pass.
   It also reads no content, decision, or attribution field and recomputes no
-  signature. Use this tier to catch accidental truncation or corruption, never
-  as tamper evidence. The `--json` output names the checked and unchecked sets.
+  signature. Use this tier to catch naive sequence/link corruption, never as
+  tamper evidence. A valid suffix can be removed without creating an internal
+  inconsistency. The `--json` output names the checked and unchecked sets.
 - **Full (with `api-key`)** — every HMAC signature is recomputed from content, so
   any content tamper breaks the check. Pass the key via a secret.
 
@@ -28,11 +29,12 @@ Exit status maps straight to the check:
 | `3` | **valid but incomplete** — the chain verifies and a signed gap marker declares events were dropped | fails, unless `allow-gaps: 'true'` |
 
 Exit `3` is the one worth reading before you hit it. The SDK signs gap markers
-for sender-visible loss classes, so a run can declare known loss rather than
-reading clean — and `obsvr-verify` reports *valid* and *incomplete* as different
-things instead of collapsing them. A process killed before it can emit the
-marker is not recoverable from the bundle alone. A bundle whose chain is intact
-can therefore still fail this check.
+for sender-visible loss classes when the marker itself can be delivered, so a
+run can declare known loss rather than reading clean — and `obsvr-verify`
+reports *valid* and *incomplete* as different things instead of collapsing
+them. A process killed before it can emit the marker, or a marker that the
+destination also refuses, is not recoverable from the bundle alone. A bundle
+whose chain is intact can therefore still fail this check.
 
 Set `allow-gaps: 'true'` to accept it. The default is `false` on purpose: a
 bundle missing events should stop a check that exists to establish what
