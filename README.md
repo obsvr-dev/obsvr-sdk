@@ -949,8 +949,8 @@ is marked on each.
    construction through any name the list did not carry reached the original
    class while `init(auto=True)` reported success. That is the shape
    `langchain-anthropic` constructs through, so on Python it governed nothing
-   for every LangChain-on-Claude application. Both SDKs now cover it: Python
-   resolves the class objects and rebinds every public module attribute bound to
+   for every application using that LangChain adapter. Both SDKs now cover it:
+   Python resolves the class objects and rebinds every public module attribute bound to
    one (or to a subclass, which is what the Azure/Bedrock/Vertex flavours are),
    and TypeScript overrides every client export the shim declares, with a test
    that derives the expected set from the real installed package so an upstream
