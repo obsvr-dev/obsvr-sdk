@@ -61,7 +61,10 @@ def test_denied_tool_records_not_evaluated_not_blocked(sent):
         f"a refusal was claimed about a call that already returned: {verdicts}"
     )
 
-    gated = [e for e in sent if e["action_taken"] == "not_evaluated"]
+    gated = [
+        e for e in sent
+        if e["operation"] == "openai_agents.agent.policy.tool_not_evaluated"
+    ]
     assert len(gated) == 1, f"expected one not_evaluated verdict, got {verdicts}"
     detail = _telemetry(gated[0])["policy_not_evaluated"]
     assert detail["gate"] == "tool_gate"
@@ -92,16 +95,20 @@ def test_allowlist_miss_also_records_not_evaluated(sent):
 
     proc.on_span_end(span)
 
-    gated = [e for e in sent if e["action_taken"] == "not_evaluated"]
+    gated = [
+        e for e in sent
+        if e["operation"] == "openai_agents.agent.policy.tool_not_evaluated"
+    ]
     assert len(gated) == 1
     assert "tool_not_in_allowlist" in _telemetry(gated[0])["policy_not_evaluated"]["reason"]
 
 
-def test_a_permitted_tool_is_not_marked_not_evaluated(sent):
+def test_a_permitted_tool_gets_no_negative_tool_policy_finding(sent):
     """The control. Without it every assertion above passes vacuously.
 
-    If this surface stamped ``not_evaluated`` on everything, the tests above
-    would be satisfied by a gate that had stopped reading policy at all.
+    The ordinary tool span remains ``not_evaluated`` because this is an
+    observe-only processor. The control is that no negative tool-policy
+    finding is emitted for a name the policy permits.
     """
     obsvr.init(api_key="test", sample_rate=1,
                agent_policy={"denied_tools": ["something_else"]})
@@ -109,10 +116,10 @@ def test_a_permitted_tool_is_not_marked_not_evaluated(sent):
 
     proc.on_span_end(span)
 
-    assert [e["action_taken"] for e in sent] == ["allowed", "allowed"], (
-        "a permitted tool should produce the run-start and tool-call events "
-        "with no policy verdict attached"
-    )
+    assert not [
+        e for e in sent
+        if e["operation"] == "openai_agents.agent.policy.tool_not_evaluated"
+    ]
     assert any(e["operation"] == "openai_agents.tool.call" for e in sent)
 
 
@@ -212,7 +219,10 @@ def test_the_processor_stays_silent_beside_a_real_gate(sent, monkeypatch):
 
     proc.on_span_end(span)
 
-    assert not [e for e in sent if e["action_taken"] == "not_evaluated"], (
+    assert not [
+        e for e in sent
+        if e["operation"] == "openai_agents.agent.policy.tool_not_evaluated"
+    ], (
         "the processor re-judged a call a real gate already ruled on"
     )
     # Still observed as a call — deference is not silence about the step.

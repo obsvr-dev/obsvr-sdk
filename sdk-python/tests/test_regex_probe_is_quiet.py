@@ -28,11 +28,12 @@ from obsvr.safe_regex import (
 )
 
 #: Every class shape CPython's parser warns about, with the verdict this
-#: validator reaches for it. Two of them are syntax errors on this engine and
-#: three compile cleanly, so the rows cover both sides of the probe's branch.
+#: validator reaches for it. One compiles on Python but has different meaning
+#: under JavaScript's Unicode regex mode, so portability validation rejects it
+#: after the deliberately quiet Python syntax probe.
 WARNING_TRIGGERS = [
     pytest.param("[\\w--[0-9]]", False, id="set difference (in the conformance corpus)"),
-    pytest.param("[[a]]", True, id="nested set"),
+    pytest.param("[[a]]", False, id="nested set with non-portable leading close bracket"),
     pytest.param("[a&&b]", True, id="set intersection"),
     pytest.param("[a~~b]", True, id="set symmetric difference"),
     pytest.param("[a||b]", True, id="set union"),
@@ -76,7 +77,10 @@ def test_the_verdicts_are_the_ones_recorded_before_the_suppression():
     """The exact reasons, not just the booleans. A suppression that shifted a
     pattern from one refusal to another would still be a behavior change."""
     assert validate_regex_pattern("[\\w--[0-9]]") == (False, "invalid_syntax")
-    assert validate_regex_pattern("[[a]]") == (True, None)
+    assert validate_regex_pattern("[[a]]") == (
+        False,
+        "not_portable_across_sdks: unescaped_close_bracket",
+    )
 
 
 def test_the_suppression_does_not_outlive_the_probe():
@@ -98,21 +102,17 @@ def test_the_suppression_does_not_outlive_the_probe():
     assert [w.category.__name__ for w in caught] == ["FutureWarning"]
 
 
-def test_the_operative_compile_is_not_quieted():
-    """Deliberate boundary. ``compile_safe_regex`` builds the object that will
-    run against customer data, so a warning there is about a pattern the SDK is
-    about to execute and an operator should see it. ``[[a]]`` passes validation
-    and reaches that compile."""
+def test_a_nonportable_pattern_never_reaches_the_operative_compile():
+    """The Python engine accepts ``[[a]]`` with a warning, but JavaScript's
+    Unicode-mode engine interprets it differently. Cross-SDK portability must
+    reject it before an operative regex object can be constructed."""
     re.purge()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         compiled = compile_safe_regex("[[a]]")
 
-    assert compiled is not None
-    assert [str(w.message) for w in caught if w.category is FutureWarning], (
-        "the operative compile went quiet too - the suppression is wider than "
-        "the probe it was scoped to"
-    )
+    assert compiled is None
+    assert not [str(w.message) for w in caught if w.category is FutureWarning]
 
 
 def test_an_unrelated_warning_raised_inside_the_window_still_reaches_the_caller(
@@ -134,7 +134,10 @@ def test_an_unrelated_warning_raised_inside_the_window_still_reaches_the_caller(
         warnings.simplefilter("always")
         verdict = validate_regex_pattern("[[a]]")
 
-    assert verdict == (True, None)
+    assert verdict == (
+        False,
+        "not_portable_across_sdks: unescaped_close_bracket",
+    )
     assert "an unrelated future change" in [str(w.message) for w in caught]
 
 
