@@ -16,4 +16,4 @@ export {
   _resetSender,
 } from "./fire-and-forget.js";
 
-export { shouldSample } from "./sampling.js";
+export { shouldSample, shouldEmitAllowedEvent } from "./sampling.js";

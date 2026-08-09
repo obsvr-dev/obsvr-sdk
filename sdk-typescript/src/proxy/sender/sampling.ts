@@ -28,3 +28,15 @@ export function shouldSample(sampleRate: number): boolean {
 
   return Math.random() < sampleRate;
 }
+
+/**
+ * Mode-aware allowed-event emission gate. Monitor mode is a complete evidence
+ * stream, so allowed events bypass sampling; enforce mode retains the ordinary
+ * sample-rate decision.
+ */
+export function shouldEmitAllowedEvent(
+  sampleRate: number,
+  enforcementMode: "enforce" | "monitor" = "enforce",
+): boolean {
+  return enforcementMode === "monitor" || shouldSample(sampleRate);
+}
