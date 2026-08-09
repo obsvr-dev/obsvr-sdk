@@ -167,12 +167,21 @@ class TestBoundaryHoldsInBothDirections:
             (["messages", "parse"], 1),
             (["responses", "create"], 1),
             (["responses", "parse"], 1),
+            (["responses", "with_raw_response", "create"], 1),
+            (["responses", "with_raw_response", "parse"], 1),
             (["generate_content"], 1),
             (["generate_content_async"], 1),
             (["beta", "messages", "create"], 1),
+            (["beta", "messages", "with_raw_response", "create"], 1),
             (["beta", "responses", "create"], 1),
+            (["beta", "responses", "with_raw_response", "create"], 1),
             (["beta", "chat", "completions", "create"], 1),
             (["beta", "chat", "completions", "parse"], 1),
+            (["beta", "chat", "completions", "with_raw_response", "create"], 1),
+            (["beta", "chat", "completions", "with_raw_response", "parse"], 1),
+            (["chat", "completions", "with_raw_response", "create"], 1),
+            (["chat", "completions", "with_raw_response", "parse"], 1),
+            (["messages", "with_raw_response", "create"], 1),
             # The .stream() helpers moved INSIDE the boundary and are pinned by
             # their own test below — they return a manager, so an event appears
             # when the run ends rather than when the method is called.

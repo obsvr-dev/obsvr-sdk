@@ -17,6 +17,14 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Python now governs OpenAI and Anthropic `with_raw_response` calls.** The
+  accessor objects were outside proxy traversal, so their text-generation
+  methods bypassed every pre-call block and redaction. The explicit raw-response
+  paths now run through the same sync/async pipeline, preserve the raw response
+  object returned to the caller, and use its cached typed view for response
+  policy and audit extraction. The deferred `with_streaming_response` context
+  managers remain a separate boundary.
+
 - **Python now governs legacy Gemini's async generation method.** The declared
   `google-generativeai` integration intercepted `generate_content` but handed
   `generate_content_async` straight to the provider with no policy or audit

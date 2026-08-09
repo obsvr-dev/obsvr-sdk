@@ -24,6 +24,7 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     beta.messages.create          anthropic 0.8.0 (see note)
     messages.create               anthropic 0.16.0  the anthropic extra's floor
     messages.parse                anthropic 0.77.0  structured outputs
+    *.with_raw_response.*         openai / anthropic (see note)
     generate_content              google-generativeai  (see note)
     generate_content_async        google-generativeai  (see note)
 
@@ -41,6 +42,11 @@ is not reached by obsvr.init() either; it needs an explicit obsvr.wrap().
 Sync and async client methods are both supported: if the underlying method is
 a coroutine function the wrapper is async, otherwise sync. The wrapped object
 delegates every other attribute untouched.
+
+The ``with_raw_response`` accessors return the provider's raw response object.
+obsvr parses its cached typed view for response policy and audit extraction,
+but returns the original raw object unchanged. ``with_streaming_response`` is
+different: it defers the request until context entry and remains out of scope.
 """
 
 import copy as _copy
@@ -121,12 +127,21 @@ AUDITABLE_METHODS = {
     "responses.parse",           # OpenAI Responses structured outputs
     "messages.create",           # Anthropic
     "messages.parse",            # Anthropic structured outputs
+    "messages.with_raw_response.create",  # Anthropic raw response
     "generate_content",          # Google Gemini, google-generativeai only
     "generate_content_async",    # Google Gemini async, google-generativeai only
     "beta.messages.create",      # Anthropic beta
+    "beta.messages.with_raw_response.create",  # Anthropic beta raw response
     "beta.responses.create",     # OpenAI Responses beta
+    "beta.responses.with_raw_response.create",  # OpenAI beta raw response
     "beta.chat.completions.create",  # OpenAI chat beta
     "beta.chat.completions.parse",   # OpenAI chat beta
+    "beta.chat.completions.with_raw_response.create",  # OpenAI beta raw response
+    "beta.chat.completions.with_raw_response.parse",  # OpenAI beta raw parse
+    "chat.completions.with_raw_response.create",  # OpenAI raw response
+    "chat.completions.with_raw_response.parse",  # OpenAI raw structured output
+    "responses.with_raw_response.create",  # OpenAI Responses raw response
+    "responses.with_raw_response.parse",  # OpenAI Responses raw structured output
 }
 
 #: The ``.stream()`` helpers, which are the same request as ``create`` and
@@ -151,7 +166,10 @@ STREAM_HELPER_METHODS = {
 #: place here for the two beta paths above: without it ``client.beta`` is
 #: returned raw and every path beneath it is unreachable, which would leave
 #: those entries as dead code.
-_TRAVERSABLE = {"beta", "chat", "completions", "messages", "responses"}
+_TRAVERSABLE = {
+    "beta", "chat", "completions", "messages", "responses",
+    "with_raw_response",
+}
 
 
 def _detect_provider(client: Any) -> str:
@@ -476,6 +494,28 @@ def _extract_model(provider: str, target: Any, kwargs: dict) -> str:
             or "gemini"
         )
     return "unknown"
+
+
+def _response_for_observation(method_path: str, result: Any) -> Any:
+    """Return the typed view of a raw provider response when available.
+
+    Stainless-backed OpenAI and Anthropic clients deliberately return a
+    ``LegacyAPIResponse`` from ``with_raw_response``. Its cached ``parse()``
+    view is the same typed response the ordinary method returns, so policy,
+    usage, and telemetry extraction can inspect it while the caller still gets
+    the original raw object. Parsing remains best-effort: callers choose this
+    accessor partly to handle unusual successful bodies themselves, and
+    observation must not turn such a response into a new application error.
+    """
+    if ".with_raw_response." not in method_path:
+        return result
+    parse = getattr(result, "parse", None)
+    if not callable(parse):
+        return result
+    try:
+        return parse()
+    except Exception:
+        return result
 
 
 def _extract_response_text(provider: str, result: Any) -> str:
@@ -1363,9 +1403,12 @@ def _governed_call(
         )
 
     latency_ms = (time.monotonic() - start) * 1000
-    response_text = _extract_response_text(provider, result)
-    usage = _extract_usage(provider, result)
-    metadata = _merge_telemetry(metadata, _extract_telemetry(provider, kwargs, result))
+    observed_result = _response_for_observation(method_path, result)
+    response_text = _extract_response_text(provider, observed_result)
+    usage = _extract_usage(provider, observed_result)
+    metadata = _merge_telemetry(
+        metadata, _extract_telemetry(provider, kwargs, observed_result)
+    )
     metadata = with_span_metadata(metadata, span_envelope_for("llm_call", operation))
 
     event = build_audit_event(
@@ -1434,9 +1477,12 @@ async def _governed_call_async(
         )
 
     latency_ms = (time.monotonic() - start) * 1000
-    response_text = _extract_response_text(provider, result)
-    usage = _extract_usage(provider, result)
-    metadata = _merge_telemetry(metadata, _extract_telemetry(provider, kwargs, result))
+    observed_result = _response_for_observation(method_path, result)
+    response_text = _extract_response_text(provider, observed_result)
+    usage = _extract_usage(provider, observed_result)
+    metadata = _merge_telemetry(
+        metadata, _extract_telemetry(provider, kwargs, observed_result)
+    )
     metadata = with_span_metadata(metadata, span_envelope_for("llm_call", operation))
 
     event = build_audit_event(
