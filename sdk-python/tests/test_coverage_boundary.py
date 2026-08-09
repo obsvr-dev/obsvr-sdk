@@ -360,3 +360,35 @@ class TestBoundaryHoldsInBothDirections:
         assert len(captured) == 1
         assert captured[0]["operation"] == ".".join(path)
         assert captured[0]["response"] == "four"
+
+    def test_messages_tool_runner_is_deferred_but_inside_the_boundary(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+
+        class _Runner:
+            def until_done(self):
+                return FakeAnthropicResponse()
+
+        class _Messages(_RecordingMessages):
+            def tool_runner(self, **kwargs):
+                return _Runner()
+
+        seen = []
+        client = type("Client", (), {})()
+        client.messages = _RecordingMessages(seen, "messages.create")
+        client.beta = type("Beta", (), {})()
+        client.beta.messages = _Messages(seen, "beta.messages.create")
+
+        runner = obsvr.wrap(client).beta.messages.tool_runner(
+            model="m",
+            max_tokens=8,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+        )
+        assert captured == []
+
+        runner.until_done()
+
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "beta.messages.tool_runner"
+        assert captured[0]["response"] == "four"

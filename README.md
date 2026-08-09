@@ -704,11 +704,7 @@ therefore ungoverned through `obsvr.wrap()` as well: the legacy
 earlier wording — "covers the full table" beside a count of seventeen — read as
 a promise of complete coverage on that client, which it is not.
 
-### What `obsvr.wrap()` reaches in Python, and the one thing it still does not
-
-The two SDKs reach the same set with one exception, and the exception is an
-**enforcement** gap rather than a recording one — so it is stated here rather
-than only in a source comment.
+### What `obsvr.wrap()` reaches in Python
 
 - **The `.stream()` helpers are governed in both languages** as of this
   release: `messages.stream`, `beta.messages.stream`,
@@ -720,12 +716,15 @@ than only in a source comment.
   TypeScript governs them through a deferred runner, which it needs because
   governance there is asynchronous while the helper must return synchronously;
   Python's pipeline is synchronous and needs no such machinery.
-- **The provider tool runners are governed in TypeScript only.**
-  `chat.completions.runTools` and `beta.messages.toolRunner` bind through
-  untouched in Python — no pre-call policy, no PII block, no floor, no
-  `on_pre_call`, and no event. A runner invokes its own tools, so this is both
-  a coverage gap and an enforcement one. Put the tools behind `govern_tool()`,
-  or drive the loop yourself through `messages.create`.
+- **Provider tool runners are governed where each client exposes them.**
+  TypeScript covers OpenAI `chat.completions.runTools` and Anthropic
+  `beta.messages.toolRunner`. Python's current OpenAI client has no matching
+  runner surface; Anthropic `beta.messages.tool_runner` is covered from 0.68.0,
+  and the async managed-session `beta.sessions.events.tool_runner` is covered
+  from 0.103.0. The Messages runner's initial prompt passes through normal
+  pre-call policy, and every local runnable tool is governed before the runner
+  snapshots its registry. Hosted tool definitions remain unchanged because
+  they expose no local callback.
 - **Text-bearing paths in neither table, in both languages:** the legacy
   `completions.create` on both providers, `beta.messages.parse`, the batch
   surfaces, and `count_tokens`.
@@ -752,7 +751,7 @@ not agree, so neither column may be read across to the other.
 | CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. Also driven live around those paths — delegation to a coworker, the crew's result cache, the hierarchical manager, `kickoff_async` / `kickoff_for_each` / `async_execution`, tools attached to a Task, and streaming — with the tool's payload asserted absent from what the caller received, not only the side effect absent. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **enforces** with `govern_agent`, driven live at llama-index-core 0.14.5 and 0.14.23 — a denied tool at ZERO side-effect writes with the payload absent from the `ToolCallResult` the caller received, allow controls at exactly one, on the plain, ReAct, tool-retriever and multi-agent-handoff routes. The gate is on the tools rather than the callback, and that is forced: no tool event is dispatched to a callback handler at any current version, and the newer instrumentation dispatcher swallows every handler exception, so a gate there could neither fire nor refuse. Which mechanism you install decides the coverage — `govern_tool` by hand covers a `tools=[...]` list and does enforce, but it governs an OBJECT, and a tool arriving per turn from a `tool_retriever` or held as a second unwrapped reference RAN under a policy that denied it; `govern_agent` binds to `get_tools`, where the agent assembles its tools, and reaches both. One caller-visible limit changes inside the range: below 0.14.8 the framework discards the exception on a swallowed tool error, so a refusal and a crash look identical to the caller and obsvr's signed record is the only thing that tells them apart |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
-| provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | *no integration* |
+| provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | **enforces** on Anthropic local tools; the Messages runner's initial prompt is gated, while intermediate turns and managed-session model traffic occur inside the provider runner |
 
 - **enforces** — the gate sits at the invocation boundary. A denied tool's own
   callback does not run, and the event records `blocked`.
@@ -784,8 +783,10 @@ not agree, so neither column may be read across to the other.
   provider runs on its own infrastructure has no local callback to gate. The
   refusal shape differs by provider: one runner guards its tool call, so the loop
   survives a refusal and the model is told; the other does not, so the run ends
-  with the refusal. Both fail closed. Python ships no tool-runner integration at
-  all, which is why that column reads *no integration* rather than a grade.
+  with the refusal. Both fail closed. Python covers Anthropic's Messages and
+  managed-session runners: local callbacks fail closed, the Messages runner's
+  initial prompt is gated, and no claim is made that obsvr can interpose on
+  later model turns or remote session traffic owned by the provider runner.
 
 **The LangChain row used to be the one to notice, and closing it is why it no
 longer is.** TypeScript enforced and Python did not, because only the TypeScript

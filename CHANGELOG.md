@@ -17,6 +17,14 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Python now governs Anthropic provider tool runners.** Messages runner
+  construction sends the initial prompt through the normal pre-call policy and
+  installs governed copies of local runnable tools before dispatch is
+  registered, while preserving hosted tool definitions. Sync and async
+  Messages runners are covered from Anthropic 0.68.0, and async managed-session
+  local tools are covered from 0.103.0 without claiming governance over remote
+  session model traffic.
+
 - **Python now keeps legacy Gemini chat sessions inside governance.**
   `start_chat()` returned the provider's raw `ChatSession`, so both sync and
   async messages bypassed pre-call policy and audit. The factory now returns a

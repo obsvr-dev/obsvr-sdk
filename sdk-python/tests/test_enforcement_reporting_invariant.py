@@ -829,6 +829,27 @@ def _drive_haystack_tool_gate_hook(spy, sent):
                 spy.enter(call.tool_name)
     return Outcome(spy, sent, raised)
 
+
+def _drive_provider_tool_runner(spy, sent):
+    """A provider runner snapshots tools, then dispatches through ``call``."""
+    from obsvr.integrations.provider_tool_runners import govern_runner_tools
+
+    class _Tool:
+        name = SPY_TOOL
+        description = "side effect"
+
+        def call(self, payload):
+            return spy.enter(self.name)
+
+    tool = govern_runner_tools([_Tool()])[0]
+    raised = None
+    try:
+        tool.call({"amount": 1})
+    except BaseException as exc:  # noqa: BLE001 - a refusal is the outcome
+        raised = exc
+    return Outcome(spy, sent, raised)
+
+
 TABLE = [
     ("mcp", _drive_mcp, "mcp_tool_policy", ENFORCES),
     ("pydantic_ai", _drive_pydantic_ai, "agent_policy", ENFORCES),
@@ -858,6 +879,7 @@ TABLE = [
     # message have to cross.
     ("autogen:tool-gate", _drive_autogen_tool_gate, "agent_policy", ENFORCES),
     ("haystack", _drive_haystack_tool_gate_hook, "agent_policy", ENFORCES),
+    ("provider_tool_runners", _drive_provider_tool_runner, "agent_policy", ENFORCES),
 ]
 
 # Rows this invariant currently CATCHES. Each marker names a live defect and

@@ -29,6 +29,8 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     generate_content_async        google-generativeai  (see note)
     start_chat().send_message     google-generativeai  (see note)
     start_chat().send_message_async google-generativeai (see note)
+    beta.messages.tool_runner     anthropic>=0.68.0
+    beta.sessions.events.tool_runner anthropic>=0.103.0 (async client)
 
 Note on beta.messages.create: present from 0.8.0, then ABSENT 0.16.0 through
 0.35.0, then present again from 0.36.0. That gap is upstream — the beta
@@ -189,6 +191,16 @@ GOVERNED_FACTORY_METHODS = {
     "start_chat",
 }
 
+#: Provider-managed loops that snapshot local tool callbacks at construction.
+#: The Messages runner also owns the initial model request, so it receives the
+#: normal pre-call pipeline and a run-level audit event. The managed-session
+#: runner attaches to an already-created remote session; only its local tools
+#: are on this boundary, and each is governed by its own ``tool.call`` event.
+TOOL_RUNNER_METHODS = {
+    "beta.messages.tool_runner": True,
+    "beta.sessions.events.tool_runner": False,
+}
+
 #: Every method path that makes ``wrap()`` a governed wrapper. Keep the three
 #: tables separate above because their return shapes require different
 #: interception pipelines, but coverage reporting must consider all of them.
@@ -197,6 +209,7 @@ _GOVERNED_METHODS = (
     | STREAM_HELPER_METHODS
     | DEFERRED_RESPONSE_METHODS
     | GOVERNED_FACTORY_METHODS
+    | set(TOOL_RUNNER_METHODS)
 )
 
 #: Attribute names that may lead to an auditable method. Everything else is
@@ -205,7 +218,7 @@ _GOVERNED_METHODS = (
 #: returned raw and every path beneath it is unreachable, which would leave
 #: those entries as dead code.
 _TRAVERSABLE = {
-    "beta", "chat", "completions", "messages", "responses",
+    "beta", "chat", "completions", "events", "messages", "responses", "sessions",
     "with_raw_response", "with_streaming_response",
 }
 
@@ -1329,6 +1342,109 @@ class _GovernedResponseManager:
         return getattr(object.__getattribute__(self, "_obsvr_manager"), name)
 
 
+class _GovernedToolRunner:
+    """Delegating sync/async runner that settles one model-run event."""
+
+    __slots__ = ("_obsvr_runner", "_obsvr_emit", "_obsvr_provider", "_obsvr_sink")
+
+    def __init__(self, runner: Any, provider: str, emit: Callable) -> None:
+        object.__setattr__(self, "_obsvr_runner", runner)
+        object.__setattr__(self, "_obsvr_provider", provider)
+        object.__setattr__(self, "_obsvr_emit", emit)
+        object.__setattr__(self, "_obsvr_sink", _StreamSink())
+
+    def _settle(self, error: Any = None) -> None:
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        if sink.emitted:
+            return
+        sink.emitted = True
+        object.__getattribute__(self, "_obsvr_emit")(sink, error)
+
+    def _observe(self, item: Any) -> Any:
+        provider = object.__getattribute__(self, "_obsvr_provider")
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        if any(callable(getattr(item, name, None)) for name in _STREAM_FINAL_GETTERS):
+            return _AccumulatingStream(item, provider, sink)
+        sink.note_final(provider, item)
+        return item
+
+    def __iter__(self) -> Any:
+        runner = object.__getattribute__(self, "_obsvr_runner")
+        try:
+            for item in runner:
+                yield self._observe(item)
+        except Exception as error:
+            self._settle(error)
+            raise
+        else:
+            self._settle()
+
+    def __next__(self) -> Any:
+        runner = object.__getattribute__(self, "_obsvr_runner")
+        try:
+            return self._observe(next(runner))
+        except StopIteration:
+            self._settle()
+            raise
+        except Exception as error:
+            self._settle(error)
+            raise
+
+    async def __aiter__(self) -> Any:
+        runner = object.__getattribute__(self, "_obsvr_runner")
+        try:
+            async for item in runner:
+                yield self._observe(item)
+        except Exception as error:
+            self._settle(error)
+            raise
+        else:
+            self._settle()
+
+    async def __anext__(self) -> Any:
+        runner = object.__getattribute__(self, "_obsvr_runner")
+        try:
+            return self._observe(await runner.__anext__())
+        except StopAsyncIteration:
+            self._settle()
+            raise
+        except Exception as error:
+            self._settle(error)
+            raise
+
+    def __getattr__(self, name: str) -> Any:
+        runner = object.__getattribute__(self, "_obsvr_runner")
+        value = getattr(runner, name)
+        if name != "until_done" or not callable(value):
+            return value
+        if _is_async_callable(value):
+            async def _until_done_async(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    result = await value(*args, **kwargs)
+                    self._observe(result)
+                    self._settle()
+                    return result
+                except Exception as error:
+                    self._settle(error)
+                    raise
+            return _until_done_async
+
+        def _until_done(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = value(*args, **kwargs)
+                self._observe(result)
+                self._settle()
+                return result
+            except Exception as error:
+                self._settle(error)
+                raise
+        return _until_done
+
+    def __repr__(self) -> str:
+        runner = object.__getattribute__(self, "_obsvr_runner")
+        return f"<obsvr-governed {runner!r}>"
+
+
 def _governed_stream_helper(
     original: Callable,
     target: Any,
@@ -1403,6 +1519,62 @@ def _governed_deferred_response(
         )
 
     return _GovernedResponseManager(manager, provider, _emit)
+
+
+def _governed_tool_runner(
+    original: Callable,
+    target: Any,
+    provider: str,
+    method_path: str,
+    options: Dict[str, Any],
+    args: tuple,
+    kwargs: dict,
+    governs_model_request: bool,
+) -> Any:
+    """Govern a provider runner before it snapshots prompts or tools."""
+    from .integrations.provider_tool_runners import govern_runner_tools
+
+    call_kwargs = dict(kwargs)
+    if "tools" in call_kwargs:
+        call_kwargs["tools"] = list(call_kwargs["tools"])
+
+    if not governs_model_request:
+        if "tools" in call_kwargs:
+            call_kwargs["tools"] = govern_runner_tools(
+                call_kwargs["tools"], options
+            )
+        return original(*args, **call_kwargs)
+
+    if "messages" in call_kwargs and not isinstance(call_kwargs["messages"], list):
+        call_kwargs["messages"] = list(call_kwargs["messages"])
+
+    config = get_config()
+    pre = _govern_before_call(
+        target, provider, method_path, options, args, call_kwargs
+    )
+    if "tools" in pre.kwargs:
+        pre.kwargs["tools"] = govern_runner_tools(pre.kwargs["tools"], options)
+
+    start = time.monotonic()
+    try:
+        runner = original(*pre.args, **pre.kwargs)
+    except Exception as error:
+        _emit_stream_event(
+            config, provider, pre.model, method_path, options, pre.compliance,
+            pre.stored_prompt, pre.user_input, "",
+            {"input_tokens": None, "output_tokens": None, "total_tokens": None},
+            start, metadata=pre.metadata, error=error,
+        )
+        raise
+
+    def _emit(sink: "_StreamSink", error: Any) -> None:
+        _emit_stream_event(
+            config, provider, pre.model, method_path, options, pre.compliance,
+            pre.stored_prompt, pre.user_input, sink.text(), sink.usage, start,
+            metadata=pre.metadata, error=error,
+        )
+
+    return _GovernedToolRunner(runner, provider, _emit)
 
 
 class _PreCall:
@@ -1782,6 +1954,14 @@ class _ObsvrProxy:
                 result = value(*args, **kwargs)
                 return _ObsvrProxy(result, [], provider, options)
             return intercepted_factory
+
+        if method_path in TOOL_RUNNER_METHODS and callable(value):
+            def intercepted_tool_runner(*args: Any, **kwargs: Any) -> Any:
+                return _governed_tool_runner(
+                    value, target, provider, method_path, options, args, kwargs,
+                    TOOL_RUNNER_METHODS[method_path],
+                )
+            return intercepted_tool_runner
 
         # Keep walking only down chains that can reach an auditable method
         if name in _TRAVERSABLE and value is not None and not callable(value):

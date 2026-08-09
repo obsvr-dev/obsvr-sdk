@@ -95,7 +95,11 @@ Two things to know about the supported one. **It needs the explicit `obsvr.wrap(
 `with_streaming_response` variants where the provider exposes them,
 `generate_content` / `generate_content_async`,
 `start_chat().send_message` / `.send_message_async`, and the `beta.chat.completions.create` / `.parse`,
-`beta.messages.create`, and `beta.responses.create` namespaces. Everything else on the client passes through
+`beta.messages.create`, and `beta.responses.create` namespaces. Anthropic's
+`beta.messages.tool_runner` is also governed from Anthropic 0.68.0, including
+the initial Messages prompt and every local runnable tool; the async
+`beta.sessions.events.tool_runner` local tools are governed from 0.103.0.
+Hosted tool definitions have no local callback to gate. Everything else on the client passes through
 ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for which of
 those carry no chat text at all and which are text-bearing but not yet reachable from
 a method-path table.

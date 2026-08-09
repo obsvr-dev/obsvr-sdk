@@ -118,7 +118,7 @@ PYTHON_SOURCES = {
     "CrewAI": "crewai",
     "LlamaIndex": "llamaindex",
     "Vercel AI SDK": None,
-    "provider tool runners": None,
+    "provider tool runners": "provider_tool_runners",
 }
 
 ROOT_README = (REPO / "README.md").read_text(encoding="utf-8")
