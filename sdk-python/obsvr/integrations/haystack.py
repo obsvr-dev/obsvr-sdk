@@ -25,8 +25,11 @@ of your Generator and wire its ``prompt`` output into the Generator's text
 input. On every run it applies the obsvr pre-call pipeline (built-in PII scan,
 structured rules, the pre-call hook / HITL) to the prompt flowing through it:
 
-- BLOCK  -> ``run`` raises. A raising component aborts ``pipeline.run()``, so
-            the downstream Generator never executes — a real, enforceable stop.
+- BLOCK  -> the component emits only the terminal ``blocked`` branch and omits
+            ``prompt``. Haystack treats a missing connected output as
+            ``_NO_OUTPUT_PRODUCED``, so the downstream Generator never becomes
+            runnable. The pipeline returns a clear blocked result without
+            constructing an exception snapshot containing the raw input.
 - REDACT -> the redacted prompt is emitted downstream (the Generator sees the
             governed text, never the raw PII).
 - ALLOW  -> the prompt passes through unchanged.
@@ -66,8 +69,8 @@ differs, because Haystack 3.0 removed the text ``OpenAIGenerator`` and its
 """
 
 # Interception: Haystack 2.x @component node (non-mutating). Placed in the
-# pipeline graph; a policy block raises out of run(), aborting the pipeline
-# before the downstream generator runs.
+# pipeline graph; a policy block omits the connected prompt output so the
+# downstream generator cannot become runnable.
 
 from typing import Any, Dict, Optional, Tuple
 
@@ -105,7 +108,7 @@ except Exception as _exc:  # pragma: no cover - Haystack not installed
 
 
 class ObsvrHaystackBlocked(RuntimeError):
-    """Raised inside run() when the prompt is blocked by policy; aborts the pipeline."""
+    """Raised by abort-mode Haystack tool governance before a tool executes."""
 
 
 @_component
@@ -127,7 +130,7 @@ class ObsvrGuard:
             meta["service_name"] = opts["service_name"]
         return meta or None
 
-    @_component.output_types(prompt=str, blocked=bool, redacted=bool)
+    @_component.output_types(prompt=str, blocked=bool, redacted=bool, block_reason=str)
     def run(self, prompt: str) -> Dict[str, Any]:
         cfg = try_get_config()
         if cfg is None:
@@ -150,7 +153,17 @@ class ObsvrGuard:
                 response="", success=False, status_code=403, compliance=compliance,
                 options=opts,
             )
-            raise ObsvrHaystackBlocked("[obsvr] Prompt blocked by policy")
+            # Haystack's native conditional-output contract: an omitted output
+            # is propagated as _NO_OUTPUT_PRODUCED. Since only ``prompt`` is
+            # wired to the generator, no prompt means the downstream component
+            # cannot become runnable. Returning instead of raising is also
+            # privacy-critical: Pipeline.run() attaches all component inputs to
+            # PipelineRuntimeError.pipeline_snapshot when a component raises.
+            return {
+                "blocked": True,
+                "redacted": False,
+                "block_reason": "policy_blocked",
+            }
 
         out_prompt = prompt
         redacted = False
@@ -167,20 +180,17 @@ class ObsvrGuard:
 
 
 # ---------------------------------------------------------------------------
-# Catching a block through a Pipeline
+# Recognising abort-mode tool blocks through a Pipeline
 # ---------------------------------------------------------------------------
 
 
 def is_obsvr_block(error: BaseException) -> bool:
     """Whether this exception is (or was caused by) an obsvr policy refusal.
 
-    Worth having because ``except ObsvrHaystackBlocked`` around ``pipeline.run()``
-    catches nothing on haystack-ai 3.x: a component's exception is re-raised as
-    ``PipelineRuntimeError`` with the original demoted to ``__cause__``, and an
-    async pipeline wraps a second time. The refusal is still there and the run
-    still stopped; only the type a caller sees at the top changed. Driving the
-    Agent directly instead of through a Pipeline raises the obsvr error
-    unwrapped, so callers who want one branch for both shapes want this.
+    The prompt guard uses a non-raising terminal output so its raw input cannot
+    land in a PipelineRuntimeError snapshot. Abort-mode Agent tool governance
+    still raises before dispatch; when an Agent sits inside a Pipeline, Haystack
+    wraps that refusal and this helper recognizes the cause chain.
     """
     seen = 0
     current: Optional[BaseException] = error

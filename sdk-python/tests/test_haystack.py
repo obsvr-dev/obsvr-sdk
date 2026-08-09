@@ -2,20 +2,15 @@
 
 Haystack is not installed here; ObsvrGuard uses a shim @component decorator so
 the governance node is still constructable and its run() logic runs. What these
-tests establish is therefore bounded: a block raises out of run(), a redact
-returns scrubbed text, an allow passes through.
+tests establish is therefore bounded: a block omits the downstream prompt, a
+redact returns scrubbed text, and an allow passes through.
 
-They do NOT establish that a raise aborts a real Pipeline before the downstream
-Generator, because a shimmed component is not in a pipeline graph — that is a
-property of Haystack, not of this code, and asserting it from here would be the
-same shape of vacuous coverage the canary wiring test carried. It was measured
-separately, out of tree, against a real Pipeline and a real Generator on both
-ends of the supported range, graded on whether the provider received bytes.
+The real-package regression separately drives this conditional output through
+Haystack's synchronous and asynchronous schedulers.
 """
-import pytest
 
 import obsvr
-from obsvr.integrations.haystack import ObsvrGuard, ObsvrHaystackBlocked
+from obsvr.integrations.haystack import ObsvrGuard
 
 
 def _init(**extra):
@@ -24,12 +19,13 @@ def _init(**extra):
 
 
 def _mini_pipeline(guard, prompt):
-    """Emulate a 2-node pipeline: guard -> sink. A raise aborts before sink."""
+    """Emulate a 2-node pipeline: only a produced prompt activates the sink."""
     sink = {"ran": False, "prompt": None}
-    out = guard.run(prompt)  # raises on block, aborting the pipeline
-    sink["ran"] = True
-    sink["prompt"] = out["prompt"]
-    return sink
+    out = guard.run(prompt)
+    if "prompt" in out:
+        sink["ran"] = True
+        sink["prompt"] = out["prompt"]
+    return out, sink
 
 
 def test_clean_prompt_passes_through(sent):
@@ -40,29 +36,33 @@ def test_clean_prompt_passes_through(sent):
     assert out["blocked"] is False
 
 
-def test_block_aborts_pipeline_before_sink(sent):
+def test_block_returns_terminal_branch_without_prompt(sent):
     _init(pii_policy={"rules": {"ssn": "block"}})
     guard = ObsvrGuard()
-    with pytest.raises(ObsvrHaystackBlocked):
-        _mini_pipeline(guard, "the ssn is 123-45-6789")
+    raw_prompt = "the ssn is 123-45-6789"
+    out, sink = _mini_pipeline(guard, raw_prompt)
+    assert out == {
+        "blocked": True,
+        "redacted": False,
+        "block_reason": "policy_blocked",
+    }
+    assert sink["ran"] is False
+    assert raw_prompt not in repr(out)
     assert sent[0]["event_type"] == "blocked_call"
+    assert raw_prompt not in repr(sent[0])
 
 
 def test_downstream_never_runs_on_block(sent):
     _init(on_pre_call=lambda e: "block")
     guard = ObsvrGuard()
-    sink = {"ran": False}
-    try:
-        out = guard.run("anything")
-        sink["ran"] = True
-    except ObsvrHaystackBlocked:
-        pass
+    out, sink = _mini_pipeline(guard, "anything")
     assert sink["ran"] is False
+    assert out["blocked"] is True
 
 
 def test_redact_forwards_governed_prompt(sent):
     _init(pii_policy={"rules": {"email": "redact"}})
     guard = ObsvrGuard()
-    out = _mini_pipeline(guard, "email me at alice@example.com")
-    assert "alice@example.com" not in out["prompt"]
-    assert "[REDACTED_EMAIL]" in out["prompt"]
+    _, sink = _mini_pipeline(guard, "email me at alice@example.com")
+    assert "alice@example.com" not in sink["prompt"]
+    assert "[REDACTED_EMAIL]" in sink["prompt"]
