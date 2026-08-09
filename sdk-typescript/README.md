@@ -1,6 +1,6 @@
 # @obsvr/sdk
 
-Runtime governance for LLM applications: intercept every model and tool call, enforce deterministic policies (PII, allowlists, budgets, custom rules), and produce a tamper-evident audit trail. One line to integrate.
+Runtime governance for documented LLM and tool boundaries: enforce deterministic policies (PII, allowlists, budgets, custom rules) on supported wrapped methods and produce a tamper-evident audit stream. Coverage is per integration, not process-wide.
 
 ## Installation
 
@@ -9,7 +9,8 @@ npm install @obsvr/sdk
 ```
 
 > **Enforcement needs no account.** Policy, PII, and agent checks run entirely
-> in your process and block calls with nothing configured but an API key.
+> in your process, but you must configure the controls you want to enforce; an
+> API key enables signing and delivery, not a default block policy.
 > Delivering the signed audit record needs an obsvr ingest service, which is in
 > private beta; you receive its URL together with your key. Until `ingestUrl` is
 > set the SDK still enforces — it warns once and delivers nothing.
@@ -63,29 +64,32 @@ obsvr.init({
 // Wrap your existing client
 const openai = obsvr.wrap(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }));
 
-// Every call is now intercepted, policy-checked, and audited
+// Supported text-generation methods are policy-checked; clean allows may be sampled.
 const response = await openai.chat.completions.create({
   model: 'gpt-4o',
   messages: [{ role: 'user', content: 'What is 2+2?' }],
 });
 ```
 
-Anthropic and Google Gemini work the same way:
+Anthropic and current Google Gemini work the same way:
 
 ```typescript
 const anthropic = obsvr.wrap(new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }));
-// Gemini via @google/generative-ai — see the note below on which SDK this is
-const gemini = obsvr.wrap(genAI.getGenerativeModel({ model: 'gemini-2.5-flash' }));
+const gemini = obsvr.wrap(new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }));
+const result = await gemini.models.generateContent({
+  model: 'gemini-2.5-flash',
+  contents: 'What is 2+2?',
+});
 ```
 
-**Which Gemini SDK.** Google ships two, and obsvr integrates one of them:
+**Which Gemini SDK.** Google ships two, and obsvr integrates both:
 
 | Package | State |
 | --- | --- |
 | `@google/generative-ai` | **supported, compatibility only** — legacy line, last release 0.24.1, end-of-life August 2025 |
-| `@google/genai` | **not yet supported** — the current SDK; obsvr does not intercept it and has no adapter for it |
+| `@google/genai` | **supported** — current 2.x client; `models.generateContent` and `models.generateContentStream` |
 
-Compatibility only means fixes, not features: the legacy adapter is kept working because a large installed base still runs it, and instrumenting what people actually run is the point. Note that npm carries **no deprecation flag on any version** of either package, so neither `npm outdated` nor `npm audit` will tell you which one you have — check your `package.json`. `@google/genai` has a different response shape, so support for it is new work rather than a rename.
+Compatibility only means fixes, not features: the legacy adapter is kept working for existing deployments. The two packages have different method and response shapes and use separate adapters. npm carries no deprecation flag on either package, so check `package.json` to identify the installed line.
 
 ### Zero-code global coverage (no monkey patching)
 
@@ -96,23 +100,22 @@ node --import @obsvr/sdk/register app.js
 # or: NODE_OPTIONS="--import @obsvr/sdk/register" npm start
 ```
 
-`new OpenAI()`, `new Anthropic()` and `getGenerativeModel()` then return governed instances automatically, including ones created inside third-party libraries. obsvr never mutates provider prototypes, classes, or module objects: the interceptor swaps the module's exported class for a construct-trap `Proxy`, and the instance underneath stays a genuine SDK client. APM, tracing, and other instrumentation layered on the same SDKs keep working. Clients constructed before `obsvr.init()` pass through untouched and pick up governance on their first call after init.
+`new OpenAI()`, `new Anthropic()`, `new GoogleGenAI()` and legacy `getGenerativeModel()` then return governed instances automatically, including ones created inside third-party libraries. obsvr never mutates provider prototypes, classes, or module objects: the interceptor swaps the module's exported class for a construct-trap `Proxy`, and the instance underneath stays a genuine SDK client. APM, tracing, and other instrumentation layered on the same SDKs keep working. Clients constructed before `obsvr.init()` pass through untouched and pick up governance on their first call after init.
 
 Use `providers: ['openai']` in `obsvr.init()` to narrow which providers the interceptor governs; omit it to govern all supported ones.
 
 #### What this does not reach
 
-The hook's reach is narrower than *every* client anywhere in the process, and the gaps below were measured against a real provider with a governed control in the same run rather than reasoned about. What the hook governs is the **default and named client export** of a supported package, imported by its **exact specifier**, from an **ESM** entry point. Three things escape:
+The hook's reach is narrower than *every* client anywhere in the process, and the gaps below were measured against a real provider with a governed control in the same run rather than reasoned about. What the hook governs is each supported root client export of a supported package, imported by its **exact specifier**, from an **ESM** entry point. Two import shapes escape:
 
 | Escapes | Why |
 | --- | --- |
 | `require("openai")` | `module.register()` hooks do not intercept CommonJS. Interception never activates; the call reaches the provider and nothing is recorded. |
 | `openai/index.mjs`, `openai/index`, `openai/client`, `openai/client.mjs`, `openai/client.js`, `openai/azure` | The specifier table is exact-match, so a subpath resolves to the untouched module. |
-| `AzureOpenAI`, `BedrockOpenAI` | The shim overrides `default` and `OpenAI`; other client classes ride the `export *` through. |
 
-**None of these puts a false record in the audit trail** — an escaped client emits no event rather than a wrong one, which is a coverage gap and not a lie. `obsvr.wrap(client)` governs every one of them, including a CommonJS caller's client, so the fix in each case is one line at the call site.
+**Neither puts a false record in the audit trail** — an escaped import emits no event rather than a wrong one, so it is reported as a coverage gap. Where the application can import `@obsvr/sdk`, explicit `obsvr.wrap(client)` governs the resulting client instance.
 
-The CommonJS row is structural and cannot be closed here; the other two are open coverage gaps rather than decisions. Widening the specifier table and the class list is a change to the interception path across the whole declared version range of each provider package, which is why it is not being done as a footnote to a documentation fix.
+The CommonJS row is structural and cannot be closed by the ESM loader hook; subpath coverage remains an open gap. Widening the specifier table is a change to the interception path across the whole declared version range of each provider package, not a documentation-only change.
 
 ## Policy Enforcement
 
@@ -166,11 +169,11 @@ obsvr.init({
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy.
 
-**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policyFloor`** — a non-overridable operator baseline (same shape as `policyRules`) that customer rules and the `onPreCall` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation: { enabled: true }`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcpToolPolicy: { pinning: { enabled: true, mode: 'block' } }`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`sessionTaint: { enabled: true }`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructiveTools` naming exact tools a tainted session may never invoke even in flag mode — **which holds only on the surfaces where obsvr is genuinely on the tool boundary; see [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)**; **`requirePrincipal: true`** — refuse a call that arrives with no non-blank `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; empty and whitespace-only strings are unattributed — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mintCanary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md) for each control's exact guarantee and boundary.
 
 **Global monitor mode.** `enforcementMode: 'monitor'` is one flip meaning
-"keep deciding and recording, stop enforcing": every layer still evaluates,
-every event still emits, and a final block is converted to an allow whose
+"keep deciding and recording, stop enforcing": every applicable layer still evaluates,
+every governed decision and execution-span event emits, and a final block is converted to an allow whose
 `shadow_outcome` carries the would-be verdict with the same `rule_id` and
 `reason_code` an enforcing run records. Two classes enforce in **both**
 modes: the enforcement-integrity gate (kill switch / fail-closed staleness),
@@ -246,7 +249,7 @@ Semantics:
 
 - **Deny-wins merge.** A `deny` from *either* the local rules or the backend blocks the call. A backend `allow` never downgrades a local block — the backend can only add restriction.
 - **Fail-closed.** A backend error or timeout counts as `deny` (a policy engine that cannot render a verdict is not approval). Use `shadow: true` for a safe, observe-only rollout that records what the backend *would* have done without ever blocking.
-- **SSRF-guarded.** The backend URL must be `http(s)`; requests to private / loopback / link-local / cloud-metadata addresses (`169.254.169.254`, `10/8`, `127/8`, `::1`, …) are refused, resolving the hostname before connecting. A legitimate sidecar on `localhost`/a private network needs `allowPrivateNetwork: true`; the cloud-metadata and link-local ranges are blocked even then.
+- **SSRF-guarded.** The production transport resolves the backend hostname once, rejects the complete address snapshot if any answer is private / loopback / link-local / cloud metadata, and pins the connection to an approved address while retaining the original Host header and TLS server name. Redirects are not followed. A legitimate sidecar on `localhost`/a private network needs `allowPrivateNetwork: true`; cloud-metadata and link-local ranges remain blocked. An explicitly injected `fetchImpl` is a trusted embedding seam and must provide equivalent address pinning.
 - **Provenance.** Each event records which backend decided via `external_backend` (identity, backend type, raw outcome, shadow flag, and a hash of the effective backend policy).
 
 The **OPA** endpoint is POSTed `{ "input": <decision document> }` and its `result` is read as `allow` (boolean, or `{ allow, reasons }`). The **Cedar** endpoint receives the decision document and its `decision` (`Allow`/`Deny`) is read. The decision document carries non-content fields only — operation, provider, model, principal (user/service/tenant), the local decision so far, the rules hash, and a SHA-256 **digest** of the prompt (never the raw prompt). Zero-config default is no backend (unchanged behavior).
@@ -260,17 +263,18 @@ The **OPA** endpoint is POSTed `{ "input": <decision document> }` and its `resul
 | OpenAI / Azure OpenAI (through `obsvr.wrap()`) | `chat.completions.create`, `chat.completions.parse`, `beta.chat.completions.create`, `beta.chat.completions.parse` |
 | OpenAI Responses API | `responses.create`, `responses.parse`, `beta.responses.create` |
 | Anthropic | `messages.create`, `messages.parse`, `beta.messages.create` |
-| Google Gemini (`@google/generative-ai` only) | `generateContent` |
+| Google Gemini (`@google/genai`) | `models.generateContent`, `models.generateContentStream` |
+| Google Gemini legacy (`@google/generative-ai`) | `generateContent` |
 
 Beta namespaces are listed one by one rather than matched by stripping a leading `beta.`, so a provider shipping a new beta namespace never widens governance without review.
 
 Three different things sit outside that table, and only the first is a policy decision:
 
 - **Excluded — no chat text to govern.** `embeddings.create`, `images.generate`, `audio.*`, `files.*`, `fine_tuning.*` and the moderation/model-listing surfaces pass through **ungoverned and unaudited**. They carry no chat-shaped prompt/response text for the policy engine to evaluate.
-- **Text-bearing but not covered yet.** The batch surfaces (`messages.batches.create`) carry many prompts per call against a one-prompt event schema; `countTokens` returns no response text; and Gemini's `startChat()` session calls an internal function rather than a method on the model, so no method-path table can reach it.
+- **Text-bearing but not covered yet.** The batch surfaces (`messages.batches.create`) carry many prompts per call against a one-prompt event schema; token-counting methods return no response text; legacy Gemini's `startChat()` calls an internal function rather than a method on the model; and current Gemini chat sessions, Live API, Interactions, and batches are outside the table.
 - **Governed, but not through that table.** The `.stream()` helpers (`messages.stream`, `chat.completions.stream`, `responses.stream`) and the tool runners (`chat.completions.runTools`, `beta.messages.toolRunner`) return their runner object synchronously, so they cannot go through the async method wrapper. They are governed by a deferred runner that returns the runner immediately and reaches the provider only once governance has resolved — so a blocked call never leaves the process. A stream helper emits one event when the stream ends. A tool runner emits the run as a sequence instead: one event per model call, one per tool call, and a run-level start/finish pair sharing an `agent_run_id`, with the tool events carrying `content_provenance: "tool_result"`. **The model calls a tool runner makes after the first are audited but not individually gated** — the runner holds the provider client internally, so per-turn enforcement would need its own mechanism.
 
-**The named compatibility wrappers are NOT that table.** `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` consult a one-entry path table (`integrations/openai-compat.ts`) and govern **`chat.completions.create` only**. `wrapWorkersAI` is not one of them and is not described by this paragraph: it proxies `run` on a Workers AI binding and applies the pre-call policy and outbound redaction directly, the same net the other infra integrations run. `obsvr.wrap()` covers the full 17-path table above; these wrappers cover exactly 1 (`chat.completions.create`). The other 26 text-bearing paths on a current client — `responses.create`, `responses.parse`, `responses.stream`, `chat.completions.parse`, `chat.completions.stream`, `chat.completions.runTools`, `completions.create`, and the whole `beta.threads.*` assistants surface — bind straight through with **no gate and no event**. That is not a limitation of the client: `obsvr.wrap()` duck-types the same objects and covers the full table above. These wrappers exist to set a provider label and a source; use `obsvr.wrap()` when you need the coverage.
+**The named compatibility wrappers share that table.** `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` delegate to the same generic governed-path resolver and enforcement pipeline as `obsvr.wrap()`. Their difference is attribution: they supply a destination fallback and per-endpoint source label when the client exposes no readable base URL. `wrapWorkersAI` is separate: it proxies `run` on a Workers AI binding and applies the pre-call policy and outbound redaction directly. The generic table still has documented exclusions below; a named wrapper does not make an unsupported OpenAI surface governed.
 
 **The framework integrations are not that table either.** LangChain, LlamaIndex and the OpenAI Agents tracing processor call `applyObservePolicy` on their model-call paths, which is the PII scan and the stored redacted copy — not `applyPreCallPolicy`. Measured layer by layer: `policyRules`, `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch integrity gate, the response-side scan and PII **blocking** do not run there, and metering is opt-in. A `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and does not block through any of those three — the call goes out and the event records `action_taken: "not_evaluated"` plus stored-copy provenance under `metadata.obsvr_telemetry`. Treat those paths as observability with a PII scan; their tool gates are graded separately below.
 
@@ -305,7 +309,7 @@ Governance covers all three MCP phases: **discovery** (`listTools()` is scanned 
 
 ## Tamper-Evident Audit Trail
 
-Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers the prompt/response **content** and event **order**, so tampering with captured content — or dropping/reordering events once they are in the chain — breaks it. Events the bounded sender queue drops under load never enter the chain and so hole nothing; those are declared instead by a signed **gap marker** stating how many were lost at that point, which both verifiers report alongside the verdict. Since **chain format 3** the preimage also covers the **decision fields** — `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, `model`, `provider`, `user_id` — so a rewritten verdict breaks the chain offline. `tenant_id`, token counts and cost are still outside it; their integrity is sealed at ingest, which verifies the client signature on acceptance and **countersigns the full canonical event** with a server-held key. Chains signed under formats 1 and 2 keep verifying as those formats, without the decision coverage, and the verifier reports which format it checked.
+Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers the prompt/response **content** and event **order**, so tampering with captured content — or dropping/reordering events once they are in the chain — breaks it. Sender-visible loss is declared by a signed **gap marker**: queue overflow links a marker into the current session, while ingest rejection, permanent failure, and retry exhaustion start a fresh session whose sequence-1 marker names the reason and count. Both verifiers report those markers. A marker is still in-memory work, so abrupt process death or failure to deliver the marker leaves only local counters and warnings. Since **chain format 3** the preimage also covers the **decision fields** — `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, `model`, `provider`, `user_id` — so a rewritten verdict breaks the chain offline. `tenant_id`, token counts and cost are still outside it; their integrity is sealed at ingest, which verifies the client signature on acceptance and **countersigns the full canonical event** with a server-held key. Chains signed under formats 1 and 2 keep verifying as those formats, without the decision coverage, and the verifier reports which format it checked.
 
 Verify an exported bundle offline with the shipped `obsvr-verify` CLI — no network, no trust in obsvr's servers:
 
@@ -335,7 +339,7 @@ const client = wrapOpenAICompatible(new OpenAI({ baseURL: 'http://localhost:1143
 });
 ```
 
-Set `source` per endpoint. **The recorded `provider` follows the endpoint, not the wrapper.** The named wrappers built on this one (`wrapTogether`, and the Azure/Cloudflare modules) pass their label as a FALLBACK, used only when the client exposes no readable base URL; when it does, the label is derived from the host, `metadata.endpoint_host` records that host, and `metadata.provider_attribution` says whether the value was checked against the endpoint (`endpoint`) or merely declared (`client_declared`). A destination the canonical provider enum cannot name records `provider: "unknown"` and keeps its identity in `metadata.provider_detail` — so a Groq or Ollama endpoint reads as what it is rather than as whichever module wrapped it. These labels used to be unconditional, which meant one wrapper pointed at two different servers reported the same destination for both. **`obsvr.wrap()` resolves the same way** — through the same endpoint table — so the front door does not have to be traded for honest attribution; its duck-typed detection is the fallback there, exactly as a named wrapper's label is here. The client's shape still selects the extractors; only the recorded destination follows the endpoint.
+Set `source` per endpoint. **The recorded `provider` follows the endpoint, not the wrapper.** The named wrappers built on this one (`wrapTogether`, and the Azure/Cloudflare modules) pass their label as a FALLBACK, used only when the client exposes no readable base URL; when it does, the label is derived from the host, `metadata.endpoint_host` records that host, and `metadata.provider_attribution` says whether the value was checked against the endpoint (`endpoint`) or merely declared (`client_declared`). A destination the canonical provider enum cannot name records `provider: "unknown"` and keeps its identity in `metadata.provider_detail` — so a Groq or Ollama endpoint reads as what it is rather than as whichever module wrapped it. These labels used to be unconditional, which meant one wrapper pointed at two different servers reported the same destination for both. **`obsvr.wrap()` resolves the same way** — through the same endpoint table — so the front door does not have to be traded for accurate attribution; its duck-typed detection is the fallback there, exactly as a named wrapper's label is here. The client's shape still selects the extractors; only the recorded destination follows the endpoint.
 
 ### Does a tool-policy block actually stop the tool?
 
@@ -347,7 +351,7 @@ captured audit event.
 
 | Surface | Tool policy |
 | --- | --- |
-| MCP | **enforces** — the gate binds `request`, the path every client route into `tools/call` converges on, rather than the `callTool` convenience above it. Driven against a real server on `callTool`, a hand-built `tools/call` frame, and the task API's `callToolStream`: denied tool at ZERO executions with its result absent from what the caller received, allow control at one execution on each. `listTools` is bound separately for discovery-time poisoning defense |
+| MCP | **enforces** — the gate binds `request`, above the `callTool` convenience. Driven against a real server on `callTool`, a hand-built `tools/call` frame, the task API's `callToolStream`, and a task facade retained before governance: denied tool at ZERO executions with its result absent, allow control at one. An already-issued task facade is rebound in place. A raw `request` / `requestStream` function explicitly bound and retained before governance cannot be revoked by a later Proxy. `listTools` is bound separately for discovery-time poisoning defense |
 | `obsvrGovernTool` | **enforces** — wraps the tool's own execute and gates before delegating |
 | LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError`. Both pre-tool callbacks reach one gate and the discount for a duplicate delivery is credited per call, not per handler: as a per-handler flag, one dispatch of the legacy `handleAgentAction` left every later `handleToolStart` returning before the gate, and `copy()` hands the same instance to every child manager. Driven against a real LangGraph agent |
 | LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |
@@ -441,9 +445,10 @@ Use it for frameworks governed at the tool level (LlamaIndex, Vercel AI) so thei
 
 ## Per-request identity
 
-Every governed call resolves a principal — the `user_id` that user-scoped
+When supplied, a governed call resolves one principal — the `user_id` that user-scoped
 quota rules meter, the session-taint latch keys on, approval grants bind to,
-and the signed event carries inside the decision preimage. Resolution is one
+and the signed event carries inside the decision preimage. Attribution is optional
+unless `requirePrincipal: true`. Resolution is one
 fixed precedence — per-call audit fields / `metadata`, then the wrap-time or
 integration `user_id` option, then the ambient subject — and one resolution
 feeds both enforcement and the record.
@@ -472,16 +477,16 @@ streamed and blocked events, the external-backend input, and the
 decision-input document) now fall back to the ambient subject.
 
 **`requirePrincipal: true`** (off by default) refuses a governed call whose
-enforcing channel carries no `user_id` at all — `PRINCIPAL_REQUIRED`, after
-the enforcement-integrity gate, before any scanning layer. An empty string is
-a supplied principal; only an absent one refuses. It is enforced on the proxy
+enforcing channel carries no non-blank `user_id` — `PRINCIPAL_REQUIRED`, after
+the enforcement-integrity gate, before any scanning layer. Empty and whitespace-
+only strings are unattributed. It is enforced on the proxy
 wrapper, the integration pipeline, the generic tool governor, and the
 governance `evaluate()` endpoint, and it arms the MCP pre-call net by itself,
 so a config whose only policy is this flag still refuses there.
 
 ## Known Limitations & Architecture Notes
 
-We document enforcement limits honestly — what the signature chain does and does not prove, streaming semantics, fail-open/closed behavior, and the inherent bypass surface of any in-process library. The key ones:
+This section documents signature, streaming, fail-mode, and in-process bypass boundaries.
 
 ### Before you install: the seven limits of the TypeScript SDK
 
@@ -492,8 +497,8 @@ The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
-   Four surfaces run against the real upstream package in CI — MCP, OpenAI,
-   Google Generative AI and OpenAI Agents; every other integration is
+   Five surfaces run against real upstream packages in CI — MCP, OpenAI,
+   legacy Google Generative AI, maintained Google Gen AI and OpenAI Agents; every other integration is
    fake-driven. A green integration suite says the shape is right, not that the
    framework behaves the way the test models it.
    [`tests/README.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-typescript/tests/README.md) says which surfaces are which.
@@ -503,10 +508,10 @@ The combined list for both, with the scope marked on each entry, is in the
    `--import` interception never sees `require()` — so that coverage is nil
    rather than partial. See [below](#this-package-is-esm-only).
 
-3. **The named compatibility wrappers govern one method out of twenty-seven.**
-   `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible`
-   gate `chat.completions.create` and nothing else. `obsvr.wrap()` duck-types the
-   same clients and covers seventeen paths — use it when you need the coverage.
+3. **Coverage is method-table based, even on named compatibility wrappers.**
+   `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` now share
+   `obsvr.wrap()`'s governed OpenAI-shaped paths and exclusions. Their extra
+   behavior is endpoint attribution, not a narrower policy engine.
    [Detail](#what-gets-governed).
 
 4. **LangChain, LlamaIndex and the OpenAI Agents tracing processor observe rather
@@ -527,22 +532,30 @@ The combined list for both, with the scope marked on each entry, is in the
    capability behind MCP, a tool guardrail, or a governed tool.
    [Grading](#framework-integrations).
 
-6. **The zero-code auto-register misses three things, each measured rather
+6. **The zero-code auto-register misses two import shapes, each measured rather
    than reasoned about.** A `require()` entry point (the hook does not
-   intercept CommonJS at all), a subpath import such as `openai/index.mjs` or
-   `openai/client` (the specifier table is exact-match), and other client
-   classes exported by a governed package — `AzureOpenAI` and `BedrockOpenAI`
-   ride through ungoverned. An escaped client records nothing rather than
-   recording something false, and `obsvr.wrap()` governs all of them.
+   intercept CommonJS at all) and a subpath import such as `openai/index.mjs`
+   or `openai/client` (the specifier table is exact-match) bypass interception.
+   Supported root exports, including `OpenAI`, `AzureOpenAI`, and
+   `BedrockOpenAI`, are rebound to governed clients. An escaped import records
+   nothing rather than recording something false, and explicit `obsvr.wrap()`
+   remains available for client instances.
    [Detail](#zero-code-global-coverage-no-monkey-patching).
 
-7. **The current Google Gemini SDK is not supported.** obsvr binds
-   `@google/generative-ai`, the legacy line, which reached end-of-life in August
-   2025. `@google/genai` has no adapter and is not intercepted.
+7. **Current Gemini coverage is method-bounded.** `@google/genai` 2.x is
+   governed on `models.generateContent` and `models.generateContentStream`,
+   through explicit wrapping or the module interceptor. Chat sessions, Live
+   API, Interactions, batches, token counting, and binary/multimodal payload
+   contents remain outside this wrapper.
 
 ### Streaming calls
 
 With `stream: true`, PII scanning and policy hooks run **before** the LLM is contacted; a blocked call never opens the stream. However, **post-call** policies on streamed responses are audit-time, not enforcement-time: tokens reach the caller as they arrive, and response scanning happens after completion.
+
+`streamingMode: "skip"` is an enforce-mode evidence opt-out, not a policy
+opt-out: pre-call block/redaction still runs, but an allowed stream is returned
+without wrapping or emitting its stream event. Monitor mode ignores this opt-out
+and emits the governed stream evidence even when `skip` is configured.
 
 ### Signing model
 
@@ -556,7 +569,14 @@ Default is fail-open: if a hook times out or throws, or a detector layer fails w
 
 ### PII scanning scope
 
-Policy decisions scan the **last user message**. System prompts, earlier turns, assistant turns and tool results do not drive block/redact decisions, so a payload sitting in one of them reaches the provider unmodified. They are still stored — and the stored copy is scrubbed for any type resolving to `block` or `redact`, with `stored_redaction_outbound_unmodified` on the event so the record is not mistaken for enforcement. Types `name`, `address`, `person`, `location`, `medical`, `national_id` require the Presidio integration; built-in regex will never fire for them.
+On direct wrapper paths, policy decisions scan all provider-bound text carried by
+system, user, assistant, and tool-result roles. A block stops the request and a
+redaction rewrites the affected role while preserving the message structure.
+The centralized stored-content pass separately scans the final prompt and
+response for every emitted event. Observe-only LangChain, LlamaIndex, and OpenAI
+Agents tracing callbacks do not control provider-bound content; their stored
+redaction is labeled `not_evaluated`. Types `name`, `address`, `person`,
+`location`, `medical`, and `national_id` require Presidio.
 
 ### Unicode normalization (matching-time only)
 
