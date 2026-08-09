@@ -728,7 +728,7 @@ than only in a source comment.
   or drive the loop yourself through `messages.create`.
 - **Text-bearing paths in neither table, in both languages:** the legacy
   `completions.create` on both providers, `beta.messages.parse`, the batch
-  surfaces, `count_tokens`, and Gemini's `start_chat` → `ChatSession`.
+  surfaces, and `count_tokens`.
   Python additionally does not reach anything under the current
   `google-genai` package.
 

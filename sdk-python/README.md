@@ -93,7 +93,8 @@ Two things to know about the supported one. **It needs the explicit `obsvr.wrap(
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
 `messages.create` / `.parse`, their `with_raw_response` and
 `with_streaming_response` variants where the provider exposes them,
-`generate_content` / `generate_content_async`, and the `beta.chat.completions.create` / `.parse`,
+`generate_content` / `generate_content_async`,
+`start_chat().send_message` / `.send_message_async`, and the `beta.chat.completions.create` / `.parse`,
 `beta.messages.create`, and `beta.responses.create` namespaces. Everything else on the client passes through
 ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for which of
 those carry no chat text at all and which are text-bearing but not yet reachable from

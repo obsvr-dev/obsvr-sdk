@@ -232,6 +232,23 @@ class FakeGenerativeModel:
         self.calls.append(prompt)
         return FakeGeminiResponse()
 
+    def start_chat(self, **kwargs):
+        return FakeChatSession(self, kwargs)
+
+
+class FakeChatSession:
+    def __init__(self, model, start_options):
+        self.model = model
+        self.start_options = start_options
+
+    def send_message(self, prompt, **kwargs):
+        self.model.calls.append(prompt)
+        return FakeGeminiResponse()
+
+    async def send_message_async(self, prompt, **kwargs):
+        self.model.calls.append(prompt)
+        return FakeGeminiResponse()
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -559,6 +576,63 @@ class TestGeminiInterception:
         assert len(captured) == 1
         assert captured[0]["event_type"] == "blocked_call"
         assert "123-45-6789" not in (captured[0].get("user_input") or "")
+
+    def test_start_chat_keeps_sync_messages_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        model = obsvr.wrap(raw)
+
+        chat = model.start_chat(history=[])
+        assert captured == []
+        result = chat.send_message("hello chat")
+
+        assert result.text == "fake gemini answer"
+        assert raw.calls == ["hello chat"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "send_message"
+        assert captured[0]["model"] == "gemini-2.5-flash"
+        assert captured[0]["prompt"] == "hello chat"
+
+    def test_start_chat_sync_block_prevents_provider_call(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        chat = obsvr.wrap(raw).start_chat()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            chat.send_message("my ssn is 123-45-6789")
+
+        assert raw.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+
+    def test_directly_wrapped_chat_session_redacts_sync_message(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        chat = obsvr.wrap(raw.start_chat())
+
+        chat.send_message("mail a@b.com")
+
+        assert raw.calls == ["mail [REDACTED_EMAIL]"]
+        assert len(captured) == 1
+        assert captured[0]["provider"] == "google"
+        assert captured[0]["model"] == "gemini-2.5-flash"
+
+    def test_start_chat_keeps_async_messages_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        chat = obsvr.wrap(raw).start_chat()
+
+        result = asyncio.run(chat.send_message_async("hello async chat"))
+
+        assert result.text == "fake gemini answer"
+        assert raw.calls == ["hello async chat"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "send_message_async"
+        assert captured[0]["prompt"] == "hello async chat"
 
     def test_gemini_positional_block_emits_and_raises_no_crash(self, monkeypatch):
         # Regression: the block path called redact_builtin_pii(_last_user_message(kwargs)),

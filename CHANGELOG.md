@@ -17,6 +17,13 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Python now keeps legacy Gemini chat sessions inside governance.**
+  `start_chat()` returned the provider's raw `ChatSession`, so both sync and
+  async messages bypassed pre-call policy and audit. The factory now returns a
+  transparent governed session whose `send_message` and `send_message_async`
+  calls enforce the same block, redaction, stream, and response rules as direct
+  generation.
+
 - **Python now governs OpenAI and Anthropic `with_streaming_response` calls.**
   Policy runs before a response context manager is created, preserving the
   providers' deferred sync and async request lifecycle while preventing blocked

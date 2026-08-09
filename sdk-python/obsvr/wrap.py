@@ -27,6 +27,8 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     *.with_raw_response.*         openai / anthropic (see note)
     generate_content              google-generativeai  (see note)
     generate_content_async        google-generativeai  (see note)
+    start_chat().send_message     google-generativeai  (see note)
+    start_chat().send_message_async google-generativeai (see note)
 
 Note on beta.messages.create: present from 0.8.0, then ABSENT 0.16.0 through
 0.35.0, then present again from 0.36.0. That gap is upstream — the beta
@@ -107,10 +109,8 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 #: COVERAGE BOUNDARY. Mirrors the TypeScript AUDITABLE_METHODS table, which
 #: carries the full statement of what is excluded because it bears no chat text
 #: (embeddings, images, audio, files, fine-tuning) versus what is text-bearing
-#: but genuinely out of reach of a method-path table (the batch surfaces,
-#: ``count_tokens``, and Gemini's ``start_chat``, whose ChatSession calls a
-#: module-level function rather than a property on the proxied model, so no
-#: property read on the proxy ever happens).
+#: but genuinely out of reach of a method-path table (batch surfaces,
+#: ``count_tokens``, and legacy completion methods).
 #:
 #: The ``.stream()`` helpers are governed, in their own table below, because
 #: they return a manager rather than a response and so cannot share this one.
@@ -132,6 +132,8 @@ AUDITABLE_METHODS = {
     "messages.with_raw_response.create",  # Anthropic raw response
     "generate_content",          # Google Gemini, google-generativeai only
     "generate_content_async",    # Google Gemini async, google-generativeai only
+    "send_message",              # Google Gemini ChatSession sync
+    "send_message_async",        # Google Gemini ChatSession async
     "beta.messages.create",      # Anthropic beta
     "beta.messages.with_raw_response.create",  # Anthropic beta raw response
     "beta.responses.create",     # OpenAI Responses beta
@@ -180,11 +182,21 @@ DEFERRED_RESPONSE_METHODS = {
     "responses.with_streaming_response.parse",
 }
 
+#: Factory methods whose return object contains governed calls. The factory
+#: itself performs no provider request and emits no event; its result must stay
+#: behind the proxy so the later request cannot escape through a raw object.
+GOVERNED_FACTORY_METHODS = {
+    "start_chat",
+}
+
 #: Every method path that makes ``wrap()`` a governed wrapper. Keep the three
 #: tables separate above because their return shapes require different
 #: interception pipelines, but coverage reporting must consider all of them.
 _GOVERNED_METHODS = (
-    AUDITABLE_METHODS | STREAM_HELPER_METHODS | DEFERRED_RESPONSE_METHODS
+    AUDITABLE_METHODS
+    | STREAM_HELPER_METHODS
+    | DEFERRED_RESPONSE_METHODS
+    | GOVERNED_FACTORY_METHODS
 )
 
 #: Attribute names that may lead to an auditable method. Everything else is
@@ -207,6 +219,12 @@ def _detect_provider(client: Any) -> str:
     if hasattr(client, "responses") and hasattr(getattr(client, "responses"), "create"):
         return "openai"
     if hasattr(client, "generate_content"):
+        return "google"
+    if (
+        hasattr(client, "send_message")
+        and hasattr(client, "model")
+        and hasattr(getattr(client, "model"), "generate_content")
+    ):
         return "google"
     name = type(client).__name__.lower()
     if "openai" in name:
@@ -514,9 +532,12 @@ def _extract_model(provider: str, target: Any, kwargs: dict) -> str:
     if isinstance(model, str):
         return model
     if provider == "google":
+        model_target = getattr(target, "model", None)
         return str(
             getattr(target, "model_name", None)
             or getattr(target, "_model_name", None)
+            or getattr(model_target, "model_name", None)
+            or getattr(model_target, "_model_name", None)
             or "gemini"
         )
     return "unknown"
@@ -1755,6 +1776,12 @@ class _ObsvrProxy:
                     value, target, provider, method_path, options, args, kwargs
                 )
             return intercepted_response
+
+        if method_path in GOVERNED_FACTORY_METHODS and callable(value):
+            def intercepted_factory(*args: Any, **kwargs: Any) -> Any:
+                result = value(*args, **kwargs)
+                return _ObsvrProxy(result, [], provider, options)
+            return intercepted_factory
 
         # Keep walking only down chains that can reach an auditable method
         if name in _TRAVERSABLE and value is not None and not callable(value):

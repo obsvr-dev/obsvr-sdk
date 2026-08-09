@@ -171,6 +171,8 @@ class TestBoundaryHoldsInBothDirections:
             (["responses", "with_raw_response", "parse"], 1),
             (["generate_content"], 1),
             (["generate_content_async"], 1),
+            (["send_message"], 1),
+            (["send_message_async"], 1),
             (["beta", "messages", "create"], 1),
             (["beta", "messages", "with_raw_response", "create"], 1),
             (["beta", "responses", "create"], 1),
@@ -188,6 +190,7 @@ class TestBoundaryHoldsInBothDirections:
             (["messages", "count_tokens"], 0),
             (["messages", "batches", "create"], 0),
             (["generate_content_stream"], 0),
+            # A governed factory: no event until its returned session sends.
             (["start_chat"], 0),
             (["embeddings", "create"], 0),
             (["images", "generate"], 0),
@@ -209,7 +212,9 @@ class TestBoundaryHoldsInBothDirections:
         async def _async_leaf(**kwargs):
             return FakeAnthropicResponse()
 
-        node = _async_leaf if path == ["generate_content_async"] else _Leaf()
+        node = _async_leaf if path in (
+            ["generate_content_async"], ["send_message_async"]
+        ) else _Leaf()
         for seg in reversed(path):
             holder = type("Node", (), {})()
             setattr(holder, seg, node)
@@ -217,7 +222,12 @@ class TestBoundaryHoldsInBothDirections:
 
         # The provider detector duck-types on messages.create; give it one
         # unless this path already supplies it.
-        if path[0] != "messages":
+        if path[0] in {"send_message", "send_message_async"}:
+            node.model = type(
+                "GenerativeModel", (),
+                {"model_name": "gemini-test", "generate_content": lambda *a: None},
+            )()
+        elif path[0] != "messages":
             node.messages = _RecordingMessages([], "messages.create")
 
         client = obsvr.wrap(node)
@@ -225,7 +235,7 @@ class TestBoundaryHoldsInBothDirections:
         for seg in path:
             cursor = getattr(cursor, seg)
         result = cursor(model="m", messages=[{"role": "user", "content": "hi"}])
-        if path == ["generate_content_async"]:
+        if path in (["generate_content_async"], ["send_message_async"]):
             asyncio.run(result)
 
         assert len(captured) == expected_events
