@@ -31,6 +31,15 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-09: the hidden-HTML pass now retains malformed content and matches
+  same-name nesting. The first bounded implementation stopped at the first
+  `</name>` and dropped the rest of the input when no closer existed. A nested
+  hidden element could therefore expose a hidden tail in the canonical view,
+  while an unterminated opening tag could remove the very payload the view was
+  meant to scan. Both SDKs now depth-count same-name elements and, when no
+  matching closer exists, remove only the opening tag while retaining the full
+  remainder. Cross-language cases `hidden_html_same_name_nesting` and
+  `hidden_html_unterminated_retains_remainder` pin both failure directions.
 - 2026-08-06: a customer `regex` rule now means one thing on both SDKs. The
   SYNTAX half of the dialect split had already been closed by rejection in both
   validators; the SEMANTIC half — `\d` `\w` `\s` `\b` `$` `.`, which read
@@ -216,10 +225,9 @@ History:
   `String.prototype.trimEnd`, whose whitespace set is not Python's — Python also
   strips `\x1c`-`\x1f` and NEL, and does not strip U+FEFF — so the Python side
   spells the ECMAScript set out (`_JS_TRIM_WS`) instead of calling bare
-  `rstrip()`. The documented limits are shared too: first-matching-closer (so
-  same-name nesting leaves a tail, failing toward keeping content), an
-  unterminated hidden element drops the remainder, and only the `style`
-  attribute carries the CSS forms.
+  `rstrip()`. The original first-closer and unterminated-input limits were
+  closed on 2026-08-09 (entry above); only the `style` attribute carries the
+  CSS forms.
 - 2026-07-27: KD-4 (numeric canonicalization) was FIXED, not re-argued, and
   the row is gone. It had been an accepted risk pinned by hand-written
   vectors, scoped to "exotic numbers" — integers past the JS safe range and

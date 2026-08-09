@@ -257,24 +257,37 @@ def _find_tag_end(text: str, start: int) -> int:
 
 
 def _index_of_closing_tag(text: str, start: int, name: str) -> int:
-    """Index just past the first ``</name ... >`` at or after ``start``, or -1."""
+    """Index just past the matching same-name closer, including nesting."""
     n = len(text)
-    i = start
-    while True:
-        lt = text.find("</", i)
+    depth = 1
+    scan = start
+    while scan < n:
+        lt = text.find("<", scan)
         if lt == -1:
             return -1
-        name_start = lt + 2
-        if text[name_start:name_start + len(name)].lower() == name:
-            after_at = name_start + len(name)
-            after = text[after_at] if after_at < n else None
-            # A real closer, not a longer name that merely starts the same way.
-            if after is None or not _is_tag_name_char(after):
-                gt = text.find(">", after_at)
-                if gt == -1:
-                    return -1
-                return gt + 1
-        i = lt + 2
+        closing = lt + 1 < n and text[lt + 1] == "/"
+        name_start = lt + (2 if closing else 1)
+        if name_start >= n or not _is_tag_name_start(text[name_start]):
+            scan = lt + 1
+            continue
+        p = name_start
+        while p < n and _is_tag_name_char(text[p]):
+            p += 1
+        tag_end = _find_tag_end(text, p)
+        if tag_end == -1:
+            return -1
+        candidate = text[name_start:p].lower()
+        if candidate == name:
+            if closing:
+                depth -= 1
+                if depth == 0:
+                    return tag_end + 1
+            else:
+                attrs = text[p:tag_end]
+                if not attrs.rstrip(_JS_TRIM_WS).endswith("/") and candidate not in _VOID_ELEMENTS:
+                    depth += 1
+        scan = tag_end + 1
+    return -1
 
 
 def _has_hidden_attribute(attrs: str) -> bool:
@@ -345,17 +358,16 @@ def strip_hidden_html(text: str) -> str:
     region is removed with NO separator (unlike ``strip_html_comments``, which
     leaves a space): the canonical view is what a reader actually sees rendered.
 
-    Deliberately a bounded text pass, not a parser (hot-path budget):
+    Deliberately a bounded text pass, not a general HTML parser (hot-path budget):
      - no regex over the document, so no backtracking surface; the only regex
        is a whitespace squeeze over one tag's attribute value
      - single forward pass, O(input): each hidden region's closing-tag search
        ends where scanning resumes, so no character is examined twice
-     - the FIRST matching closing tag ends the region, so same-name nesting
-       (``<div style="display:none">a<div>b</div>c</div>``) leaves a tail in
-       the view. That fails toward keeping content, and the raw scan still
-       covers it.
-     - an unterminated hidden element drops the remainder, matching
-       ``strip_html_comments``.
+     - same-name nesting is depth-counted, so the matching outer closer ends
+       the hidden region rather than exposing a tail
+     - an unterminated hidden element removes only its opening tag and retains
+       the entire remainder for scanning; malformed markup never makes content
+       disappear from the detection view.
 
     Twin: ``stripHiddenHtml`` in sdk-typescript/src/policy/deobfuscate.ts.
     """
@@ -392,7 +404,7 @@ def strip_hidden_html(text: str) -> str:
             region_end = tag_end + 1
         else:
             close = _index_of_closing_tag(text, tag_end + 1, name)
-            region_end = n if close == -1 else close
+            region_end = tag_end + 1 if close == -1 else close
         emitted = region_end
         scan = region_end
     if out is None:

@@ -238,23 +238,35 @@ function findTagEnd(text: string, from: number): number {
   return -1;
 }
 
-/** Index just past the first `</name ... >` at or after `from`, or -1. */
+/** Index just past the matching same-name closer, including nested elements. */
 function indexOfClosingTag(text: string, from: number, name: string): number {
-  for (let i = from; ; ) {
-    const lt = text.indexOf('</', i);
+  let depth = 1;
+  for (let scan = from; scan < text.length; ) {
+    const lt = text.indexOf('<', scan);
     if (lt === -1) return -1;
-    const nameStart = lt + 2;
-    if (text.slice(nameStart, nameStart + name.length).toLowerCase() === name) {
-      const after = text[nameStart + name.length];
-      // A real closer, not a longer name that merely starts the same way.
-      if (after === undefined || !isTagNameChar(after)) {
-        const gt = text.indexOf('>', nameStart + name.length);
-        if (gt === -1) return -1;
-        return gt + 1;
+    const closing = text[lt + 1] === '/';
+    const nameStart = lt + (closing ? 2 : 1);
+    if (nameStart >= text.length || !isTagNameStart(text[nameStart])) {
+      scan = lt + 1;
+      continue;
+    }
+    let p = nameStart;
+    while (p < text.length && isTagNameChar(text[p])) p++;
+    const tagEnd = findTagEnd(text, p);
+    if (tagEnd === -1) return -1;
+    const candidate = text.slice(nameStart, p).toLowerCase();
+    if (candidate === name) {
+      if (closing) {
+        depth--;
+        if (depth === 0) return tagEnd + 1;
+      } else {
+        const attrs = text.slice(p, tagEnd);
+        if (!attrs.trimEnd().endsWith('/') && !VOID_ELEMENTS.has(candidate)) depth++;
       }
     }
-    i = lt + 2;
+    scan = tagEnd + 1;
   }
+  return -1;
 }
 
 /**
@@ -317,16 +329,16 @@ function hasHiddenAttribute(attrs: string): boolean {
  * separator (unlike `stripHtmlComments`, which leaves a space): the canonical
  * view is what a reader actually sees rendered.
  *
- * Deliberately a bounded text pass, not a parser (hot-path budget, P-01):
+ * Deliberately a bounded text pass, not a general HTML parser (hot-path budget, P-01):
  *  - no regex over the document, so no backtracking surface; the only regexes
  *    are whitespace tests over one tag's attribute text
  *  - single forward pass, O(input): each hidden region's closing-tag search
  *    ends where scanning resumes, so no character is examined twice
- *  - the FIRST matching closing tag ends the region, so same-name nesting
- *    (`<div style="display:none">a<div>b</div>c</div>`) leaves a tail in the
- *    view. That fails toward keeping content, and the raw scan still covers it.
- *  - an unterminated hidden element drops the remainder, matching
- *    `stripHtmlComments`.
+ *  - same-name nesting is depth-counted, so the matching outer closer ends the
+ *    hidden region rather than exposing a tail
+ *  - an unterminated hidden element removes only its opening tag and retains
+ *    the entire remainder for scanning; malformed markup never makes content
+ *    disappear from the detection view.
  */
 export function stripHiddenHtml(text: string): string {
   if (!text.includes('<')) return text;
@@ -361,7 +373,7 @@ export function stripHiddenHtml(text: string): string {
       regionEnd = tagEnd + 1;
     } else {
       const close = indexOfClosingTag(text, tagEnd + 1, name);
-      regionEnd = close === -1 ? text.length : close;
+      regionEnd = close === -1 ? tagEnd + 1 : close;
     }
     emitted = regionEnd;
     scan = regionEnd;
