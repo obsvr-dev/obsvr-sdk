@@ -109,13 +109,18 @@ class TestStoredContentIsScanned:
         assert tool, "no tool event"
         assert SSN not in str(tool[0]["prompt"])
 
-    def test_the_verdict_says_redacted_and_never_blocked(self, monkeypatch):
-        # A TracingProcessor cannot refuse, so an event claiming it had would be
-        # the exact false record this repository exists to remove.
+    def test_the_verdict_does_not_claim_the_outbound_call_was_redacted(self, monkeypatch):
+        # A TracingProcessor cannot change or refuse a completed call. Stored
+        # redaction therefore travels separately from the outbound verdict.
         captured = _run_generation(monkeypatch, pii_policy={"rules": {"ssn": "block"}})
         llm = [e for e in captured if e.get("operation") == "llm"]
-        assert llm[0]["action_taken"] == "redacted"
+        assert llm[0]["action_taken"] == "not_evaluated"
         assert llm[0]["action_reason"] == "pii_detected"
+        telemetry = llm[0]["metadata"]["obsvr_telemetry"]
+        assert telemetry["stored_redaction_scope"] == "observe_only"
+        assert telemetry["stored_redaction_types"] == ["ssn"]
+        assert telemetry["stored_redaction_outbound_unmodified"] is True
+        assert telemetry["stored_redaction_requested_action"] == "block"
 
 
 class TestTheControls:

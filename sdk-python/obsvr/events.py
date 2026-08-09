@@ -593,6 +593,13 @@ def build_audit_event(
         _tel["policy_not_evaluated"] = _policy_not_evaluated
         _md["obsvr_telemetry"] = _tel
         _event["metadata"] = _md
+    _stored_redaction_telemetry = comp.get("stored_redaction_telemetry")
+    if _stored_redaction_telemetry is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel.update(_stored_redaction_telemetry)
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
     if bool(getattr(config, "policy_floor", None)):
         # Anti-tamper floor evidence: floor_version is a pure function of
         # config.policy_floor, so it is stamped HERE for EVERY event under an

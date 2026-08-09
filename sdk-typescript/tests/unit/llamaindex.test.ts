@@ -201,8 +201,14 @@ describe('obsvrLlamaIndexHandler', () => {
 
     await waitForEvents(1);
     expect(sentEvents[0].event_type).toBe('llm_call');
-    expect(sentEvents[0].action_taken).toBe('redacted');
+    expect(sentEvents[0].action_taken).toBe('not_evaluated');
     expect(sentEvents[0].prompt).toContain('[REDACTED_SSN]');
+    expect(sentEvents[0].metadata.obsvr_telemetry).toMatchObject({
+      stored_redaction_scope: 'observe_only',
+      stored_redaction_types: ['ssn'],
+      stored_redaction_outbound_unmodified: true,
+      stored_redaction_requested_action: 'block',
+    });
   });
 
   it('ignores llm-end with no matching start', async () => {

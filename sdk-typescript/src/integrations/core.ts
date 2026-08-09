@@ -186,6 +186,15 @@ export interface ComplianceInfo {
    * proposed rather than taken, exactly as `detector_failure` reasoned.
    */
   policy_not_evaluated?: PolicyNotEvaluated;
+  /** Stored-copy redaction performed after an observe-only callback. This is
+   * storage provenance, not a claim that the provider-bound operation was
+   * changed. It is mirrored onto metadata.obsvr_telemetry for ingest. */
+  stored_redaction_telemetry?: {
+    stored_redaction_scope: "observe_only";
+    stored_redaction_types: string[];
+    stored_redaction_outbound_unmodified: true;
+    stored_redaction_requested_action: "block" | "redact";
+  };
 }
 
 /** Why a surface carries no policy verdict, in terms an operator can act on. */
@@ -1718,9 +1727,9 @@ export function blockedUserInputForStorage(
 }
 
 /**
- * Observe-only policy for framework callbacks: the request was already
- * sent to the LLM, so PII policy applies to the *stored* copy.
- * "block" is downgraded to redact-in-event with action_reason pii_detected.
+ * Observe-only policy for framework callbacks: the request was already sent
+ * to the LLM, so PII policy can only change the stored copy. The outbound
+ * verdict remains not_evaluated and storage provenance is recorded separately.
  */
 /**
  * DEFAULT_COMPLIANCE copy with the REAL policy_version (derived rules hash)
@@ -1782,16 +1791,26 @@ export function applyObservePolicy(
         ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
       };
     }
-    // redact OR block (downgraded): redact the stored copy
+    // redact OR block: redact the stored copy without claiming the already-sent
+    // provider request was changed.
     return {
       shouldRedactStored: true,
       compliance: {
         ...observeCompliance(config),
-        action_taken: "redacted",
+        action_taken: "not_evaluated",
         action_reason: "pii_detected",
         action_source: "builtin",
-        redacted_types: [...resolved.redactedTypes, ...resolved.blockedTypes],
-        blocked_types: [],
+        policy_not_evaluated: {
+          surface: "observe_only_integration",
+          gate: "pre_call_policy",
+          reason: "callback_observed_after_operation",
+        },
+        stored_redaction_telemetry: {
+          stored_redaction_scope: "observe_only",
+          stored_redaction_types: [...resolved.redactedTypes, ...resolved.blockedTypes],
+          stored_redaction_outbound_unmodified: true,
+          stored_redaction_requested_action: resolved.action,
+        },
       },
       ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
     };
@@ -2130,6 +2149,15 @@ export function buildIntegrationEvent(
     metadata.obsvr_telemetry = {
       ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
       policy_not_evaluated: compliance.policy_not_evaluated,
+    };
+    event.metadata = metadata;
+  }
+
+  if (compliance.stored_redaction_telemetry) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      ...compliance.stored_redaction_telemetry,
     };
     event.metadata = metadata;
   }

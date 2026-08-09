@@ -2020,8 +2020,8 @@ def _observe_compliance(config: ResolvedConfig) -> Dict[str, Any]:
 
 def apply_observe_policy(prompt_text: str, config: ResolvedConfig) -> Dict[str, Any]:
     """Observe-only policy for framework callbacks: the request already
-    went to the LLM, so policy applies to the *stored* copy.
-    "block" is downgraded to redact-in-event with action_reason pii_detected.
+    went to the LLM, so policy can only change the stored copy. The outbound
+    verdict remains not_evaluated and storage provenance is recorded separately.
     """
     if config.pii_policy is None:
         return {"should_redact_stored": False, "compliance": _observe_compliance(config)}
@@ -2038,14 +2038,25 @@ def apply_observe_policy(prompt_text: str, config: ResolvedConfig) -> Dict[str, 
         if via is not None:
             result["stored_redaction_via"] = via
         return result
-    # redact OR block (downgraded): redact the stored copy. A view-only hit
+    # redact OR block: redact the stored copy without claiming the already-sent
+    # provider request was changed. A view-only hit
     # (stored_redaction_via) has no locatable span — callers MUST redact
     # stored copies with redact_for_storage(text, via), never span redaction.
     compliance = _observe_compliance(config)
-    compliance["action_taken"] = "redacted"
+    compliance["action_taken"] = "not_evaluated"
     compliance["action_reason"] = "pii_detected"
     compliance["action_source"] = "builtin"
-    compliance["redacted_types"] = resolved["redacted_types"] + resolved["blocked_types"]
+    compliance["policy_not_evaluated"] = {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
+    compliance["stored_redaction_telemetry"] = {
+        "stored_redaction_scope": "observe_only",
+        "stored_redaction_types": resolved["redacted_types"] + resolved["blocked_types"],
+        "stored_redaction_outbound_unmodified": True,
+        "stored_redaction_requested_action": resolved["action"],
+    }
     result = {"should_redact_stored": True, "compliance": compliance}
     if via is not None:
         result["stored_redaction_via"] = via

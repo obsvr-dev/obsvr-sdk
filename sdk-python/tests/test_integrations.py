@@ -102,7 +102,7 @@ def test_langchain_llm_error(sent):
     assert sent[0]["error_message"] == "connection reset"
 
 
-def test_langchain_observe_only_pii_downgrade(sent):
+def test_langchain_observe_only_pii_storage_is_separate_from_outbound(sent):
     _init_pii()
     from obsvr.integrations.langchain import ObsvrCallbackHandler
     h = ObsvrCallbackHandler()
@@ -111,10 +111,12 @@ def test_langchain_observe_only_pii_downgrade(sent):
     assert len(sent) == 1
     e = sent[0]
     assert e["event_type"] == "llm_call"       # not blocked_call
-    assert e["action_taken"] == "redacted"
+    assert e["action_taken"] == "not_evaluated"
     assert e["action_reason"] == "pii_detected"
     assert "[REDACTED_SSN]" in e["prompt"]
     assert "123-45-6789" not in e["prompt"]
+    assert e["metadata"]["obsvr_telemetry"]["stored_redaction_scope"] == "observe_only"
+    assert e["metadata"]["obsvr_telemetry"]["stored_redaction_outbound_unmodified"] is True
 
 
 def test_langchain_ghost_end_ignored(sent):
@@ -445,7 +447,8 @@ def test_llamaindex_pii_observe_only(sent):
     assert len(sent) == 1
     e = sent[0]
     assert "[REDACTED_SSN]" in e["prompt"]
-    assert e["action_taken"] == "redacted"
+    assert e["action_taken"] == "not_evaluated"
+    assert e["metadata"]["obsvr_telemetry"]["stored_redaction_scope"] == "observe_only"
 
 
 def test_llamaindex_uninitialized_no_op(sent):
@@ -507,7 +510,8 @@ def test_crewai_pii_observe_only(sent):
     obsvr_step_callback(_AgentFinish("ssn 123-45-6789"))
     assert len(sent) == 1
     assert "[REDACTED_SSN]" in sent[0]["prompt"]
-    assert sent[0]["action_taken"] == "redacted"
+    assert sent[0]["action_taken"] == "not_evaluated"
+    assert sent[0]["metadata"]["obsvr_telemetry"]["stored_redaction_scope"] == "observe_only"
 
 
 def test_crewai_uninitialized_no_op(sent):

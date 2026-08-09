@@ -258,24 +258,37 @@ def test_pre_call_hook_allow_cannot_override_builtin_block():
 # ---------------------------------------------------------------------------
 
 
-def test_observe_policy_blocks_downgraded_to_redact():
+def test_observe_policy_records_storage_without_claiming_outbound_redaction():
     r = apply_observe_policy("ssn 123-45-6789", _cfg(pii_policy={}))
     assert r["should_redact_stored"] is True
-    assert r["compliance"]["action_taken"] == "redacted"
+    assert r["compliance"]["action_taken"] == "not_evaluated"
     assert r["compliance"]["event_type"] == "llm_call"
     assert r["compliance"]["blocked_types"] == []
-    assert "ssn" in r["compliance"]["redacted_types"]
+    assert r["compliance"]["redacted_types"] == []
+    assert r["compliance"]["policy_not_evaluated"] == {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
+    assert r["compliance"]["stored_redaction_telemetry"] == {
+        "stored_redaction_scope": "observe_only",
+        "stored_redaction_types": ["ssn"],
+        "stored_redaction_outbound_unmodified": True,
+        "stored_redaction_requested_action": "block",
+    }
 
 
 def test_observe_policy_clean_no_redact():
     r = apply_observe_policy("hello world", _cfg(pii_policy={}))
     assert r["should_redact_stored"] is False
     assert r["compliance"]["action_taken"] == "allowed"
+    assert "stored_redaction_telemetry" not in r["compliance"]
 
 
 def test_observe_policy_no_policy():
     r = apply_observe_policy("ssn 123-45-6789", _cfg())
     assert r["should_redact_stored"] is False
+    assert r["compliance"]["action_taken"] == "allowed"
 
 
 # ── scan scope: DECISION scans scan_text (last user turn), storage keeps full ──

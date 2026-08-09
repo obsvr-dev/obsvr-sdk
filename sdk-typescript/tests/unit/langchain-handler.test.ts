@@ -117,7 +117,7 @@ describe('ObsvrCallbackHandler', () => {
     expect(sentEvents[0].error_message).toBe('connection reset');
   });
 
-  it('redacts stored copy when PII is present (observe-only downgrade)', async () => {
+  it('separates stored-copy redaction from the unmodified provider call', async () => {
     init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
     const handler = new ObsvrCallbackHandler();
 
@@ -133,12 +133,19 @@ describe('ObsvrCallbackHandler', () => {
 
     await waitForEvents(1);
     const e = sentEvents[0];
-    // Block is downgraded to redact-in-event; call already happened
+    // The callback ran after provider dispatch, so it cannot claim the call was
+    // redacted even though it scrubs the event copy.
     expect(e.event_type).toBe('llm_call');
-    expect(e.action_taken).toBe('redacted');
+    expect(e.action_taken).toBe('not_evaluated');
     expect(e.action_reason).toBe('pii_detected');
     expect(e.prompt).toContain('[REDACTED_SSN]');
     expect(e.prompt).not.toContain('123-45-6789');
+    expect(e.metadata.obsvr_telemetry).toMatchObject({
+      stored_redaction_scope: 'observe_only',
+      stored_redaction_types: ['ssn'],
+      stored_redaction_outbound_unmodified: true,
+      stored_redaction_requested_action: 'block',
+    });
   });
 
   it('ignores ends with no matching start', async () => {
