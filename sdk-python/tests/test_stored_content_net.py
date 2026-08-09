@@ -37,6 +37,8 @@ import obsvr
 import obsvr.wrap  # ensure module is loaded; package attr shadows it
 from obsvr import sender
 from obsvr.config import _reset
+from obsvr.config import get_config
+from obsvr.events import build_audit_event
 
 WRAP_MODULE = sys.modules["obsvr.wrap"]
 
@@ -182,3 +184,57 @@ def test_no_pii_policy_the_net_never_fires(monkeypatch):
     assert SSN in captured[0]["prompt"]
     tel = (captured[0].get("metadata") or {}).get("obsvr_telemetry") or {}
     assert "stored_redaction_scope" not in tel
+
+
+def test_response_only_pii_is_redacted_from_the_stored_event(monkeypatch):
+    _init(pii_policy={"rules": {"ssn": "redact"}})
+    captured = _captured(monkeypatch)
+    fake = FakeOpenAI()
+
+    def create_with_pii(**kwargs):
+        fake.chat.completions.calls.append(kwargs)
+
+        class _Msg:
+            content = f"generated ssn {SSN}"
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+
+        return _Resp()
+
+    fake.chat.completions.create = create_with_pii
+    response = obsvr.wrap(fake).chat.completions.create(
+        model="gpt-4", messages=[{"role": "user", "content": "hello"}]
+    )
+    assert SSN in response.choices[0].message.content
+    assert SSN not in captured[0]["response"]
+    assert "[REDACTED_SSN]" in captured[0]["response"]
+    tel = (captured[0].get("metadata") or {}).get("obsvr_telemetry") or {}
+    assert tel["response_pii_detected"] is True
+    assert tel["response_pii_types"] == ["ssn"]
+    assert tel["response_pii_action"] == "redacted"
+    assert tel["stored_redaction_scope"] == "all_event_content"
+    assert tel["stored_redaction_surfaces"] == ["response"]
+
+
+def test_integration_event_builder_redacts_response_only_pii():
+    _init(pii_policy={"rules": {"ssn": "redact"}})
+    event = build_audit_event(
+        get_config(),
+        provider="unknown",
+        model="gpt-4",
+        operation="framework.callback",
+        source="test",
+        prompt="hello",
+        response=f"generated ssn {SSN}",
+    )
+    assert SSN not in event["response"]
+    assert "[REDACTED_SSN]" in event["response"]
+    tel = (event.get("metadata") or {}).get("obsvr_telemetry") or {}
+    assert tel["stored_redaction_scope"] == "all_event_content"
+    assert tel["stored_redaction_types"] == ["ssn"]
+    assert tel["stored_redaction_surfaces"] == ["response"]
+    assert tel["stored_redaction_outbound_unmodified"] is True

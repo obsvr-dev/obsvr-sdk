@@ -1960,18 +1960,72 @@ export function buildIntegrationEvent(
   // front doors cannot answer this differently again — they already did once,
   // in both directions: `wrap()` stored a honeytoken this path redacted, and
   // this path stored unreached-role PII that `wrap()` redacts.
-  const scannedForDecision = params.scannedText ?? params.userInput;
-  let storedRedactionTelemetry: Record<string, unknown> | undefined;
-  if (scannedForDecision !== undefined) {
-    const unscanned = redactUnscannedForStorage(
-      scrubbedPrompt,
-      scannedForDecision,
-      config,
-      (err) => recordDetectorFailure("builtin_pii_scan", err, config),
-    );
-    scrubbedPrompt = unscanned.prompt;
-    storedRedactionTelemetry = unscanned.telemetry;
+  const scannedForDecision = params.scannedText ?? params.userInput ?? "";
+  const storageScans: Array<{
+    surface: "prompt" | "response" | "user_input";
+    result: ReturnType<typeof redactUnscannedForStorage>;
+  }> = [
+    {
+      surface: "prompt",
+      result: redactUnscannedForStorage(
+        scrubbedPrompt,
+        scannedForDecision,
+        config,
+        (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+      ),
+    },
+    {
+      surface: "response",
+      result: redactUnscannedForStorage(
+        scrubbedResponse,
+        "",
+        config,
+        (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+      ),
+    },
+  ];
+  if (scrubbedUserInput !== undefined) {
+    storageScans.push({
+      surface: "user_input",
+      result: redactUnscannedForStorage(
+        scrubbedUserInput,
+        params.userInput ?? "",
+        config,
+        (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+      ),
+    });
   }
+  scrubbedPrompt = storageScans[0].result.prompt;
+  scrubbedResponse = storageScans[1].result.prompt;
+  if (scrubbedUserInput !== undefined && storageScans[2]) {
+    scrubbedUserInput = storageScans[2].result.prompt;
+  }
+  const firedStorageScans = storageScans.filter(({ result }) => result.telemetry !== undefined);
+  const storedRedactionTypes = Array.from(
+    new Set(
+      firedStorageScans.flatMap(({ result }) =>
+        Array.isArray(result.telemetry?.stored_redaction_types)
+          ? (result.telemetry.stored_redaction_types as string[])
+          : [],
+      ),
+    ),
+  ).sort();
+  const storedRedactionTelemetry: Record<string, unknown> | undefined =
+    firedStorageScans.length > 0
+      ? {
+          stored_redaction_scope: "all_event_content",
+          ...(storedRedactionTypes.length > 0
+            ? { stored_redaction_types: storedRedactionTypes }
+            : {}),
+          stored_redaction_surfaces: firedStorageScans.map(({ surface }) => surface),
+          stored_redaction_outbound_unmodified: true,
+          ...(firedStorageScans.some(
+            ({ result }) => result.telemetry?.stored_redaction_scan_failed === true,
+          )
+            ? { stored_redaction_scan_failed: true }
+            : {}),
+        }
+      : undefined;
 
   const errorMessage = (() => {
     const m =

@@ -3,6 +3,8 @@ import { init, _reset } from '../../src/proxy/config';
 import { wrap } from '../../src/proxy/wrapper';
 import { wrapTogether } from '../../src/integrations/together';
 import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
+import { getConfig } from '../../src/proxy/config';
+import { buildIntegrationEvent } from '../../src/integrations/core';
 
 /**
  * The README promise this pins, in its own words:
@@ -224,5 +226,47 @@ describe('stored-content net: content outside the decision scan', () => {
     await waitForEvents(1);
     expect(sentEvents[0].prompt).toContain(SSN);
     expect(sentEvents[0].metadata?.obsvr_telemetry?.stored_redaction_scope).toBeUndefined();
+  });
+
+  it('redacts response-only PII from the stored event', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { rules: { ssn: 'redact' } } });
+    const create = jest.fn(async (_args: any) => ({
+      choices: [{ message: { content: `generated ssn ${SSN}` } }],
+      model: 'gpt-4',
+    }));
+    const wrapped = wrap({ chat: { completions: { create } } });
+    const response = await wrapped.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    expect(response.choices[0].message.content).toContain(SSN);
+    await waitForEvents(1);
+    expect(sentEvents[0].response).not.toContain(SSN);
+    expect(sentEvents[0].response).toContain('[REDACTED_SSN]');
+    expect(sentEvents[0].metadata?.obsvr_telemetry).toMatchObject({
+      response_pii_detected: true,
+      response_pii_types: ['ssn'],
+      response_pii_action: 'redacted',
+    });
+  });
+
+  it('applies the response storage net to integration-built events', () => {
+    init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { rules: { ssn: 'redact' } } });
+    const event = buildIntegrationEvent({
+      config: getConfig(),
+      provider: 'unknown',
+      model: 'gpt-4',
+      operation: 'framework.callback',
+      source: 'test',
+      prompt: 'hello',
+      response: `generated ssn ${SSN}`,
+    });
+    expect(event.response).not.toContain(SSN);
+    expect(event.response).toContain('[REDACTED_SSN]');
+    expect(event.metadata?.obsvr_telemetry).toMatchObject({
+      stored_redaction_scope: 'all_event_content',
+      stored_redaction_types: ['ssn'],
+      stored_redaction_outbound_unmodified: true,
+    });
   });
 });
