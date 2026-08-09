@@ -165,6 +165,12 @@ describe('ssrf: resolve-before-connect', () => {
       assertBackendUrlAllowed('https://sneaky.example.com/x', { allowPrivateNetwork: true }, resolver),
     ).rejects.toBeInstanceOf(SsrfError);
   });
+  it('rejects the whole snapshot when any resolved address is private', async () => {
+    const resolver = async () => ['93.184.216.34', '10.1.2.3'];
+    await expect(
+      resolveBackendUrlAllowed('https://opa.example.com/x', {}, resolver),
+    ).rejects.toBeInstanceOf(SsrfError);
+  });
   it('allows a hostname resolving to a public address', async () => {
     const resolver = async () => ['93.184.216.34'];
     await expect(
