@@ -56,6 +56,14 @@ const SURFACES = [
         match: /^\s*\.\.\.\(\(audit_fields\.metadata \?\? \{\}\) as Record<string, unknown>\),$|^\s*const rawMeta = /,
       },
       {
+        // The guarded detector section first assembles the per-call and
+        // wrap-time metadata channels. The rawMeta derivation immediately
+        // below is still the sole resolved principal view consumed by gates.
+        why: "assembles metadata inside the detector guard before resolution",
+        match:
+          /^\s*if \(ctx\.options\.metadata \|\| audit_fields\.metadata\) \{$|^\s*\.\.\.\(\(audit_fields\.metadata as Record<string, unknown> \| undefined\) \?\? \{\}\),$/,
+      },
+      {
         // Telemetry stamping writes the reserved obsvr_telemetry key back
         // onto the record. A write is not a principal read.
         why: "stamps telemetry onto the record",
