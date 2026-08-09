@@ -7,8 +7,8 @@
 Intercept supported model and tool calls at documented provider and execution boundaries. On enforcing surfaces, apply deterministic policy **before** the request leaves your process. Sign emitted decisions into a tamper-evident event stream that your obsvr service can seal into an independently verifiable record, preserving the recorded model, structured-rule version, verdict, and content integrity for later review. We call that **temporal provenance**.
 
 ![Status](https://img.shields.io/badge/status-beta-6d4aff)
-![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)
-![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi)
+[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.11.2)
+[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.11.2/)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-typescript%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
@@ -29,8 +29,8 @@ Two SDKs — **TypeScript** and **Python** — implementing one shared conforman
 
 | Package                    | Language                  | Version | Directory                    |
 | -------------------------- | ------------------------- | ------- | ---------------------------- |
-| [`@obsvr/sdk`](sdk-typescript/)       | TypeScript / Node.js ≥ 22 | 0.11.2  | [`sdk-typescript/`](sdk-typescript/)               |
-| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.11.2  | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.11.2) | TypeScript / Node.js ≥ 22 | 0.11.2  | [`sdk-typescript/`](sdk-typescript/) |
+| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.11.2/) | Python ≥ 3.10             | 0.11.2  | [`sdk-python/`](sdk-python/) |
 
 ## Table of contents
 
