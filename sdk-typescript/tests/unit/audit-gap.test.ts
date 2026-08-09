@@ -21,9 +21,14 @@ import {
   _resetSender,
 } from '../../src/proxy/sender/fire-and-forget';
 import { verifyAuditChain } from '../../src/governance/verify-chain';
-import { parseAuditGapPrompt, AUDIT_GAP_METADATA_KEY } from '../../src/proxy/audit-gap';
-import { MAX_QUEUE_SIZE } from '../../src/constants';
+import {
+  AUDIT_GAP_METADATA_KEY,
+  parseAuditGapPrompt,
+  readAuditGapClaim,
+} from '../../src/proxy/audit-gap';
+import { MAX_QUEUE_SIZE, MAX_SEND_RETRIES } from '../../src/constants';
 import type { AuditEvent, ResolvedConfig } from '../../src/proxy/types';
+import { jest } from '@jest/globals';
 
 const API_KEY = 'test-key';
 
@@ -84,8 +89,9 @@ describe('audit gap markers', () => {
     globalThis.fetch = (async (_url: string, init: { body: string }) => {
       await gate;
       const body = JSON.parse(init.body);
-      for (const e of Array.isArray(body) ? body : [body]) delivered.push(e);
-      return { status: 200, ok: true, json: async () => ({ count: 1 }) };
+      const events = Array.isArray(body) ? body : [body];
+      for (const e of events) delivered.push(e);
+      return { status: 200, ok: true, json: async () => ({ count: events.length }) };
     }) as unknown as typeof fetch;
   });
 
@@ -240,6 +246,127 @@ describe('audit gap markers', () => {
     expect(marker.metadata?.governance_event).toBe('audit_gap');
     expect(marker.event_type).toBe('policy_flag');
     expect(marker.policy_version).toBe('none');
+  });
+});
+
+describe('post-sign delivery gap markers', () => {
+  let warned: ReturnType<typeof jest.spyOn>;
+
+  beforeEach(() => {
+    _resetSender();
+    warned = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    warned.mockRestore();
+    jest.useRealTimers();
+  });
+
+  async function exerciseTerminalLoss(
+    ordinaryVerdict: 'rejected' | 'permanent',
+  ): Promise<AuditEvent[]> {
+    const attempted: AuditEvent[] = [];
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as AuditEvent | AuditEvent[];
+      const event = (Array.isArray(body) ? body[0] : body) as AuditEvent;
+      attempted.push(event);
+      if (readAuditGapClaim(event)) {
+        return { status: 200, ok: true, json: async () => ({ count: 1 }) };
+      }
+      if (event.request_id === 'future') {
+        return { status: 200, ok: true, json: async () => ({ count: 1 }) };
+      }
+      if (ordinaryVerdict === 'rejected') {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            count: 0,
+            rejected: [{ index: 0, error: 'policy_blocked' }],
+          }),
+        };
+      }
+      return { status: 400, ok: false, json: async () => ({ error: 'bad_request' }) };
+    }) as unknown as typeof fetch;
+
+    const cfg = config();
+    enqueueAuditEvent(cfg, auditEvent('lost'));
+    await flushQueue(cfg, 2000);
+    enqueueAuditEvent(cfg, auditEvent('future'));
+    await flushQueue(cfg, 2000);
+    return attempted;
+  }
+
+  it.each([
+    ['rejected', 'ingest_rejected'],
+    ['permanent', 'permanent_failure'],
+  ] as const)('starts a fresh verified chain after %s loss', async (verdict, reason) => {
+    const attempted = await exerciseTerminalLoss(verdict);
+    const lost = attempted.find((event) => event.request_id === 'lost')!;
+    const marker = attempted.find((event) => readAuditGapClaim(event))!;
+    const future = attempted.find((event) => event.request_id === 'future')!;
+
+    expect(readAuditGapClaim(marker)).toEqual({ dropped: 1, reason });
+    expect(marker.sdk_session_id).not.toBe(lost.sdk_session_id);
+    expect(marker.seq_no).toBe(1);
+    expect(marker.prev_sig).toBeUndefined();
+    expect(future.sdk_session_id).toBe(marker.sdk_session_id);
+    expect(future.seq_no).toBe(2);
+    expect(future.prev_sig).toBe(marker.sdk_sig);
+    const verification = verifyAuditChain([marker, future], API_KEY);
+    expect(verification.valid).toBe(true);
+    expect(verification.gapMarkers).toBe(1);
+    expect(verification.eventsDeclaredLost).toBe(1);
+  });
+
+  it('declares retry exhaustion after the complete retry budget', async () => {
+    // Drive equal jitter to its zero-delay boundary so the real retry state
+    // machine runs without making this unit test sleep through backoff.
+    const random = jest.spyOn(Math, 'random').mockReturnValue(-1);
+    const attempted: AuditEvent[] = [];
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as AuditEvent | AuditEvent[];
+      const event = (Array.isArray(body) ? body[0] : body) as AuditEvent;
+      attempted.push(event);
+      if (readAuditGapClaim(event)) {
+        return { status: 200, ok: true, json: async () => ({ count: 1 }) };
+      }
+      return { status: 500, ok: false, json: async () => ({ error: 'unavailable' }) };
+    }) as unknown as typeof fetch;
+
+    enqueueAuditEvent(config(), auditEvent('lost-after-retries'));
+    await flushQueue(config(), 2000);
+    random.mockRestore();
+
+    const ordinaryAttempts = attempted.filter((event) => !readAuditGapClaim(event));
+    const marker = attempted.find((event) => readAuditGapClaim(event))!;
+    expect(ordinaryAttempts).toHaveLength(MAX_SEND_RETRIES + 1);
+    expect(readAuditGapClaim(marker)).toEqual({ dropped: 1, reason: 'retry_exhausted' });
+    expect(marker.sdk_session_id).not.toBe(ordinaryAttempts[0].sdk_session_id);
+    expect(marker.seq_no).toBe(1);
+    expect(verifyAuditChain([marker], API_KEY).valid).toBe(true);
+  });
+
+  it('does not recursively replace a terminally failed gap marker', async () => {
+    const attempted: AuditEvent[] = [];
+    globalThis.fetch = (async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as AuditEvent | AuditEvent[];
+      attempted.push((Array.isArray(body) ? body[0] : body) as AuditEvent);
+      return { status: 400, ok: false, json: async () => ({ error: 'bad_request' }) };
+    }) as unknown as typeof fetch;
+
+    enqueueAuditEvent(config(), auditEvent('lost'));
+    await flushQueue(config(), 2000);
+
+    expect(attempted).toHaveLength(2);
+    expect(readAuditGapClaim(attempted[0])).toBeNull();
+    expect(readAuditGapClaim(attempted[1])).toEqual({
+      dropped: 1,
+      reason: 'permanent_failure',
+    });
+    expect(getSenderStats().gap_markers).toBe(1);
+    expect(getQueueSize()).toBe(0);
   });
 });
 

@@ -6,6 +6,7 @@ import {
   getSenderStats,
 } from '../../src/proxy/sender/fire-and-forget';
 import type { PolicyRule } from '../../src/policy/rules';
+import { readAuditGapClaim } from '../../src/proxy/audit-gap';
 
 beforeEach(() => { _reset(); _resetSender(); _resetPolicyLog(); });
 
@@ -87,10 +88,14 @@ describe('policy log', () => {
 
     const stats = getSenderStats();
     expect(stats.sent).toBe(0);
-    expect(stats.dropped_rejected).toBe(1);
-    expect(requests).toHaveLength(1);
+    expect(stats.dropped_rejected).toBe(2);
+    expect(requests).toHaveLength(2);
     expect(requests[0].event_type).toBe('policy_changed');
     expect(typeof requests[0].sdk_sig).toBe('string');
+    expect(readAuditGapClaim(requests[1])).toEqual({
+      dropped: 1,
+      reason: 'ingest_rejected',
+    });
 
     delete (global as any).fetch;
   });

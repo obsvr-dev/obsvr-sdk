@@ -40,6 +40,15 @@ export const AUDIT_GAP_FORMAT = "obsvr:audit-gap/1";
 /** Events dropped because the bounded sender queue was full. */
 export const AUDIT_GAP_REASON_QUEUE_OVERFLOW = "queue_overflow";
 
+/** Events explicitly refused inside an otherwise terminal ingest response. */
+export const AUDIT_GAP_REASON_INGEST_REJECTED = "ingest_rejected";
+
+/** Events discarded after a non-retryable delivery failure. */
+export const AUDIT_GAP_REASON_PERMANENT_FAILURE = "permanent_failure";
+
+/** Events discarded after consuming their complete retry budget. */
+export const AUDIT_GAP_REASON_RETRY_EXHAUSTED = "retry_exhausted";
+
 /** Reserved metadata key carrying the structured (unsigned) copy of the claim. */
 export const AUDIT_GAP_METADATA_KEY = "obsvr_audit_gap";
 

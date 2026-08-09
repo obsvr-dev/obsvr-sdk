@@ -11,6 +11,8 @@ import pytest
 from obsvr import _reset
 from obsvr.config import ResolvedConfig
 from obsvr import sender
+from obsvr.audit_gap import read_audit_gap_claim
+from obsvr.verify_chain import verify_chain
 
 
 def _cfg(**kw):
@@ -316,11 +318,11 @@ def test_batch_rejects_increment_dropped_rejected_and_are_not_sent(monkeypatch):
     assert any(u.endswith("/ingest/batch") for u in calls), "no batch request was made"
 
     stats = sender.get_sender_stats()
-    assert stats["enqueued"] == 4
+    assert stats["enqueued"] == 5  # four calls plus the accepted gap marker
     assert stats["dropped_rejected"] == 2
     # 1 single-event send + 1 accepted event out of the batch of 3.
-    assert stats["sent"] == 2
-    # Rejects are not a transport failure: nothing retried, dead-lettered, or
+    assert stats["sent"] == 3  # two calls plus the marker
+    # Rejects are not a transport failure: nothing retried, permanently discarded, or
     # overflowed, and no backoff is armed - the batch itself succeeded.
     assert stats["retries"] == 0
     assert stats["dropped_permanent"] == 0
@@ -384,7 +386,7 @@ def test_malformed_reject_list_cannot_inflate_the_counter(monkeypatch):
     )
     stats = sender.get_sender_stats()
     assert stats["dropped_rejected"] == 2  # the batch held 2 events, not 10
-    assert stats["sent"] == 1
+    assert stats["sent"] == 2  # one call plus the accepted gap marker
     sender._reset_sender()
 
 
@@ -397,9 +399,101 @@ def test_whole_request_4xx_still_counts_as_dropped_permanent(monkeypatch):
         lambda url, payload, idx: _make_response(400),
     )
     stats = sender.get_sender_stats()
-    assert stats["dropped_permanent"] == 3
+    assert stats["dropped_permanent"] == 5  # three calls plus two failed markers
     assert stats["dropped_rejected"] == 0
     assert stats["sent"] == 0
+    sender._reset_sender()
+
+
+@pytest.mark.parametrize(
+    ("verdict", "reason"),
+    [("rejected", "ingest_rejected"), ("permanent", "permanent_failure")],
+)
+def test_terminal_delivery_loss_starts_fresh_marker_chain(monkeypatch, verdict, reason):
+    sender._reset_sender()
+    attempted = []
+
+    def send_one(_config, event):
+        attempted.append(event)
+        if read_audit_gap_claim(event):
+            return ("ok", 0)
+        if event["request_id"] == "future":
+            return ("ok", 0)
+        return (verdict, 0)
+
+    monkeypatch.setattr(sender, "_send_event", send_one)
+    monkeypatch.setattr(sender, "_mirror", lambda _config, _event: None)
+    cfg = _cfg()
+    sender.send_audit_async(cfg, {"request_id": "lost", "prompt": "p", "response": ""})
+    sender.flush(timeout=5)
+    sender.send_audit_async(cfg, {"request_id": "future", "prompt": "p", "response": ""})
+    sender.flush(timeout=5)
+
+    lost = next(event for event in attempted if event["request_id"] == "lost")
+    marker = next(event for event in attempted if read_audit_gap_claim(event))
+    future = next(event for event in attempted if event["request_id"] == "future")
+    assert read_audit_gap_claim(marker) == {"dropped": 1, "reason": reason}
+    assert marker["sdk_session_id"] != lost["sdk_session_id"]
+    assert marker["seq_no"] == 1
+    assert "prev_sig" not in marker
+    assert future["sdk_session_id"] == marker["sdk_session_id"]
+    assert future["seq_no"] == 2
+    assert future["prev_sig"] == marker["sdk_sig"]
+    result = verify_chain([marker, future], "test-key")
+    assert result.valid
+    assert result.gap_markers == 1
+    assert result.events_declared_lost == 1
+    sender._reset_sender()
+
+
+def test_retry_exhaustion_starts_fresh_marker_chain(monkeypatch):
+    sender._reset_sender()
+    attempted = []
+
+    def send_one(_config, event):
+        attempted.append(event)
+        if read_audit_gap_claim(event):
+            return ("ok", 0)
+        return ("retryable", 0)
+
+    monkeypatch.setattr(sender, "_send_event", send_one)
+    monkeypatch.setattr(sender, "_mirror", lambda _config, _event: None)
+    sender.send_audit_async(
+        _cfg(), {"request_id": "lost-after-retries", "prompt": "p", "response": ""}
+    )
+    sender.flush(timeout=5)
+
+    ordinary_attempts = [event for event in attempted if not read_audit_gap_claim(event)]
+    marker = next(event for event in attempted if read_audit_gap_claim(event))
+    assert len(ordinary_attempts) == 6
+    assert read_audit_gap_claim(marker) == {"dropped": 1, "reason": "retry_exhausted"}
+    assert marker["sdk_session_id"] != ordinary_attempts[0]["sdk_session_id"]
+    assert marker["seq_no"] == 1
+    assert verify_chain([marker], "test-key").valid
+    sender._reset_sender()
+
+
+def test_failed_gap_marker_is_not_replaced_recursively(monkeypatch):
+    sender._reset_sender()
+    attempted = []
+
+    def send_one(_config, event):
+        attempted.append(event)
+        return ("permanent", 0)
+
+    monkeypatch.setattr(sender, "_send_event", send_one)
+    monkeypatch.setattr(sender, "_mirror", lambda _config, _event: None)
+    sender.send_audit_async(_cfg(), {"request_id": "lost", "prompt": "p", "response": ""})
+    sender.flush(timeout=5)
+
+    assert len(attempted) == 2
+    assert read_audit_gap_claim(attempted[0]) is None
+    assert read_audit_gap_claim(attempted[1]) == {
+        "dropped": 1,
+        "reason": "permanent_failure",
+    }
+    assert sender.get_sender_stats()["gap_markers"] == 1
+    assert sender.get_queue_size() == 0
     sender._reset_sender()
 
 
@@ -543,7 +637,7 @@ def test_per_event_duplicate_reject_counts_as_sent_not_dropped(monkeypatch):
     )
     stats = sender.get_sender_stats()
     # 1 single + the duplicate + the one clean event = 3 sent, 1 refused.
-    assert stats["sent"] == 3
+    assert stats["sent"] == 4  # includes the accepted gap marker
     assert stats["dropped_rejected"] == 1
     assert stats["sent"] + stats["dropped_rejected"] == stats["enqueued"]
     sender._reset_sender()

@@ -749,7 +749,7 @@ def test_a_refused_event_is_never_counted_as_delivered(ingest_server):
     not claim otherwise. This is the counter the reporter measured lying."""
     stats = _deliver_one(ingest_server, 403, {"error": "invalid_sdk_signature"})
     assert stats["sent"] == 0, "a refused event was counted as delivered"
-    assert stats["dropped_rejected"] == 1
+    assert stats["dropped_rejected"] == 2  # refused event plus its refused gap marker
 
 
 def test_a_2xx_that_enumerates_a_reject_is_not_a_delivery(ingest_server):
@@ -761,7 +761,7 @@ def test_a_2xx_that_enumerates_a_reject_is_not_a_delivery(ingest_server):
         {"count": 0, "rejected": [{"index": 0, "error": "policy_blocked"}]},
     )
     assert stats["sent"] == 0
-    assert stats["dropped_rejected"] == 1
+    assert stats["dropped_rejected"] == 2  # refused event plus its refused gap marker
 
 
 def test_a_short_accepted_count_is_reconciled(ingest_server):
@@ -769,7 +769,7 @@ def test_a_short_accepted_count_is_reconciled(ingest_server):
     refusal whether or not the server enumerated it."""
     stats = _deliver_one(ingest_server, 200, {"count": 0})
     assert stats["sent"] == 0
-    assert stats["dropped_rejected"] == 1
+    assert stats["dropped_rejected"] == 2  # refused event plus its refused gap marker
 
 
 def test_an_accepted_event_still_counts_as_delivered(ingest_server):
@@ -784,8 +784,9 @@ def test_a_refused_policy_change_uses_the_signed_sender(ingest_server):
     """A policy change used to POST outside the sender and ignore the status.
 
     The real server is the instrument: it receives the governance event and
-    refuses it, while the shared sender must report zero deliveries and one
-    rejection. No audit-event verdict is used to grade the outcome.
+    refuses it, while the shared sender must report zero deliveries and both
+    terminal refusals (the change and its one non-recursive gap marker). No
+    audit-event verdict is used to grade the outcome.
     """
     from obsvr.config import set_tenant_policy
     from obsvr.rules import PolicyRule
@@ -816,10 +817,11 @@ def test_a_refused_policy_change_uses_the_signed_sender(ingest_server):
 
     stats = sender.get_sender_stats()
     assert stats["sent"] == 0
-    assert stats["dropped_rejected"] == 1
-    assert len(ingest_server.obsvr_requests) == 1
+    assert stats["dropped_rejected"] == 2
+    assert len(ingest_server.obsvr_requests) == 2
     assert ingest_server.obsvr_requests[0]["event_type"] == "policy_changed"
     assert isinstance(ingest_server.obsvr_requests[0].get("sdk_sig"), str)
+    assert ingest_server.obsvr_requests[1]["operation"] == "audit.gap"
 
 
 def test_delivery_loss_is_reported_at_default_settings(ingest_server, caplog):
