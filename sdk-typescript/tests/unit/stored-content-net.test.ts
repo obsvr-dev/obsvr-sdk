@@ -7,34 +7,17 @@ import { getConfig } from '../../src/proxy/config';
 import { buildIntegrationEvent } from '../../src/integrations/core';
 
 /**
- * The README promise this pins, in its own words:
- *
- *   "Policy decisions scan the last user message; earlier turns and system
- *    prompts are still stored (and redacted if configured)..."
- *
- * The first clause was true and the second was not. Measured across
- * block x redact x flag x four roles, NO configuration redacted content the
- * decision scan never reached — the full multi-role prompt went into the
- * signed event verbatim. "Still stored" was the half that was true, and that
- * was the harm.
+ * Provider-bound policy and stored-copy safety cover every text role. This
+ * suite pins both halves so an optimization cannot narrow enforcement back to
+ * the newest user turn or store a role the outbound rewrite missed.
  *
  * Twin: sdk-python/tests/test_stored_content_net.py.
  *
- * Both halves are asserted here, because a fix satisfying only the first would
- * trade a storage leak for a worse defect:
- *
- *   H1  content outside the decision scan is redacted in the stored copy when
- *       a PII type is configured block/redact;
+ *   H1  block/redact decisions apply before provider execution across roles;
  *   H2  a detect_only-only policy leaves the record ALONE — that mode exists so
  *       an operator can baseline what actually flows, and scrubbing the record
  *       destroys the only thing it produces;
- *   H3  the event says the outbound request was NOT modified, so a redacted
- *       stored prompt beside `action_taken: "allowed"` cannot be read as
- *       prevention.
- *
- * H2 is also what makes H1 falsifiable: without it, a redacted stored prompt
- * could mean "this net fired" or "this SDK redacts everything always", and the
- * test could not tell them apart.
+ *   H3  the event verdict and the actual provider payload agree.
  */
 
 const SSN = '123-45-6789';
@@ -64,7 +47,7 @@ async function waitForEvents(n = 1): Promise<void> {
   }
 }
 
-/** The four roles the decision scan does not reach. */
+/** Four provider-bound roles that must all be governed. */
 const UNSCANNED_ROLES: ReadonlyArray<{
   readonly role: string;
   readonly messages: (payload: string) => Array<Record<string, unknown>>;
@@ -120,18 +103,45 @@ async function driveWrap(
 }
 
 describe('stored-content net: content outside the decision scan', () => {
+  it('blocks provider-bound PII in a system message before execution', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { rules: { ssn: 'block' } } });
+    const create = jest.fn(async (_args: any) => ({
+      choices: [{ message: { content: 'ok' } }],
+      model: 'gpt-4',
+    }));
+    const wrapped = wrap({ chat: { completions: { create } } });
+    await expect(
+      wrapped.chat.completions.create({
+        model: 'gpt-4',
+        messages: UNSCANNED_ROLES[0].messages(SSN),
+      }),
+    ).rejects.toThrow();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   for (const { role, messages } of UNSCANNED_ROLES) {
-    it(`H1 wrap(): an SSN in a ${role} is redacted in the STORED prompt under pii_policy block`, async () => {
-      const { event } = await driveWrap({ rules: { ssn: 'block' } }, messages(SSN));
-      // The call was allowed — enforcement scope is unchanged by this net.
-      expect(event.action_taken).toBe('allowed');
-      expect(event.prompt).not.toContain(SSN);
-      expect(event.prompt).toContain('[REDACTED_SSN]');
+    it(`H1 wrap(): an SSN in a ${role} is blocked before provider execution`, async () => {
+      init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { rules: { ssn: 'block' } } });
+      const create = jest.fn(async (_args: any) => ({
+        choices: [{ message: { content: 'ok' } }],
+        model: 'gpt-4',
+      }));
+      const wrapped = wrap({ chat: { completions: { create } } });
+      await expect(
+        wrapped.chat.completions.create({ model: 'gpt-4', messages: messages(SSN) }),
+      ).rejects.toThrow();
+      expect(create).not.toHaveBeenCalled();
     });
 
     it(`H1 wrap(): the same holds under pii_policy redact in a ${role}`, async () => {
-      const { event } = await driveWrap({ rules: { ssn: 'redact' } }, messages(SSN));
+      const { event, sentToProvider } = await driveWrap(
+        { rules: { ssn: 'redact' } },
+        messages(SSN),
+      );
+      expect(event.action_taken).toBe('redacted');
       expect(event.prompt).not.toContain(SSN);
+      expect(sentToProvider).not.toContain(SSN);
+      expect(sentToProvider).toContain('[REDACTED_SSN]');
     });
 
     it(`H2 wrap(): a detect_only policy leaves a ${role} readable in the record`, async () => {
@@ -140,19 +150,14 @@ describe('stored-content net: content outside the decision scan', () => {
     });
   }
 
-  it('H3 the event states the outbound request was not modified', async () => {
+  it('H3 the event and actual outbound redaction agree', async () => {
     const { event, sentToProvider } = await driveWrap(
-      { rules: { ssn: 'block' } },
+      { rules: { ssn: 'redact' } },
       UNSCANNED_ROLES[0].messages(SSN),
     );
-    const tel = event.metadata?.obsvr_telemetry;
-    expect(tel?.stored_redaction_scope).toBe('unscanned_roles');
-    expect(tel?.stored_redaction_types).toEqual(['ssn']);
-    expect(tel?.stored_redaction_outbound_unmodified).toBe(true);
-    // ...and that claim is TRUE: the provider did receive the raw value.
-    // Recording a redacted prompt without saying this would assert an
-    // enforcement that did not happen.
-    expect(sentToProvider).toContain(SSN);
+    expect(event.action_taken).toBe('redacted');
+    expect(event.prompt).not.toContain(SSN);
+    expect(sentToProvider).not.toContain(SSN);
   });
 
   it('a single-turn call is decided by the ordinary gate, not by this net', async () => {
@@ -168,9 +173,7 @@ describe('stored-content net: content outside the decision scan', () => {
         messages: [{ role: 'user', content: `my ssn is ${SSN}` }],
       }),
     ).rejects.toThrow();
-    // The provider is never reached — that is the enforcement this net does
-    // NOT provide and must not be credited with. The control matters because a
-    // storage net that also blocked would look identical from the record alone.
+    // The provider is never reached and the block is recorded.
     expect(create).not.toHaveBeenCalled();
     await waitForEvents(1);
     expect(sentEvents[0].event_type).toBe('blocked_call');
@@ -193,7 +196,7 @@ describe('stored-content net: content outside the decision scan', () => {
         _reset();
         _resetSender();
         sentEvents = [];
-        init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { rules: { ssn: 'block' } } });
+        init({ api_key: 'k', ingest_url: 'https://x', pii_policy: { rules: { ssn: 'redact' } } });
         const create = jest.fn(async (_args: any) => ({
           choices: [{ message: { content: 'ok' } }],
           model: 'x',

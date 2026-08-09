@@ -1628,7 +1628,8 @@ def _govern_before_call(
     policy = apply_pre_call_policy(
         prompt_text, config, provider=provider, operation=operation,
         metadata=metadata, model=model,
-        scan_text=_last_user_message_text(provider, args, kwargs),
+        scan_text=prompt_text,
+        turn_text=_last_user_message_text(provider, args, kwargs),
     )
     compliance = policy["compliance"]
     security_normalized = policy.get("security_normalized")

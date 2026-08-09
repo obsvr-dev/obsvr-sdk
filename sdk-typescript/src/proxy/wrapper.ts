@@ -1435,25 +1435,25 @@ async function governCall(
     // Derive policy version from active rules - stamped on every event emitted for this call.
     const policyVersion = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
-    // The last user turn is what every builtin gate decides on, and it was
-    // being re-walked from the raw request eight times per governed call. The
-    // walk is pure, so it is computed once and memoized — but the request is
-    // MUTATED in place by outbound redaction, so the memo is explicitly
-    // invalidated at each of those three sites rather than trusted for the
-    // life of the call. A memo without that invalidation would hand the
-    // post-redaction event builders the pre-redaction text and quietly restore
-    // the raw PII this SDK had just removed.
+    // Single-turn accumulation and canary checks intentionally use only the
+    // newest user turn, while provider-bound content policy evaluates every
+    // text role that will leave the process. Memoize both views and invalidate
+    // both after an outbound redaction mutates the copied request.
     let lastUserTextMemo: string | undefined;
+    let decisionTextMemo: string | undefined;
     const lastUserText = (): string =>
       (lastUserTextMemo ??= extractLastUserMessageText(cleaned_args[0]) ?? "");
-    const invalidateLastUserText = (): void => {
+    const decisionText = (): string =>
+      (decisionTextMemo ??= extractPromptTextFromArgs(cleaned_args[0]) ?? "");
+    const invalidatePromptText = (): void => {
       lastUserTextMemo = undefined;
+      decisionTextMemo = undefined;
     };
 
     // Canonical decision record (ADR-2): capture the evaluated text ONCE,
     // before any redaction the pipeline may apply in place, so the sealed
     // digest commits the text as presented to the decision pipeline.
-    const decisionEvaluatedText = lastUserText();
+    const decisionEvaluatedText = decisionText();
 
     // Compliance boundary - runs for ALL calls, including streaming, before any LLM contact.
     // Builds one ComplianceCtx that is stamped on every audit event for this call.
@@ -1684,7 +1684,7 @@ async function governCall(
       // 1. Built-in PII scan (runs before customer hook; skipped when the
       //    integrity gate already blocked the call)
       if (config.pii_policy && actionTaken !== "blocked") {
-        const promptText = lastUserText();
+        const promptText = decisionText();
 
         // Builtin regex scan (always runs, fast). With deobfuscation enabled
         // the scanner also sees decoded/stripped views of the text (the server-side normalizer
@@ -1763,7 +1763,7 @@ async function governCall(
               }
             });
             // Both branches above rewrite the request in place.
-            invalidateLastUserText();
+            invalidatePromptText();
             if (notRedacted) {
               actionTaken = "blocked";
               actionReason = "policy_violation";
@@ -1792,7 +1792,7 @@ async function governCall(
         // joined history — otherwise a benign phrase in an early turn is re-counted
         // on every subsequent call and inflates the decayed score into a false trip
         // (the gate is designed to accumulate per-turn deltas).
-        const promptText = lastUserText();
+        const promptText = decisionText();
         // Keyed off the RESOLVED principal, so a wrap-time or ambient
         // identity gets its own accumulation bucket instead of sharing the
         // process-wide "global" one with every other such session (Python
@@ -1855,7 +1855,7 @@ async function governCall(
       floorOverrideIgnored = undefined;
       floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
       if (floorActive && actionTaken !== "blocked") {
-        const promptText = lastUserText();
+        const promptText = decisionText();
         // The floor's authoritative context (environment, model, provider) is
         // pinned AFTER the caller-metadata spread, so a caller cannot set
         // metadata.model / metadata.currentEnvironment / metadata.provider to
@@ -1894,7 +1894,7 @@ async function governCall(
       ruleId = ruleIdOverride;
       policyReason = policyReasonOverride;
       if (config.policyRules?.length && actionTaken !== "blocked") {
-        const promptText = lastUserText();
+        const promptText = decisionText();
         // Build PolicyEvalContext from the ENFORCING metadata and config
         // environment. Scope-keyed rules (quota by user_id / service_name /
         // tenant_id, namespace and cross-tenant gates) bucket off this
@@ -2042,7 +2042,7 @@ async function governCall(
             }
           }, "policy_rules");
           // Both branches above rewrite the request in place.
-          invalidateLastUserText();
+          invalidatePromptText();
           if (notRedacted) {
             actionTaken = "blocked";
             actionReason = "policy_violation";
@@ -2218,7 +2218,7 @@ async function governCall(
             }
           });
           // Both branches above rewrite the request in place.
-          invalidateLastUserText();
+          invalidatePromptText();
           if (notRedacted) {
             actionTaken = "blocked";
             actionReason = "policy_violation";
@@ -2352,7 +2352,7 @@ async function governCall(
     // final, check-only, recorded on the event, never decision-affecting.
     let shadowOutcome: ComplianceCtx["shadowOutcome"] = null;
     if (config.policyRules?.some((r) => r.enabled && r.mode === "shadow")) {
-      const promptText = lastUserText();
+      const promptText = decisionText();
       const evalCtx: PolicyEvalContext = {
         currentEnvironment: config.environment,
         model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
@@ -2561,7 +2561,7 @@ async function governCall(
       // keyword block stores "[BLOCKED_BY_POLICY]" without ever having looked
       // at the roles behind it, and a class closed on four paths out of five is
       // a class that is still open.
-      applyStoredContentNet(blockedEvent, config, lastUserText());
+      applyStoredContentNet(blockedEvent, config, decisionText());
 
       sendAuditAsync(config, blockedEvent);
       debugLog(

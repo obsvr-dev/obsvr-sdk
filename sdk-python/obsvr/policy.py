@@ -1067,23 +1067,22 @@ def apply_pre_call_policy(
     metadata: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     scan_text: Optional[str] = None,
+    turn_text: Optional[str] = None,
     tool_name: Optional[str] = None,
     tool_declared_destructive: bool = False,
 ) -> Dict[str, Any]:
     """Compliance boundary before an LLM call (real enforcement).
 
     ``prompt_text`` is the FULL prompt — it is what gets stored/redacted.
-    ``scan_text`` is the text the PII / rules DECISION scans AND what
-    multi-turn injection scores; callers pass the last user message so each
-    turn is governed once, when it arrives, and the multi-turn gate
-    accumulates per-turn deltas (parity with the TS wrapper — scoring the
-    joined history would re-count early turns on every call and inflate the
-    decayed score into a false trip). Defaults to ``prompt_text`` when not
-    provided.
+    ``scan_text`` is the complete provider-bound text the PII, floor, and
+    structured-rule decision evaluates. ``turn_text`` is the newest user/tool
+    turn used only by canary and multi-turn accumulation, so earlier history is
+    not re-counted on every call. Both default to ``prompt_text``.
 
     Returns {"decision", "compliance", "redacted_prompt"}.
     """
     scan = scan_text if scan_text is not None else prompt_text
+    turn = turn_text if turn_text is not None else scan
     # Resolve tenant config if provided
     if tenant_id is not None:
         from .config import get_tenant_config
@@ -1255,7 +1254,7 @@ def apply_pre_call_policy(
         from .canary import canary_registry_size
         if canary_registry_size() > 0 and action_taken != "blocked":
             from .canary import scan_for_canary, canary_leak_telemetry
-            leak = scan_for_canary(scan)
+            leak = scan_for_canary(turn)
             if leak["leaked"]:
                 action_taken = "blocked"
                 action_reason = "policy_violation"
@@ -1359,14 +1358,14 @@ def apply_pre_call_policy(
             # lets turn 1 trip on its own. The phrase still accrues weak-signal
             # score in score_turn, so an attacker who wraps a payload in quotes
             # gets a quieter line in the log and nothing else.
-            _inj_scan = run_builtin_pii_scan(scan)
+            _inj_scan = run_builtin_pii_scan(turn)
             had_full = any(
                 m["label"] == "prompt_injection" and not m["quoted"]
                 for m in _inj_scan["matches"]
             )
             mt = score_turn(
                 session_key,
-                scan,
+                turn,
                 had_full,
                 threshold=float(mti.get("threshold", 1.0)),
                 half_life_s=float(mti.get("half_life_s", 600.0)),
