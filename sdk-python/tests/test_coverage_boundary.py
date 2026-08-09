@@ -281,3 +281,72 @@ class TestBoundaryHoldsInBothDirections:
             pass
 
         assert len(captured) == 1
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ["messages", "with_streaming_response", "create"],
+            ["beta", "messages", "with_streaming_response", "create"],
+            ["responses", "with_streaming_response", "create"],
+            ["responses", "with_streaming_response", "parse"],
+            ["beta", "responses", "with_streaming_response", "create"],
+            ["chat", "completions", "with_streaming_response", "create"],
+            ["chat", "completions", "with_streaming_response", "parse"],
+            ["beta", "chat", "completions", "with_streaming_response", "create"],
+            ["beta", "chat", "completions", "with_streaming_response", "parse"],
+        ],
+    )
+    def test_streaming_response_accessors_are_inside_the_boundary(
+        self, monkeypatch, path
+    ):
+        _init()
+        captured = _captured_events(monkeypatch)
+
+        class _RawResponse:
+            status_code = 200
+            choices = [
+                type("Choice", (), {
+                    "message": type("Message", (), {"content": "four"})()
+                })()
+            ]
+
+            def parse(self):
+                result = FakeAnthropicResponse()
+                result.choices = self.choices
+                return result
+
+        class _Manager:
+            def __enter__(self):
+                return _RawResponse()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Leaf:
+            def __call__(self, **kwargs):
+                return _Manager()
+
+        node = _Leaf()
+        for seg in reversed(path):
+            holder = type("Node", (), {})()
+            setattr(holder, seg, node)
+            node = holder
+        if path[0] == "messages":
+            node.messages.create = lambda **kwargs: FakeAnthropicResponse()
+        else:
+            node.messages = _RecordingMessages([], "messages.create")
+
+        client = obsvr.wrap(node)
+        cursor = client
+        for seg in path:
+            cursor = getattr(cursor, seg)
+
+        manager = cursor(model="m", messages=[{"role": "user", "content": "hi"}])
+        assert captured == []
+        with manager as response:
+            assert response.parse().content[0].text == "four"
+            assert captured == []
+
+        assert len(captured) == 1
+        assert captured[0]["operation"] == ".".join(path)
+        assert captured[0]["response"] == "four"

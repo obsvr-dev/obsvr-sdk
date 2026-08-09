@@ -45,8 +45,10 @@ delegates every other attribute untouched.
 
 The ``with_raw_response`` accessors return the provider's raw response object.
 obsvr parses its cached typed view for response policy and audit extraction,
-but returns the original raw object unchanged. ``with_streaming_response`` is
-different: it defers the request until context entry and remains out of scope.
+but returns the original raw object unchanged. ``with_streaming_response``
+defers the request until context entry, so it uses a dedicated governed context
+manager that preserves that lifecycle and observes whichever response-reading
+surface the caller chooses.
 """
 
 import copy as _copy
@@ -161,6 +163,30 @@ STREAM_HELPER_METHODS = {
     "responses.stream",          # OpenAI Responses
 }
 
+#: Provider accessors that return a response context manager immediately and
+#: defer the actual HTTP request until ``with`` / ``async with`` entry. They
+#: cannot use the ordinary call pipeline (which would record success before the
+#: request) or the stream-helper wrapper (whose entered object is an event
+#: iterator rather than a raw APIResponse).
+DEFERRED_RESPONSE_METHODS = {
+    "messages.with_streaming_response.create",
+    "beta.messages.with_streaming_response.create",
+    "beta.responses.with_streaming_response.create",
+    "beta.chat.completions.with_streaming_response.create",
+    "beta.chat.completions.with_streaming_response.parse",
+    "chat.completions.with_streaming_response.create",
+    "chat.completions.with_streaming_response.parse",
+    "responses.with_streaming_response.create",
+    "responses.with_streaming_response.parse",
+}
+
+#: Every method path that makes ``wrap()`` a governed wrapper. Keep the three
+#: tables separate above because their return shapes require different
+#: interception pipelines, but coverage reporting must consider all of them.
+_GOVERNED_METHODS = (
+    AUDITABLE_METHODS | STREAM_HELPER_METHODS | DEFERRED_RESPONSE_METHODS
+)
+
 #: Attribute names that may lead to an auditable method. Everything else is
 #: returned untouched, so we never wrap unrelated objects. "beta" earns its
 #: place here for the two beta paths above: without it ``client.beta`` is
@@ -168,7 +194,7 @@ STREAM_HELPER_METHODS = {
 #: those entries as dead code.
 _TRAVERSABLE = {
     "beta", "chat", "completions", "messages", "responses",
-    "with_raw_response",
+    "with_raw_response", "with_streaming_response",
 }
 
 
@@ -1146,6 +1172,142 @@ class _GovernedStreamManager:
         return f"<obsvr-governed {object.__getattribute__(self, '_obsvr_manager')!r}>"
 
 
+def _note_raw_response_piece(sink: "_StreamSink", piece: Any) -> None:
+    if isinstance(piece, bytes):
+        sink.note_text(piece.decode("utf-8", errors="replace"))
+    elif isinstance(piece, str):
+        sink.note_text(piece)
+
+
+class _ObservedStreamingResponse:
+    """Delegating view over a provider ``APIResponse``.
+
+    The caller keeps the raw-response interface (status, headers, read/parse,
+    and iterators). The handful of methods that consume body content also feed
+    the audit sink; every other attribute is returned untouched.
+    """
+
+    __slots__ = ("_obsvr_response", "_obsvr_provider", "_obsvr_sink")
+
+    def __init__(self, response: Any, provider: str, sink: "_StreamSink") -> None:
+        object.__setattr__(self, "_obsvr_response", response)
+        object.__setattr__(self, "_obsvr_provider", provider)
+        object.__setattr__(self, "_obsvr_sink", sink)
+
+    def __getattr__(self, name: str) -> Any:
+        response = object.__getattribute__(self, "_obsvr_response")
+        provider = object.__getattribute__(self, "_obsvr_provider")
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        value = getattr(response, name)
+
+        if name == "parse" and callable(value):
+            if inspect.iscoroutinefunction(value):
+                async def _parse_async(*a: Any, **k: Any) -> Any:
+                    result = await value(*a, **k)
+                    sink.note_final(provider, result)
+                    return result
+                return _parse_async
+
+            def _parse(*a: Any, **k: Any) -> Any:
+                result = value(*a, **k)
+                sink.note_final(provider, result)
+                return result
+            return _parse
+
+        if name == "read" and callable(value):
+            if inspect.iscoroutinefunction(value):
+                async def _read_async(*a: Any, **k: Any) -> Any:
+                    result = await value(*a, **k)
+                    _note_raw_response_piece(sink, result)
+                    return result
+                return _read_async
+
+            def _read(*a: Any, **k: Any) -> Any:
+                result = value(*a, **k)
+                _note_raw_response_piece(sink, result)
+                return result
+            return _read
+
+        if name in {"iter_text", "iter_lines", "iter_bytes"} and callable(value):
+            def _iter(*a: Any, **k: Any) -> Any:
+                iterable = value(*a, **k)
+                if hasattr(iterable, "__aiter__"):
+                    async def _async_iter() -> Any:
+                        async for piece in iterable:
+                            _note_raw_response_piece(sink, piece)
+                            yield piece
+                    return _async_iter()
+
+                def _sync_iter() -> Any:
+                    for piece in iterable:
+                        _note_raw_response_piece(sink, piece)
+                        yield piece
+                return _sync_iter()
+            return _iter
+
+        return value
+
+
+class _GovernedResponseManager:
+    """Govern a response-context accessor without advancing its request."""
+
+    __slots__ = ("_obsvr_manager", "_obsvr_emit", "_obsvr_provider", "_obsvr_sink")
+
+    def __init__(self, manager: Any, provider: str, emit: Callable) -> None:
+        object.__setattr__(self, "_obsvr_manager", manager)
+        object.__setattr__(self, "_obsvr_provider", provider)
+        object.__setattr__(self, "_obsvr_emit", emit)
+        object.__setattr__(self, "_obsvr_sink", _StreamSink())
+
+    def _wrapped(self, response: Any) -> _ObservedStreamingResponse:
+        return _ObservedStreamingResponse(
+            response,
+            object.__getattribute__(self, "_obsvr_provider"),
+            object.__getattribute__(self, "_obsvr_sink"),
+        )
+
+    def _settle(self, error: Any = None) -> None:
+        sink = object.__getattribute__(self, "_obsvr_sink")
+        if sink.emitted:
+            return
+        sink.emitted = True
+        object.__getattribute__(self, "_obsvr_emit")(sink, error)
+
+    def __enter__(self) -> _ObservedStreamingResponse:
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        try:
+            return self._wrapped(type(manager).__enter__(manager))
+        except Exception as error:
+            self._settle(error)
+            raise
+
+    def __exit__(self, *exc_info: Any) -> Any:
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        try:
+            return type(manager).__exit__(manager, *exc_info)
+        finally:
+            self._settle(exc_info[1] if len(exc_info) > 1 else None)
+
+    async def __aenter__(self) -> _ObservedStreamingResponse:
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        try:
+            response = await type(manager).__aenter__(manager)
+            return self._wrapped(response)
+        except Exception as error:
+            self._settle(error)
+            raise
+
+    async def __aexit__(self, *exc_info: Any) -> Any:
+        manager = object.__getattribute__(self, "_obsvr_manager")
+        try:
+            return await type(manager).__aexit__(manager, *exc_info)
+        finally:
+            self._settle(exc_info[1] if len(exc_info) > 1 else None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(object.__getattribute__(self, "_obsvr_manager"), name)
+
+
 def _governed_stream_helper(
     original: Callable,
     target: Any,
@@ -1186,6 +1348,40 @@ def _governed_stream_helper(
         )
 
     return _GovernedStreamManager(manager, provider, _emit)
+
+
+def _governed_deferred_response(
+    original: Callable,
+    target: Any,
+    provider: str,
+    method_path: str,
+    options: Dict[str, Any],
+    args: tuple,
+    kwargs: dict,
+) -> Any:
+    """Govern a ``with_streaming_response`` accessor before context entry."""
+    config = get_config()
+    pre = _govern_before_call(target, provider, method_path, options, args, kwargs)
+    start = time.monotonic()
+    try:
+        manager = original(*pre.args, **pre.kwargs)
+    except Exception as error:
+        _emit_stream_event(
+            config, provider, pre.model, method_path, options, pre.compliance,
+            pre.stored_prompt, pre.user_input, "",
+            {"input_tokens": None, "output_tokens": None, "total_tokens": None},
+            start, metadata=pre.metadata, error=error,
+        )
+        raise
+
+    def _emit(sink: "_StreamSink", error: Any) -> None:
+        _emit_stream_event(
+            config, provider, pre.model, method_path, options, pre.compliance,
+            pre.stored_prompt, pre.user_input, sink.text(), sink.usage, start,
+            metadata=pre.metadata, error=error,
+        )
+
+    return _GovernedResponseManager(manager, provider, _emit)
 
 
 class _PreCall:
@@ -1551,6 +1747,15 @@ class _ObsvrProxy:
                 )
             return intercepted_stream
 
+        if method_path in DEFERRED_RESPONSE_METHODS and callable(value):
+            # These methods are synchronous even on async clients: they return
+            # an AsyncResponseContextManager whose request starts at __aenter__.
+            def intercepted_response(*args: Any, **kwargs: Any) -> Any:
+                return _governed_deferred_response(
+                    value, target, provider, method_path, options, args, kwargs
+                )
+            return intercepted_response
+
         # Keep walking only down chains that can reach an auditable method
         if name in _TRAVERSABLE and value is not None and not callable(value):
             return _ObsvrProxy(value, path + [name], provider, options)
@@ -1649,7 +1854,7 @@ def _report_ungoverned_client(client: Any, provider: str, config: ResolvedConfig
         f"shape: {provider}). The object it returned forwards every call "
         f"straight through - no policy runs and no audit event is emitted for "
         f"it, so this client is NOT covered. obsvr intercepts these paths: "
-        f"{', '.join(sorted(AUDITABLE_METHODS))}. Wrap the provider client "
+        f"{', '.join(sorted(_GOVERNED_METHODS))}. Wrap the provider client "
         f"itself (obsvr.wrap(OpenAI())), or govern this object through its own "
         f"integration. Pass require_governed_surface=True to obsvr.init() to "
         f"make this raise instead."
@@ -1753,7 +1958,7 @@ def wrap(client: Any, **options: Any) -> Any:
     # proxy is built either way — a client with no governed method still gets a
     # transparent pass-through, which is what it got before — but the caller is
     # told instead of left to infer coverage from the fact that wrap() returned.
-    if not any(_resolves_to_callable(client, p) for p in AUDITABLE_METHODS):
+    if not any(_resolves_to_callable(client, p) for p in _GOVERNED_METHODS):
         _report_ungoverned_client(client, provider, config)
 
     recorded_provider, attribution = resolve_destination(client, provider)

@@ -17,6 +17,13 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Python now governs OpenAI and Anthropic `with_streaming_response` calls.**
+  Policy runs before a response context manager is created, preserving the
+  providers' deferred sync and async request lifecycle while preventing blocked
+  prompts from reaching context entry. Parsed or read response content is
+  captured once when the context exits, with the raw status, headers, and body
+  accessors still available to callers.
+
 - **Python now governs OpenAI and Anthropic `with_raw_response` calls.** The
   accessor objects were outside proxy traversal, so their text-generation
   methods bypassed every pre-call block and redaction. The explicit raw-response

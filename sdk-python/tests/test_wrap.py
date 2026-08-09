@@ -59,10 +59,39 @@ class _RawCompletions:
         return FakeRawResponse(FakeOpenAIResponse())
 
 
+class FakeStreamingResponse:
+    status_code = 200
+
+    def parse(self):
+        return FakeOpenAIResponse()
+
+
+class _ResponseManager:
+    def __init__(self, owner, kwargs):
+        self.owner = owner
+        self.kwargs = kwargs
+
+    def __enter__(self):
+        self.owner.calls.append(self.kwargs)
+        return FakeStreamingResponse()
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _StreamingCompletions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, **kwargs):
+        return _ResponseManager(self.owner, kwargs)
+
+
 class _Completions:
     def __init__(self):
         self.calls = []
         self.with_raw_response = _RawCompletions(self)
+        self.with_streaming_response = _StreamingCompletions(self)
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -84,6 +113,7 @@ class _AsyncCompletions:
     def __init__(self):
         self.calls = []
         self.with_raw_response = _AsyncRawCompletions(self)
+        self.with_streaming_response = _AsyncStreamingCompletions(self)
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -97,6 +127,34 @@ class _AsyncRawCompletions:
     async def create(self, **kwargs):
         self.owner.calls.append(kwargs)
         return FakeRawResponse(FakeOpenAIResponse())
+
+
+class _AsyncResponseManager:
+    def __init__(self, owner, kwargs):
+        self.owner = owner
+        self.kwargs = kwargs
+
+    async def __aenter__(self):
+        self.owner.calls.append(self.kwargs)
+        return FakeAsyncStreamingResponse()
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _AsyncStreamingCompletions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, **kwargs):
+        return _AsyncResponseManager(self.owner, kwargs)
+
+
+class FakeAsyncStreamingResponse:
+    status_code = 200
+
+    async def parse(self):
+        return FakeOpenAIResponse()
 
 
 class _AsyncChat:
@@ -301,6 +359,46 @@ class TestOpenAIInterception:
         assert len(captured) == 1
         assert captured[0]["event_type"] == "blocked_call"
 
+    def test_with_streaming_response_is_deferred_and_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+
+        manager = client.chat.completions.with_streaming_response.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "stream raw hi"}]
+        )
+
+        assert raw.chat.completions.calls == []
+        with manager as response:
+            assert response.status_code == 200
+            parsed = response.parse()
+            assert parsed.choices[0].message.content == "fake openai answer"
+            assert captured == []
+
+        assert len(raw.chat.completions.calls) == 1
+        assert len(captured) == 1
+        assert captured[0]["operation"] == (
+            "chat.completions.with_streaming_response.create"
+        )
+        assert captured[0]["response"] == "fake openai answer"
+
+    def test_with_streaming_response_block_prevents_manager_creation(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            client.chat.completions.with_streaming_response.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "ssn 123-45-6789"}],
+            )
+
+        assert raw.chat.completions.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+
     def test_pre_call_hook_block(self, monkeypatch):
         _init(on_pre_call=lambda event: "block")
         captured = _captured_events(monkeypatch)
@@ -370,6 +468,33 @@ class TestAsyncOpenAI:
         assert isinstance(result, FakeRawResponse)
         assert result.parse_calls == 1
         assert len(captured) == 1
+        assert captured[0]["response"] == "fake openai answer"
+
+    def test_async_with_streaming_response_is_deferred_and_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeAsyncOpenAI()
+        client = obsvr.wrap(raw)
+
+        async def run():
+            manager = client.chat.completions.with_streaming_response.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "async stream raw hi"}],
+            )
+            assert raw.chat.completions.calls == []
+            async with manager as response:
+                assert response.status_code == 200
+                parsed = await response.parse()
+                assert captured == []
+                return parsed
+
+        result = asyncio.run(run())
+        assert result.choices[0].message.content == "fake openai answer"
+        assert len(raw.chat.completions.calls) == 1
+        assert len(captured) == 1
+        assert captured[0]["operation"] == (
+            "chat.completions.with_streaming_response.create"
+        )
         assert captured[0]["response"] == "fake openai answer"
 
 

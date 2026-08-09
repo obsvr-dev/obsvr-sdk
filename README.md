@@ -729,9 +729,8 @@ than only in a source comment.
 - **Text-bearing paths in neither table, in both languages:** the legacy
   `completions.create` on both providers, `beta.messages.parse`, the batch
   surfaces, `count_tokens`, and Gemini's `start_chat` → `ChatSession`.
-  Python additionally does not reach the `with_streaming_response` accessor
-  chains or anything
-  under the current `google-genai` package.
+  Python additionally does not reach anything under the current
+  `google-genai` package.
 
 ### Does a tool-policy block actually stop the tool?
 
