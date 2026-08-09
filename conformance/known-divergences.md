@@ -19,7 +19,7 @@ better half of the record.
 **Ids are allocated once and never reused.** A `KD-` number that appears in the
 History below is spent: the divergence it named was fixed, and that record is
 what the History is for. The next live entry takes the next free number, which
-is why the catalog currently holds KD-6, KD-9, KD-10 and KD-11 with gaps
+is why the catalog currently holds KD-6, KD-9 and KD-10 with gaps
 between them.
 
 **A row is added only after the divergence is re-measured, never transcribed
@@ -31,6 +31,14 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-09: KD-11's final empty-principal precedence edge is FIXED and the
+  live entry is gone. Python now treats an explicit `user_id` key as supplied
+  when its value is `""` or whitespace, so the ambient `use_subject()` scope
+  cannot replace it. `require_principal=True` consequently refuses the blank
+  principal exactly as TypeScript does, and the signed event preserves that
+  same explicit value instead of naming the ambient subject the decision did
+  not use. The choke-point and governed-tool regressions cover both empty and
+  whitespace-only values alongside an active ambient subject.
 - 2026-08-09: the final customer-regex verdict divergence is closed. TypeScript
   now compiles accepted patterns in ECMAScript `u` mode, so `.`, negated
   classes, and `[\s\S]` consume an astral character as one code point, matching

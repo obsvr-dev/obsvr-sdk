@@ -4,11 +4,12 @@ conformance/fixtures/eval_semantics.json through validator + evaluator +
 shadow evaluator. A divergence from the fixture (or from the TS harness)
 is a release blocker unless recorded in conformance/known-divergences.md.
 
-Three case modes:
+Four case modes:
     rules     (default) drive the rules engine directly
     pipeline  drive the full pre-call pipeline - the only way to pin
               statements about step composition and the integrity gate
     explain   drive check-only evaluation and prove it consumes nothing
+    config    submit raw rules to init without remote-style filtering
 """
 
 import json
@@ -59,7 +60,11 @@ def _run_rules_case(case):
     # 2. Active evaluation.
     target = case["input"].get("target", "prompt")
     result = evaluate_policy_rules(
-        rules, case["input"]["text"], target, case["input"].get("context")
+        rules,
+        case["input"]["text"],
+        target,
+        case["input"].get("context"),
+        resolution=case.get("resolution"),
     )
     assert result["decision"] == case["expect"]["decision"]
     expected_rule = case["expect"].get("rule_id", "__unchecked__")
@@ -128,6 +133,13 @@ def _run_pipeline_case(case):
         assert hook_ran["value"] is expected["hook_ran"]
 
 
+def _run_config_case(case):
+    _reset()
+    if case["expect_config"]["init"] == "reject":
+        with pytest.raises(ValueError, match="not a usable rule"):
+            obsvr.init(api_key="test", policy_rules=case["rules"])
+
+
 def _run_explain_case(case):
     rules = _valid_rules(case)
     _reset()
@@ -170,6 +182,8 @@ def test_conformance_case(case):
             _run_pipeline_case(case)
         elif mode == "explain":
             _run_explain_case(case)
+        elif mode == "config":
+            _run_config_case(case)
         else:
             raise AssertionError(f"unknown case mode in fixture: {mode}")
     finally:
