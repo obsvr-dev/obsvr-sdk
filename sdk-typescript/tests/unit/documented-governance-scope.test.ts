@@ -8,19 +8,14 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
  * The documented scope of the named compatibility wrappers, pinned against
  * behaviour.
  *
- * `wrapAzureOpenAI` / `wrapTogether` / `wrapOpenAICompatible`
- * consult a ONE-ENTRY path table and govern `chat.completions.create` alone,
- * while `obsvr.wrap()` governs seventeen paths on the same client. Every public
- * document now says so. Nothing enforced that, so the documents could drift back
- * to describing `obsvr.wrap()`'s coverage for a wrapper that does not have it —
- * which is the state they were in.
+ * `wrapAzureOpenAI` / `wrapTogether` / `wrapOpenAICompatible` share the generic
+ * wrapper's governed path table. A named entry point must not silently expose a
+ * path the generic entry point blocks on the same client.
  *
  * This is a two-way pin, deliberately:
  *
- *   - a path the wrapper starts governing fails the "ungoverned" row, so
- *     widening coverage is a deliberate regrade with a documentation change
- *     rather than a silent improvement nobody wrote down;
- *   - a path it stops governing fails the "governed" row.
+ * The legacy top-level completion path remains outside the generic table and
+ * is pinned separately so coverage is never inferred from a nearby method.
  *
  * It grades on EMITTED EVENTS, not on the path table, because a table entry is
  * the claim under test rather than the evidence for it.
@@ -94,22 +89,33 @@ describe('documented governance scope: the named compatibility wrappers', () => 
     expect(sentEvents.some((e) => e.action_taken === 'blocked')).toBe(true);
   });
 
-  for (const path of ['chat.completions.parse', 'responses.create', 'responses.parse', 'completions.create']) {
-    it(`does NOT govern ${path} — no gate and no event`, async () => {
+  for (const path of ['chat.completions.parse', 'responses.create', 'responses.parse']) {
+    it(`governs ${path} through the shared path table`, async () => {
       init({ api_key: 'k', ingest_url: 'https://x', pii_policy: PII_POLICY });
       const seen: string[] = [];
       const c = wrapOpenAICompatible(client(seen) as any, { provider: 'together', source: 'together_js' }) as any;
       const [a, b, d] = path.split('.');
       const fn = d ? c[a][b][d] : c[a][b];
-      // The SAME payload that the governed path above refuses.
-      await fn({ model: 'm', messages: [{ role: 'user', content: `ssn ${SSN}` }] });
-      // Both halves matter: the provider WAS reached, and nothing was recorded.
-      // Either alone would be a different (and less bad) finding.
-      expect(seen).toEqual([path]);
-      await new Promise((r) => setTimeout(r, 30));
-      expect(sentEvents).toEqual([]);
+      const payload = path.startsWith('responses.')
+        ? { model: 'm', input: `ssn ${SSN}` }
+        : { model: 'm', messages: [{ role: 'user', content: `ssn ${SSN}` }] };
+      await expect(fn(payload)).rejects.toThrow();
+      expect(seen).toEqual([]);
+      await settle();
+      expect(sentEvents.some((e) => e.action_taken === 'blocked')).toBe(true);
     });
   }
+
+  it('does not infer coverage for legacy completions.create', async () => {
+    init({ api_key: 'k', ingest_url: 'https://x', pii_policy: PII_POLICY });
+    const seen: string[] = [];
+    const c = wrapOpenAICompatible(client(seen) as any, {
+      provider: 'together',
+      source: 'together_js',
+    }) as any;
+    await c.completions.create({ model: 'm', prompt: `ssn ${SSN}` });
+    expect(seen).toEqual(['completions.create']);
+  });
 
   it('obsvr.wrap() DOES govern the same paths on the same client', async () => {
     // The control that makes every row above a statement about the WRAPPER

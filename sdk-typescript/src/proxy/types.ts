@@ -655,6 +655,9 @@ export interface WrapOptions {
    * Service name for this client (V2)
    */
   service_name?: string;
+
+  /** Metadata merged into every event from this wrapped client. */
+  metadata?: Record<string, unknown>;
 }
 
 /**

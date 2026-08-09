@@ -344,7 +344,23 @@ const WRAPPED_MARKER = Symbol("obsvr-wrapped");
 const REBIND_MARKER = Symbol("obsvr-rebind");
 
 /** What a governed proxy hands back under {@link REBIND_MARKER}. */
-type RebindTarget = { instance: object; options: WrapOptions };
+type RebindTarget = {
+  instance: object;
+  options: WrapOptions;
+  declaredProvider?: CanonicalProvider;
+};
+
+/** True when another front-door call would rebuild the exact same proxy. */
+function sameWrapOptions(left: WrapOptions, right: WrapOptions): boolean {
+  const keys = new Set([
+    ...Object.keys(left),
+    ...Object.keys(right),
+  ] as Array<keyof WrapOptions>);
+  for (const key of keys) {
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
+}
 
 /**
  * Track the current method path during proxy traversal
@@ -389,6 +405,8 @@ type PathContext = {
   recordedProvider: CanonicalProvider;
   /** Reserved metadata: where the call goes, and how sure of it we are. */
   providerAttribution: Record<string, unknown>;
+  /** Optional fallback supplied by a named compatibility wrapper. */
+  declaredProvider?: CanonicalProvider;
 };
 
 /**
@@ -1416,6 +1434,12 @@ async function governCall(
     // Always filter audit fields from args (even if not auditing)
     // This ensures audit fields never reach the LLM provider
     const { cleaned_args, audit_fields } = filterArgs(args);
+    if (ctx.options.metadata || audit_fields.metadata) {
+      audit_fields.metadata = {
+        ...(ctx.options.metadata ?? {}),
+        ...((audit_fields.metadata as Record<string, unknown> | undefined) ?? {}),
+      };
+    }
 
     // For Google providers, extract the model name from the GenerativeModel instance.
     // target.model contains the full path e.g. "models/gemini-1.5-pro".
@@ -3268,7 +3292,11 @@ function createRecursiveProxy<T extends object>(
       // existing return-unchanged path.
       if (prop === REBIND_MARKER) {
         return ctx.path.length === 0
-          ? ({ instance: obj, options: ctx.options } as RebindTarget)
+          ? ({
+              instance: obj,
+              options: ctx.options,
+              declaredProvider: ctx.declaredProvider,
+            } as RebindTarget)
           : undefined;
       }
 
@@ -3393,6 +3421,15 @@ export function wrap<T extends object>(
   client: T,
   options: WrapOptions = {},
 ): T {
+  return wrapWithProviderHint(client, options);
+}
+
+/** @internal Shared construction path for named compatibility wrappers. */
+export function wrapWithProviderHint<T extends object>(
+  client: T,
+  options: WrapOptions = {},
+  declaredProvider?: CanonicalProvider,
+): T {
   const config = getConfig();
 
   // If disabled, return original client
@@ -3416,18 +3453,32 @@ export function wrap<T extends object>(
     const rebind = (client as unknown as Record<symbol, unknown>)[REBIND_MARKER] as
       | RebindTarget
       | undefined;
+    const resolvedProvider = declaredProvider ?? rebind?.declaredProvider;
+    if (
+      rebind
+      && resolvedProvider === rebind.declaredProvider
+      && sameWrapOptions(rebind.options, options)
+    ) {
+      debugLog(config, "warn", "Client already wrapped with identical options");
+      return client;
+    }
     if (rebind && Object.keys(options).length > 0) {
       // Straight to the constructor, not back through wrap(): the first wrap
       // marked the underlying INSTANCE as wrapped too, so re-entering here
       // would take this same branch, find no rebind on a raw client, and
       // hand back an ungoverned one.
-      return governClient(rebind.instance, { ...rebind.options, ...options }, config) as T;
+      return governClient(
+        rebind.instance,
+        { ...rebind.options, ...options },
+        config,
+        resolvedProvider,
+      ) as T;
     }
     debugLog(config, "warn", "Client already wrapped, returning existing");
     return client;
   }
 
-  return governClient(client, options, config);
+  return governClient(client, options, config, declaredProvider);
 }
 
 /**
@@ -3440,6 +3491,7 @@ function governClient<T extends object>(
   client: T,
   options: WrapOptions,
   config: ResolvedConfig,
+  declaredProvider?: CanonicalProvider,
 ): T {
   // The client's SHAPE, which selects the extractors.
   const provider = detectProvider(client);
@@ -3449,7 +3501,7 @@ function governClient<T extends object>(
   // re-deriving it per call would buy nothing and cost a URL parse on the hot
   // path. Same resolver the compat integrations use — one endpoint table.
   const { provider: recordedProvider, attribution: providerAttribution } =
-    resolveDestination(client, provider);
+    resolveDestination(client, declaredProvider ?? provider);
   debugLog(
     config,
     "info",
@@ -3482,6 +3534,7 @@ function governClient<T extends object>(
     provider,
     recordedProvider,
     providerAttribution,
+    declaredProvider,
   };
 
   // COVERAGE, decided here rather than discovered from missing traffic. The
