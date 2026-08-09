@@ -51,7 +51,8 @@ beforeEach(() => {
   globalThis.fetch = (async (input: string | URL | Request, options?: RequestInit) => {
     const url = String(input);
     const rawBody = typeof options?.body === 'string' ? options.body : '{}';
-    if (url.includes('googleapis.com')) {
+    const parsedUrl = URL.canParse(url) ? new URL(url) : null;
+    if (parsedUrl?.hostname === 'generativelanguage.googleapis.com') {
       providerCalls.push({ url, body: JSON.parse(rawBody) });
       if (url.includes('streamGenerateContent')) {
         const chunks = [responseBody('a ', 8), responseBody('fine answer', 10)];
