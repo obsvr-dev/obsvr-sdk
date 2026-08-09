@@ -71,12 +71,18 @@ class TestConfigKeySpelling:
             "config key is now silently ignored instead of raising"
         )
 
-    def test_control_the_correct_spelling_applies_and_redacts(self):
+    def test_control_the_correct_spelling_applies_and_redacts(self, monkeypatch):
         """Without this, the rows above would also pass if init() rejected
         everything, or if redaction had simply stopped working."""
         _reset()
         obsvr.init(api_key="k", ingest_url="https://x", pii_policy={"rules": {"ssn": "redact"}})
         assert get_config().pii_policy == {"rules": {"ssn": "redact"}}
+
+        # Delivery is not this test's instrument. Keep its redaction event out
+        # of the process-global sender so an unreachable example URL cannot
+        # leave retry-owned work for the next test module.
+        wrap_module = sys.modules["obsvr.wrap"]
+        monkeypatch.setattr(wrap_module, "send_audit_async", lambda _config, _event: None)
 
         seen = {}
 

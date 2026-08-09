@@ -62,6 +62,15 @@ _INJECTION_POINT = {
 _CUSTOMER_RULE_ID = "r1"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_delivery(monkeypatch):
+    # Detector resolution is the instrument in this module. Keep its synthetic
+    # ingest URL out of the process-global sender so retries cannot leak into
+    # later modules; tests that inspect events replace this seam locally.
+    wrap_mod = importlib.import_module("obsvr.wrap")
+    monkeypatch.setattr(wrap_mod, "send_audit_async", lambda _config, _event: None)
+
+
 def _init(fail_mode="open", **kw):
     _reset()
     obsvr.init(
