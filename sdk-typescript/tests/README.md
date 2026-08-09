@@ -4,7 +4,7 @@ Read this before trusting a green run on an integration surface.
 
 ## Which upstream packages are real in CI
 
-`devDependencies` carries four real provider/framework packages, and `npm ci`
+`devDependencies` carries five real provider/framework packages, and `npm ci`
 installs them, so a test may import any of them:
 
 | Package | Driven by a test |
@@ -12,6 +12,7 @@ installs them, so a test may import any of them:
 | `@modelcontextprotocol/sdk` | **yes** — `tests/integration/mcp-real-package.test.ts` connects a real `Client` to a real `McpServer` over the package's own `InMemoryTransport` |
 | `openai` | **yes** — `tests/integration/openai-real-package.test.ts` drives a real client with the transport injected via the constructor `fetch`, grading a block at zero transport calls; plus resolution in `tests/unit/module-hook-resolution.test.ts` |
 | `@google/generative-ai` | **yes** — `tests/integration/google-genai-real-package.test.ts` drives a real `GenerativeModel`, splitting provider traffic from sender traffic by host |
+| `@google/genai` | **yes** — `tests/integration/google-genai-maintained-real-package.test.ts` drives a real 2.x client through unary, streaming, block, redact, structured-output, and module-interceptor paths with provider transport mocked |
 | `@openai/agents` | **yes** — `tests/integration/openai-agents-real-package.test.ts` runs a real `Agent` with real `tool()` objects and only the model stubbed; a denied tool's body never runs and the block message reaches the model's next turn |
 
 Every other integration — `langchain`, `llamaindex`, `vercel-ai`, `bedrock`,
@@ -20,7 +21,7 @@ against hand-written fakes. `@langchain/core`, `llamaindex`, `ai`, the AWS and
 Google client libraries and `@anthropic-ai/sdk` are **not** devDependencies and
 are not installed when this suite runs.
 
-All four real-package suites follow the same non-vacuity convention: every
+All five real-package suites follow the same non-vacuity convention: every
 deny leg is paired with an allow CONTROL that must reach exactly one side
 effect, so a suite that stopped exercising the gate goes red rather than
 quietly green.
