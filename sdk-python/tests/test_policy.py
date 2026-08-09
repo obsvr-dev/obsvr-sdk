@@ -281,14 +281,39 @@ def test_observe_policy_records_storage_without_claiming_outbound_redaction():
 def test_observe_policy_clean_no_redact():
     r = apply_observe_policy("hello world", _cfg(pii_policy={}))
     assert r["should_redact_stored"] is False
-    assert r["compliance"]["action_taken"] == "allowed"
+    assert r["compliance"]["action_taken"] == "not_evaluated"
+    assert r["compliance"]["policy_not_evaluated"] == {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
     assert "stored_redaction_telemetry" not in r["compliance"]
 
 
 def test_observe_policy_no_policy():
     r = apply_observe_policy("ssn 123-45-6789", _cfg())
     assert r["should_redact_stored"] is False
-    assert r["compliance"]["action_taken"] == "allowed"
+    assert r["compliance"]["action_taken"] == "not_evaluated"
+    assert r["compliance"]["policy_not_evaluated"] == {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
+
+
+def test_observe_policy_detect_only_does_not_claim_enforcement():
+    r = apply_observe_policy(
+        "ssn 123-45-6789",
+        _cfg(pii_policy={"default": "detect_only"}),
+    )
+    assert r["should_redact_stored"] is False
+    assert r["compliance"]["action_taken"] == "not_evaluated"
+    assert r["compliance"]["action_reason"] == "pii_detected"
+    assert r["compliance"]["policy_not_evaluated"] == {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
 
 
 # ── scan scope: DECISION scans scan_text (last user turn), storage keeps full ──

@@ -184,9 +184,44 @@ describe('applyObservePolicy', () => {
     // placeholder), so the sealed policy_version is accurate for framework events.
     expect(compliance.policy_version).not.toBe('v1');
     expect(compliance.policy_version).toBe(derivePolicyVersion(getConfig().policyRules ?? []));
-    expect(compliance.action_taken).toBe('allowed');
-    expect(compliance.policy_not_evaluated).toBeUndefined();
+    expect(compliance.action_taken).toBe('not_evaluated');
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
     expect(compliance.stored_redaction_telemetry).toBeUndefined();
+  });
+
+  it('does not claim enforcement when no observe policy is configured', () => {
+    init({ api_key: 'test' });
+    const { shouldRedactStored, compliance } = applyObservePolicy(
+      'ssn 123-45-6789',
+      getConfig(),
+    );
+    expect(shouldRedactStored).toBe(false);
+    expect(compliance.action_taken).toBe('not_evaluated');
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
+  });
+
+  it('reports detect-only findings without claiming enforcement', () => {
+    init({ api_key: 'test', pii_policy: { default: 'detect_only' } });
+    const { shouldRedactStored, compliance } = applyObservePolicy(
+      'ssn 123-45-6789',
+      getConfig(),
+    );
+    expect(shouldRedactStored).toBe(false);
+    expect(compliance.action_taken).toBe('not_evaluated');
+    expect(compliance.action_reason).toBe('pii_detected');
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
   });
 });
 

@@ -2011,6 +2011,12 @@ def _observe_compliance(config: ResolvedConfig) -> Dict[str, Any]:
     observe-only paths must pin the policy state they ran under."""
     from .rules import derive_policy_version
     compliance = dict(DEFAULT_COMPLIANCE)
+    compliance["action_taken"] = "not_evaluated"
+    compliance["policy_not_evaluated"] = {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
     compliance["policy_version"] = derive_policy_version(
         getattr(config, "policy_rules", None) or [],
         getattr(config, "rule_resolution", None),

@@ -1740,6 +1740,12 @@ export function blockedUserInputForStorage(
 function observeCompliance(config: ResolvedConfig): ComplianceInfo {
   return {
     ...DEFAULT_COMPLIANCE,
+    action_taken: "not_evaluated",
+    policy_not_evaluated: {
+      surface: "observe_only_integration",
+      gate: "pre_call_policy",
+      reason: "callback_observed_after_operation",
+    },
     policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
   };
 }
