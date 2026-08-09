@@ -315,10 +315,24 @@ function createAuditedRun(
       );
       throw blockedCallError(policy.compliance);
     }
-    if (policy.decision === "redact" && inputs) {
+    if (policy.decision === "redact") {
       // Enforcement application: a redaction that cannot be carried out blocks
       // the call rather than forwarding the content it was told to remove.
+      //
+      // NOT GUARDED ON `inputs` BEING TRUTHY. It used to be — `decision ===
+      // "redact" && inputs` — so a falsy inputs skipped the redaction entirely
+      // while `policy.compliance` still carried `action_taken: "redacted"`.
+      // Whatever the scanner found the verdict on came from somewhere, and a
+      // shape this redactor cannot reach is a redaction that could not be
+      // applied, which is a block. Missing inputs now resolve through the same
+      // fail-closed path as any other unappliable redaction rather than
+      // silently reading as a completed one.
       const notRedacted = applyOutboundRedaction(() => {
+        if (!inputs) {
+          throw new Error(
+            "redaction could not be applied: the request carried no inputs to rewrite",
+          );
+        }
         redactWorkersInputsInPlace(inputs);
       });
       if (notRedacted) {

@@ -283,6 +283,38 @@ describe('wrap with auditable method', () => {
     delete (global as any).fetch;
   });
 
+  it('does not let an allow hook erase a PII block', async () => {
+    // F011: the published options example combined these exact layers. The
+    // provider mock is the instrument — no audit-event field is consulted.
+    (global as any).fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      sample_rate: 0,
+      pii_policy: { rules: { ssn: 'block' } },
+      on_pre_call: () => 'allow',
+    });
+
+    const create = jest.fn(async (_args: any) => ({
+      choices: [{ message: { content: 'ok' } }],
+    }));
+    const wrapped = wrap({ chat: { completions: { create } } });
+
+    await expect(
+      wrapped.chat.completions.create({
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: 'my ssn is 123-45-6789' }],
+      }),
+    ).rejects.toThrow(/blocked by policy/i);
+    expect(create).not.toHaveBeenCalled();
+
+    delete (global as any).fetch;
+  });
+
   it('does not emit an allowed-call audit event when sampled out, but still returns', async () => {
     const sentEvents: any[] = [];
     (global as any).fetch = async (_url: any, opts: any) => {

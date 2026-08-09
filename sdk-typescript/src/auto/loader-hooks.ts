@@ -139,44 +139,77 @@ export async function load(
 }
 
 /**
+ * Every CLIENT CLASS each provider package exports, beside the default.
+ *
+ * The shim used to override the default export plus ONE named export, so every
+ * other client class on a governed package rode the `export *` through
+ * ungoverned — `AzureOpenAI` and `BedrockOpenAI` reach the same auditable
+ * methods as `OpenAI` and were constructed with no interception at all, while
+ * interception reported success for the name it did replace.
+ *
+ * WHY THIS IS A LIST HERE AND NOT IN THE PYTHON TWIN. Python resolves the class
+ * objects at runtime and rebinds every module attribute that IS one, so it needs
+ * no names. ESM export names are static: a module cannot decide at evaluation
+ * time which bindings to export, and the shim source is generated before the
+ * real module has been loaded. So the list is unavoidable — what is avoidable is
+ * it being WRONG without anyone noticing, which is what
+ * `tests/unit/provider-client-exports.test.ts` is for: it loads each real
+ * provider package, finds every exported class descending from that package's
+ * base client, and fails when one is missing from this table. A new upstream
+ * client class breaks a test instead of reaching a user.
+ */
+const PROVIDER_CLIENT_EXPORTS: Record<string, readonly string[]> = {
+  openai: ['OpenAI', 'AzureOpenAI', 'BedrockOpenAI'],
+  anthropic: ['Anthropic'],
+  google: ['GoogleGenerativeAI'],
+};
+
+/**
  * Build the replacement module source for a provider.
  *
  * `export * from` forwards every named export of the real module untouched.
- * Local exports take precedence over star exports, so only the client class
- * binding is overridden with the construct-trap Proxy.
+ * Local exports take precedence over star exports, so each client class binding
+ * named above is overridden with its own construct-trap Proxy.
+ *
+ * Each class is intercepted SEPARATELY rather than aliased to the default: they
+ * are distinct classes (Azure and Bedrock flavours are not the base client), so
+ * one Proxy standing for all of them would hand callers the wrong constructor.
  */
 function buildShim(provider: string, originalUrl: string, runtimeUrl: string): string {
   const orig = JSON.stringify(originalUrl);
   const runtime = JSON.stringify(runtimeUrl);
+  const names = PROVIDER_CLIENT_EXPORTS[provider];
+  if (!names) return `export * from ${orig};`;
 
-  switch (provider) {
-    case 'openai':
-      return [
-        `export * from ${orig};`,
-        `import { default as $obsvrOriginal } from ${orig};`,
-        `import { interceptProviderClass as $obsvrIntercept } from ${runtime};`,
-        `const $obsvrPatched = $obsvrIntercept('openai', $obsvrOriginal);`,
-        `export default $obsvrPatched;`,
-        `export { $obsvrPatched as OpenAI };`,
-      ].join('\n');
-    case 'anthropic':
-      return [
-        `export * from ${orig};`,
-        `import { default as $obsvrOriginal } from ${orig};`,
-        `import { interceptProviderClass as $obsvrIntercept } from ${runtime};`,
-        `const $obsvrPatched = $obsvrIntercept('anthropic', $obsvrOriginal);`,
-        `export default $obsvrPatched;`,
-        `export { $obsvrPatched as Anthropic };`,
-      ].join('\n');
-    case 'google':
-      return [
-        `export * from ${orig};`,
-        `import { GoogleGenerativeAI as $obsvrOriginal } from ${orig};`,
-        `import { interceptProviderClass as $obsvrIntercept } from ${runtime};`,
-        `const $obsvrPatched = $obsvrIntercept('google', $obsvrOriginal);`,
-        `export { $obsvrPatched as GoogleGenerativeAI };`,
-      ].join('\n');
-    default:
-      return `export * from ${orig};`;
+  const lines = [
+    `export * from ${orig};`,
+    `import { interceptProviderClass as $obsvrIntercept } from ${runtime};`,
+  ];
+  // The default export is the primary client for openai and anthropic; google
+  // has no default and is reached only through its named export.
+  const hasDefault = provider !== 'google';
+  if (hasDefault) {
+    lines.push(
+      `import { default as $obsvrDefault } from ${orig};`,
+      `const $obsvrPatchedDefault = $obsvrIntercept(${JSON.stringify(provider)}, $obsvrDefault);`,
+      `export default $obsvrPatchedDefault;`,
+    );
   }
+  names.forEach((name, index) => {
+    // The first named export IS the default class on the packages that have a
+    // default, so it reuses that Proxy and stays `===` to the default export —
+    // callers compare them.
+    if (hasDefault && index === 0) {
+      lines.push(`export { $obsvrPatchedDefault as ${name} };`);
+      return;
+    }
+    lines.push(
+      `import { ${name} as $obsvrOriginal${index} } from ${orig};`,
+      `const $obsvrPatched${index} = $obsvrIntercept(${JSON.stringify(provider)}, $obsvrOriginal${index});`,
+      `export { $obsvrPatched${index} as ${name} };`,
+    );
+  });
+  return lines.join('\n');
 }
+
+export { PROVIDER_CLIENT_EXPORTS, buildShim };

@@ -245,12 +245,12 @@ def test_pre_call_hook_block_overrides_allow():
     assert r["compliance"]["action_source"] == "customer_hook"
 
 
-def test_pre_call_hook_allow_overrides_builtin_block():
+def test_pre_call_hook_allow_cannot_override_builtin_block():
     cfg = _cfg(pii_policy={}, on_pre_call=lambda e: "allow")
     r = apply_pre_call_policy("ssn 123-45-6789", cfg)
-    assert r["decision"] == "allow"
-    assert r["compliance"]["action_reason"] == "customer_override"
-    assert r["compliance"]["action_source"] == "customer_hook"
+    assert r["decision"] == "block"
+    assert r["compliance"]["action_reason"] == "pii_detected"
+    assert r["compliance"]["action_source"] == "builtin"
 
 
 # ---------------------------------------------------------------------------
@@ -343,10 +343,10 @@ def test_pre_call_clean_allow_is_permitted():
     assert r["compliance"]["reason_code"] == "PERMITTED"
 
 
-def test_pre_call_customer_override_is_permitted():
+def test_pre_call_hook_allow_preserves_pii_reason_code():
     cfg = _cfg(pii_policy={}, on_pre_call=lambda e: "allow")
     r = apply_pre_call_policy("ssn 123-45-6789", cfg)
-    assert r["compliance"]["reason_code"] == "PERMITTED"
+    assert r["compliance"]["reason_code"] == "PII_DETECTED"
 
 
 def test_pre_call_hook_block_resolves_hook_blocked():

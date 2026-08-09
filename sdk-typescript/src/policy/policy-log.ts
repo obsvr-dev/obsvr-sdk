@@ -189,23 +189,6 @@ export function emitPolicyChangedEvent(
   return event;
 }
 
-/** POST a PolicyChangedEvent to the ingest endpoint. Fire-and-forget. */
-export async function sendPolicyEvent(
-  event: PolicyChangedEvent,
-  ingestUrl: string,
-  apiKey: string,
-): Promise<void> {
-  try {
-    await fetch(`${ingestUrl}/ingest`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
-      body: JSON.stringify(event),
-    });
-  } catch {
-    // swallow - must never break caller
-  }
-}
-
 /** Reset snapshot buffers (for testing only) */
 export function _resetPolicyLog(): void {
   snapshotBuffers.clear();

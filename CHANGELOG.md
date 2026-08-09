@@ -13,7 +13,166 @@ Each entry links the commit that made the change.
 
 ## [Unreleased]
 
-Nothing yet. Changes land here and are renamed at the next release cut.
+Changes land here and are renamed at the next release cut.
+
+### Fixed
+
+- **Python now governs Anthropic provider tool runners.** Messages runner
+  construction sends the initial prompt through the normal pre-call policy and
+  installs governed copies of local runnable tools before dispatch is
+  registered, while preserving hosted tool definitions. Sync and async
+  Messages runners are covered from Anthropic 0.68.0, and async managed-session
+  local tools are covered from 0.103.0 without claiming governance over remote
+  session model traffic.
+
+- **Python now keeps legacy Gemini chat sessions inside governance.**
+  `start_chat()` returned the provider's raw `ChatSession`, so both sync and
+  async messages bypassed pre-call policy and audit. The factory now returns a
+  transparent governed session whose `send_message` and `send_message_async`
+  calls enforce the same block, redaction, stream, and response rules as direct
+  generation.
+
+- **Python now governs OpenAI and Anthropic `with_streaming_response` calls.**
+  Policy runs before a response context manager is created, preserving the
+  providers' deferred sync and async request lifecycle while preventing blocked
+  prompts from reaching context entry. Parsed or read response content is
+  captured once when the context exits, with the raw status, headers, and body
+  accessors still available to callers.
+
+- **Python now governs OpenAI and Anthropic `with_raw_response` calls.** The
+  accessor objects were outside proxy traversal, so their text-generation
+  methods bypassed every pre-call block and redaction. The explicit raw-response
+  paths now run through the same sync/async pipeline, preserve the raw response
+  object returned to the caller, and use its cached typed view for response
+  policy and audit extraction. The deferred `with_streaming_response` context
+  managers remain a separate boundary.
+
+- **Python now governs legacy Gemini's async generation method.** The declared
+  `google-generativeai` integration intercepted `generate_content` but handed
+  `generate_content_async` straight to the provider with no policy or audit
+  event. The real 0.8.6 package exposes it as a coroutine with the same request
+  shape; it now runs through the async governance pipeline, including outbound
+  redaction and pre-provider blocking.
+
+- **Python retry and byte-split items cannot fall out of the signed chain when
+  producers refill the public queue.** The worker put an already-signed item
+  back into that bounded queue; a concurrent producer could fill the slot first,
+  making `put_nowait` drop the signed item while later events still chained to
+  it. Worker-owned pending lanes now retain those items in order until terminal
+  delivery, and queue-drain accounting follows the original submission.
+
+- **BREAKING: a customer hook can no longer erase an existing block.** The
+  published advanced-options example combined an SSN block with an
+  `on_pre_call` / `onPreCall` hook whose ordinary path returned `allow`; that
+  explicit allow replaced the PII verdict and sent the SSN to the provider.
+  Pre-call enforcement is now monotonic in both SDKs and on both TypeScript
+  pipelines: hooks may add a block or redaction, while `allow` only preserves
+  a call that no earlier layer blocked. External-oracle regressions assert the
+  provider receives zero calls for the published composition.
+
+- **Policy-change events use the signed delivery queue.** `set_tenant_policy`
+  / `setTenantPolicy` posted through a private one-off HTTP client that ignored
+  every response status, retried nothing, updated no delivery counter, emitted
+  no default warning, and placed the governance event outside the SDK chain.
+  Both SDKs now enqueue the event through their normal sender, so rejection,
+  retry exhaustion, shutdown flushing, counters, signatures, and loss reporting
+  have the same semantics as every other audit event.
+
+- **A `policy_rules` entry written as a mapping enforces.** It reached the rule
+  engine uncoerced and raised on the first attribute read, where the detector
+  guard resolved the raise by `failMode` — open by default — so a `block` rule
+  written that way did not block and the call went to the provider behind a
+  stderr notice. `policy_floor` had always accepted mappings, which is most of
+  why a caller expected the other tier to. Both tiers of rule now hold to one
+  schema and differ only in what an invalid rule costs: a `/policies` poll drops
+  it and fires `sdk:rule_rejected`, `init()` throws and names the index and the
+  field. That newly refuses a rule missing `enabled`, one with a misspelled
+  `type`, one claiming the reserved `sdk:` / `backend:` namespace, and a `regex`
+  pattern the ReDoS validator rejects — each of which previously produced a rule
+  the engine skipped in silence. ([`2d25f64`](https://github.com/obsvr-dev/obsvr-sdk/commit/2d25f64))
+
+- **`obsvr.wrap()` governs the `.stream()` helpers in Python.** They were
+  outside the method table, so the proxy returned the provider's own bound
+  method and no pipeline ran: on one wrapped client a `pii_policy` of
+  `{ssn: "block"}` refused `create(stream=True)` and let `messages.stream(...)`
+  through with the SSN in it. `messages.stream`, `beta.messages.stream`,
+  `chat.completions.stream` and `responses.stream` are governed now and emit one
+  event per run. The provider tool runners remain TypeScript-only.
+  ([`0db5816`](https://github.com/obsvr-dev/obsvr-sdk/commit/0db5816))
+
+- **The TypeScript OpenAI Agents tracing processor scans what it stores.** It
+  ran no policy pipeline of any kind, so at any sample rate it wrote the agent's
+  prompt and response into the signed event raw, while the Python twin ran the
+  observe-only PII net and the READMEs described the scan as running in both.
+  ([`b64cabb`](https://github.com/obsvr-dev/obsvr-sdk/commit/b64cabb))
+
+- **No event describes a provider call that has not happened.** Both provider
+  SDKs decorate their async `create` with a `@required_args` validator that is
+  itself a plain function, so `inspect.iscoroutinefunction` reported False and
+  the sync pipeline ran on an async client: an event with `success: true`, an
+  empty response and zero latency was written when the coroutine was
+  CONSTRUCTED, before the provider had been contacted and while the call could
+  still fail. Affected `messages.create` and `chat.completions.create` on the
+  async clients; `responses.create` carries no such decorator and was always
+  right. ([`30cb339`](https://github.com/obsvr-dev/obsvr-sdk/commit/30cb339))
+
+- **A tool-result redaction that could not be applied is no longer recorded as
+  applied.** A content item whose `text` could not be assigned was swallowed by
+  a per-item `except Exception: pass` inside the MCP sanitizer, so the raw
+  result travelled to the model under an event stamped `redacted`. The failure
+  now reaches the guard that exists: blocked under `failMode: "closed"`, and
+  under open the result is delivered with a `policy_flag` that files the types
+  as detected, drops the redaction claim and names the lost layer.
+  ([`179848d`](https://github.com/obsvr-dev/obsvr-sdk/commit/179848d))
+
+- **A `govern_tool` gate whose evaluation raised records `not_evaluated`.** It
+  recorded `allowed` — a verdict asserting a gate looked and permitted — on a
+  call where the gate raised and the tool ran ungoverned, with no trace of the
+  lost layer. Same vocabulary the MCP boundary already used for this failure.
+  ([`9328dec`](https://github.com/obsvr-dev/obsvr-sdk/commit/9328dec))
+
+- **The six NLP-only PII types are removed from the REQUEST, not only from the
+  record.** `name`, `person`, `address`, `location`, `medical` and
+  `national_id` have no built-in regex pattern, and Python ran the Presidio
+  anonymizer over the stored copy alone while rewriting the outbound request
+  with the regex tier — so a `redact` verdict on one of them produced an event
+  reading `redacted` with the value intact on the wire. Both that and the
+  attribution defect came from one place: the analyzer call returned an empty
+  list for "found nothing" and for "did not answer", so a 500ms timeout was
+  indistinguishable from a clean scan and `action_source` credited
+  `builtin+presidio` whenever the URL was merely configured. **Behaviour
+  change:** with Presidio configured and one of those six resolving to
+  `redact`, an anonymizer that does not answer now blocks the call.
+  ([`3f7d657`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f7d657))
+
+- **`init(auto=True)` reaches a client class a framework already imported.**
+  `from openai import OpenAI` binds the class object into the importing module,
+  so rebinding the provider module afterwards could not reach it: a framework
+  imported before `init()` kept constructing the ungoverned class while the
+  report named every provider alias as intercepted and nothing warned. Driven
+  against the real packages, crewai, ag2, LlamaIndex, Haystack and
+  openai-agents were all ungoverned that way — three from the bare top-level
+  import. Resolved by identity, so a framework's own unrelated class of the
+  same name is untouched.
+  ([`9e3dbda`](https://github.com/obsvr-dev/obsvr-sdk/commit/9e3dbda))
+
+- **`hardDeletion.endpoint` is inside the SSRF guard.** The fourth
+  customer-configured outbound URL, carrying a DELETE with the `X-API-Key`
+  header, was outside it while the security notes said every such URL was
+  validated. ([`b7ff312`](https://github.com/obsvr-dev/obsvr-sdk/commit/b7ff312))
+
+### Changed
+
+- **Documentation: the coverage claims this release moved, and several that
+  were simply wrong.** "The SDK can emit only content hashes" described an
+  option that exists in neither SDK; the seventeen governed method paths are
+  the table across every provider rather than the coverage of one client, and
+  `completions.create` and the assistants surface are in no table at all;
+  Cloudflare Workers AI has no Python path; the session-taint latch never arms
+  on injection without a `piiPolicy` co-requisite that went unstated; the
+  stored-copy scrub holds on the framework integrations in TypeScript only; and
+  the package table was two releases stale.
+  ([`d6c5bb3`](https://github.com/obsvr-dev/obsvr-sdk/commit/d6c5bb3))
 
 ## [0.11.0] - 2026-08-06
 

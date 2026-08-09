@@ -79,7 +79,12 @@ def test_pre_call_merges_presidio_types(monkeypatch):
                presidio_analyzer_url="http://an", policy_refresh_interval_s=0)
     monkeypatch.setattr(
         "obsvr.presidio.presidio_scan",
-        lambda text, url, timeout_s=0.5: {"detected_types": ["name", "location"]},
+        # `answered` is part of the contract: the record credits Presidio only
+        # when it actually answered, so a stub that omits it is a stub for a
+        # detector that never ran.
+        lambda text, url, timeout_s=0.5: {
+            "detected_types": ["name", "location"], "answered": True
+        },
     )
     result = apply_pre_call_policy("hello bob from berlin", get_config())
     assert result["compliance"]["action_reason"] == "pii_detected"

@@ -38,9 +38,60 @@ class FakeOpenAIResponse:
     usage = FakeUsage()
 
 
+class FakeRawResponse:
+    status_code = 200
+
+    def __init__(self, parsed):
+        self.parsed = parsed
+        self.parse_calls = 0
+
+    def parse(self):
+        self.parse_calls += 1
+        return self.parsed
+
+
+class _RawCompletions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, **kwargs):
+        self.owner.calls.append(kwargs)
+        return FakeRawResponse(FakeOpenAIResponse())
+
+
+class FakeStreamingResponse:
+    status_code = 200
+
+    def parse(self):
+        return FakeOpenAIResponse()
+
+
+class _ResponseManager:
+    def __init__(self, owner, kwargs):
+        self.owner = owner
+        self.kwargs = kwargs
+
+    def __enter__(self):
+        self.owner.calls.append(self.kwargs)
+        return FakeStreamingResponse()
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+class _StreamingCompletions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, **kwargs):
+        return _ResponseManager(self.owner, kwargs)
+
+
 class _Completions:
     def __init__(self):
         self.calls = []
+        self.with_raw_response = _RawCompletions(self)
+        self.with_streaming_response = _StreamingCompletions(self)
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
@@ -61,9 +112,48 @@ class FakeOpenAI:
 class _AsyncCompletions:
     def __init__(self):
         self.calls = []
+        self.with_raw_response = _AsyncRawCompletions(self)
+        self.with_streaming_response = _AsyncStreamingCompletions(self)
 
     async def create(self, **kwargs):
         self.calls.append(kwargs)
+        return FakeOpenAIResponse()
+
+
+class _AsyncRawCompletions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    async def create(self, **kwargs):
+        self.owner.calls.append(kwargs)
+        return FakeRawResponse(FakeOpenAIResponse())
+
+
+class _AsyncResponseManager:
+    def __init__(self, owner, kwargs):
+        self.owner = owner
+        self.kwargs = kwargs
+
+    async def __aenter__(self):
+        self.owner.calls.append(self.kwargs)
+        return FakeAsyncStreamingResponse()
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _AsyncStreamingCompletions:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def create(self, **kwargs):
+        return _AsyncResponseManager(self.owner, kwargs)
+
+
+class FakeAsyncStreamingResponse:
+    status_code = 200
+
+    async def parse(self):
         return FakeOpenAIResponse()
 
 
@@ -136,6 +226,27 @@ class FakeGenerativeModel:
 
     def generate_content(self, prompt, **kwargs):
         self.calls.append(prompt)
+        return FakeGeminiResponse()
+
+    async def generate_content_async(self, prompt, **kwargs):
+        self.calls.append(prompt)
+        return FakeGeminiResponse()
+
+    def start_chat(self, **kwargs):
+        return FakeChatSession(self, kwargs)
+
+
+class FakeChatSession:
+    def __init__(self, model, start_options):
+        self.model = model
+        self.start_options = start_options
+
+    def send_message(self, prompt, **kwargs):
+        self.model.calls.append(prompt)
+        return FakeGeminiResponse()
+
+    async def send_message_async(self, prompt, **kwargs):
+        self.model.calls.append(prompt)
         return FakeGeminiResponse()
 
 
@@ -231,6 +342,80 @@ class TestOpenAIInterception:
         assert "a@b.com" not in sent
         assert "[REDACTED_EMAIL]" in sent
 
+    def test_with_raw_response_is_governed_and_preserves_raw_object(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+
+        result = client.chat.completions.with_raw_response.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "raw hello"}]
+        )
+
+        assert isinstance(result, FakeRawResponse)
+        assert result.status_code == 200
+        assert result.parse_calls == 1
+        assert raw.chat.completions.calls[0]["messages"][0]["content"] == "raw hello"
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "chat.completions.with_raw_response.create"
+        assert captured[0]["response"] == "fake openai answer"
+
+    def test_with_raw_response_block_prevents_provider_call(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            client.chat.completions.with_raw_response.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "ssn 123-45-6789"}],
+            )
+
+        assert raw.chat.completions.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+
+    def test_with_streaming_response_is_deferred_and_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+
+        manager = client.chat.completions.with_streaming_response.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "stream raw hi"}]
+        )
+
+        assert raw.chat.completions.calls == []
+        with manager as response:
+            assert response.status_code == 200
+            parsed = response.parse()
+            assert parsed.choices[0].message.content == "fake openai answer"
+            assert captured == []
+
+        assert len(raw.chat.completions.calls) == 1
+        assert len(captured) == 1
+        assert captured[0]["operation"] == (
+            "chat.completions.with_streaming_response.create"
+        )
+        assert captured[0]["response"] == "fake openai answer"
+
+    def test_with_streaming_response_block_prevents_manager_creation(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeOpenAI()
+        client = obsvr.wrap(raw)
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            client.chat.completions.with_streaming_response.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "ssn 123-45-6789"}],
+            )
+
+        assert raw.chat.completions.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+
     def test_pre_call_hook_block(self, monkeypatch):
         _init(on_pre_call=lambda event: "block")
         captured = _captured_events(monkeypatch)
@@ -284,6 +469,51 @@ class TestAsyncOpenAI:
         assert len(captured) == 1
         assert captured[0]["prompt"] == "async hi"
 
+    def test_async_with_raw_response_is_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeAsyncOpenAI()
+        client = obsvr.wrap(raw)
+
+        async def run():
+            return await client.chat.completions.with_raw_response.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "async raw hi"}],
+            )
+
+        result = asyncio.run(run())
+        assert isinstance(result, FakeRawResponse)
+        assert result.parse_calls == 1
+        assert len(captured) == 1
+        assert captured[0]["response"] == "fake openai answer"
+
+    def test_async_with_streaming_response_is_deferred_and_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeAsyncOpenAI()
+        client = obsvr.wrap(raw)
+
+        async def run():
+            manager = client.chat.completions.with_streaming_response.create(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "async stream raw hi"}],
+            )
+            assert raw.chat.completions.calls == []
+            async with manager as response:
+                assert response.status_code == 200
+                parsed = await response.parse()
+                assert captured == []
+                return parsed
+
+        result = asyncio.run(run())
+        assert result.choices[0].message.content == "fake openai answer"
+        assert len(raw.chat.completions.calls) == 1
+        assert len(captured) == 1
+        assert captured[0]["operation"] == (
+            "chat.completions.with_streaming_response.create"
+        )
+        assert captured[0]["response"] == "fake openai answer"
+
 
 class TestAnthropicInterception:
     def test_messages_create_intercepted(self, monkeypatch):
@@ -315,6 +545,94 @@ class TestGeminiInterception:
         assert ev["model"] == "gemini-2.5-flash"
         assert ev["prompt"] == "hello gemini"
         assert ev["total_tokens"] == 5
+
+    def test_generate_content_async_intercepted(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        model = obsvr.wrap(raw)
+
+        result = asyncio.run(model.generate_content_async("hello async gemini"))
+
+        assert result.text == "fake gemini answer"
+        assert raw.calls == ["hello async gemini"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "generate_content_async"
+        assert captured[0]["prompt"] == "hello async gemini"
+
+    def test_generate_content_async_block_prevents_provider_call(self, monkeypatch):
+        _init(pii_policy={})
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        model = obsvr.wrap(raw)
+
+        async def run():
+            await model.generate_content_async("my ssn is 123-45-6789")
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            asyncio.run(run())
+
+        assert raw.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+        assert "123-45-6789" not in (captured[0].get("user_input") or "")
+
+    def test_start_chat_keeps_sync_messages_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        model = obsvr.wrap(raw)
+
+        chat = model.start_chat(history=[])
+        assert captured == []
+        result = chat.send_message("hello chat")
+
+        assert result.text == "fake gemini answer"
+        assert raw.calls == ["hello chat"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "send_message"
+        assert captured[0]["model"] == "gemini-2.5-flash"
+        assert captured[0]["prompt"] == "hello chat"
+
+    def test_start_chat_sync_block_prevents_provider_call(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        chat = obsvr.wrap(raw).start_chat()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            chat.send_message("my ssn is 123-45-6789")
+
+        assert raw.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+
+    def test_directly_wrapped_chat_session_redacts_sync_message(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        chat = obsvr.wrap(raw.start_chat())
+
+        chat.send_message("mail a@b.com")
+
+        assert raw.calls == ["mail [REDACTED_EMAIL]"]
+        assert len(captured) == 1
+        assert captured[0]["provider"] == "google"
+        assert captured[0]["model"] == "gemini-2.5-flash"
+
+    def test_start_chat_keeps_async_messages_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        chat = obsvr.wrap(raw).start_chat()
+
+        result = asyncio.run(chat.send_message_async("hello async chat"))
+
+        assert result.text == "fake gemini answer"
+        assert raw.calls == ["hello async chat"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "send_message_async"
+        assert captured[0]["prompt"] == "hello async chat"
 
     def test_gemini_positional_block_emits_and_raises_no_crash(self, monkeypatch):
         # Regression: the block path called redact_builtin_pii(_last_user_message(kwargs)),

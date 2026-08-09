@@ -107,8 +107,17 @@ from ..events import (
     blocked_call_error,
     emit_event,
     tool_denied_compliance,
+    tool_gate_not_evaluated_compliance,
 )
-from ..policy import apply_pre_call_policy, blocked_prompt_for_storage
+from ..policy import (
+    apply_outbound_redaction,
+    apply_pre_call_policy,
+    assert_redaction_applied,
+    blocked_prompt_for_storage,
+    outbound_redaction_blocked_compliance,
+    redact_arguments,
+    redact_builtin_pii,
+)
 from ..tool_content_hash import safe_tool_content_hash, tool_content_metadata
 
 SOURCE = "obsvr_tool"
@@ -368,14 +377,173 @@ def _descriptor_of(
     return descriptor
 
 
-def _input_of(exec_attr: str, args: tuple, kwargs: dict) -> Any:
+def _declared_params(tool: Any, original: Callable[..., Any]) -> Optional[Set[str]]:
+    """The parameter names this tool DECLARES, or None when it declares none.
+
+    AUDIT THE DECLARED SURFACE, NOT WHAT THE FRAMEWORK HAPPENED TO PASS. A
+    framework calls a tool's entry point with its own machinery alongside the
+    model's arguments: LangChain adds ``run_manager`` and the whole
+    ``RunnableConfig``, and under LangGraph that config carries the Pregel
+    scratchpad, callback-manager handles, weakrefs and checkpoint UUIDs. Merging
+    args and kwargs wholesale put all of it in the SIGNED event, and had three
+    consequences that were each worse than the noise:
+
+      * the PII scanner matched the debris — a LangGraph ``checkpoint_id`` is a
+        UUID — so every governed tool call recorded ``PII_DETECTED`` for
+        arguments that contained no PII;
+      * the sealed tool-content digest could not be computed over unhashable
+        framework objects, so ``safe_tool_content_hash`` returned None and the
+        evidence field was simply ABSENT — indistinguishable from a deployment
+        that seals nothing;
+      * memory addresses in the reprs made the signed content differ between two
+        identical calls.
+
+    Resolution order, strongest declaration first:
+
+      1. ``args_schema`` — the schema the MODEL is given. What is in it is the
+         whole of what a caller may send, so it is the exact allow-list. The
+         same read already feeds the descriptor digest (:func:`_descriptor_of`).
+      2. ``args`` — LangChain's projection of that schema, for shapes that
+         expose the properties without the model class.
+      3. the entry point's own signature, but only when it has no ``**kwargs``:
+         a signature that collects overflow declares nothing about what lands
+         there, and the overflow is exactly where the framework's machinery
+         arrives.
+
+    None means "this shape declares nothing" and the caller keeps the whole
+    payload. That direction is deliberate: an audited payload narrowed to
+    nothing is silence, which is worse than noise.
+    """
+    for schema in (getattr(tool, "args_schema", None),):
+        try:
+            if schema is not None and hasattr(schema, "model_json_schema"):
+                props = schema.model_json_schema().get("properties")
+                if isinstance(props, dict) and props:
+                    return set(props)
+            elif isinstance(schema, dict):
+                props = schema.get("properties")
+                if isinstance(props, dict) and props:
+                    return set(props)
+        except Exception:  # noqa: BLE001 - a schema that will not project
+            pass
+    try:
+        args_map = getattr(tool, "args", None)
+        if isinstance(args_map, dict) and args_map:
+            return set(args_map)
+    except Exception:  # noqa: BLE001 - a property that raises is not a schema
+        pass
+    try:
+        params = inspect.signature(original).parameters
+    except (TypeError, ValueError):
+        return None
+    names = set()
+    for name, param in params.items():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return None
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return None
+        if name != "self":
+            names.add(name)
+    return names or None
+
+
+class _Binding:
+    """A call's arguments addressed BY NAME, and writable back into the call.
+
+    One binding serves both halves of the fix: it is how the declared names are
+    selected out of a call that may have passed them positionally, and it is how
+    a redacted value is written BACK into the call — so the two halves cannot
+    disagree about which value is which.
+
+    The overflow parameter is flattened, and that is the whole reason this is a
+    class rather than a bare ``BoundArguments``. A framework entry point
+    collects the model's arguments in ``**kwargs``: LangChain's
+    ``StructuredTool._run(*args, config, run_manager=None, **kwargs)`` puts
+    ``order_id`` inside ``arguments["kwargs"]``, one level down, where a lookup
+    by declared name finds nothing at all. Selecting on the unflattened view
+    silently matched no declared parameter and fell back to auditing everything
+    — the same defect, reached by a different route.
+    """
+
+    def __init__(self, bound: inspect.BoundArguments, var_keyword: Optional[str]):
+        self._bound = bound
+        self._var_keyword = var_keyword
+
+    def named(self) -> Dict[str, Any]:
+        """Every argument this call supplied, addressed by parameter name."""
+        flat = dict(self._bound.arguments)
+        overflow = flat.pop(self._var_keyword, None) if self._var_keyword else None
+        if isinstance(overflow, dict):
+            flat.update(overflow)
+        return flat
+
+    def set(self, name: str, value: Any) -> None:
+        """Replace one named argument, wherever the binding actually holds it."""
+        if name in self._bound.arguments and name != self._var_keyword:
+            self._bound.arguments[name] = value
+            return
+        if self._var_keyword:
+            overflow = self._bound.arguments.get(self._var_keyword)
+            if isinstance(overflow, dict) and name in overflow:
+                # A fresh dict: BoundArguments hands back the caller's mapping
+                # for the overflow, and governing a caller must not mutate it.
+                updated = dict(overflow)
+                updated[name] = value
+                self._bound.arguments[self._var_keyword] = updated
+
+    def call(self) -> Tuple[tuple, dict]:
+        return self._bound.args, self._bound.kwargs
+
+
+def _bind_arguments(
+    original: Callable[..., Any], args: tuple, kwargs: dict
+) -> Optional[_Binding]:
+    """Bind this call to the callable's parameters, or None if the shape resists."""
+    try:
+        signature = inspect.signature(original)
+        bound = signature.bind_partial(*args, **kwargs)
+    except (TypeError, ValueError):
+        return None
+    var_keyword = next(
+        (
+            name
+            for name, param in signature.parameters.items()
+            if param.kind is inspect.Parameter.VAR_KEYWORD
+        ),
+        None,
+    )
+    return _Binding(bound, var_keyword)
+
+
+def _input_of(
+    exec_attr: str,
+    args: tuple,
+    kwargs: dict,
+    bound: Optional["_Binding"] = None,
+    declared: Optional[Set[str]] = None,
+) -> Any:
     """The tool input, normalized across calling conventions.
 
     ``on_invoke_tool(run_context, input)`` carries the input at position 1;
     every other shape carries it at position 0 or as keyword arguments.
+
+    When the tool declares a parameter surface (see :func:`_declared_params`)
+    and the call could be bound to names, the payload is narrowed to exactly
+    that surface. A narrowing that selects NOTHING is discarded rather than
+    reported: an empty payload beside a call that plainly carried arguments is a
+    shape this resolution does not understand, and the wholesale value is the
+    honest answer there.
     """
     if exec_attr == "on_invoke_tool" and len(args) >= 2:
         return args[1]
+    if bound is not None and declared:
+        selected = {
+            name: value
+            for name, value in bound.named().items()
+            if name in declared
+        }
+        if selected:
+            return selected
     if kwargs and not args:
         return kwargs
     if len(args) == 1 and not kwargs:
@@ -386,6 +554,48 @@ def _input_of(exec_attr: str, args: tuple, kwargs: dict) -> Any:
     if kwargs:
         payload["kwargs"] = kwargs
     return payload
+
+
+def _redacted_call(
+    exec_attr: str,
+    args: tuple,
+    kwargs: dict,
+    bound: Optional["_Binding"],
+    declared: Optional[Set[str]],
+    redact: Callable[[Optional[str]], str],
+) -> Tuple[tuple, dict, Any]:
+    """Rebuild this invocation with its declared arguments redacted.
+
+    Returns ``(args, kwargs, payload)`` — the call to make, and the payload the
+    record should describe. The payload is derived from the REDACTED values
+    rather than from the policy engine's own redacted copy of the text, so what
+    the event says the tool received is what the tool received.
+
+    ONLY DECLARED ARGUMENTS ARE REWRITTEN. The framework's own handles travel
+    through untouched: rewriting a callback manager or a checkpoint id would
+    corrupt the run, and neither is content the policy was asked about.
+    """
+    if bound is not None and declared:
+        supplied = bound.named()
+        targets = [name for name in supplied if name in declared]
+        if targets:
+            payload = {}
+            for name in targets:
+                value = redact_arguments(supplied[name], redact)
+                bound.set(name, value)
+                payload[name] = value
+            new_args, new_kwargs = bound.call()
+            return new_args, new_kwargs, payload
+
+    if exec_attr == "on_invoke_tool" and len(args) >= 2:
+        redacted = redact_arguments(args[1], redact)
+        return (args[0], redacted) + tuple(args[2:]), kwargs, redacted
+
+    # No declared surface to narrow to: redact everything the call carried,
+    # which is also everything that was scanned.
+    new_args = tuple(redact_arguments(value, redact) for value in args)
+    new_kwargs = {key: redact_arguments(value, redact) for key, value in kwargs.items()}
+    return new_args, new_kwargs, _input_of(exec_attr, new_args, new_kwargs)
 
 
 def _input_text(value: Any) -> str:
@@ -451,13 +661,23 @@ def _gate(
     kwargs: dict,
     options: Dict[str, Any],
     descriptor: Optional[Dict[str, Any]] = None,
-) -> None:
-    """Run every check that must precede the tool body. Raises to refuse."""
+    original: Optional[Callable[..., Any]] = None,
+) -> Tuple[tuple, dict]:
+    """Run every check that must precede the tool body. Raises to refuse.
+
+    Returns the ``(args, kwargs)`` the body is to be called with. On a ``redact``
+    verdict those are NOT the arguments that came in: the declared arguments are
+    rewritten and the tool receives the redacted values, because a tool is where
+    side effects live and a redaction that stops at the audit copy protects
+    nothing that a file, a row, or a third-party API will see.
+    """
     config = try_get_config()
     if config is None:
-        return
+        return args, kwargs
 
-    raw_input = _input_of(exec_attr, args, kwargs)
+    declared = _declared_params(tool, original) if original is not None else None
+    bound = _bind_arguments(original, args, kwargs) if original is not None else None
+    raw_input = _input_of(exec_attr, args, kwargs, bound, declared)
     input_text = _input_text(raw_input)
     content_meta = tool_content_metadata(
         safe_tool_content_hash(
@@ -536,6 +756,67 @@ def _gate(
             )
             compliance_out = result["compliance"]
             stored_prompt = result["redacted_prompt"]
+            if result["decision"] == "redact":
+                # ENFORCEMENT APPLICATION, not a record of one. The pipeline's
+                # own ``redacted_prompt`` is a redacted copy of the SCANNED
+                # TEXT; it cannot be handed to a callable that takes arguments.
+                # So the declared arguments are rewritten value by value and
+                # the stored prompt is then derived from THOSE — the record
+                # describes what the tool received because it is built from it.
+                #
+                # Fails closed exactly as the wrap() path does: a redaction the
+                # SDK cannot carry out blocks the call rather than forwarding
+                # the content it was told to remove, and the event drops every
+                # "redacted" claim (see outbound_redaction_blocked_compliance).
+                redacted_state: Dict[str, Any] = {}
+
+                def _apply_redaction() -> None:
+                    new_args, new_kwargs, payload = _redacted_call(
+                        exec_attr, args, kwargs, bound, declared, redact_builtin_pii
+                    )
+                    assert_redaction_applied(payload, compliance_out)
+                    redacted_state["call"] = (new_args, new_kwargs)
+                    redacted_state["payload"] = payload
+
+                not_redacted = apply_outbound_redaction(_apply_redaction)
+                if not_redacted is not None:
+                    compliance_out = outbound_redaction_blocked_compliance(
+                        compliance_out, not_redacted
+                    )
+                    emit_event(
+                        config,
+                        provider="unknown",
+                        model="unknown",
+                        operation="tool.call",
+                        source=SOURCE,
+                        prompt=blocked_prompt_for_storage(
+                            input_text, compliance_out,
+                            result.get("security_normalized"),
+                        ),
+                        response="",
+                        success=False,
+                        status_code=403,
+                        metadata={
+                            **(identity_meta or {}),
+                            "tool_name": tool_name,
+                            **content_meta,
+                        },
+                        compliance=compliance_out,
+                        options=event_options,
+                    )
+                    raise blocked_call_error(compliance_out)
+                args, kwargs = redacted_state["call"]
+                stored_prompt = _input_text(redacted_state["payload"])
+                # Re-seal: the digest commits to what the tool was handed, so a
+                # verifier reproducing it from the stored prompt gets the same
+                # value instead of a digest of arguments nobody ever received.
+                content_meta = tool_content_metadata(
+                    safe_tool_content_hash(
+                        tool_name=tool_name,
+                        descriptor=_descriptor_of(tool, tool_name, descriptor),
+                        args=redacted_state["payload"],
+                    )
+                )
             if result["decision"] == "block":
                 emit_event(
                     config,
@@ -576,7 +857,27 @@ def _gate(
                         "blocked_types": [],
                     }
                 ) from e
-            compliance_out = None
+            # Under the default "open" the tool runs, and the record has to say
+            # so honestly. It used to fall through to the no-policy-configured
+            # fallback below, which reads ``allowed`` — a gate asserting it
+            # looked and permitted, when in fact it raised. Same vocabulary the
+            # MCP boundary already uses for the same failure, plus the lost
+            # layer named on this call's own event.
+            from ..policy import record_detector_failure
+
+            record_detector_failure("tool_gate", e, config)
+            compliance_out = tool_gate_not_evaluated_compliance(
+                surface=SOURCE,
+                gate="govern_tool",
+                reason=f"policy evaluation raised {type(e).__name__}; tool ran ungoverned",
+            )
+            compliance_out["detector_failure"] = {
+                "layer": "tool_gate",
+                "error": f"{type(e).__name__}: {e}"[:200],
+                "resolution": "open",
+                "floor_class": False,
+                "phase": "pre_call",
+            }
             stored_prompt = input_text
 
     # 3) signed tool.call audit event.
@@ -611,6 +912,7 @@ def _gate(
         },
         options=event_options,
     )
+    return args, kwargs
 
 
 def _wrap_callable(
@@ -626,7 +928,12 @@ def _wrap_callable(
     one governed object: an outer entry point that delegates to an inner
     gated attr (crewai's ``_run`` → ``func``, LlamaIndex's ``call`` → ``_fn``)
     must be gated ONCE — a second verdict and a second audit event for one
-    invocation is how a step budget silently drifts."""
+    invocation is how a step budget silently drifts.
+
+    THE GATE'S RETURN IS THE CALL. Under a ``redact`` verdict the arguments it
+    hands back are not the ones that came in, and the body is entered with those
+    — the tool is the surface where a redaction has to be real, because a tool
+    writes files and rows rather than a transcript."""
     if inspect.iscoroutinefunction(original):
 
         @functools.wraps(original)
@@ -635,7 +942,10 @@ def _wrap_callable(
                 return await original(*args, **kwargs)
             token = inflight.set(True)
             try:
-                _gate(tool, tool_name, exec_attr, args, kwargs, options, descriptor)
+                args, kwargs = _gate(
+                    tool, tool_name, exec_attr, args, kwargs, options, descriptor,
+                    original,
+                )
                 return await original(*args, **kwargs)
             finally:
                 inflight.reset(token)
@@ -648,7 +958,10 @@ def _wrap_callable(
             return original(*args, **kwargs)
         token = inflight.set(True)
         try:
-            _gate(tool, tool_name, exec_attr, args, kwargs, options, descriptor)
+            args, kwargs = _gate(
+                tool, tool_name, exec_attr, args, kwargs, options, descriptor,
+                original,
+            )
             return original(*args, **kwargs)
         finally:
             inflight.reset(token)

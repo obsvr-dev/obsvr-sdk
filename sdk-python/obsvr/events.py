@@ -515,6 +515,13 @@ def build_audit_event(
         "action_source": comp["action_source"],
         "redacted_types": comp["redacted_types"],
         "blocked_types": comp["blocked_types"],
+        # What the scan FOUND, as distinct from what policy DID about it.
+        # ``reason_code: PII_DETECTED`` is derived from the detection while the
+        # two lists above are filled only by the block and redact branches, so a
+        # type that resolves to detect_only produced that code with both lists
+        # empty and nothing on the record naming what matched. Present only when
+        # something was detected, so an event with no finding is unchanged.
+        "detected_types": comp.get("detected_types"),
         # Optional compliance detail (parity with TS: rule_id/policy_reason
         # identify WHICH rule fired, not just that one did)
         "rule_id": comp.get("rule_id"),

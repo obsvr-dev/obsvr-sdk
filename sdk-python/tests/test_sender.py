@@ -99,8 +99,8 @@ def test_send_event_posts_correct_url(monkeypatch):
     monkeypatch.setattr(sender, "urlopen", fake_urlopen)
     cfg = _cfg()
     event = {"request_id": "r1", "prompt": "test"}
-    result = sender._send_event(cfg, event)
-    assert result == "ok"
+    verdict, rejected = sender._send_event(cfg, event)
+    assert (verdict, rejected) == ("ok", 0)
     assert received["url"] == "http://localhost:3000/ingest"
     assert received["method"] == "POST"
     assert received["headers"]["X-api-key"] == "test-key"
@@ -118,8 +118,8 @@ def test_send_event_429_applies_backoff(monkeypatch):
     # Reset backoff state
     sender._reset_backoff()
     cfg = _cfg()
-    result = sender._send_event(cfg, {"request_id": "r1"})
-    assert result == "retryable"
+    verdict, _ = sender._send_event(cfg, {"request_id": "r1"})
+    assert verdict == "retryable"
     assert sender._backoff["until"] > time.time()
     assert sender._backoff["multiplier"] == 2.0
     # cleanup
@@ -135,8 +135,8 @@ def test_send_event_500_is_retryable(monkeypatch):
     monkeypatch.setattr(sender, "urlopen", fake_urlopen)
     sender._reset_backoff()
     cfg = _cfg()
-    result = sender._send_event(cfg, {"request_id": "r1"})
-    assert result == "retryable"
+    verdict, _ = sender._send_event(cfg, {"request_id": "r1"})
+    assert verdict == "retryable"
     assert sender._backoff["until"] > time.time()  # retryables arm backoff too
     sender._reset_backoff()
 
@@ -147,8 +147,8 @@ def test_send_event_exception_is_retryable(monkeypatch):
     )
     sender._reset_backoff()
     cfg = _cfg()
-    result = sender._send_event(cfg, {})
-    assert result == "retryable"
+    verdict, _ = sender._send_event(cfg, {})
+    assert verdict == "retryable"
     sender._reset_backoff()
 
 
@@ -162,7 +162,7 @@ def test_send_event_4xx_is_permanent(monkeypatch):
             lambda req, timeout=None, c=code: (_ for _ in ()).throw(HTTPError(None, c, "err", {}, None)),
         )
         sender._reset_backoff()
-        assert sender._send_event(_cfg(), {"request_id": "r1"}) == "permanent"
+        assert sender._send_event(_cfg(), {"request_id": "r1"})[0] == "permanent"
         assert sender._backoff["until"] == 0.0  # permanent does not arm backoff
     sender._reset_backoff()
 
@@ -176,6 +176,63 @@ def test_batch_splits_on_byte_budget():
     # end-to-end split behavior is covered by the queue integration test.
     assert sender.MAX_BATCH_BYTES < 1_000_000  # ingest bodyLimit
     assert len(json.dumps(small)) < sender.MAX_BATCH_BYTES
+
+
+def test_retry_survives_when_producers_refill_the_public_queue(monkeypatch):
+    """An already-signed retry must not compete with producers for a slot.
+
+    The first request is held in flight while a second event fills a one-slot
+    public queue. The old worker tried to put the first event back, hit Full,
+    dropped it, and left the chain pointing through an event ingest never saw.
+    The worker-local carry now sends both in sequence without an overflow.
+    """
+    sender._reset_sender()
+    original_maxsize = sender._queue.maxsize
+    sender._queue.maxsize = 1
+    in_flight = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def send_one(_cfg, event):
+        calls.append(("single", event["request_id"]))
+        if event["request_id"] == "retry-first" and calls.count(("single", "retry-first")) == 1:
+            in_flight.set()
+            assert release.wait(5), "test never released the first request"
+            return ("retryable", 0)
+        return ("ok", 0)
+
+    def send_batch(_cfg, events):
+        calls.append(("batch", [event["request_id"] for event in events]))
+        return ("ok", 0)
+
+    monkeypatch.setattr(sender, "_send_event", send_one)
+    monkeypatch.setattr(sender, "_send_event_batch", send_batch)
+    cfg = _cfg()
+    try:
+        sender.send_audit_async(
+            cfg, {"request_id": "retry-first", "prompt": "p1", "response": ""}
+        )
+        assert in_flight.wait(5), "worker never started the first request"
+        sender.send_audit_async(
+            cfg, {"request_id": "queued-second", "prompt": "p2", "response": ""}
+        )
+        assert sender.get_queue_size() == 1
+        release.set()
+        sender.flush(timeout=5)
+
+        stats = sender.get_sender_stats()
+        assert stats["sent"] == 2
+        assert stats["retries"] == 1
+        assert stats["dropped_overflow"] == 0
+        assert sender.get_pending_gap_count() == 0
+        assert calls == [
+            ("single", "retry-first"),
+            ("batch", ["retry-first", "queued-second"]),
+        ]
+    finally:
+        release.set()
+        sender._queue.maxsize = original_maxsize
+        sender._reset_sender()
 
 
 def test_disabled_config_skips_send():
@@ -401,7 +458,7 @@ def test_single_event_409_duplicate_counts_as_sent(monkeypatch):
             {"ok": False, "error": "duplicate_event", "reason": "replay"}
         ),
     )
-    assert sender._send_event(_cfg(), {"request_id": "dup"}) == "ok"
+    assert sender._send_event(_cfg(), {"request_id": "dup"})[0] == "ok"
     assert sender._backoff["until"] == 0.0
     sender._reset_sender()
 
@@ -424,7 +481,7 @@ def test_409_duplicate_raised_as_httperror_counts_as_sent(monkeypatch):
         )
 
     monkeypatch.setattr(sender, "urlopen", raise_conflict)
-    assert sender._send_event(_cfg(), {"request_id": "dup"}) == "ok"
+    assert sender._send_event(_cfg(), {"request_id": "dup"})[0] == "ok"
     sender._reset_sender()
 
 
@@ -438,7 +495,7 @@ def test_non_duplicate_409_stays_permanent(monkeypatch):
         "urlopen",
         lambda req, timeout=None: _conflict_response({"ok": False, "error": "sequence_fork"}),
     )
-    assert sender._send_event(_cfg(), {"request_id": "fork"}) == "permanent"
+    assert sender._send_event(_cfg(), {"request_id": "fork"})[0] == "permanent"
     sender._reset_sender()
 
 
@@ -450,7 +507,7 @@ def test_409_with_unreadable_body_stays_permanent(monkeypatch):
     resp = _make_response(409)
     resp.read.return_value = b"<html>gateway</html>"
     monkeypatch.setattr(sender, "urlopen", lambda req, timeout=None: resp)
-    assert sender._send_event(_cfg(), {"request_id": "opaque"}) == "permanent"
+    assert sender._send_event(_cfg(), {"request_id": "opaque"})[0] == "permanent"
     sender._reset_sender()
 
 

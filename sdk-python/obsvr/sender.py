@@ -49,7 +49,7 @@ import uuid
 from queue import Empty, Full, Queue
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .audit_gap import (
     AUDIT_GAP_GOVERNANCE_EVENT,
@@ -82,6 +82,14 @@ SIGNING_SALT = b"obsvr-sdk-signing-v1"
 SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
 
 _queue: "Queue[Any]" = Queue(maxsize=MAX_QUEUE_SIZE)
+# Unbounded, worker-only carry for ALREADY-SIGNED items that need the next
+# byte-bounded batch or a retry. Its size is bounded by construction (one split
+# item plus one failed SEND_BATCH_SIZE batch), while keeping it separate means
+# producers can never consume the slot an older signed item needs to survive.
+_worker_pending: "Queue[Any]" = Queue()
+# One item that crossed the byte budget belongs before every other pending
+# retry/item, so it gets its own front slot rather than going to the tail.
+_worker_front: "Queue[Any]" = Queue(maxsize=1)
 _backoff: Dict[str, float] = {"until": 0.0, "multiplier": 1.0}
 # Set at process exit so the worker breaks out of its (up to 60s) backoff sleep
 # and drains immediately — otherwise the atexit flush budget is defeated by a
@@ -200,7 +208,8 @@ def _reseed_chain_after_fork() -> None:
     Twin: none. The TypeScript SDK has no ``fork()`` to survive.
     """
     global _sdk_session_id, _seq_no, _last_sig
-    global _queue, _sign_lock, _stats_lock, _worker_lock, _worker
+    global _queue, _worker_pending, _worker_front
+    global _sign_lock, _stats_lock, _worker_lock, _worker
     global _gap_pending, _gap_marker_ordinal, _dropped
 
     _sign_lock = threading.RLock()
@@ -214,6 +223,8 @@ def _reseed_chain_after_fork() -> None:
     # A fresh queue: drops the parent's undelivered events (the parent still has
     # them) and discards any queue-internal lock inherited in a locked state.
     _queue = Queue(maxsize=MAX_QUEUE_SIZE)
+    _worker_pending = Queue()
+    _worker_front = Queue(maxsize=1)
 
     # These describe the PARENT's losses and its markers. The child has had none.
     _gap_pending = 0
@@ -364,26 +375,42 @@ def _reset_backoff() -> None:
 
 def _classify_status(status: int, path: str) -> str:
     """Failure taxonomy (SPEC posture, OTel consumererror pattern):
-    'ok'        2xx, or a final server-side verdict (single-event 403).
+    'ok'        2xx: the server accepted the request.
+    'rejected'  the server answered, understood, and REFUSED (single-event
+                403). Final like a permanent failure, but its own verdict
+                because the server saw the event and said no, which is a
+                different audit story from never having reached it.
     'retryable' 408/429/5xx and transport errors: retrying can help.
-    'permanent' every other 4xx: retrying the same bytes AT THE SAME MOMENT
-                will not help (malformed event, body too large). Auth-class
-                4xx (401/403) are in this class too, and they are the reason
-                the header no longer says "the same bytes will always fail":
-                that is key state, not a property of the bytes. Measured — a
-                401 dead-letters with zero retries, and the identical event
-                re-posted with the same key header succeeds once the sink
-                answers 200. Retrying an auth failure in a hot loop burns
-                quota and hides the bug, so it is still classed permanent;
-                the event is dead-lettered rather than held."""
+    'permanent' every other 4xx, and every 3xx: retrying the same bytes AT THE
+                SAME MOMENT will not help (malformed event, body too large, an
+                ingest URL that redirects). Auth-class 4xx (401/403) are in
+                this class too, and they are the reason the header no longer
+                says "the same bytes will always fail": that is key state, not
+                a property of the bytes. Measured — a 401 dead-letters with
+                zero retries, and the identical event re-posted with the same
+                key header succeeds once the sink answers 200. Retrying an
+                auth failure in a hot loop burns quota and hides the bug, so it
+                is still classed permanent; the event is dead-lettered rather
+                than held.
+
+    ONLY A 2xx IS A DELIVERY. A 403 on the single-event path used to classify
+    'ok', on the reasoning that a server-side policy refusal is a final verdict
+    rather than something to retry. Final it is; delivered it is not, and 'ok'
+    is the verdict that increments ``sent``. The batch path had it right all
+    along — it reads the response body and books per-event refusals as
+    ``dropped_rejected`` — so the same 403 was counted as a delivery or as a
+    loss depending only on how many events happened to be queued behind it.
+    Worse, the status is shared: a server that answers 403 for
+    ``invalid_sdk_signature`` produced a run where the SDK reported 100%
+    delivery and the sink had stored nothing.
+    """
     if 200 <= status < 300:
         return "ok"
     if status == 403 and path == INGEST_PATH:
-        # Server-side policy block on the single-event path: final verdict.
-        return "ok"
+        return "rejected"
     if status in (408, 429) or status >= 500:
         return "retryable"
-    if 400 <= status < 500:
+    if 300 <= status < 500:
         return "permanent"
     return "retryable"
 
@@ -421,10 +448,9 @@ def _count_rejects(config: ResolvedConfig, body: Any, events: list) -> int:
     if not isinstance(body, dict):
         return 0
     rejected = body.get("rejected")
-    if not isinstance(rejected, list) or not rejected:
-        return 0
     drops = 0
-    for entry in rejected:
+    duplicates = 0
+    for entry in rejected if isinstance(rejected, list) else ():
         if not isinstance(entry, dict):
             drops += 1
             continue
@@ -433,6 +459,7 @@ def _count_rejects(config: ResolvedConfig, body: Any, events: list) -> int:
         label = (event or {}).get("request_id") or f"index {idx}"
         if entry.get("error") == DUPLICATE_EVENT_ERROR:
             # Already recorded: counts as sent, never as a drop.
+            duplicates += 1
             _debug_warn(config, f"Audit event already recorded (duplicate): {label}")
             continue
         drops += 1
@@ -440,8 +467,26 @@ def _count_rejects(config: ResolvedConfig, body: Any, events: list) -> int:
             config,
             f"Audit event rejected by server ({entry.get('error')}) - dropping: {label}",
         )
-    # Never exceed the batch: a malformed body cannot inflate the counter.
-    return min(drops, len(events))
+    # RECONCILE AGAINST THE ACCEPTED COUNT. The response states how many it
+    # took; a server that took fewer than it was sent has refused the rest
+    # whether or not it enumerated them, and crediting the difference to
+    # ``sent`` would overstate coverage on the strength of a field the sender
+    # read and then ignored. A duplicate counts toward the delivered side, not
+    # the shortfall: the server did not take it because it already had it.
+    accepted = body.get("count")
+    if isinstance(accepted, int) and not isinstance(accepted, bool):
+        shortfall = len(events) - accepted - duplicates
+        if shortfall > drops:
+            _debug_warn(
+                config,
+                f"Ingest accepted {accepted} of {len(events)} audit events and "
+                f"enumerated {drops} refusal(s); counting the "
+                f"{shortfall - drops} unaccounted event(s) as dropped",
+            )
+            drops = shortfall
+    # Never exceed the batch, and never below zero: a malformed body cannot
+    # inflate the counter or manufacture deliveries.
+    return max(0, min(drops, len(events)))
 
 
 def _debug_warn(config: ResolvedConfig, message: str) -> None:
@@ -449,14 +494,72 @@ def _debug_warn(config: ResolvedConfig, message: str) -> None:
         logging.getLogger("obsvr").warning(message)
 
 
+#: Seconds between loss warnings. The first loss speaks immediately; a sustained
+#: outage then costs one line a minute rather than one per event.
+_LOSS_WARN_INTERVAL_S = 60.0
+_loss_warned_at = 0.0
+
+
+def _warn_events_lost(count: int, reason: str) -> None:
+    """Say out loud, at DEFAULT settings, that audit events were lost.
+
+    Everything else on this path speaks only under ``debug=True``, and that is
+    how a run that delivered nothing looked like a run that delivered
+    everything: the counters knew, the counters are not exported, and the
+    process that held them exited. The same principle ``config.py`` states for
+    configuration — silent misconfiguration of a governance SDK is itself a
+    governance failure — applies at least as strongly to silent loss of the
+    evidence, so this one is a warning nobody has to opt into.
+
+    Rate-limited rather than once-per-process: a second outage an hour later is
+    news again, and a burst is not.
+    """
+    global _loss_warned_at
+    now = time.monotonic()
+    if _loss_warned_at and now - _loss_warned_at < _LOSS_WARN_INTERVAL_S:
+        return
+    _loss_warned_at = now
+    logging.getLogger("obsvr").warning(
+        "obsvr: %d audit event(s) were NOT recorded (%s). The audit trail for "
+        "this process is incomplete; obsvr.sender.get_sender_stats() has the "
+        "counts, and debug=True logs each one.",
+        count,
+        reason,
+    )
+
+
+class _RefuseSilentRedirect(HTTPRedirectHandler):
+    """Never let a redirect turn an audit POST into a body-less GET.
+
+    urllib's default follows 301/302/303 by rewriting the request to a GET
+    WITHOUT the body, so the event is discarded in the client and the redirect
+    target's 200 is what the classifier sees — a delivery counted for bytes
+    that were never sent anywhere. Refusing the redirect surfaces the 3xx
+    instead, which classifies permanent: an ingest URL that redirects is a
+    misconfiguration to fix, not a condition to retry around.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+#: The module's one HTTP entry point. Same name and same call shape as
+#: ``urllib.request.urlopen``, which it replaces, so every caller and every test
+#: seam is unchanged — what differs is the redirect disposition above.
+urlopen = build_opener(_RefuseSilentRedirect).open
+
+
 def _post(config: ResolvedConfig, path: str, payload: Any, events: Optional[list] = None) -> Any:
-    """POST JSON; returns 'ok' | 'retryable' | 'permanent'.
+    """POST JSON; returns 'ok' | 'rejected' | 'retryable' | 'permanent'.
 
     429 and retryable failures arm the (jittered) backoff window. When
-    ``events`` is given (the batch path), the 2xx response BODY is read and the
-    return becomes ``(verdict, rejected_count)`` - without reading it, a
-    per-event refusal inside an accepted batch is invisible and miscounted as
-    a delivery.
+    ``events`` is given, the 2xx response BODY is read and the return becomes
+    ``(verdict, rejected_count)`` - without reading it, a per-event refusal
+    inside an accepted batch is invisible and miscounted as a delivery. BOTH
+    call sites now pass it: the single-event path used to omit ``events``, so
+    the body-reading branch was unreachable for it and a 200 carrying
+    ``{"rejected": [...]}`` counted as a clean delivery of the event the server
+    had just refused in that very response.
     """
     url = f"{config.ingest_url}{path}"
     data = json.dumps(payload).encode("utf-8")
@@ -508,15 +611,23 @@ def _post(config: ResolvedConfig, path: str, payload: Any, events: Optional[list
                 pass
     except Exception:
         verdict = "retryable"
-    if verdict == "ok":
+    if verdict in ("ok", "rejected"):
+        # The server answered. The transport is healthy whichever way it ruled,
+        # so the backoff window is cleared for both.
         _reset_backoff()
     elif verdict == "retryable":
         _apply_backoff()
     return (verdict, rejected) if events is not None else verdict
 
 
-def _send_event(config: ResolvedConfig, event: Dict[str, Any]) -> str:
-    return _post(config, INGEST_PATH, event)
+def _send_event(config: ResolvedConfig, event: Dict[str, Any]) -> tuple:
+    """One request for one event via /ingest.
+
+    Passes the event through as a one-item list so the accepted-response body is
+    read here exactly as it is on the batch path. Returns
+    ``(verdict, rejected_count)``.
+    """
+    return _post(config, INGEST_PATH, event, events=[event])
 
 
 def _send_event_batch(config: ResolvedConfig, events: list) -> tuple:
@@ -526,8 +637,9 @@ def _send_event_batch(config: ResolvedConfig, events: list) -> tuple:
     blocked or duplicate event reported that way costs only itself. A batch
     answered with a 4xx is a different case and the header used to elide it:
     the verdict applies to the whole request, so every event in it dead-letters
-    together. Measured: a batch of 25 answered 403 drops all 25, while the SAME
-    403 on the single-event path is a final server verdict and drops nothing.
+    together. A 403 costs every event in the request on both paths now — it
+    used to drop all 25 here and none on the single-event path, so what a
+    refusal cost depended on how many events were queued behind it.
     'retryable' means a transport failure worth retrying.
     Returns ``(verdict, rejected_count)`` - the count of events the server
     refused individually, so the caller can account for them as delivered and
@@ -543,28 +655,49 @@ def _worker_loop() -> None:
     requeue with a bounded per-item budget; permanent failures (4xx other
     than 408/429) dead-letter immediately: the same bytes will always fail."""
     global _dropped
+    # Items removed from Queue must never be put back into a queue producers
+    # can refill between get() and put_nowait(). Two such requeues existed:
+    # byte-budget carry-over and retryable delivery. If either raced a full
+    # queue, an ALREADY-SIGNED event was dropped, the next event linked to its
+    # missing signature, and no gap marker was armed. Keep the bounded carry
+    # locally instead: at most one byte-split item plus SEND_BATCH_SIZE retries,
+    # and always drain it before reading newer queue entries.
     while True:
-        first = _queue.get()
+        try:
+            first = _worker_front.get_nowait()
+            _worker_front.task_done()
+        except Empty:
+            try:
+                first = _worker_pending.get_nowait()
+                _worker_pending.task_done()
+            except Empty:
+                first = _queue.get()
         batch = [first]
+        completed = 1
         try:
             batch_bytes = len(json.dumps(first[1]))
             while len(batch) < SEND_BATCH_SIZE:
                 try:
-                    item = _queue.get_nowait()
+                    item = _worker_front.get_nowait()
+                    _worker_front.task_done()
                 except Empty:
-                    break
+                    try:
+                        item = _worker_pending.get_nowait()
+                        _worker_pending.task_done()
+                    except Empty:
+                        try:
+                            item = _queue.get_nowait()
+                        except Empty:
+                            break
                 item_bytes = len(json.dumps(item[1]))
                 if batch and batch_bytes + item_bytes > MAX_BATCH_BYTES:
-                    # Byte budget reached: send what we have, put this one
-                    # back for the next batch.
-                    try:
-                        _queue.put_nowait(item)
-                    except Full:
-                        _dropped += 1
-                        _bump("dropped_overflow")
-                    _queue.task_done()
+                    # Byte budget reached: carry this already-signed item
+                    # locally into the next batch. Requeueing it could race a
+                    # producer for the last slot and silently break the chain.
+                    _worker_front.put(item)
                     break
                 batch.append(item)
+                completed += 1
                 batch_bytes += item_bytes
 
             wait = _backoff["until"] - time.time()
@@ -576,7 +709,7 @@ def _worker_loop() -> None:
             config = batch[0][0]
             events = [item[1] for item in batch]
             if len(events) == 1:
-                verdict, rejected = _send_event(config, events[0]), 0
+                verdict, rejected = _send_event(config, events[0])
             else:
                 verdict, rejected = _send_event_batch(config, events)
             if verdict == "ok":
@@ -587,27 +720,40 @@ def _worker_loop() -> None:
                 if rejected > 0:
                     _bump("dropped_rejected", rejected)
                     _dropped += rejected
+                    _warn_events_lost(rejected, "refused by the ingest service")
+            elif verdict == "rejected":
+                # The server saw the request and refused it outright. Final, so
+                # never retried — and never counted as sent, because nothing was
+                # stored at the other end.
+                _dropped += len(batch)
+                _bump("dropped_rejected", len(batch))
+                _warn_events_lost(len(batch), "refused by the ingest service")
             elif verdict == "permanent":
                 _dropped += len(batch)
                 _bump("dropped_permanent", len(batch))
+                _warn_events_lost(
+                    len(batch), "permanently undeliverable to the ingest service"
+                )
             else:  # retryable
                 for item in batch:
                     cfg, ev = item[0], item[1]
                     retries = item[2] if len(item) > 2 else 0
                     if retries < MAX_SEND_RETRIES:
-                        try:
-                            _queue.put_nowait((cfg, ev, retries + 1))
-                            _bump("retries")
-                        except Full:
-                            _dropped += 1
-                            _bump("dropped_overflow")
+                        # Retry older signed events before newer queue entries.
+                        # The carry is bounded by this batch and retains the
+                        # original Queue unfinished-task obligation until the
+                        # event reaches a terminal verdict.
+                        _worker_pending.put((cfg, ev, retries + 1))
+                        completed -= 1
+                        _bump("retries")
                     else:
                         _dropped += 1
                         _bump("dropped_retry_exhausted")
+                        _warn_events_lost(1, "retry budget exhausted")
         except Exception:
             pass
         finally:
-            for _ in batch:
+            for _ in range(completed):
                 _queue.task_done()
 
 
@@ -1022,6 +1168,21 @@ def _reset_sender() -> None:
     """Reset sender state (tests only). The worker thread stays alive."""
     global _dropped, _seq_no, _last_sig, _signing_key, _signing_key_source
     global _gap_pending, _gap_marker_ordinal, _last_config, _device_signer
+    # Every carried item still owns an unfinished task on the public queue.
+    while True:
+        try:
+            _worker_front.get_nowait()
+            _worker_front.task_done()
+            _queue.task_done()
+        except Empty:
+            break
+    while True:
+        try:
+            _worker_pending.get_nowait()
+            _worker_pending.task_done()
+            _queue.task_done()
+        except Empty:
+            break
     while True:
         try:
             _queue.get_nowait()

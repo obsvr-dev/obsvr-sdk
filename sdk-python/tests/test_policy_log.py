@@ -52,13 +52,15 @@ def test_emit_policy_changed_event_is_well_formed():
 
 
 def test_set_tenant_policy_sends_policy_changed_event(monkeypatch):
-    # the event is actually delivered (was built and dropped).
+    # The event enters the signed sender rather than a one-off HTTP client.
     import obsvr.config as cfgmod
-    from obsvr import policy_log
+    from obsvr import sender
     obsvr.init(api_key="k", ingest_url="https://ingest.example")
     sent = []
-    monkeypatch.setattr(policy_log, "send_policy_event", lambda ev, url, key: sent.append((ev, url, key)))
+    monkeypatch.setattr(sender, "send_audit_async", lambda cfg, ev: sent.append((cfg, ev)))
     rules = [PolicyRule(id="r1", name="t", enabled=True, action="block", type="keyword", conditions={"keywords": ["x"]})]
     cfgmod.set_tenant_policy("tenant1", rules, "admin")
     assert len(sent) == 1
-    assert sent[0][1] == "https://ingest.example"
+    assert sent[0][0].ingest_url == "https://ingest.example"
+    assert sent[0][1]["event_type"] == "policy_changed"
+    assert sent[0][1]["metadata"]["policy_change"]["changed_by"] == "admin"

@@ -141,9 +141,10 @@ obsvr.init({
     },
   ],
 
-  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
-  // and resolved by failMode on expiry — for human approval, use
-  // approvalWaitMs below, not a hook that waits.
+  // Custom pre-call hook: allow | block | redact. Enforcement is monotonic:
+  // "allow" keeps a clean call allowed but never erases a PII/rule block.
+  // Budgeted by hookTimeoutMs and resolved by failMode on expiry — for human
+  // approval, use approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) => {
     if (event.provider === 'openai' && isHighRisk(event.prompt)) {
       return 'block';

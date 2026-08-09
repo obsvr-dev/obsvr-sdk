@@ -29,8 +29,8 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 
 | Package                    | Language                  | Version | Directory                    |
 | -------------------------- | ------------------------- | ------- | ---------------------------- |
-| [`@obsvr/sdk`](sdk-typescript/)       | TypeScript / Node.js ≥ 22 | 0.10.0  | [`sdk-typescript/`](sdk-typescript/)               |
-| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.10.0  | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](sdk-typescript/)       | TypeScript / Node.js ≥ 22 | 0.11.1  | [`sdk-typescript/`](sdk-typescript/)               |
+| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.11.1  | [`sdk-python/`](sdk-python/) |
 
 ## Table of contents
 
@@ -197,9 +197,10 @@ obsvr.init({
     }, // enforce | shadow
   ],
 
-  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
-  // and resolved by failMode on expiry — for human approval, use
-  // approvalWaitMs below, not a hook that waits.
+  // Custom pre-call hook: allow | block | redact. Enforcement is monotonic:
+  // "allow" keeps a clean call allowed but never erases a PII/rule block.
+  // Budgeted by hookTimeoutMs and resolved by failMode on expiry — for human
+  // approval, use approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) =>
     isHighRisk(event.prompt) ? "block" : "allow",
   hookTimeoutMs: 2000,
@@ -287,7 +288,32 @@ try {
 }
 ```
 
-**ReDoS-hardened rules.** Customer-supplied `regex` rules are checked by a static catastrophic-backtracking validator before they can be installed, **and** every match executes against a bounded input slice (≤ 50 KB). Two layers of defense in depth: the validator rejects the known pathological shapes, and the input cap bounds the blast radius of anything that slips past it, so a hostile pattern is contained rather than left to run unbounded against a large input.
+**ReDoS-hardened rules.** Customer-supplied `regex` rules are checked by a static catastrophic-backtracking validator before they can be installed, **and** every match executes against a bounded input slice (≤ 50 KB). Two layers of defense in depth: the validator rejects the known pathological shapes, and the input cap bounds the blast radius of anything that slips past it, so a hostile pattern is contained rather than left to run unbounded against a large input. "Before they can be installed" covers both tiers as of this release — it used to run on the `/policies` poll only, so a pattern the validator refuses could be declared in `init()` and then simply never match, which at the verdict is indistinguishable from a rule that ran and found nothing.
+
+**A rule you declare in `init()` is validated at `init()`, and an unusable one is refused there.** Both tiers now hold a rule to the same schema; they differ only in what an invalid rule costs. A `/policies` poll **drops** it — one bad rule must not brick a fleet — and fires the `sdk:rule_rejected` signal naming the id. `init()` **throws**, naming the index and the field, because the author is right there and there is no later moment at which unreadable configuration becomes readable. What this catches: a missing `enabled` flag or a misspelled `type`, either of which produced a rule the engine skipped in silence; a rule id claiming the reserved `sdk:` / `backend:` namespace; and a `regex` pattern the ReDoS validator refuses.
+
+In Python, `policy_rules` and `policy_floor` accept **either** `PolicyRule` objects or plain mappings:
+
+```python
+import obsvr
+
+obsvr.init(
+    api_key=os.environ["OBSVR_API_KEY"],
+    ingest_url="https://your-ingest-service",
+    policy_rules=[
+        {
+            "id": "no-wire-transfers",
+            "name": "Block wire transfers",
+            "enabled": True,
+            "action": "block",
+            "type": "keyword",
+            "conditions": {"keywords": ["wire transfer"]},
+        },
+    ],
+)
+```
+
+The mapping form is new. It previously reached the rule engine uncoerced and raised on the first attribute read, where the detector guard resolved the raise by `failMode` — open by default — so a `block` rule written this way did not block and the call went to the provider behind a stderr notice. `policy_floor` already accepted mappings, which is most of why a caller expected `policy_rules` to.
 
 **Signed policy distribution (both languages).** Pin a policy public key and server-fetched policy is Ed25519-verified over the raw payload; it **fails closed** on tamper, forgery, or version rollback and keeps the last-good policy — so not even obsvr's own servers can push you an unsigned or downgraded ruleset. Python needs an Ed25519 backend for this (`pip install "obsvr-sdk[crypto]"`); with a key pinned and none installed the policy is **refused**, not waved through, and the event says which. If the ingest service is unreachable, cached rules keep enforcing; only rule _updates_ degrade. Policies also export to OPA/Rego for teams running policy-as-code; the `obsvr-export-rego` CLI that writes the bundle ships in the **TypeScript** package only.
 
@@ -330,7 +356,7 @@ The fold is deliberately not left to the host runtime, because NFKC is not a sta
 | **Built-in regex** (13)         | email, phone, ssn, credit_card (Luhn-validated), ip_address, api_key, aws_access_key, jwt, uuid, private_key, github_token, slack_webhook, prompt_injection |
 | **Requires Presidio / NER** (6) | name, address, person, location, medical, national_id                                                                                                       |
 
-The **built-in regex scanner never fires for the 6 NER types** — they require the optional Presidio integration. Policy decisions scan the **last user message**. Earlier turns, system prompts, assistant turns and tool results still reach the audit record and still drive multi-turn injection accumulation, but do not by themselves trigger block/redact, so **the request reaches the provider unmodified**. The stored copy is a separate question and is answered separately: when a detected type resolves to `block` or `redact`, the value is scrubbed from the recorded prompt wherever in the conversation it sat, and the event says so — `stored_redaction_types`, plus `stored_redaction_outbound_unmodified` so a redacted record beside an `allowed` verdict cannot be read as prevention. Under `detect_only` the record keeps the raw value, which is what that mode is for.
+The **built-in regex scanner never fires for the 6 NER types** — they require the optional Presidio integration. Policy decisions scan the **last user message**. Earlier turns, system prompts, assistant turns and tool results still reach the audit record and still drive multi-turn injection accumulation, but do not by themselves trigger block/redact, so **the request reaches the provider unmodified**. The stored copy is a separate question and is answered separately: when a detected type resolves to `block` or `redact`, the value is scrubbed from the recorded prompt wherever in the conversation it sat, and the event says so — **on the `wrap()` front door in both languages, and on the framework integrations in TypeScript only.** Python's integration emit path does not run that net, so on Bedrock and Vertex an unreached role's PII is stored raw. The sentence used to be unqualified by surface and by language — `stored_redaction_types`, plus `stored_redaction_outbound_unmodified` so a redacted record beside an `allowed` verdict cannot be read as prevention. Under `detect_only` the record keeps the raw value, which is what that mode is for.
 
 Default severities: `ssn`, `credit_card`, `api_key`, `aws_access_key`, `jwt`, `private_key`, `github_token`, `slack_webhook`, `prompt_injection` → **block**; `email`, `phone`, `ip_address` → **redact**; the rest **detect_only**. (`ip_address` redacts rather than blocks because the pattern matches any dotted quad — public IPs, `127.0.0.1`, version-like strings — so blocking on it would hard-fail calls that merely mention an IP.)
 
@@ -373,7 +399,7 @@ Recommended rollout: run `detect_only` for a couple of weeks to baseline what ac
   ```typescript
   mcpToolPolicy: { pinning: { enabled: true, mode: "block" } },
   ```
-- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised the moment an injection or canary leak is detected, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list — the hint can only ever add (a server cannot describe itself out of the set); `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
+- **Session taint latch** — `sessionTaint: { enabled: true, action: "block" }` latches a session as compromised when an injection or canary leak is detected. **The injection half needs a co-requisite and does not arm without it:** the latch is set inside the PII scan, so `piiPolicy` must be configured with `prompt_injection` enabled (`piiPolicy: { rules: { prompt_injection: "detect_only" } }` is enough) or nothing ever detects an injection to latch on. The canary half arms on its own. Measured: `sessionTaint` alone, exactly as this option used to be documented, left a destructive tool executing; with the `prompt_injection` rule added it went to zero. Once armed, so later egress from that session is escalated (`flag` by default — annotate, don't brick the session; or `block`). `destructiveTools: ["send_money", ...]` names exact tools a tainted session may never invoke **even in flag mode** — ordinary egress stays flagged while the capabilities that could do damage go dark. An MCP tool whose descriptor declares `destructiveHint: true` joins that set on its own, so the gate works without a configured list — the hint can only ever add (a server cannot describe itself out of the set); `honorDestructiveHints: false` turns that off. Keyed on `metadata.user_id ?? session_id ?? tenant_id` — thread a session id or everything shares one bucket. Off by default.
 
   **Enforcement is a per-integration property, not an SDK-wide one.** See
   [Does a tool-policy block actually stop the tool?](#does-a-tool-policy-block-actually-stop-the-tool)
@@ -497,7 +523,7 @@ flowchart LR
 
 **Not guaranteed (client-attested).** The client chain does **not** prove an event corresponds to a real LLM call rather than one fabricated at capture by a party holding the API key. HMAC is symmetric and providers don't sign their responses, so no in-process tool can prove non-fabrication at capture. Treat the client chain as **integrity, not non-repudiation against a key-holder**, and protect the API key like the signing credential it is. External, public verifiability comes from the service's Ed25519-signed, off-host-anchored root — not the symmetric HMAC layer.
 
-**What leaves your process is your choice.** With redaction configured, raw prompts and responses can stay entirely in your environment; the SDK can emit only content hashes, signatures, and verdicts.
+**What leaves your process is bounded by your redaction policy, not switchable to hashes.** With `redact` configured, the detected spans are replaced before the event is built, so those values stay in your environment; `block` stores a placeholder rather than the offending prompt. What travels is still the surrounding prompt and response text, truncated at `maxPayloadChars`. There is **no content-free mode**: this paragraph used to offer one — "the SDK can emit only content hashes, signatures, and verdicts" — and no such option exists in either SDK. Set `maxPayloadChars` low, or run redaction over the types you care about, but do not plan on hashes-only delivery.
 
 **What a dropped event leaves behind.** Delivery is bounded: if the queue fills faster than it drains, events are dropped rather than growing memory without limit. Those drops happen before a sequence number is assigned, so they leave no hole for the chain to expose — which is exactly why the SDK does not rely on the chain to expose them. It signs a **gap marker**: one chain-linked event, at the position the loss happened, stating how many events were dropped there. The count is inside the signature preimage, so editing it breaks verification, and `obsvr-verify` reports it alongside the verdict. A chain carrying markers is valid and incomplete at once; both are reported, because reporting only the first is how a lossy run gets read as a clean one.
 
@@ -543,6 +569,8 @@ obsvr-verify ./bundle.json --api-key <key>
 npx obsvr-verify ./bundle.json --api-key <key> --allow-gaps
 ```
 
+**The two tiers answer different questions, and only one of them is about what an event SAYS.** Keyless verification groups the bundle per `sdk_session_id` and checks each chain's linkage, `seq_no` continuity from 1, timestamp monotonicity and a constant `chain_format`. It reads no content, decision or attribution field and recomputes no signature — so an edit to `action_taken`, `reason_code`, `rule_id`, `prompt`, `response`, `model`, `provider` or `user_id` passes it, and **needs no signing key to do so**; it also cannot see an event appended after the last, or the last one removed. `obsvr-verify chain.json && deploy` therefore gates on ordering, not on integrity. Pass `--api-key` for any claim about content or verdicts; `--json` names both sets explicitly in `checked` and `notChecked`, so a CI script can assert on the scope of the pass rather than on `valid` alone. The GitHub Action defaults to the keyless tier — supply `api-key` from a secret to gate on the record itself.
+
 Exit codes — identical in both, along with the accepted bundle shapes and the verdicts:
 
 | Code | Meaning |
@@ -582,7 +610,7 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 **Auto-governed by `init()` alone** — Python: OpenAI · Anthropic.
 **TypeScript needs the module interceptor for zero-code coverage** — start Node with `--import @obsvr/sdk/register` and OpenAI · Anthropic · Google Gemini² are governed globally, [as described above](#interception-model). `init()` on its own installs no interception in TypeScript and says so at startup when `providers` is configured — measured: with `init()` alone, a call carrying an SSN under a `block` rule reached the provider with the SSN still in the request body and emitted **zero** events; the same script under `--import` refused it before send and recorded one. `obsvr.wrap()` governs a client explicitly in either language and needs no flag.
 **Gemini on Python is fully governed, but needs an explicit `obsvr.wrap(genai.GenerativeModel(...))`** — measured: after `obsvr.init()` a plainly constructed model emitted **zero** events, and the same model through `obsvr.wrap()` emitted a complete one. Everything under "also supported" needs an explicit wrap in both languages.
-**Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together¹ · Cloudflare Workers AI
+**Also supported:** Azure OpenAI · AWS Bedrock · Google Vertex AI · Together¹ · Cloudflare Workers AI³
 
 ² **Gemini means one of Google's two SDKs, and it is worth checking which one you have.**
 
@@ -593,6 +621,14 @@ This re-checks the **client HMAC chain** — capture order and content integrity
 
 Compatibility only means fixes, not features: the legacy adapter is kept working because a large installed base still runs it, and instrumenting what people actually run is the point. The current SDK has a different response shape, so covering it is new work rather than a rename. **npm carries no deprecation flag on any version of either package**, so neither `npm outdated` nor `npm audit` will tell you which one you are on — read your manifest.
 **Any other OpenAI-compatible endpoint — TypeScript only:** `wrapOpenAICompatible` from `@obsvr/sdk/openai-compat` (or the root export) governs anything speaking `chat.completions.create` — Groq, Mistral, a local Ollama server — and takes `provider` and `source` from you, so the audit trail names the endpoint you reached. **Python has no equivalent wrapper**, but `obsvr.wrap()` governs such a client in both languages and the recorded `provider` now follows the endpoint on that path too: a client pointed at a local server records `provider: "unknown"` with `metadata.provider_detail` `"local"` and `metadata.endpoint_host` naming the host, rather than the `"openai"` its shape would suggest. What `wrapOpenAICompatible` still adds over `wrap()` is the per-endpoint `source` label and a declared fallback for clients that expose no readable base URL.
+
+³ **Cloudflare Workers AI is TypeScript only.** `wrapWorkersAI(env.AI)`
+intercepts the `ai.run` binding, which has no Python counterpart — there is no
+Cloudflare integration in `obsvr-sdk` and no `run` entry in the Python coverage
+table, so a Workers AI call is ungoverned and unrecorded there. The sentence
+above once said everything in this list "needs an explicit wrap in both
+languages", which reads as though both have one. Azure OpenAI and Together are
+reachable in Python through `obsvr.wrap()` duck-typing; Cloudflare is not.
 
 ¹ The Together module is exercised through the real client class and the real `wrapTogether` → `wrapOpenAICompatible` → `chat.completions.create` path, but against a different OpenAI-compatible endpoint — `api.together.xyz` has never been called, in either language. What is verified is that the code path is sound; Together-specific `usage` extensions and Together-only endpoints are not covered. The label is no longer set unconditionally: `provider` is derived from the client's base URL, so a client pointed at another endpoint records that endpoint rather than `"together"` — verified live against Groq's API and a local server, each recording its own destination through the same wrapper.
 
@@ -646,7 +682,7 @@ on MCP. Their tool gates are a separate question, graded in the table below.
 
 `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible`
 govern **`chat.completions.create` and nothing else**. Counted against real
-`AzureOpenAI` and `Together` clients: `obsvr.wrap()` governs 17 method paths on
+`AzureOpenAI` and `Together` clients: `obsvr.wrap()` governs 10 of the paths on
 the same client; these wrappers govern 1. Everything else binds straight through
 with **no gate and no event** — `responses.create`, `responses.parse`,
 `responses.stream`, `chat.completions.parse`, `chat.completions.stream`,
@@ -654,8 +690,46 @@ with **no gate and no event** — `responses.create`, `responses.parse`,
 `beta.threads.*` assistants surface. Twenty-six such paths on a current client.
 
 If you need those governed, wrap the client with **`obsvr.wrap()`** instead — it
-duck-types the same clients and covers the full table. The named wrappers exist
-to set a provider label and a source, not to widen coverage.
+duck-types the same clients and reaches every OpenAI-shaped path in the coverage
+table. The named wrappers exist to set a provider label and a source, not to
+widen coverage.
+
+**It does not cover everything, and this paragraph used to imply it did.** The
+seventeen entries in the coverage table span every provider; on an OpenAI-shaped
+client the ten that apply are `chat.completions.create` / `.parse` / `.stream`
+/ `.runTools`, `responses.create` / `.parse` / `.stream`, and the three `beta.`
+namespace paths. Two of the surfaces named above are in **no** table and are
+therefore ungoverned through `obsvr.wrap()` as well: the legacy
+`completions.create` and the whole `beta.threads.*` assistants surface. The
+earlier wording — "covers the full table" beside a count of seventeen — read as
+a promise of complete coverage on that client, which it is not.
+
+### What `obsvr.wrap()` reaches in Python
+
+- **The `.stream()` helpers are governed in both languages** as of this
+  release: `messages.stream`, `beta.messages.stream`,
+  `chat.completions.stream` and `responses.stream`. Before it, Python had them
+  outside its method table, and the consequence was not a missing event: on one
+  wrapped client a `pii_policy` of `{ssn: "block"}` refused
+  `create(stream=True)` and let `messages.stream(...)` through, so the same
+  prompt reached the provider through one entry point and not the other.
+  TypeScript governs them through a deferred runner, which it needs because
+  governance there is asynchronous while the helper must return synchronously;
+  Python's pipeline is synchronous and needs no such machinery.
+- **Provider tool runners are governed where each client exposes them.**
+  TypeScript covers OpenAI `chat.completions.runTools` and Anthropic
+  `beta.messages.toolRunner`. Python's current OpenAI client has no matching
+  runner surface; Anthropic `beta.messages.tool_runner` is covered from 0.68.0,
+  and the async managed-session `beta.sessions.events.tool_runner` is covered
+  from 0.103.0. The Messages runner's initial prompt passes through normal
+  pre-call policy, and every local runnable tool is governed before the runner
+  snapshots its registry. Hosted tool definitions remain unchanged because
+  they expose no local callback.
+- **Text-bearing paths in neither table, in both languages:** the legacy
+  `completions.create` on both providers, `beta.messages.parse`, the batch
+  surfaces, and `count_tokens`.
+  Python additionally does not reach anything under the current
+  `google-genai` package.
 
 ### Does a tool-policy block actually stop the tool?
 
@@ -677,7 +751,7 @@ not agree, so neither column may be read across to the other.
 | CrewAI | *no integration* | **enforces** via two independent pre-execution mechanisms — its own `before_tool_call` hook (a 1.15.3+ capability, feature-detected; refuses by the hook system's sentinel) and/or a governed tool. Driven live: a denied tool at ZERO side-effect writes on both executor paths, allow controls at exactly one. Also driven live around those paths — delegation to a coworker, the crew's result cache, the hierarchical manager, `kickoff_async` / `kickoff_for_each` / `async_execution`, tools attached to a Task, and streaming — with the tool's payload asserted absent from what the caller received, not only the side effect absent. With neither mechanism installed it records honestly instead: `not_evaluated` on the ReAct path, nothing per-tool on the native path (its step limit does fire) |
 | LlamaIndex | via `obsvrGovernTool` | **enforces** with `govern_agent`, driven live at llama-index-core 0.14.5 and 0.14.23 — a denied tool at ZERO side-effect writes with the payload absent from the `ToolCallResult` the caller received, allow controls at exactly one, on the plain, ReAct, tool-retriever and multi-agent-handoff routes. The gate is on the tools rather than the callback, and that is forced: no tool event is dispatched to a callback handler at any current version, and the newer instrumentation dispatcher swallows every handler exception, so a gate there could neither fire nor refuse. Which mechanism you install decides the coverage — `govern_tool` by hand covers a `tools=[...]` list and does enforce, but it governs an OBJECT, and a tool arriving per turn from a `tool_retriever` or held as a second unwrapped reference RAN under a policy that denied it; `govern_agent` binds to `get_tools`, where the agent assembles its tools, and reaches both. One caller-visible limit changes inside the range: below 0.14.8 the framework discards the exception on a swallowed tool error, so a refusal and a crash look identical to the caller and obsvr's signed record is the only thing that tells them apart |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
-| provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | *no integration* |
+| provider tool runners | **enforces** on the tools; the intermediate model turns are not gated | **enforces** on Anthropic local tools; the Messages runner's initial prompt is gated, while intermediate turns and managed-session model traffic occur inside the provider runner |
 
 - **enforces** — the gate sits at the invocation boundary. A denied tool's own
   callback does not run, and the event records `blocked`.
@@ -694,11 +768,13 @@ not agree, so neither column may be read across to the other.
 ¹ Tool policy on this surface records only, and that is the row above. Its
   **model-call** path is a separate question with a separate answer: it is
   observe + stored-copy PII, the same as LangChain and LlamaIndex. It ran no
-  policy pipeline at all until recently — no PII scan, no rules, no floor — so
-  raw PII went into signed events at any sample rate while its observe-only
-  siblings stored a redacted copy. The scan now runs over what the event will
-  store, and the verdict on those events is `redacted`, never `blocked`,
-  because a tracing processor cannot refuse and the call has already
+  policy pipeline at all — no PII scan, no rules, no floor — so raw PII went
+  into signed events at any sample rate while its observe-only siblings stored
+  a redacted copy. The scan runs over what the event will store **in both
+  languages as of this release**; it reached Python first, and for one release
+  the sentence above was true of Python and not of TypeScript while this table
+  stated it unconditionally. The verdict on those events is `redacted`, never
+  `blocked`, because a tracing processor cannot refuse and the call has already
   completed.
 - **provider tool runners** — a runner invokes its tools itself, so obsvr was
   off that boundary entirely until it began gating each tool's callback before
@@ -707,8 +783,10 @@ not agree, so neither column may be read across to the other.
   provider runs on its own infrastructure has no local callback to gate. The
   refusal shape differs by provider: one runner guards its tool call, so the loop
   survives a refusal and the model is told; the other does not, so the run ends
-  with the refusal. Both fail closed. Python ships no tool-runner integration at
-  all, which is why that column reads *no integration* rather than a grade.
+  with the refusal. Both fail closed. Python covers Anthropic's Messages and
+  managed-session runners: local callbacks fail closed, the Messages runner's
+  initial prompt is gated, and no claim is made that obsvr can interpose on
+  later model turns or remote session traffic owned by the provider runner.
 
 **The LangChain row used to be the one to notice, and closing it is why it no
 longer is.** TypeScript enforced and Python did not, because only the TypeScript
@@ -855,15 +933,30 @@ is marked on each.
    `google-genai`, has no adapter and is not intercepted.
    [Which one you have](#framework--provider-support).
 
-8. **The zero-code auto-register misses three things, each measured rather
-   than reasoned about.** *(TypeScript only)* A `require()` entry point (the
-   hook does not intercept CommonJS at all), a subpath import such as
-   `openai/index.mjs` or `openai/client` (the specifier table is exact-match),
-   and other client classes exported by a governed package — `AzureOpenAI`
-   and `BedrockOpenAI` ride through ungoverned. An escaped client records
-   nothing rather than recording something false, and `obsvr.wrap()` governs
-   all of them.
+8. **The zero-code auto-register misses two import shapes, each measured
+   rather than reasoned about.** *(TypeScript only)* A `require()` entry point
+   (the hook does not intercept CommonJS at all) and a subpath import such as
+   `openai/index.mjs` or `openai/client` (the specifier table is exact-match).
+   An escaped client records nothing rather than recording something false, and
+   `obsvr.wrap()` governs both.
    [Detail](sdk-typescript/README.md#zero-code-global-coverage-no-monkey-patching).
+
+   A third shape used to sit here and **was not TypeScript-only, which is how it
+   went undisclosed on the other side for as long as it did**: other client
+   classes exported by a governed package. Interception enumerated class NAMES,
+   and a provider binds one class object to several — `anthropic.Client is
+   anthropic.Anthropic` and `openai.Client is openai.OpenAI` are both True — so
+   construction through any name the list did not carry reached the original
+   class while `init(auto=True)` reported success. That is the shape
+   `langchain-anthropic` constructs through, so on Python it governed nothing
+   for every application using that LangChain adapter. Both SDKs now cover it:
+   Python resolves the class objects and rebinds every public module attribute bound to
+   one (or to a subclass, which is what the Azure/Bedrock/Vertex flavours are),
+   and TypeScript overrides every client export the shim declares, with a test
+   that derives the expected set from the real installed package so an upstream
+   addition fails a test instead of reaching a user. The general lesson stands
+   and is worth stating plainly: **a limit measured on one SDK is a hypothesis
+   about the other, not a fact about it.**
 
 One distinction decides which of these limits would block a release and which
 ship documented, and it is worth stating before you read them: **a record that

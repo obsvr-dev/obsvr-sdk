@@ -32,15 +32,18 @@
 import {
   applyLoopDetection,
   applyDelegationPolicy,
+  applyObservePolicy,
   createLoopDetector,
   createDelegationTracker,
   emitIntegrationEvent,
+  redactForStorage,
   setupExitHandlers,
   toolGateNotEvaluatedCompliance,
   tryGetConfig,
   type ComplianceInfo,
   type IntegrationOptions,
 } from "./core.js";
+import type { ResolvedConfig } from "../proxy/types.js";
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
@@ -49,6 +52,46 @@ import { isToolGoverned, registerGovernedToolName } from "./tools.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 
 const SOURCE = "openai_agents_js";
+
+/**
+ * Run the observe-only PII net over what an event is about to STORE.
+ *
+ * This integration is a tracing processor and cannot refuse anything — the
+ * framework wraps every processor callback in its own try/catch and only logs
+ * — so this is emphatically NOT enforcement, and the returned compliance says
+ * so: `redacted`, never `blocked`. The call has already happened by the time a
+ * span ends.
+ *
+ * What it does stop is raw PII coming to rest in a signed event. Every other
+ * observe-only integration in this SDK has run this net for as long as it has
+ * existed; this one ran no policy pipeline of any kind, so at any sample rate
+ * it wrote whatever the agent said straight into the chain. The canary half
+ * was already covered — that net lives in `buildIntegrationEvent` and fires on
+ * every path — so the gap was the PII half alone, and the README described it
+ * as closed in both languages while it was closed in one.
+ *
+ * Twin: sdk-python/obsvr/integrations/openai_agents.py (`_govern_stored`),
+ * deliberately, because a third spelling of the same decision is how two of
+ * them drift.
+ */
+function governStored(
+  promptText: string,
+  responseText: string,
+  config: ResolvedConfig,
+): { prompt: string; response: string; compliance?: ComplianceInfo } {
+  const joined = [promptText, responseText].filter(Boolean).join("\n");
+  if (!joined) return { prompt: promptText, response: responseText };
+  const { shouldRedactStored, compliance, storedRedactionVia } = applyObservePolicy(
+    joined,
+    config,
+  );
+  if (!shouldRedactStored) return { prompt: promptText, response: responseText, compliance };
+  return {
+    prompt: promptText ? redactForStorage(promptText, storedRedactionVia) : promptText,
+    response: responseText ? redactForStorage(responseText, storedRedactionVia) : responseText,
+    compliance,
+  };
+}
 
 /** Duck-typed shape of the current @openai/agents-core Span class getters. */
 interface OpenAIAgentSpan {
@@ -609,14 +652,17 @@ export class ObsvrTraceProcessor {
               ? JSON.stringify(rawInput)
               : "";
 
+        const toolStored = governStored(toolInputText, "", config);
+
         emitIntegrationEvent({
           config,
           provider: "unknown",
           model: "unknown",
           operation: "openai_agents.tool.call",
           source: SOURCE,
-          prompt: toolInputText,
-          response: "",
+          prompt: toolStored.prompt,
+          response: toolStored.response,
+          compliance: toolStored.compliance,
           metadata: {
             agent_run_id: traceId,
             tool_name: toolName,
@@ -667,6 +713,8 @@ export class ObsvrTraceProcessor {
               ? JSON.stringify(rawOutput)
               : "";
 
+        const genStored = governStored(promptText, responseText, config);
+
         emitIntegrationEvent({
           config,
           provider: "openai",
@@ -677,8 +725,9 @@ export class ObsvrTraceProcessor {
           provenance_source: modelResolved ? "provider_response" : undefined,
           operation: "llm",
           source: SOURCE,
-          prompt: promptText,
-          response: responseText,
+          prompt: genStored.prompt,
+          response: genStored.response,
+          compliance: genStored.compliance,
           metadata: { agent_run_id: traceId },
           options: this.opts,
         });
@@ -731,6 +780,7 @@ export class ObsvrTraceProcessor {
         const inputTokens = tokens?.input_tokens;
         const outputTokens = tokens?.output_tokens;
         const totalTokens = tokens?.total_tokens;
+        const respStored = governStored(promptText, responseText, config);
 
         emitIntegrationEvent({
           config,
@@ -755,8 +805,9 @@ export class ObsvrTraceProcessor {
           provenance_source: "provider_response",
           operation: "llm",
           source: SOURCE,
-          prompt: promptText,
-          response: responseText,
+          prompt: respStored.prompt,
+          response: respStored.response,
+          compliance: respStored.compliance,
           inputTokens,
           outputTokens,
           totalTokens,

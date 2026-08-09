@@ -27,7 +27,7 @@ import { PROXY_TIMEOUT_MS, SDK_VERSION } from "../constants.js";
 const SDK_INSTANCE_ID = randomUUID();
 import type { PolicyRule } from "../policy/rules.js";
 import { derivePolicyVersion, ensureRuleResolution } from "../policy/rules.js";
-import { snapshotPolicy, emitPolicyChangedEvent, sendPolicyEvent } from "../policy/policy-log.js";
+import { snapshotPolicy, emitPolicyChangedEvent } from "../policy/policy-log.js";
 import { validateRegexPattern } from "../utils/safe-regex.js";
 import { updateApprovals, type ApprovalGrant } from "../policy/approvals.js";
 import { loadDeviceSigner } from "./device-identity.js";
@@ -63,6 +63,13 @@ let policyPollIntervalId: ReturnType<typeof setInterval> | null = null;
  * drift is a key silently dropped — the exact defect the warning exists to make
  * visible. Where a name is identical in both shapes it appears on both sides.
  */
+/**
+ * The environments the ingest service accepts. It enforces this set as an enum
+ * and answers 400 to every event carrying anything else, so a value outside it
+ * is not a cosmetic mistake — it is the whole audit trail, silently.
+ */
+const VALID_ENVIRONMENTS = ["development", "staging", "production"] as const;
+
 const CONFIG_KEY_MAP: Record<string, string> = {
   apiKey: "api_key",
   ingestUrl: "ingest_url",
@@ -344,6 +351,23 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       `obsvr.init(): requireGovernedSurface must be a boolean, got ${String(config.require_governed_surface)}`,
     );
   }
+  // The environment is an ENUM at ingest, and this block validated every other
+  // constrained field while skipping the one field with a declared set. A value
+  // outside it is rejected there with a 400 on EVERY event, so a single typo
+  // costs the entire audit trail of the run while the application sees nothing.
+  // The compile-time union is not a guard: a JS caller, a config loaded from
+  // JSON or YAML, and any `as any` all reach here unchecked.
+  if (
+    config.environment !== undefined &&
+    !VALID_ENVIRONMENTS.includes(config.environment as (typeof VALID_ENVIRONMENTS)[number])
+  ) {
+    throw new Error(
+      `obsvr.init(): environment must be one of ${VALID_ENVIRONMENTS.join(", ")}, ` +
+        `got ${String(config.environment)}. The ingest service enforces this set ` +
+        `and rejects every event carrying anything else, so the audit trail would ` +
+        `not be recorded at all.`,
+    );
+  }
   if (config.device_signing_key_file !== undefined) {
     // Loud at init: the operator asked for non-repudiation, so a key that
     // cannot be read or cannot sign must refuse now — shipping unsigned
@@ -366,6 +390,29 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     } catch (err) {
       throw new Error(`obsvr.init(): ${(err as Error).message}`);
     }
+  }
+  // Declared rule lists are schema-checked HERE, at the boundary that accepts
+  // them, against the same standard the `/policies` poll has always applied.
+  // Only the poll tier was checked, so a rule this validator refuses could be
+  // declared in code and enforce nothing: the engine reads `enabled` as a
+  // truth value and matches on `type`, so a rule missing the one or misspelling
+  // the other is skipped in silence. A throw, not a warning — there is no
+  // later moment at which an unreadable rule becomes readable, and this is the
+  // only point at which the author can still be told.
+  for (const [name, list] of [
+    ["policyRules", config.policy_rules],
+    ["policyFloor", config.policyFloor],
+  ] as const) {
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) {
+      throw new Error(`obsvr.init(): ${name} must be an array of rules`);
+    }
+    list.forEach((rule, i) => {
+      const why = invalidPolicyRuleReason(rule);
+      if (why !== undefined) {
+        throw new Error(`obsvr.init(): ${name}[${i}] is not a usable rule: ${why}`);
+      }
+    });
   }
   const refreshMs = config.policy_refresh_interval_ms;
   if (refreshMs !== undefined && (typeof refreshMs !== "number" || refreshMs < 0)) {
@@ -418,7 +465,16 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
   // `http://[::169.254.169.254]/` was ACCEPTED here and stored verbatim while
   // the `::ffff:` spelling of the same address was refused — the absolute held
   // for one spelling of it. Twin: sdk-python/obsvr/config.py.
+  // `hardDeletion.endpoint` is the fourth customer-configured outbound URL and
+  // it was outside the guard entirely, while the section that names the others
+  // says every one of them is validated. It carries a DELETE with the
+  // `X-API-Key` header, so an attacker-influenced value is both an SSRF
+  // primitive and a credential-disclosure one — the same two properties that
+  // put the other three inside the guard. Private hosts are permitted, because
+  // a retention/erasure service is normally internal; the metadata range is
+  // refused here as it is everywhere.
   for (const [name, purl] of [
+    ["hardDeletion.endpoint", config.hardDeletion?.endpoint],
     ["presidioAnalyzerUrl", config.presidio_analyzer_url],
     ["presidioAnonymizerUrl", config.presidio_anonymizer_url],
   ] as const) {
@@ -462,6 +518,11 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
     streaming_mode: config.streaming_mode ?? "wrap",
     default_region: config.default_region,
     default_source: config.default_source,
+    // Declared on both the init and resolved shapes, read at five sites in the
+    // wrapper, and never assigned here — so it was permanently `undefined` and
+    // a caller who set it got the unattributed default on every event. The
+    // Python twin has always assigned it.
+    default_service_name: config.default_service_name,
     on_pre_call: config.on_pre_call,
     hookTimeoutMs: config.hook_timeout_ms,
     hookTrigger: config.hook_trigger,
@@ -704,10 +765,18 @@ export function setTenantPolicy(tenantId: string, rules: PolicyRule[], changedBy
   const event = emitPolicyChangedEvent(
     prevRules, rules, tenantId, changedBy, state.config?.ruleResolution,
   );
-  // actually record the change in the audit trail (was built + dropped).
+  // Put policy changes through the SAME signed sender as every other audit
+  // event. The old standalone POST ignored HTTP status, retried nothing,
+  // updated no counters, and swallowed every failure — a rejected governance
+  // event was indistinguishable from a recorded one.
   const cfg = state.config;
   if (cfg?.ingest_url) {
-    void sendPolicyEvent(event, cfg.ingest_url, cfg.api_key);
+    import("./sender/index.js")
+      .then(({ sendAuditAsync }) => sendAuditAsync(cfg, event as unknown as AuditEvent))
+      .catch(() => {
+        // Import failure must not break the policy update. The sender's own
+        // delivery failures are classified, counted, and reported normally.
+      });
   }
 }
 
@@ -814,41 +883,69 @@ export const SDK_CAPABILITIES: string = [
 export const RESERVED_RULE_ID_PREFIXES = ["sdk:", "backend:"] as const;
 
 /**
- * Validate that a server-fetched object has the minimum required PolicyRule fields.
- * Prevents malformed or pathological rules from being applied.
- * Regex rules additionally pass through the ReDoS pattern validator so a
- * catastrophic-backtracking pattern can never be installed from the server.
+ * Why `rule` is not a usable PolicyRule, or undefined if it is one.
+ *
+ * The reason string exists because the two tiers of rule report differently:
+ * a `/policies` poll DROPS an invalid rule (one bad rule must not brick a
+ * fleet) while `init()` REFUSES it, and a refusal has to say what was wrong.
+ * Both tiers ask this one function, so "a rule" cannot come to mean two
+ * things — it used to, and the tier that went unchecked was the one an
+ * operator writes by hand.
+ *
+ * Regex rules additionally pass through the ReDoS pattern validator, so a
+ * catastrophic-backtracking pattern can never be installed from either tier.
  */
-export function isValidPolicyRule(rule: unknown): rule is PolicyRule {
-  if (!rule || typeof rule !== "object") return false;
+export function invalidPolicyRuleReason(rule: unknown): string | undefined {
+  if (!rule || typeof rule !== "object") {
+    return `expected a rule object, got ${rule === null ? "null" : typeof rule}`;
+  }
   const r = rule as Record<string, unknown>;
-  const structureOk =
-    typeof r.id === "string" &&
-    r.id.length > 0 &&
-    typeof r.name === "string" &&
-    typeof r.enabled === "boolean" &&
-    VALID_RULE_ACTIONS.has(r.action as string) &&
-    VALID_RULE_TYPES.has(r.type as string) &&
-    typeof r.conditions === "object" &&
-    r.conditions !== null;
-  if (!structureOk) return false;
-
+  if (typeof r.id !== "string" || r.id.length === 0) return "id must be a non-empty string";
   // A rule cannot claim the SDK's own verdict namespace (see
   // RESERVED_RULE_ID_PREFIXES above).
-  if (RESERVED_RULE_ID_PREFIXES.some((p) => (r.id as string).startsWith(p))) return false;
-
+  if (RESERVED_RULE_ID_PREFIXES.some((p) => (r.id as string).startsWith(p))) {
+    return `id "${r.id}" claims a reserved prefix (${RESERVED_RULE_ID_PREFIXES.join(", ")})`;
+  }
+  if (typeof r.name !== "string") return "name must be a string";
+  // The silent-inertness case: the engine reads `enabled` as a truth value,
+  // so a rule that omits it is skipped rather than enforced.
+  if (typeof r.enabled !== "boolean") return "enabled must be a boolean";
+  if (!VALID_RULE_ACTIONS.has(r.action as string)) {
+    return `action must be one of ${[...VALID_RULE_ACTIONS].sort().join(", ")}, got ${JSON.stringify(r.action)}`;
+  }
+  // The other silent-inertness case: the matcher has no branch for an unknown
+  // type, so it never matches and the rule enforces nothing.
+  if (!VALID_RULE_TYPES.has(r.type as string)) {
+    return `type must be one of ${[...VALID_RULE_TYPES].sort().join(", ")}, got ${JSON.stringify(r.type)}`;
+  }
+  if (typeof r.conditions !== "object" || r.conditions === null) {
+    return "conditions must be an object";
+  }
   // mode is optional; when present it must be a known value. A typo'd
   // mode must invalidate the rule (EV-12), never silently ENFORCE a rule
   // the author meant to shadow.
-  if (r.mode !== undefined && r.mode !== "enforce" && r.mode !== "shadow") return false;
-
+  if (r.mode !== undefined && r.mode !== "enforce" && r.mode !== "shadow") {
+    return `mode must be "enforce" or "shadow", got ${JSON.stringify(r.mode)}`;
+  }
   if (r.type === "regex") {
     const pattern = (r.conditions as Record<string, unknown>).pattern;
-    if (typeof pattern !== "string") return false;
+    if (typeof pattern !== "string") {
+      return "a regex rule needs conditions.pattern as a string";
+    }
     const verdict = validateRegexPattern(pattern);
-    if (!verdict.ok) return false;
+    if (!verdict.ok) {
+      return `conditions.pattern was refused by the ReDoS guard (${verdict.reason})`;
+    }
   }
-  return true;
+  return undefined;
+}
+
+/**
+ * Validate that an object has the minimum required PolicyRule fields.
+ * Prevents malformed or pathological rules from being applied.
+ */
+export function isValidPolicyRule(rule: unknown): rule is PolicyRule {
+  return invalidPolicyRuleReason(rule) === undefined;
 }
 
 // ── Remote policy sync health ────────────────────────────────────────────────

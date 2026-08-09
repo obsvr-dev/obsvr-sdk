@@ -22,13 +22,24 @@ OBSVR_API_KEY (required), OBSVR_INGEST_URL, OBSVR_ENVIRONMENT.
 """
 
 import logging
+import sys
 import os
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import is_initialized, try_get_config
 from .wrap import wrap
 
 _installed: List[str] = []
+
+#: Where the search for a provider's client classes STARTS. These are seeds,
+#: not the set of names that gets replaced: the names below are resolved to
+#: class OBJECTS and the module is then swept for every attribute bound to one
+#: of those objects (or to a subclass of one). Read
+#: :func:`_client_classes_by_name` for why a name list cannot be the patch set.
+_PROVIDER_SEEDS: Dict[str, Tuple[str, ...]] = {
+    "openai": ("OpenAI", "AsyncOpenAI", "AzureOpenAI", "AsyncAzureOpenAI"),
+    "anthropic": ("Anthropic", "AsyncAnthropic"),
+}
 
 
 def _ensure_init() -> bool:
@@ -64,51 +75,237 @@ def _governed_subclass(cls: type, label: str) -> type:
     Governed.__name__ = cls.__name__
     Governed.__qualname__ = cls.__qualname__
     Governed.__module__ = cls.__module__
+    setattr(Governed, _GOVERNED_CLASS_MARKER, True)
     return Governed
 
 
 originals: dict = {}
 
 
+#: Set on every subclass this module builds, so a second install() can tell a
+#: governed class from a client class and never gates a gate.
+_GOVERNED_CLASS_MARKER = "_obsvr_governed_client_class"
+
+
+def _client_base(module_name: str, roots: List[type]) -> Optional[type]:
+    """The provider's own base client class, derived from a seed's ancestry.
+
+    Walking a seed's MRO and keeping the DEEPEST ancestor still defined inside
+    the provider's package lands on the class every one of that package's
+    clients descends from (``openai._base_client.BaseClient``,
+    ``anthropic._base_client.BaseClient``). Deriving it means the gateway
+    flavours a provider ships — Azure, Bedrock, Vertex, Foundry, and whatever it
+    adds next — are found by ANCESTRY rather than by being named here. Several
+    of them are not subclasses of the primary client at all, so a sweep rooted
+    only at the seeds would miss them, and a list naming them would be the same
+    defect one level up.
+    """
+    base: Optional[type] = None
+    for root in roots:
+        for cls in root.__mro__[1:]:
+            if cls.__module__.split(".")[0] == module_name:
+                base = cls
+    return base
+
+
+def _client_classes_by_name(
+    module: Any, module_name: str, seeds: Iterable[str]
+) -> List[Tuple[type, List[str]]]:
+    """Group this module's client classes by the class object each name binds.
+
+    A NAME LIST CANNOT BE THE PATCH SET, because a provider package binds one
+    class object to more than one attribute. ``anthropic.Client is
+    anthropic.Anthropic`` and ``openai.Client is openai.OpenAI`` are both True:
+    two module attributes, one class. Replacing the attribute this SDK happened
+    to enumerate leaves every other name pointing at the ORIGINAL class, so a
+    caller constructing through the other one is not governed — and nothing says
+    so, because interception reported the name it did replace. That is how
+    ``langchain_anthropic`` (which constructs via ``anthropic.Client(**params)``)
+    escaped ``auto=True`` entirely while ``init()`` reported success.
+
+    So the seeds are resolved to class OBJECTS, their shared in-package base is
+    derived (:func:`_client_base`), and the module is then swept for every
+    PUBLIC attribute that is a client class. Every name in one group is rebound
+    to the SAME governed subclass, so the package's own aliasing survives
+    interception — ``anthropic.Client is anthropic.Anthropic`` is still True
+    afterwards, which is a property callers already rely on.
+
+    Underscore-prefixed names are left alone. A provider's private client
+    classes are built by the package's own lazy module machinery rather than by
+    a caller, and substituting one puts an obsvr proxy inside the package's
+    internals rather than in front of a construction a user wrote.
+
+    The sweep reads a SNAPSHOT of ``vars(module)`` rather than ``dir()``: the
+    module __dict__ holds what the package has actually bound, asking for a name
+    a lazy module __getattr__ would materialize could import a submodule this
+    process never needed — and the openai module mutates its own __dict__ during
+    attribute access, so an unsnapshotted iteration raises.
+    """
+    roots: List[type] = []
+    for name in seeds:
+        cls = getattr(module, name, None)
+        if isinstance(cls, type) and not any(cls is seen for seen in roots):
+            roots.append(cls)
+    if not roots:
+        return []
+
+    targets = list(roots)
+    base = _client_base(module_name, roots)
+    if base is not None:
+        targets.append(base)
+
+    groups: List[Tuple[type, List[str]]] = []
+    for name, value in list(vars(module).items()):
+        if name.startswith("_") or not isinstance(value, type):
+            continue
+        if getattr(value, _GOVERNED_CLASS_MARKER, False):
+            continue  # already a gate; gating it again would nest proxies
+        if base is not None and value is base:
+            # The derived base is the thing SUBCLASSES are recognized by, not a
+            # client anyone constructs. Governing it would wrap an abstract
+            # class whose instances are never the ones making calls.
+            continue
+        try:
+            if not any(value is t or issubclass(value, t) for t in targets):
+                continue
+        except TypeError:  # noqa: PERF203 - an exotic metaclass is not a client
+            continue
+        for cls, names in groups:
+            if cls is value:
+                names.append(name)
+                break
+        else:
+            groups.append((value, [name]))
+    return groups
+
+
+def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
+    """Govern construction of every client class this module exposes.
+
+    One governed subclass per class OBJECT, installed on every attribute bound
+    to it, and each write is READ BACK: a module that resents the assignment
+    (a lazy loader that re-materializes, a __getattr__ shim) must not be
+    reported as intercepted. Only labels whose write verifiably took are
+    returned, so the report ``init(auto=True)`` prints names what is actually
+    governed rather than what was attempted.
+    """
+    try:
+        module = __import__(module_name)
+    except ImportError:
+        return []
+    except Exception as exc:  # noqa: BLE001 - a provider that fails to import
+        logging.getLogger("obsvr").debug(
+            "register: %s could not be imported: %s", module_name, exc
+        )
+        return []
+
+    done: List[str] = []
+    governed_by_original: Dict[int, type] = {}
+    for cls, names in _client_classes_by_name(module, module_name, seeds):
+        pending = [n for n in names if f"{module_name}.{n}" not in _installed]
+        if not pending:
+            continue
+        governed = _governed_subclass(cls, f"{module_name}.{pending[0]}")
+        for name in pending:
+            label = f"{module_name}.{name}"
+            try:
+                setattr(module, name, governed)
+                took = getattr(module, name, None) is governed
+            except Exception:  # noqa: BLE001 - a module that vetoes the write
+                took = False
+            if not took:
+                logging.getLogger("obsvr").warning(
+                    "register: could not intercept %s - construction through that "
+                    "name is NOT governed; use obsvr.wrap() on the client",
+                    label,
+                )
+                continue
+            originals[label] = cls
+            _installed.append(label)
+            done.append(label)
+        governed_by_original[id(cls)] = governed
+    done.extend(_rebind_stale_aliases(module_name, governed_by_original))
+    return done
+
+
+def _rebind_stale_aliases(
+    provider_module: str, governed_by_original: Dict[int, type]
+) -> List[str]:
+    """Reach the copies of a client class that other modules already took.
+
+    ``from openai import OpenAI`` binds the CLASS OBJECT into the importing
+    module. Rebinding ``openai.OpenAI`` afterwards cannot reach that binding,
+    so a framework imported before ``init(auto=True)`` keeps constructing the
+    ungoverned class — while the report names every provider alias as
+    intercepted and nothing warns, because each write on the provider module
+    genuinely took. That is the shape the alias sweep exists to close, one
+    scope out: the same class under a second name, held somewhere else.
+
+    Measured on crewai, ag2, LlamaIndex, Haystack and openai-agents: all five
+    hold such a binding, and three of them acquire it on the bare top-level
+    import. A framework imported AFTER init() needs none of this — it imports
+    the governed class directly.
+
+    Resolved by IDENTITY against the original class object, never by name, so
+    an unrelated attribute that happens to be called ``OpenAI`` is untouched.
+    Each write is read back, on the same discipline as the provider sweep.
+    """
+    if not governed_by_original:
+        return []
+    done: List[str] = []
+    # A snapshot: importing during the sweep would mutate sys.modules, and a
+    # module imported after this point picks up the governed class anyway.
+    for mod_name, module in list(sys.modules.items()):
+        if module is None or mod_name == provider_module:
+            continue
+        # obsvr holds the originals deliberately (see `originals`), and the
+        # provider's own submodules are the provider.
+        if mod_name.startswith(("obsvr.", "obsvr")) or mod_name.startswith(provider_module + "."):
+            continue
+        try:
+            attrs = vars(module)
+        except Exception:  # noqa: BLE001 - an exotic module object is not a namespace
+            continue
+        for attr, value in list(attrs.items()):
+            governed = governed_by_original.get(id(value))
+            if governed is None or value is governed:
+                continue
+            label = f"{mod_name}.{attr}"
+            if label in _installed:
+                continue
+            try:
+                setattr(module, attr, governed)
+                took = getattr(module, attr, None) is governed
+            except Exception:  # noqa: BLE001 - a module that vetoes the write
+                took = False
+            if not took:
+                logging.getLogger("obsvr").warning(
+                    "register: %s holds its own reference to a provider client "
+                    "class and could not be intercepted - construction through "
+                    "that name is NOT governed; use obsvr.wrap() on the client",
+                    label,
+                )
+                continue
+            originals[label] = value
+            _installed.append(label)
+            done.append(label)
+    return done
+
+
 def install(providers: Optional[Iterable[str]] = None) -> List[str]:
     """Intercept provider client construction for installed SDKs.
 
     providers narrows which SDKs are governed (default: all installed).
-    Returns the list of intercepted class labels. Idempotent.
+    Returns the list of intercepted class labels — every ALIAS included, not
+    one label per provider. Idempotent.
     """
     if not _ensure_init():
         return []
-    wanted = set(providers) if providers else {"openai", "anthropic"}
+    wanted = set(providers) if providers else set(_PROVIDER_SEEDS)
     done: List[str] = []
-
-    if "openai" in wanted:
-        try:
-            import openai  # type: ignore
-            for name in ("OpenAI", "AsyncOpenAI", "AzureOpenAI", "AsyncAzureOpenAI"):
-                cls = getattr(openai, name, None)
-                label = f"openai.{name}"
-                if cls is not None and label not in _installed:
-                    originals[label] = cls
-                    setattr(openai, name, _governed_subclass(cls, label))
-                    _installed.append(label)
-                    done.append(label)
-        except ImportError:
-            pass
-
-    if "anthropic" in wanted:
-        try:
-            import anthropic  # type: ignore
-            for name in ("Anthropic", "AsyncAnthropic"):
-                cls = getattr(anthropic, name, None)
-                label = f"anthropic.{name}"
-                if cls is not None and label not in _installed:
-                    originals[label] = cls
-                    setattr(anthropic, name, _governed_subclass(cls, label))
-                    _installed.append(label)
-                    done.append(label)
-        except ImportError:
-            pass
-
+    for module_name, seeds in _PROVIDER_SEEDS.items():
+        if module_name in wanted:
+            done.extend(_install_provider(module_name, seeds))
     return done
 
 

@@ -76,7 +76,7 @@ Anthropic and Google Gemini work the same way (sync and async clients both suppo
 
 ```python
 client = obsvr.wrap(Anthropic())          # messages.create
-model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content
+model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content / generate_content_async
 ```
 
 **Which Gemini SDK.** Google ships two, and obsvr integrates one of them:
@@ -91,8 +91,15 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 Two things to know about the supported one. **It needs the explicit `obsvr.wrap()` above** — unlike the OpenAI and Anthropic clients it is not picked up by `obsvr.init()` alone, and a plainly constructed model emits no events at all. And its declared range is **unbounded on purpose**: one live cell (0.8.6) stands behind it, which shows that version works and locates no boundary, so no floor is claimed rather than one being guessed.
 
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
-`messages.create` / `.parse`, `generate_content`, and the `beta.chat.completions.create` / `.parse`,
-`beta.messages.create`, and `beta.responses.create` namespaces. Everything else on the client passes through
+`messages.create` / `.parse`, their `with_raw_response` and
+`with_streaming_response` variants where the provider exposes them,
+`generate_content` / `generate_content_async`,
+`start_chat().send_message` / `.send_message_async`, and the `beta.chat.completions.create` / `.parse`,
+`beta.messages.create`, and `beta.responses.create` namespaces. Anthropic's
+`beta.messages.tool_runner` is also governed from Anthropic 0.68.0, including
+the initial Messages prompt and every local runnable tool; the async
+`beta.sessions.events.tool_runner` local tools are governed from 0.103.0.
+Hosted tool definitions have no local callback to gate. Everything else on the client passes through
 ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for which of
 those carry no chat text at all and which are text-bearing but not yet reachable from
 a method-path table.
@@ -349,7 +356,9 @@ obsvr.init(
         "rules": {"ssn": "block", "credit_card": "block", "email": "redact"},
     },
 
-    # Custom pre-call hook: return "allow" | "block" | "redact"
+    # Custom pre-call hook: return "allow" | "block" | "redact".
+    # Enforcement is monotonic: "allow" keeps a clean call allowed but never
+    # erases a PII/rule block rendered by an earlier layer.
     on_pre_call=lambda event: "block" if is_high_risk(event["prompt"]) else "allow",
     hook_timeout_ms=2000,
 
@@ -459,12 +468,23 @@ We document enforcement limits honestly.
 ### Before you install: the five limits of the Python SDK
 
 **Scope: this list is the Python SDK only.** The two SDKs do not have the same
-limitations and neither list may be read across to the other — the TypeScript SDK
-has three of its own that do not apply here (it is ESM-only, its named
-compatibility wrappers govern one method, and its zero-code auto-register misses
-three import shapes), and one below does not apply to it. The
-combined list for both, with the scope marked on each entry, is in the
+limitations — the TypeScript SDK has three of its own that do not apply here (it
+is ESM-only, its named compatibility wrappers govern one method, and its
+zero-code auto-register misses two import shapes), and one below does not apply
+to it. The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
+
+**A limit measured on one SDK is a hypothesis about the other, not a fact about
+it.** This paragraph used to say neither list "may be read across", which reads
+as an assurance that a TypeScript limit is absent here. One of them was not:
+zero-code interception enumerated client class NAMES in both languages, and a
+provider binds one class to several of them (`anthropic.Client is
+anthropic.Anthropic` is True), so construction through an unlisted name escaped
+governance on BOTH sides while `init(auto=True)` reported success. It is fixed
+in both — Python resolves the class objects and rebinds every public name bound
+to one — and the wording is corrected here because the sentence was doing work
+it could not support. Read each list as scoped, not as a guarantee about what is
+absent elsewhere.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
    Only the MCP surface runs against the real upstream package in CI. A green

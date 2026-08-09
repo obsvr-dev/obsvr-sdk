@@ -20,6 +20,90 @@ DEFAULT_INGEST_URL = ""
 DEFAULT_TIMEOUT_S = 5.0
 DEFAULT_MAX_PAYLOAD_CHARS = 100000
 
+#: The environments the ingest service accepts. It enforces this set as an enum
+#: and answers 400 to every event carrying anything else, so a value outside it
+#: is not a cosmetic mistake — it is the whole audit trail, silently.
+VALID_ENVIRONMENTS = ("development", "staging", "production")
+
+#: Options whose enforcement lives on SOME surfaces and not others, and the
+#: surfaces that actually read each one.
+#:
+#: An option accepted at init and consumed by nothing is dead config that reads
+#: as a control. ``agent_policy["max_steps"]`` is the measured case: a step
+#: budget set alongside ``denied_tools`` looks like one policy, but only the
+#: framework callback integrations count steps — the generic tool governor and
+#: the MCP boundary implement the allow/deny gate and no budget, so a deployment
+#: whose only wiring is ``govern_tool`` has a limit nothing will ever consult.
+#:
+#: This drives a WARNING, never a refusal: the option is legitimate, and whether
+#: a consuming surface gets wired is not knowable at init — a caller may import
+#: an integration later in the process. What is knowable is that none is
+#: importable at all, and saying so is the difference between a control and a
+#: comment. Same principle as the strict validation above, one step weaker
+#: because the evidence is one step weaker.
+#: The probe is on the FRAMEWORK package, not on obsvr's own integration module.
+#: Every integration module here ships in this package and always imports, so
+#: asking whether obsvr can import its own code answers nothing; what decides
+#: the question is whether the framework that would drive it is installed at
+#: all. Absent, the option is inert with certainty. Present, it MIGHT be
+#: consumed — the caller still has to wire the handler — and a warning that
+#: cannot tell the two apart is one an operator learns to ignore, so the
+#: uncertain case stays silent.
+_SURFACE_SCOPED_OPTIONS = {
+    "agent_policy.max_steps": (
+        ("langchain_core", "LangChain callback handler"),
+        ("crewai", "CrewAI step callbacks"),
+        ("autogen", "AutoGen register_obsvr"),
+        ("agents", "OpenAI Agents tracing processor"),
+    ),
+    "agent_policy.loop_detection": (
+        ("langchain_core", "LangChain callback handler"),
+        ("crewai", "CrewAI step callbacks"),
+        ("autogen", "AutoGen register_obsvr"),
+        ("agents", "OpenAI Agents tracing processor"),
+    ),
+    "agent_policy.allow_pii_access": (
+        ("crewai", "CrewAI step callbacks"),
+        ("autogen", "AutoGen register_obsvr"),
+    ),
+}
+
+
+def _warn_unconsumed_options(agent_policy: Optional[Dict[str, Any]]) -> List[str]:
+    """Name every configured option no importable surface will read.
+
+    Returns the warnings emitted, so a caller (and a test) can assert on them
+    rather than on log capture. Never raises: a misconfiguration report that can
+    break init is worse than the misconfiguration.
+    """
+    import importlib.util
+
+    warnings: List[str] = []
+    policy = agent_policy or {}
+    for key, consumers in _SURFACE_SCOPED_OPTIONS.items():
+        option = key.split(".", 1)[1]
+        if policy.get(option) is None:
+            continue
+        available = []
+        for module, label in consumers:
+            try:
+                if importlib.util.find_spec(module) is not None:
+                    available.append(label)
+            except (ImportError, ValueError):  # noqa: PERF203 - probe, not a gate
+                continue
+        if available:
+            continue
+        message = (
+            f"obsvr.init(): agent_policy[{option!r}] is set, but nothing that "
+            "consumes it is wired. It is enforced by the framework callback "
+            f"integrations ({', '.join(label for _, label in consumers)}) and "
+            "NOT by govern_tool or the MCP boundary, which implement the "
+            "allow/deny gate only. As configured this value governs nothing."
+        )
+        logging.getLogger("obsvr").warning(message)
+        warnings.append(message)
+    return warnings
+
 #: Identifies THIS copy of the package inside the process (see instance_guard).
 _MODULE_INSTANCE_ID = f"obsvr-{uuid.uuid4().hex[:12]}"
 
@@ -339,6 +423,19 @@ def init(
             'obsvr.init(): enforcement_mode must be "enforce" or "monitor", got '
             f"{enforcement_mode!r}"
         )
+    # The environment is an ENUM at ingest, and the SDK used to accept any
+    # string for it. A value outside the set is rejected there with a 400 on
+    # EVERY event, so a single typo costs the entire audit trail of the run
+    # while the application sees nothing — the same class of silent failure a
+    # typo'd fail_mode is refused for, with a larger blast radius. Refused at
+    # init, where the operator can still read the message.
+    if environment is not None and environment not in VALID_ENVIRONMENTS:
+        raise ValueError(
+            "obsvr.init(): environment must be one of "
+            f"{', '.join(VALID_ENVIRONMENTS)}, got {environment!r}. The ingest "
+            "service enforces this set and rejects every event carrying "
+            "anything else, so the audit trail would not be recorded at all."
+        )
     # A governance flag must be a real boolean: a truthy string like "false"
     # silently enabling (or a falsy 0 silently disabling) an attribution
     # requirement is exactly the misconfiguration strict init exists to catch.
@@ -476,6 +573,36 @@ def init(
                 raise ValueError(
                     f"obsvr.init(): {_pname} failed the SSRF guard: {e}"
                 )
+
+    # Declared rule lists are coerced HERE, at the boundary that accepts them.
+    #
+    # The engine reads a rule by attribute, so a mapping reached it as an
+    # AttributeError raised inside the caller's detector guard — where
+    # fail_mode resolves it open. A `policy_rules` block written as a dict
+    # therefore did not block: the call went to the provider with only a
+    # stderr notice behind it. Mappings are the natural spelling here (the TS
+    # twin takes object literals, both parameters are typed List[Any], and
+    # `policy_floor` has always accepted them), so the fix is to accept them
+    # rather than to require the dataclass.
+    #
+    # A ValueError at init(), not a warning: a rule that cannot be built is
+    # the operator's configuration being unreadable, and there is no later
+    # moment at which it becomes readable. Raising here is the only point at
+    # which they can still be told before a governed call depends on it.
+    from .rules import coerce_policy_rules as _coerce_policy_rules
+    from .rules import invalid_rule_reason as _invalid_rule_reason
+
+    _coerced: Dict[str, List[Any]] = {}
+    for _rname, _rlist in (("policy_rules", policy_rules), ("policy_floor", policy_floor)):
+        for _i, _raw in enumerate(_rlist or []):
+            _why = _invalid_rule_reason(_raw)
+            if _why is not None:
+                raise ValueError(f"obsvr.init(): {_rname}[{_i}] is not a usable rule: {_why}")
+        _coerced[_rname] = _coerce_policy_rules(_rlist)
+    # None and [] stay distinguishable: "no rules declared" and "an empty rule
+    # set was declared" read the same to the engine but not to every caller.
+    policy_rules = None if policy_rules is None else _coerced["policy_rules"]
+    policy_floor = None if policy_floor is None else _coerced["policy_floor"]
 
     rate = 1.0 if sample_rate is None else float(sample_rate)
     if rate < 0:
@@ -618,6 +745,12 @@ def init(
     from .dedupe import _reset_dedupe as _clear_emission_memory
     _clear_emission_memory()
 
+    # Dead config reads as a control. Say so now, while the operator is looking
+    # at the init call, rather than leaving them to infer it from a limit that
+    # never fires.
+    if not cfg.disabled:
+        _warn_unconsumed_options(cfg.agent_policy)
+
     # Auto-instrumentation: wire frameworks with clean global registration
     # (providers, openai-agents, llamaindex). On by default; opt out with
     # init(auto=False). Best-effort and non-throwing — never blocks init.
@@ -690,7 +823,7 @@ def _emit_governance_disabled_event(cfg: ResolvedConfig) -> None:
 
 def set_tenant_policy(tenant_id: str, rules: list, changed_by: Optional[str] = None) -> None:
     """Set policy rules for a specific tenant."""
-    from .policy_log import snapshot_policy, emit_policy_changed_event, send_policy_event
+    from .policy_log import snapshot_policy, emit_policy_changed_event
     existing = _tenant_registry.get(tenant_id, {})
     prev_rules = existing.get("policy_rules", []) or []
     _tenant_registry[tenant_id] = {"policy_rules": rules}
@@ -700,9 +833,13 @@ def set_tenant_policy(tenant_id: str, rules: list, changed_by: Optional[str] = N
     event = emit_policy_changed_event(
         prev_rules, rules, tenant_id, changed_by, resolution=resolution
     )
-    # actually record the change in the audit trail (was built + dropped).
+    # Put policy changes through the SAME signed sender as every other audit
+    # event. The old standalone POST ignored HTTP status, retried nothing,
+    # updated no counters, and swallowed every failure — a rejected governance
+    # event was indistinguishable from a recorded one.
     if cfg is not None and getattr(cfg, "ingest_url", None):
-        send_policy_event(event, cfg.ingest_url, cfg.api_key)
+        from . import sender
+        sender.send_audit_async(cfg, dataclasses.asdict(event))
 
 
 def get_tenant_config(tenant_id: str) -> "ResolvedConfig":

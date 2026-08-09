@@ -1467,6 +1467,19 @@ async function governCall(
     let reasonCode: string | undefined;
     let redactedTypes: string[] = [];
     let blockedTypes: string[] = [];
+    /**
+     * What the scan FOUND, before policy resolved what to do about it.
+     *
+     * `actionReason` is set from the raw detection while `redactedTypes` and
+     * `blockedTypes` are only filled by the block and redact branches, so every
+     * type that resolves to detect_only produces `reason_code: PII_DETECTED` with
+     * both lists EMPTY — a verdict carrying no evidence of what it saw. An
+     * operator grepping for PII_DETECTED got a hit with nothing in it to act on,
+     * which teaches them to ignore the signal. This carries the finding so a
+     * detect-only verdict says what it detected. Additive and emitted only when
+     * non-empty, so an event with no detection is unchanged.
+     */
+    let detectedTypesFound: string[] = [];
     let ruleIdOverride: string | undefined;
     let policyReasonOverride: string | undefined;
     // Which de-obfuscation view surfaced the PII/injection hit (absent for an
@@ -1474,8 +1487,8 @@ async function governCall(
     // Present ⟹ the raw text is clean ⟹ span redaction cannot locate the
     // payload — storage/redaction paths below must use redactForStorage.
     let piiScanVia: DeobfuscationView["method"] | undefined;
-    // A canary-leak block is unsuppressible — the customer hook can never
-    // downgrade it (checked in the hook-override branches below).
+    // A canary-leak block is unsuppressible even in monitor mode; customer
+    // hooks cannot downgrade any block under monotonic enforcement.
     let canaryFloor = false;
 
     // 0. Enforcement-integrity gate. Blocks when the project is paused / the
@@ -1691,6 +1704,7 @@ async function governCall(
 
         if (allTypes.length > 0) {
           actionReason = "pii_detected";
+          detectedTypesFound = [...allTypes];
           actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
           // A detected prompt-injection taints the session (later egress escalated).
           if (taintCfg && allTypes.includes("prompt_injection")) {
@@ -1836,7 +1850,7 @@ async function governCall(
 
       layer = "policy_floor";
       // 1.4. Anti-tamper policy FLOOR — non-overridable rules evaluated BEFORE
-      //      customer rules and excluded from the hook-override branches below.
+      //      customer rules, with attempted hook overrides recorded below.
       floorBlock = false;
       floorOverrideIgnored = undefined;
       floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
@@ -1861,8 +1875,8 @@ async function governCall(
           // scanner and the hook-redact branch mutate the outgoing prompt), so a
           // floor 'redact' FAILS CLOSED to a block rather than send the prompt
           // verbatim under a false "redacted" record. Parity with the governance
-          // surface. floorBlock=true so the hook-override exclusion and the
-          // floor_override_ignored record below also cover the redact case.
+          // surface. floorBlock=true so the floor_override_ignored record below
+          // also covers an attempted downgrade of the redact case.
           floorBlock = true;
           ruleIdOverride = floorResult.rule_id;
           policyReasonOverride = floorResult.reason ?? "Blocked by policy floor";
@@ -2075,7 +2089,7 @@ async function governCall(
     }
 
     // 2. Customer hook - fires according to hookTrigger config.
-    //    Allows customers to escalate OR explicitly override a builtin decision.
+    //    Allows customers to escalate, but never weaken an existing block.
     //    Enforces configured hookTimeoutMs (default 2000ms) to prevent indefinite hangs.
     // Hook disposition for the decision record (ADR-2): configured-but-not-run
     // is "skipped"; outcomes overwrite it below.
@@ -2159,22 +2173,14 @@ async function governCall(
         hookDecision === "allow" &&
         hookDisposition === "allow" &&
         actionTaken === "blocked" &&
-        !canaryFloor
+        floorBlock
       ) {
-        if (floorBlock) {
-          // The hook tried to un-block a FLOOR rule. Refused + recorded on the
-          // tamper-evident event; the block stands.
-          floorOverrideIgnored = { rule_id: ruleIdOverride, attempted: "allow" };
-        } else {
-          // Only an EXPLICIT hook allow overrides a builtin block (logged
-          // transparently). A fail-open timeout/error default (disposition
-          // "timeout"/"error") must NOT un-block builtin PII/rules enforcement.
-          // A canary-leak block is unsuppressible (canaryFloor).
-          actionTaken = "allowed";
-          actionReason = "customer_override";
-          actionSource = "customer_hook";
-          reasonCode = undefined; // the overridden block's code no longer applies
-        }
+        // Enforcement is monotonic: a hook may add a restriction, but an
+        // allow verdict never erases a block already rendered by PII, policy
+        // rules, taint, protocol facets, or another detector. Floor override
+        // attempts retain their explicit record because the floor is a
+        // separately sealed operator boundary.
+        floorOverrideIgnored = { rule_id: ruleIdOverride, attempted: "allow" };
       } else if (
         hookDecision === "redact" &&
         actionTaken !== "redacted" &&
@@ -2400,7 +2406,7 @@ async function governCall(
     // constructor derives — so the record and the exception cannot disagree.
     const resolvedReasonCode =
       reasonCode ??
-      (actionReason === "none" || actionReason === "customer_override"
+      (actionReason === "none"
         ? ReasonCode.PERMITTED
         : resolveReasonCode({ action_reason: actionReason, action_source: actionSource }));
 
@@ -2538,6 +2544,9 @@ async function governCall(
         reason_code: resolvedReasonCode,
         action_source: actionSource,
         redacted_types: redactedTypes,
+        // The evidence behind a detection verdict. Present only when the scan
+        // found something, so an event with no finding keeps its shape.
+        ...(detectedTypesFound.length > 0 ? { detected_types: detectedTypesFound } : {}),
         blocked_types: blockedTypes,
         rule_id: ruleId,
         policy_reason: policyReason,

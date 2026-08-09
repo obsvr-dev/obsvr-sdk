@@ -8,6 +8,7 @@ path beneath it was unreachable — a stricter version of the same gap the
 TypeScript proxy had. Nothing failed when that was true, and nothing would fail
 if the list silently widened either.
 """
+import asyncio
 import sys
 
 import pytest
@@ -166,17 +167,30 @@ class TestBoundaryHoldsInBothDirections:
             (["messages", "parse"], 1),
             (["responses", "create"], 1),
             (["responses", "parse"], 1),
+            (["responses", "with_raw_response", "create"], 1),
+            (["responses", "with_raw_response", "parse"], 1),
             (["generate_content"], 1),
+            (["generate_content_async"], 1),
+            (["send_message"], 1),
+            (["send_message_async"], 1),
             (["beta", "messages", "create"], 1),
+            (["beta", "messages", "with_raw_response", "create"], 1),
             (["beta", "responses", "create"], 1),
+            (["beta", "responses", "with_raw_response", "create"], 1),
             (["beta", "chat", "completions", "create"], 1),
             (["beta", "chat", "completions", "parse"], 1),
-            (["messages", "stream"], 0),
+            (["beta", "chat", "completions", "with_raw_response", "create"], 1),
+            (["beta", "chat", "completions", "with_raw_response", "parse"], 1),
+            (["chat", "completions", "with_raw_response", "create"], 1),
+            (["chat", "completions", "with_raw_response", "parse"], 1),
+            (["messages", "with_raw_response", "create"], 1),
+            # The .stream() helpers moved INSIDE the boundary and are pinned by
+            # their own test below — they return a manager, so an event appears
+            # when the run ends rather than when the method is called.
             (["messages", "count_tokens"], 0),
             (["messages", "batches", "create"], 0),
-            (["chat", "completions", "stream"], 0),
-            (["responses", "stream"], 0),
             (["generate_content_stream"], 0),
+            # A governed factory: no event until its returned session sends.
             (["start_chat"], 0),
             (["embeddings", "create"], 0),
             (["images", "generate"], 0),
@@ -195,7 +209,12 @@ class TestBoundaryHoldsInBothDirections:
             def __call__(self, **kwargs):
                 return FakeAnthropicResponse()
 
-        node = _Leaf()
+        async def _async_leaf(**kwargs):
+            return FakeAnthropicResponse()
+
+        node = _async_leaf if path in (
+            ["generate_content_async"], ["send_message_async"]
+        ) else _Leaf()
         for seg in reversed(path):
             holder = type("Node", (), {})()
             setattr(holder, seg, node)
@@ -203,6 +222,63 @@ class TestBoundaryHoldsInBothDirections:
 
         # The provider detector duck-types on messages.create; give it one
         # unless this path already supplies it.
+        if path[0] in {"send_message", "send_message_async"}:
+            node.model = type(
+                "GenerativeModel", (),
+                {"model_name": "gemini-test", "generate_content": lambda *a: None},
+            )()
+        elif path[0] != "messages":
+            node.messages = _RecordingMessages([], "messages.create")
+
+        client = obsvr.wrap(node)
+        cursor = client
+        for seg in path:
+            cursor = getattr(cursor, seg)
+        result = cursor(model="m", messages=[{"role": "user", "content": "hi"}])
+        if path in (["generate_content_async"], ["send_message_async"]):
+            asyncio.run(result)
+
+        assert len(captured) == expected_events
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ["messages", "stream"],
+            ["beta", "messages", "stream"],
+            ["chat", "completions", "stream"],
+            ["responses", "stream"],
+        ],
+    )
+    def test_the_stream_helpers_are_inside_the_boundary(self, monkeypatch, path):
+        """Each helper is governed and produces exactly one event per run.
+
+        These sat outside the table and the proxy handed back the provider's
+        own bound method, so the pipeline never ran on them at all — on the
+        same client where it ran on ``create``.
+        """
+        _init()
+        captured = _captured_events(monkeypatch)
+
+        class _Stream:
+            def __iter__(self):
+                return iter([])
+
+        class _Manager:
+            def __enter__(self):
+                return _Stream()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Leaf:
+            def __call__(self, **kwargs):
+                return _Manager()
+
+        node = _Leaf()
+        for seg in reversed(path):
+            holder = type("Node", (), {})()
+            setattr(holder, seg, node)
+            node = holder
         if path[0] != "messages":
             node.messages = _RecordingMessages([], "messages.create")
 
@@ -210,6 +286,109 @@ class TestBoundaryHoldsInBothDirections:
         cursor = client
         for seg in path:
             cursor = getattr(cursor, seg)
-        cursor(model="m", messages=[{"role": "user", "content": "hi"}])
 
-        assert len(captured) == expected_events
+        with cursor(model="m", messages=[{"role": "user", "content": "hi"}]):
+            pass
+
+        assert len(captured) == 1
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ["messages", "with_streaming_response", "create"],
+            ["beta", "messages", "with_streaming_response", "create"],
+            ["responses", "with_streaming_response", "create"],
+            ["responses", "with_streaming_response", "parse"],
+            ["beta", "responses", "with_streaming_response", "create"],
+            ["chat", "completions", "with_streaming_response", "create"],
+            ["chat", "completions", "with_streaming_response", "parse"],
+            ["beta", "chat", "completions", "with_streaming_response", "create"],
+            ["beta", "chat", "completions", "with_streaming_response", "parse"],
+        ],
+    )
+    def test_streaming_response_accessors_are_inside_the_boundary(
+        self, monkeypatch, path
+    ):
+        _init()
+        captured = _captured_events(monkeypatch)
+
+        class _RawResponse:
+            status_code = 200
+            choices = [
+                type("Choice", (), {
+                    "message": type("Message", (), {"content": "four"})()
+                })()
+            ]
+
+            def parse(self):
+                result = FakeAnthropicResponse()
+                result.choices = self.choices
+                return result
+
+        class _Manager:
+            def __enter__(self):
+                return _RawResponse()
+
+            def __exit__(self, *exc):
+                return False
+
+        class _Leaf:
+            def __call__(self, **kwargs):
+                return _Manager()
+
+        node = _Leaf()
+        for seg in reversed(path):
+            holder = type("Node", (), {})()
+            setattr(holder, seg, node)
+            node = holder
+        if path[0] == "messages":
+            node.messages.create = lambda **kwargs: FakeAnthropicResponse()
+        else:
+            node.messages = _RecordingMessages([], "messages.create")
+
+        client = obsvr.wrap(node)
+        cursor = client
+        for seg in path:
+            cursor = getattr(cursor, seg)
+
+        manager = cursor(model="m", messages=[{"role": "user", "content": "hi"}])
+        assert captured == []
+        with manager as response:
+            assert response.parse().content[0].text == "four"
+            assert captured == []
+
+        assert len(captured) == 1
+        assert captured[0]["operation"] == ".".join(path)
+        assert captured[0]["response"] == "four"
+
+    def test_messages_tool_runner_is_deferred_but_inside_the_boundary(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+
+        class _Runner:
+            def until_done(self):
+                return FakeAnthropicResponse()
+
+        class _Messages(_RecordingMessages):
+            def tool_runner(self, **kwargs):
+                return _Runner()
+
+        seen = []
+        client = type("Client", (), {})()
+        client.messages = _RecordingMessages(seen, "messages.create")
+        client.beta = type("Beta", (), {})()
+        client.beta.messages = _Messages(seen, "beta.messages.create")
+
+        runner = obsvr.wrap(client).beta.messages.tool_runner(
+            model="m",
+            max_tokens=8,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+        )
+        assert captured == []
+
+        runner.until_done()
+
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "beta.messages.tool_runner"
+        assert captured[0]["response"] == "four"

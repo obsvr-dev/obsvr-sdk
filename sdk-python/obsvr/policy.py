@@ -6,7 +6,7 @@ EXACT parity with sdk-typescript/src/policy/hook.ts:
   - same confidence-based overlap suppression over positioned spans
   - same BUILTIN_SEVERITY defaults
   - same resolution order: rules[type] -> default -> builtin -> detect_only
-  - same compliance semantics (incl. customer hook override behavior)
+  - same compliance semantics (including monotonic customer-hook behavior)
 
 Patterns are compiled with re.ASCII so \\d, \\w, \\s and \\b match exactly what
 JavaScript's ASCII character classes match. Without it, Python's Unicode-aware
@@ -18,6 +18,7 @@ matching runs on the NFKC-normalized copy (§6).
 
 import bisect
 import concurrent.futures
+import json
 import logging
 import re
 import time
@@ -246,7 +247,7 @@ BUILTIN_PII_PATTERNS: List[Dict[str, Any]] = [
     },
 ]
 
-from .pii_types import BUILTIN_SEVERITY
+from .pii_types import BUILTIN_SEVERITY, PII_TYPES
 
 DEFAULT_COMPLIANCE: Dict[str, Any] = {
     "event_type": "llm_call",
@@ -675,6 +676,82 @@ def apply_outbound_redaction(
         }
 
 
+class RedactionNotApplied(Exception):
+    """A type policy named for removal is still present after redaction.
+
+    Raised into :func:`apply_outbound_redaction`, which resolves it the way
+    every unappliable redaction resolves: closed, with the ``redacted`` claim
+    stripped from the event rather than asserted over content still in the call.
+    """
+
+
+def redact_arguments(value: Any, redact: Callable[[Optional[str]], str]) -> Any:
+    """Redact every string inside a call's ARGUMENTS, structure preserved.
+
+    :func:`apply_outbound_redaction` has always been available to the model-call
+    path, where the payload is text and the redacted copy can simply replace it.
+    The tool-shaped boundaries — the generic tool governor, the MCP
+    ``tools/call`` gate, the PydanticAI toolset — could not use it, because a
+    tool takes ARGUMENTS and the pipeline's redacted copy of the scanned text
+    cannot be handed back to a callable. So each of them took
+    ``redacted_prompt``, used it as the EVENT's prompt, and let the call proceed
+    with the values it came in with: the signed record said
+    ``action_taken: "redacted"`` while the tool wrote the raw value to a file, a
+    row, or a third-party API. This is the missing half, in one place, because
+    three boundaries drifting from ``wrap()`` independently is how the defect
+    arose.
+
+    Arguments are not flat text: a declared parameter can be a dict, a list, or
+    a nested mixture, and the callee has to receive the same SHAPE it would have
+    received unredacted or the redaction breaks the caller. Only ``str`` leaves
+    change; every other scalar comes back as it was, and containers are rebuilt
+    rather than mutated so the caller's own objects are never written through.
+
+    Dict KEYS are left alone deliberately. A key is a parameter or field name
+    the schema chose, not user content, and rewriting one would hand the callee
+    an argument it does not accept.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {key: redact_arguments(item, redact) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_arguments(item, redact) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_arguments(item, redact) for item in value)
+    return value
+
+
+def assert_redaction_applied(
+    payload: Any, compliance: Optional[Dict[str, Any]]
+) -> None:
+    """Confirm the rewritten arguments no longer carry what was to be removed.
+
+    CHECK THE OUTCOME, NOT THE INTENT. Everything upstream of this is the SDK
+    describing its own behaviour; this re-scans the values the callee is about
+    to be handed and refuses if a type the policy named is still in them. It is
+    the difference between "a redaction was requested" and "the content is
+    gone", and only the second one is worth recording.
+
+    Scoped to the types the verdict CLAIMS to have removed, so a detection the
+    policy resolved as detect-only is not turned into a block.
+    """
+    expected = list((compliance or {}).get("redacted_types") or [])
+    if not expected:
+        return
+    if isinstance(payload, str):
+        text = payload
+    else:
+        try:
+            text = json.dumps(payload if payload is not None else {}, default=str)
+        except Exception:  # noqa: BLE001 - an unserializable payload
+            text = str(payload)
+    remaining = set(run_builtin_pii_scan(text)["detected_types"])
+    survived = sorted(name for name in expected if name in remaining)
+    if survived:
+        raise RedactionNotApplied("redaction did not remove " + ", ".join(survived))
+
+
 def outbound_redaction_blocked_compliance(
     base: Dict[str, Any], failed: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -708,6 +785,54 @@ def outbound_redaction_blocked_compliance(
     return merged
 
 
+#: PII types the built-in regex tier has NO pattern for, so only the Presidio
+#: analyzer can locate them. Derived from the pattern table rather than
+#: listed, because a list would drift the first time a pattern is added.
+NLP_ONLY_PII_TYPES = frozenset(PII_TYPES) - {p["label"] for p in BUILTIN_PII_PATTERNS}
+
+
+def outbound_redactor(
+    config: ResolvedConfig, redacted_types: Optional[List[str]] = None
+) -> Callable[[str], str]:
+    """The redactor that rewrites what actually leaves the process.
+
+    The regex tier alone was used here while ``presidio_redact_text`` produced
+    the STORED copy, so with Presidio configured and one of the six NLP-only
+    types resolving to ``redact``, the audit record said ``redacted`` and the
+    name or address went to the provider intact — the record describing a
+    removal from a payload that still carried it.
+
+    Presidio is asked only when a type it alone can find is in play. That keeps
+    a flaky sidecar from failing calls the regex tier could have redacted
+    completely, and it keeps the extra round trip off the common path. When it
+    IS in play and does not answer, this raises: the caller runs it through
+    ``apply_outbound_redaction``, which blocks. That is the applied-redaction
+    rule — falling back to a tier with no pattern for the type would forward
+    exactly the content policy said to remove.
+    """
+    analyzer = getattr(config, "presidio_analyzer_url", None)
+    anonymizer = getattr(config, "presidio_anonymizer_url", None)
+    if not (analyzer and anonymizer):
+        return redact_builtin_pii
+    if redacted_types is not None and not (set(redacted_types) & NLP_ONLY_PII_TYPES):
+        return redact_builtin_pii
+
+    from .presidio import presidio_redact_text
+
+    def _redact(text: str) -> str:
+        out = presidio_redact_text(text, analyzer, anonymizer)
+        if out is None:
+            raise RuntimeError(
+                "the Presidio anonymizer did not answer; an NLP-only PII type "
+                "cannot be removed by the regex tier"
+            )
+        # Both tiers, in order: Presidio locates the NLP entities and the
+        # regex table catches the structured ones it does not model.
+        return redact_builtin_pii(out)
+
+    return _redact
+
+
 def safe_policy_version(config: ResolvedConfig) -> str:
     """Derive the policy version for a failure record WITHOUT trusting the
     inputs that just failed.
@@ -737,14 +862,22 @@ def record_detector_failure(
     """Count and log one detector failure; return True if it resolves CLOSED.
 
     The single resolution point for the rule: every internal failure resolves
-    by fail_mode, EXCEPT the floor class, which is by definition the thing
-    fail_mode cannot move. Both the pre-call guard and the response-scan guard
-    come here, so the rule exists once rather than per call site.
+    by fail_mode, EXCEPT two classes fail_mode does not speak for — the floor,
+    which is by definition the thing fail_mode cannot move, and a rule that is
+    not a rule (see rules.MalformedPolicyRule). Both the pre-call guard and the
+    response-scan guard come here, so the rule exists once rather than per call
+    site.
     """
+    from .rules import MalformedPolicyRule
+
     global _detector_errors
     _detector_errors += 1
 
-    fail_closed = layer in _FLOOR_CLASS_LAYERS or getattr(config, "fail_mode", "open") == "closed"
+    fail_closed = (
+        layer in _FLOOR_CLASS_LAYERS
+        or isinstance(exc, MalformedPolicyRule)
+        or getattr(config, "fail_mode", "open") == "closed"
+    )
     logging.getLogger("obsvr").error(
         "obsvr detector layer %r failed (%s: %s); resolving %s. The call was %s. "
         "This is an SDK defect - please report it.",
@@ -983,6 +1116,18 @@ def apply_pre_call_policy(
     action_source = "unknown"
     redacted_types: List[str] = []
     blocked_types: List[str] = []
+    #: What the scan FOUND, before policy resolved what to do about it.
+    #:
+    #: ``action_reason`` is set from the raw detection while ``redacted_types``
+    #: and ``blocked_types`` are only filled by the block and redact branches,
+    #: so every type that resolves to detect_only produces
+    #: ``reason_code: PII_DETECTED`` with both lists EMPTY — a verdict carrying
+    #: no evidence of what it saw. An operator grepping for PII_DETECTED got a
+    #: hit with nothing in it to act on, which teaches them to ignore the
+    #: signal. This carries the finding so a detect-only verdict says what it
+    #: detected. Additive and emitted only when non-empty, so an event with no
+    #: detection is unchanged.
+    detected_types_found: List[str] = []
     hook_rule_id: Optional[str] = None
     hook_reason: Optional[str] = None
     hook_reason_code: Optional[str] = None
@@ -1135,19 +1280,23 @@ def apply_pre_call_policy(
             pii = run_configured_pii_scan(scan, getattr(config, "deobfuscation", None))
             pii_scan_via = pii.get("via")
             detected_types = list(pii["detected_types"])
+            presidio_answered = False
             if getattr(config, "presidio_analyzer_url", None):
                 from .presidio import presidio_scan
                 nlp = presidio_scan(scan, config.presidio_analyzer_url)
+                presidio_answered = bool(nlp.get("answered"))
                 for t in nlp["detected_types"]:
                     if t not in detected_types:
                         detected_types.append(t)
             if detected_types:
                 action_reason = "pii_detected"
-                action_source = (
-                    "builtin+presidio"
-                    if getattr(config, "presidio_analyzer_url", None)
-                    else "builtin"
-                )
+                detected_types_found = list(detected_types)
+                # Attributed to what ANSWERED, not to what was configured. A
+                # 500ms budget means a cold sidecar or a GC pause routinely
+                # contributes nothing, and this field used to credit it anyway
+                # — naming a detector on the record as having participated in a
+                # verdict it never saw.
+                action_source = "builtin+presidio" if presidio_answered else "builtin"
                 # A detected prompt-injection taints the session.
                 if taint_cfg and "prompt_injection" in detected_types:
                     mark_tainted(taint_key, "prompt_injection", time.monotonic())
@@ -1249,8 +1398,8 @@ def apply_pre_call_policy(
 
         _layer = "policy_floor"
         # 1.4. Anti-tamper policy FLOOR (before customer rules; floor rules always
-        #      enforce, and a floor block is excluded from the hook-override
-        #      branches below). Lives in its own config field so a remote sync
+        #      enforce, and an attempted hook downgrade is recorded below).
+        #      Lives in its own config field so a remote sync
         #      replacing the SERVER rule set can never delete it. TS parity: core.ts 1.4.
         floor_block = False
         floor_rule_id: Optional[str] = None
@@ -1280,8 +1429,8 @@ def apply_pre_call_policy(
                 # core.ts, and the governance surface): there is no span-level
                 # redaction for an arbitrary floor-rule match, so blocking is the
                 # only way the non-overridable baseline can guarantee the matched
-                # content is not forwarded. floor_block=True so the hook-override
-                # exclusion + floor_override_ignored record cover the redact case.
+                # content is not forwarded. floor_block=True so the
+                # floor_override_ignored record covers the redact case.
                 floor_block = True
                 floor_rule_id = floor_result.get("rule_id")
                 floor_reason = floor_result.get("reason") or "Blocked by policy floor"
@@ -1534,26 +1683,18 @@ def apply_pre_call_policy(
                 hook_decision == "allow"
                 and hook_disposition == "allow"
                 and action_taken == "blocked"
-                and not canary_floor
+                and floor_block
             ):
-                if floor_block:
-                    # The hook tried to un-block a FLOOR rule. Refused +
-                    # recorded on the tamper-evident event; the block stands.
-                    floor_override_ignored = {
-                        "rule_id": floor_rule_id,
-                        "attempted": "allow",
-                    }
-                else:
-                    # Only an EXPLICIT hook allow overrides a builtin block
-                    # (logged transparently). A fail-open timeout/error default
-                    # must NOT un-block builtin PII/rules enforcement. A
-                    # canary-leak block is unsuppressible (canary_floor).
-                    action_taken = "allowed"
-                    action_reason = "customer_override"
-                    action_source = "customer_hook"
-                    # The overridden block's code no longer applies.
-                    rules_reason_code = None
-                    detector_reason_code = None
+                # Enforcement is monotonic: a hook may add a restriction, but
+                # an allow verdict never erases a block already rendered by
+                # PII, policy rules, taint, protocol facets, or another
+                # detector. Floor override attempts retain their stronger,
+                # explicit audit record because the floor is a separately
+                # sealed operator boundary.
+                floor_override_ignored = {
+                    "rule_id": floor_rule_id,
+                    "attempted": "allow",
+                }
             elif (
                 hook_decision == "redact"
                 and action_taken != "redacted"
@@ -1718,7 +1859,7 @@ def apply_pre_call_policy(
     explicit_reason_code = hook_reason_code or rules_reason_code or detector_reason_code
     resolved_reason_code = explicit_reason_code or (
         ReasonCode.PERMITTED.value
-        if action_reason in ("none", "customer_override")
+        if action_reason == "none"
         else _resolve_reason_code(action_reason, action_source, None)
     )
 
@@ -1774,6 +1915,11 @@ def apply_pre_call_policy(
     # layer that did not run has to say so on the record.
     if quota_unmetered is not None:
         compliance["quota_unmetered"] = quota_unmetered
+
+    # The evidence behind a detection verdict. Emitted only when the scan found
+    # something, so an event with no detection keeps exactly the shape it had.
+    if detected_types_found:
+        compliance["detected_types"] = detected_types_found
 
     if action_taken == "blocked":
         decision = "block"
