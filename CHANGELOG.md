@@ -15,6 +15,8 @@ Each entry links the commit that made the change.
 
 Changes land here and are renamed at the next release cut.
 
+## [0.11.2] - 2026-08-09
+
 ### Fixed
 
 - **Observe-only PII storage no longer claims outbound redaction.** Framework

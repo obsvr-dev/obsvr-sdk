@@ -29,8 +29,8 @@ Two SDKs — **TypeScript** and **Python** — with **one behavior**, kept byte-
 
 | Package                    | Language                  | Version | Directory                    |
 | -------------------------- | ------------------------- | ------- | ---------------------------- |
-| [`@obsvr/sdk`](sdk-typescript/)       | TypeScript / Node.js ≥ 22 | 0.11.1  | [`sdk-typescript/`](sdk-typescript/)               |
-| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.11.1  | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](sdk-typescript/)       | TypeScript / Node.js ≥ 22 | 0.11.2  | [`sdk-typescript/`](sdk-typescript/)               |
+| [`obsvr-sdk`](sdk-python/) | Python ≥ 3.10             | 0.11.2  | [`sdk-python/`](sdk-python/) |
 
 ## Table of contents
 
