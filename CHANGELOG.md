@@ -89,7 +89,7 @@ Changes land here and are renamed at the next release cut.
   field. That newly refuses a rule missing `enabled`, one with a misspelled
   `type`, one claiming the reserved `sdk:` / `backend:` namespace, and a `regex`
   pattern the ReDoS validator rejects — each of which previously produced a rule
-  the engine skipped in silence. ([`8bb0ffd`](https://github.com/obsvr-dev/obsvr-sdk/commit/8bb0ffd))
+  the engine skipped in silence. ([`2d25f64`](https://github.com/obsvr-dev/obsvr-sdk/commit/2d25f64))
 
 - **`obsvr.wrap()` governs the `.stream()` helpers in Python.** They were
   outside the method table, so the proxy returned the provider's own bound
@@ -98,13 +98,13 @@ Changes land here and are renamed at the next release cut.
   through with the SSN in it. `messages.stream`, `beta.messages.stream`,
   `chat.completions.stream` and `responses.stream` are governed now and emit one
   event per run. The provider tool runners remain TypeScript-only.
-  ([`d7a1dde`](https://github.com/obsvr-dev/obsvr-sdk/commit/d7a1dde))
+  ([`0db5816`](https://github.com/obsvr-dev/obsvr-sdk/commit/0db5816))
 
 - **The TypeScript OpenAI Agents tracing processor scans what it stores.** It
   ran no policy pipeline of any kind, so at any sample rate it wrote the agent's
   prompt and response into the signed event raw, while the Python twin ran the
   observe-only PII net and the READMEs described the scan as running in both.
-  ([`7cb3220`](https://github.com/obsvr-dev/obsvr-sdk/commit/7cb3220))
+  ([`b64cabb`](https://github.com/obsvr-dev/obsvr-sdk/commit/b64cabb))
 
 - **No event describes a provider call that has not happened.** Both provider
   SDKs decorate their async `create` with a `@required_args` validator that is
@@ -114,7 +114,7 @@ Changes land here and are renamed at the next release cut.
   CONSTRUCTED, before the provider had been contacted and while the call could
   still fail. Affected `messages.create` and `chat.completions.create` on the
   async clients; `responses.create` carries no such decorator and was always
-  right. ([`e1dfc91`](https://github.com/obsvr-dev/obsvr-sdk/commit/e1dfc91))
+  right. ([`30cb339`](https://github.com/obsvr-dev/obsvr-sdk/commit/30cb339))
 
 - **A tool-result redaction that could not be applied is no longer recorded as
   applied.** A content item whose `text` could not be assigned was swallowed by
@@ -123,13 +123,13 @@ Changes land here and are renamed at the next release cut.
   now reaches the guard that exists: blocked under `failMode: "closed"`, and
   under open the result is delivered with a `policy_flag` that files the types
   as detected, drops the redaction claim and names the lost layer.
-  ([`947dc33`](https://github.com/obsvr-dev/obsvr-sdk/commit/947dc33))
+  ([`179848d`](https://github.com/obsvr-dev/obsvr-sdk/commit/179848d))
 
 - **A `govern_tool` gate whose evaluation raised records `not_evaluated`.** It
   recorded `allowed` — a verdict asserting a gate looked and permitted — on a
   call where the gate raised and the tool ran ungoverned, with no trace of the
   lost layer. Same vocabulary the MCP boundary already used for this failure.
-  ([`268510f`](https://github.com/obsvr-dev/obsvr-sdk/commit/268510f))
+  ([`9328dec`](https://github.com/obsvr-dev/obsvr-sdk/commit/9328dec))
 
 - **The six NLP-only PII types are removed from the REQUEST, not only from the
   record.** `name`, `person`, `address`, `location`, `medical` and
@@ -143,7 +143,7 @@ Changes land here and are renamed at the next release cut.
   `builtin+presidio` whenever the URL was merely configured. **Behaviour
   change:** with Presidio configured and one of those six resolving to
   `redact`, an anonymizer that does not answer now blocks the call.
-  ([`37d4e24`](https://github.com/obsvr-dev/obsvr-sdk/commit/37d4e24))
+  ([`3f7d657`](https://github.com/obsvr-dev/obsvr-sdk/commit/3f7d657))
 
 - **`init(auto=True)` reaches a client class a framework already imported.**
   `from openai import OpenAI` binds the class object into the importing module,
@@ -154,12 +154,12 @@ Changes land here and are renamed at the next release cut.
   openai-agents were all ungoverned that way — three from the bare top-level
   import. Resolved by identity, so a framework's own unrelated class of the
   same name is untouched.
-  ([`0ad8258`](https://github.com/obsvr-dev/obsvr-sdk/commit/0ad8258))
+  ([`9e3dbda`](https://github.com/obsvr-dev/obsvr-sdk/commit/9e3dbda))
 
 - **`hardDeletion.endpoint` is inside the SSRF guard.** The fourth
   customer-configured outbound URL, carrying a DELETE with the `X-API-Key`
   header, was outside it while the security notes said every such URL was
-  validated. ([`d7eccf4`](https://github.com/obsvr-dev/obsvr-sdk/commit/d7eccf4))
+  validated. ([`b7ff312`](https://github.com/obsvr-dev/obsvr-sdk/commit/b7ff312))
 
 ### Changed
 
@@ -172,7 +172,7 @@ Changes land here and are renamed at the next release cut.
   on injection without a `piiPolicy` co-requisite that went unstated; the
   stored-copy scrub holds on the framework integrations in TypeScript only; and
   the package table was two releases stale.
-  ([`4cd4871`](https://github.com/obsvr-dev/obsvr-sdk/commit/4cd4871))
+  ([`d6c5bb3`](https://github.com/obsvr-dev/obsvr-sdk/commit/d6c5bb3))
 
 ## [0.11.0] - 2026-08-06
 
