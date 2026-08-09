@@ -344,6 +344,9 @@ async function postPinnedJson(
       },
     );
     req.on('error', reject);
+    // Sending the evaluation payload is this explicitly configured backend's
+    // purpose. Its URL and complete DNS snapshot were validated and pinned
+    // before this transport was constructed; redirects are disabled above.
     req.end(body);
   });
 }
