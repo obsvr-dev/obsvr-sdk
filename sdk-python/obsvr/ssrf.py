@@ -19,8 +19,9 @@ Stdlib only (``ipaddress`` + ``socket``) to keep the core dependency-free.
 import ipaddress
 import re
 import socket
+from dataclasses import dataclass
 from typing import Callable, List, Optional
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 
 class SsrfError(Exception):
@@ -193,9 +194,80 @@ def assert_backend_url_static(url: str, allow_private_network: bool = False):
 Resolver = Callable[[str], List[str]]
 
 
+@dataclass(frozen=True)
+class AllowedBackendAddress:
+    """One numeric DNS answer that passed the complete address policy."""
+
+    address: str
+    family: int
+
+
+@dataclass(frozen=True)
+class AllowedBackendTarget:
+    """The original URL plus the immutable address snapshot approved for it.
+
+    Connection code must use ``addresses`` directly rather than resolving
+    ``parts.hostname`` again. Keeping ``parts`` preserves the configured Host
+    header and HTTPS certificate/SNI identity while the socket destination is
+    pinned to an address that passed the guard.
+    """
+
+    parts: SplitResult
+    addresses: tuple[AllowedBackendAddress, ...]
+
+
 def _default_resolver(host: str) -> List[str]:
     infos = socket.getaddrinfo(host, None)
     return [info[4][0] for info in infos]
+
+
+def resolve_backend_url_allowed(
+    url: str,
+    allow_private_network: bool = False,
+    resolver: Optional[Resolver] = None,
+) -> AllowedBackendTarget:
+    """FULL guard: static checks plus DNS resolution of a hostname host,
+    asserting EVERY resolved address is permitted (resolve-before-connect). A
+    public name that resolves to a private IP is refused. Literal-IP hosts skip
+    DNS.
+
+    The returned address snapshot must be used to create the socket. Resolving
+    the hostname again after this check would reintroduce DNS rebinding.
+    """
+    parts = assert_backend_url_static(url, allow_private_network)
+    host = parts.hostname or ""
+    if is_ip_literal(host):
+        parsed = _parse_ip(host)
+        if parsed is None:
+            raise SsrfError(f"backend url contains an invalid IP literal: {host}")
+        return AllowedBackendTarget(
+            parts=parts,
+            addresses=(
+                AllowedBackendAddress(
+                    address=str(parsed),
+                    family=socket.AF_INET if parsed.version == 4 else socket.AF_INET6,
+                ),
+            ),
+        )
+    resolve = resolver or _default_resolver
+    addrs = resolve(host)
+    if not addrs:
+        raise SsrfError(f"backend url host did not resolve: {host}")
+    approved = []
+    for addr in addrs:
+        parsed = _parse_ip(addr)
+        if parsed is None:
+            raise SsrfError(
+                f"backend url resolver returned a non-IP address for {host}: {addr}"
+            )
+        _assert_ip_allowed(addr, allow_private_network)
+        approved.append(
+            AllowedBackendAddress(
+                address=str(parsed),
+                family=socket.AF_INET if parsed.version == 4 else socket.AF_INET6,
+            )
+        )
+    return AllowedBackendTarget(parts=parts, addresses=tuple(approved))
 
 
 def assert_backend_url_allowed(
@@ -203,17 +275,10 @@ def assert_backend_url_allowed(
     allow_private_network: bool = False,
     resolver: Optional[Resolver] = None,
 ) -> None:
-    """FULL guard: static checks plus DNS resolution of a hostname host,
-    asserting EVERY resolved address is permitted (resolve-before-connect). A
-    public name that resolves to a private IP is refused. Literal-IP hosts skip
-    DNS. Residual TOCTOU on hostnames is documented in the TS twin."""
-    parts = assert_backend_url_static(url, allow_private_network)
-    host = parts.hostname or ""
-    if is_ip_literal(host):
-        return
-    resolve = resolver or _default_resolver
-    addrs = resolve(host)
-    if not addrs:
-        raise SsrfError(f"backend url host did not resolve: {host}")
-    for addr in addrs:
-        _assert_ip_allowed(addr, allow_private_network)
+    """Compatibility assertion for callers that only need an allow/refuse verdict.
+
+    Production connection code must retain the snapshot returned by
+    :func:`resolve_backend_url_allowed` so DNS cannot change between validation
+    and socket creation.
+    """
+    resolve_backend_url_allowed(url, allow_private_network, resolver)

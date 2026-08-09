@@ -26,6 +26,7 @@ from obsvr.ssrf import (
     assert_backend_url_static,
     is_always_blocked_ip,
     is_private_or_reserved_ip,
+    resolve_backend_url_allowed,
 )
 
 
@@ -129,6 +130,97 @@ def test_resolve_always_blocks_metadata_resolution():
 
 def test_resolve_allows_public_resolution():
     assert assert_backend_url_allowed("https://opa.example.com/x", False, lambda h: ["93.184.216.34"]) is None
+
+
+def test_resolve_rejects_mixed_public_private_snapshot():
+    with pytest.raises(SsrfError, match="private/reserved"):
+        resolve_backend_url_allowed(
+            "https://opa.example.com/x",
+            False,
+            lambda _host: ["8.8.8.8", "10.1.2.3"],
+        )
+
+
+def test_production_transport_pins_first_dns_snapshot_and_refuses_redirect(monkeypatch):
+    resolutions = iter([["8.8.8.8"], ["169.254.169.254"]])
+    resolver_calls = []
+    captured = {}
+
+    def rebinding_resolver(host):
+        resolver_calls.append(host)
+        return next(resolutions)
+
+    class RedirectResponse:
+        status = 302
+
+        @staticmethod
+        def read():
+            return b""
+
+    class FakePinnedConnection:
+        def __init__(self, target, timeout_s):
+            captured["target"] = target
+            captured["timeout_s"] = timeout_s
+
+        def request(self, method, path, body, headers):
+            captured.update(method=method, path=path, body=body, headers=headers)
+
+        @staticmethod
+        def getresponse():
+            return RedirectResponse()
+
+        @staticmethod
+        def close():
+            captured["closed"] = True
+
+    monkeypatch.setattr(eb, "_PinnedHTTPConnection", FakePinnedConnection)
+    cfg = {
+        "type": "opa",
+        "url": "http://opa.example.com:8181/v1/data/allow?tenant=a",
+        "headers": {"host": "169.254.169.254", "connection": "keep-alive"},
+    }
+
+    result = evaluate_external_backend(cfg, INPUT, resolver=rebinding_resolver)
+
+    assert result == {"outcome": "error", "reasons": ["backend_http_302"]}
+    assert resolver_calls == ["opa.example.com"]
+    assert [entry.address for entry in captured["target"].addresses] == ["8.8.8.8"]
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/data/allow?tenant=a"
+    assert captured["headers"]["Host"] == "opa.example.com:8181"
+    assert captured["headers"]["Connection"] == "close"
+    assert captured["closed"] is True
+
+
+def test_https_pin_preserves_origin_hostname_for_sni_and_certificate_check(monkeypatch):
+    raw_socket = object()
+    captured = {}
+
+    class Context:
+        @staticmethod
+        def wrap_socket(sock, *, server_hostname):
+            captured["raw_socket"] = sock
+            captured["server_hostname"] = server_hostname
+            return "tls-socket"
+
+    target = resolve_backend_url_allowed(
+        "https://opa.example.com/policy",
+        resolver=lambda _host: ["8.8.8.8"],
+    )
+    conn = eb._PinnedHTTPSConnection(target, 2.0)
+    assert conn._context.check_hostname is True
+    assert conn._context.verify_mode == eb.ssl.CERT_REQUIRED
+
+    monkeypatch.setattr(eb, "_connect_approved_socket", lambda *args: raw_socket)
+    conn._context = Context()
+
+    conn.connect()
+
+    assert conn.sock == "tls-socket"
+    assert captured == {
+        "raw_socket": raw_socket,
+        "server_hostname": "opa.example.com",
+    }
 
 
 # ── backend evaluation ───────────────────────────────────────────────────────
