@@ -34,6 +34,7 @@ import {
   type ComplianceInfo,
   type IntegrationOptions,
   inferProviderFromModel,
+  monitorModeRequiresEvidence,
 } from "./core.js";
 import { readTokenUsage } from "../proxy/extractors/token-usage.js";
 import type { TokenUsage } from "../proxy/extractors/types.js";
@@ -224,11 +225,13 @@ export function obsvrLlamaIndexHandler<T extends CallbackManagerLike>(
         shouldRedactStored,
         storedRedactionVia,
         streamText: "",
-        // Allowed: emit only when sampled in. Anything the scan acted on is
-        // enforcement evidence and is always recorded.
+        // Observe-only is classified `not_evaluated` even when the scan found
+        // nothing, so that status alone must not bypass sampling. Actual scan /
+        // storage action and monitor mode remain unsampled evidence.
         auditThisCall:
+          monitorModeRequiresEvidence(config) ||
           shouldAudit ||
-          compliance.action_taken !== "allowed" ||
+          shouldRedactStored ||
           compliance.action_reason !== "none",
       });
     } catch {

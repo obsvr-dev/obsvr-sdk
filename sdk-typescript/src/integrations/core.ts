@@ -100,6 +100,11 @@ export { redactBuiltinPii };
 export { redactForStorage };
 export type { DeobfuscationView };
 
+/** Monitor mode is a complete evidence stream, independent of allowed-call sampling. */
+export function monitorModeRequiresEvidence(config: ResolvedConfig): boolean {
+  return (config.enforcementMode ?? "enforce") === "monitor";
+}
+
 /**
  * Whole-text placeholder for a stored response the policy FLOOR redacted. A
  * floor rule match (keyword/regex/topic) has no locatable span, so the stored

@@ -28,6 +28,28 @@ const SERIALIZED_OPENAI = {
 };
 
 describe('ObsvrCallbackHandler', () => {
+  it('samples out a clean observe-only call at sample_rate 0 in enforce mode', async () => {
+    init({ api_key: 'test', sample_rate: 0 });
+    const handler = new ObsvrCallbackHandler();
+
+    await handler.handleLLMStart(SERIALIZED_OPENAI, ['hello'], 'run-sampled');
+    await handler.handleLLMEnd({ generations: [[{ text: 'ok' }]] }, 'run-sampled');
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sentEvents).toHaveLength(0);
+  });
+
+  it('emits an ordinary monitor-mode call at sample_rate 0', async () => {
+    init({ api_key: 'test', sample_rate: 0, enforcement_mode: 'monitor' });
+    const handler = new ObsvrCallbackHandler();
+
+    await handler.handleLLMStart(SERIALIZED_OPENAI, ['hello'], 'run-monitor');
+    await handler.handleLLMEnd({ generations: [[{ text: 'ok' }]] }, 'run-monitor');
+
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({ action_taken: 'not_evaluated', response: 'ok' });
+  });
+
   it('pairs handleLLMStart -> handleLLMEnd by runId', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     const handler = new ObsvrCallbackHandler();

@@ -132,7 +132,12 @@ describe('wrapVertexAI', () => {
   });
 
   it('audits streaming calls via the aggregated response promise', async () => {
-    init({ api_key: 'test', sample_rate: 1, streaming_mode: 'wrap' as any });
+    init({
+      api_key: 'test',
+      sample_rate: 0,
+      enforcement_mode: 'monitor',
+      streaming_mode: 'wrap' as any,
+    });
     const model = wrapVertexAI({
       model: 'gemini-1.5-pro',
       generateContentStream: async (_req: any) => ({

@@ -282,6 +282,21 @@ describe('obsvrMiddleware', () => {
     expect(sentEvents).toHaveLength(0);
   });
 
+  it('emits an ordinary monitor-mode call when not sampled', async () => {
+    init({ api_key: 'test', sample_rate: 0, enforcement_mode: 'monitor' });
+    const mw = obsvrMiddleware();
+    const params = userParams('Hi');
+    await mw.transformParams({ params, model: MODEL });
+    await mw.wrapGenerate({
+      doGenerate: async () => ({ text: 'x', usage: {} }),
+      params,
+      model: MODEL,
+    });
+
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({ action_taken: 'allowed', response: 'x' });
+  });
+
   it('exposes a configurable middlewareVersion', () => {
     expect((obsvrMiddleware() as any).middlewareVersion).toBe('v1');
     expect(

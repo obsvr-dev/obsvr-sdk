@@ -35,6 +35,56 @@ class UnknownCommand {
 }
 
 describe('wrapBedrock — Converse', () => {
+  it('emits an ordinary monitor-mode call at sample_rate 0', async () => {
+    init({ api_key: 'test', sample_rate: 0, enforcement_mode: 'monitor' });
+    const client = wrapBedrock({
+      send: async (_command: unknown) => ({ output: { message: { content: [{ text: 'ok' }] } } }),
+    });
+
+    await client.send(new ConverseCommand({
+      modelId: 'm',
+      messages: [{ role: 'user', content: [{ text: 'hello' }] }],
+    }));
+
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({ action_taken: 'allowed', response: 'ok' });
+  });
+
+  it('emits a monitor-converted verdict at sample_rate 0', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 0,
+      enforcement_mode: 'monitor',
+      policy_rules: [{
+        id: 'block-secret',
+        name: 'block secret',
+        enabled: true,
+        action: 'block',
+        type: 'keyword',
+        conditions: { keywords: ['secret'] },
+      }],
+    });
+    let called = false;
+    const client = wrapBedrock({
+      send: async (_command: unknown) => {
+        called = true;
+        return { output: { message: { content: [{ text: 'ok' }] } } };
+      },
+    });
+
+    await client.send(new ConverseCommand({
+      modelId: 'm',
+      messages: [{ role: 'user', content: [{ text: 'a secret request' }] }],
+    }));
+
+    expect(called).toBe(true);
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({
+      action_taken: 'allowed',
+      shadow_outcome: { would: 'block', rule_id: 'block-secret' },
+    });
+  });
+
   it('extracts prompt, response and usage', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     const client = wrapBedrock({

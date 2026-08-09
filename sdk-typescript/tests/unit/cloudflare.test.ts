@@ -24,6 +24,18 @@ async function waitForEvents(n = 1): Promise<void> {
 }
 
 describe('wrapWorkersAI', () => {
+  it('emits an ordinary monitor-mode call at sample_rate 0', async () => {
+    init({ api_key: 'test', sample_rate: 0, enforcement_mode: 'monitor' });
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => ({ response: 'ok' }),
+    });
+
+    await ai.run('@cf/model', { prompt: 'hello' });
+
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({ action_taken: 'allowed', response: 'ok' });
+  });
+
   it('audits ai.run with messages input', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     const ai = wrapWorkersAI({

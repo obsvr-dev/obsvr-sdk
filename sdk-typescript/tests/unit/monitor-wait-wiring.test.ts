@@ -185,6 +185,27 @@ describe('integrations pipeline: blocking approval wait', () => {
 });
 
 describe('proxy wrapper: monitor mode', () => {
+  it('emits an ordinary allowed call even at sample_rate 0', async () => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      enforcement_mode: 'monitor',
+      sample_rate: 0,
+    } as never);
+    const wrapped = wrap(fakeClient());
+
+    await wrapped.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'an ordinary request' }],
+    });
+
+    await waitForEvents(1);
+    expect(sentEvents.find((event) => event.operation === 'chat.completions.create')).toMatchObject({
+      action_taken: 'allowed',
+      reason_code: ReasonCode.PERMITTED,
+    });
+  });
+
   it('lets the call proceed and emits the would-be verdict even at sample_rate 0', async () => {
     // sample_rate 0 pins the sampling exemption: a monitor-converted event
     // is enforcement evidence, not a plain allowed call.
@@ -249,6 +270,41 @@ describe('proxy wrapper: monitor mode', () => {
     expect(event.action_taken).toBe('allowed');
     expect(event.shadow_outcome.would).toBe('block');
     expect(event.shadow_outcome.rule_id).toBe('floor-secret');
+  });
+
+  it('emits a drained direct stream even at sample_rate 0', async () => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      enforcement_mode: 'monitor',
+      sample_rate: 0,
+      streaming_mode: 'wrap',
+    } as never);
+    const provider = {
+      chat: {
+        completions: {
+          create: async (_args: unknown) => (async function* () {
+            yield { choices: [{ delta: { content: 'Hel' } }] };
+            yield { choices: [{ delta: { content: 'lo' } }] };
+          })(),
+        },
+      },
+    };
+
+    const stream = await wrap(provider).chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'stream this' }],
+      stream: true,
+    });
+    for await (const _chunk of stream) {
+      // drain
+    }
+
+    await waitForEvents(1);
+    expect(sentEvents.find((event) => event.operation === 'chat.completions.create')).toMatchObject({
+      action_taken: 'allowed',
+      response: 'Hello',
+    });
   });
 
   it('does not disarm the enforcement-integrity gate', async () => {

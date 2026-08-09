@@ -96,6 +96,7 @@ import {
   applyPostCallPolicy,
   mergePostCallOutcome,
   emitIntegrationEvent,
+  monitorModeRequiresEvidence,
 } from "../integrations/core.js";
 import { spanEnvelopeFor, withSpanMetadata } from "./span.js";
 import { withRunMetadata } from "./agent-run.js";
@@ -1396,8 +1397,8 @@ interface PreCallOutcome {
   cleaned_args: unknown[];
   /** The audit fields that were filtered OUT of the caller's arguments. */
   audit_fields: AuditFields;
-  /** Whether an ALLOWED-call event should be emitted (sampling). Enforcement
-   *  already ran regardless; this gates emission only. */
+  /** Whether this event should be emitted after sampling and monitor-mode rules.
+   *  Enforcement already ran regardless; this gates emission only. */
   auditThisCall: boolean;
   /** The compliance verdict this call was governed under. */
   compliance: ComplianceCtx;
@@ -2495,14 +2496,11 @@ async function governCall(
       externalBackend,
     };
 
-    // Emit this call's audit event? Enforcement already ran unconditionally
-    // above; sampling only thins the record of *allowed* calls. Blocked/redacted
-    // (enforcement actions) and errors are always recorded, so a low sample_rate
-    // never hides a policy action.
-    // A monitor-converted event is enforcement evidence, not a plain allowed
-    // call: it is exempt from allowed-call sampling so the would-be verdict
-    // is never dropped, even at sample_rate=0 (Python parity).
+    // Enforce-mode sampling only thins ordinary allowed calls. Monitor mode is
+    // a complete evidence stream, so even ordinary allowed calls bypass it.
+    // Policy action, detector failures, and converted verdicts remain unsampled.
     const auditThisCall =
+      monitorModeRequiresEvidence(config) ||
       shouldAudit ||
       compliance.actionTaken !== "allowed" ||
       monitorConverted ||

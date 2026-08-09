@@ -44,6 +44,7 @@ import {
   extractLastUserText,
   getConfig,
   isAsyncIterable,
+  monitorModeRequiresEvidence,
   redactBuiltinPii,
   redactForStorage,
   redactRequestMessagesInPlace,
@@ -367,9 +368,10 @@ function createAuditedRun(
       }
     }
 
-    // Allowed: emit only when sampled in. Anything the policy acted on is
-    // enforcement evidence and is always recorded, as are errors below.
-    const auditThisCall = shouldAudit || policy.decision !== "allow";
+    // Enforce-mode allows are sampled. Monitor mode and anything the policy
+    // acted on are complete evidence and are always recorded, as are errors.
+    const auditThisCall =
+      monitorModeRequiresEvidence(config) || shouldAudit || policy.decision !== "allow";
 
     const startTime = performance.now();
     let result: unknown;

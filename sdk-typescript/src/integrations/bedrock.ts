@@ -24,6 +24,7 @@ import {
   blockedUserInputForStorage,
   emitIntegrationEvent,
   getConfig,
+  monitorModeRequiresEvidence,
   redactBuiltinPii,
   redactForStorage,
   setupExitHandlers,
@@ -478,8 +479,10 @@ function createAuditedSend(
       }
     }
 
-    // Allowed/redacted: emit only when sampled in; redaction is always recorded.
-    const auditThisCall = shouldAudit || policy.decision !== "allow";
+    // Enforce-mode allows are sampled. Monitor mode, redaction, and other policy
+    // action are complete evidence and are always recorded.
+    const auditThisCall =
+      monitorModeRequiresEvidence(config) || shouldAudit || policy.decision !== "allow";
 
     // --- Call Bedrock ---
     const startTime = performance.now();
