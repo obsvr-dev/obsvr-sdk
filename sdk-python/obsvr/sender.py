@@ -23,7 +23,7 @@ Every enqueued event is stamped with the SDK integrity chain, byte-for-byte
 compatible with the TypeScript SDK (sdk-typescript/src/proxy/sender/fire-and-forget.ts)
 so ingest-side verification code treats both identically:
 
-- sdk_session_id : stable UUID per process lifetime
+- sdk_session_id : stable UUID until fork or declared post-sign delivery loss
 - seq_no         : monotonic 1-based counter
 - timestamp_sdk  : epoch milliseconds at enqueue
 - chain_format   : signing format number (see chain_format.py)
@@ -55,8 +55,12 @@ from .audit_gap import (
     AUDIT_GAP_GOVERNANCE_EVENT,
     AUDIT_GAP_METADATA_KEY,
     AUDIT_GAP_OPERATION,
+    AUDIT_GAP_REASON_INGEST_REJECTED,
+    AUDIT_GAP_REASON_PERMANENT_FAILURE,
     AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+    AUDIT_GAP_REASON_RETRY_EXHAUSTED,
     format_audit_gap_prompt,
+    read_audit_gap_claim,
 )
 from .chain_format import (
     CHAIN_FORMAT_CURRENT,
@@ -358,6 +362,19 @@ def should_sample(rate: float) -> bool:
     return random.random() < rate
 
 
+def should_emit(config: Any, *, governed: bool = False) -> bool:
+    """Whether an audit event should pass the emission sampling gate.
+
+    Monitor mode is an evidence-collection mode, so it records clean allowed
+    events even when ``sample_rate`` is zero. Enforce mode retains the ordinary
+    allowed-event sampling contract. Governed/error evidence is unconditional
+    in either mode.
+    """
+    if governed or getattr(config, "enforcement_mode", "enforce") == "monitor":
+        return True
+    return should_sample(getattr(config, "sample_rate", 1.0))
+
+
 def _apply_backoff() -> None:
     """Jittered exponential backoff (equal jitter): the deterministic half
     guarantees spacing, the random half prevents many clients from
@@ -386,11 +403,11 @@ def _classify_status(status: int, path: str) -> str:
                 ingest URL that redirects). Auth-class 4xx (401/403) are in
                 this class too, and they are the reason the header no longer
                 says "the same bytes will always fail": that is key state, not
-                a property of the bytes. Measured — a 401 dead-letters with
+                a property of the bytes. Measured — a 401 is discarded with
                 zero retries, and the identical event re-posted with the same
                 key header succeeds once the sink answers 200. Retrying an
                 auth failure in a hot loop burns quota and hides the bug, so it
-                is still classed permanent; the event is dead-lettered rather
+                is still classed permanent; the event is discarded rather
                 than held.
 
     ONLY A 2xx IS A DELIVERY. A 403 on the single-event path used to classify
@@ -636,7 +653,7 @@ def _send_event_batch(config: ResolvedConfig, events: list) -> tuple:
     The server accepts/rejects per event INSIDE AN ACCEPTED (2xx) batch, so a
     blocked or duplicate event reported that way costs only itself. A batch
     answered with a 4xx is a different case and the header used to elide it:
-    the verdict applies to the whole request, so every event in it dead-letters
+    the verdict applies to the whole request, so every event in it is discarded
     together. A 403 costs every event in the request on both paths now — it
     used to drop all 25 here and none on the single-event path, so what a
     refusal cost depended on how many events were queued behind it.
@@ -653,7 +670,7 @@ def _worker_loop() -> None:
     bytes per request (a burst of N calls costs ~N/25 requests while large
     prompts split instead of failing the whole batch). Retryable failures
     requeue with a bounded per-item budget; permanent failures (4xx other
-    than 408/429) dead-letter immediately: the same bytes will always fail."""
+    than 408/429) are discarded immediately: the same bytes will always fail."""
     global _dropped
     # Items removed from Queue must never be put back into a queue producers
     # can refill between get() and put_nowait(). Two such requeues existed:
@@ -676,7 +693,10 @@ def _worker_loop() -> None:
         completed = 1
         try:
             batch_bytes = len(json.dumps(first[1]))
-            while len(batch) < SEND_BATCH_SIZE:
+            while (
+                len(batch) < SEND_BATCH_SIZE
+                and read_audit_gap_claim(first[1]) is None
+            ):
                 try:
                     item = _worker_front.get_nowait()
                     _worker_front.task_done()
@@ -689,6 +709,10 @@ def _worker_loop() -> None:
                             item = _queue.get_nowait()
                         except Empty:
                             break
+                item_is_gap_marker = read_audit_gap_claim(item[1]) is not None
+                if batch and item_is_gap_marker:
+                    _worker_front.put(item)
+                    break
                 item_bytes = len(json.dumps(item[1]))
                 if batch and batch_bytes + item_bytes > MAX_BATCH_BYTES:
                     # Byte budget reached: carry this already-signed item
@@ -699,6 +723,8 @@ def _worker_loop() -> None:
                 batch.append(item)
                 completed += 1
                 batch_bytes += item_bytes
+                if item_is_gap_marker:
+                    break
 
             wait = _backoff["until"] - time.time()
             if wait > 0 and not _shutdown.is_set():
@@ -721,6 +747,12 @@ def _worker_loop() -> None:
                     _bump("dropped_rejected", rejected)
                     _dropped += rejected
                     _warn_events_lost(rejected, "refused by the ingest service")
+                    _declare_delivery_gap(
+                        config,
+                        events,
+                        rejected,
+                        AUDIT_GAP_REASON_INGEST_REJECTED,
+                    )
             elif verdict == "rejected":
                 # The server saw the request and refused it outright. Final, so
                 # never retried — and never counted as sent, because nothing was
@@ -728,13 +760,26 @@ def _worker_loop() -> None:
                 _dropped += len(batch)
                 _bump("dropped_rejected", len(batch))
                 _warn_events_lost(len(batch), "refused by the ingest service")
+                _declare_delivery_gap(
+                    config,
+                    events,
+                    len(events),
+                    AUDIT_GAP_REASON_INGEST_REJECTED,
+                )
             elif verdict == "permanent":
                 _dropped += len(batch)
                 _bump("dropped_permanent", len(batch))
                 _warn_events_lost(
                     len(batch), "permanently undeliverable to the ingest service"
                 )
+                _declare_delivery_gap(
+                    config,
+                    events,
+                    len(events),
+                    AUDIT_GAP_REASON_PERMANENT_FAILURE,
+                )
             else:  # retryable
+                exhausted = []
                 for item in batch:
                     cfg, ev = item[0], item[1]
                     retries = item[2] if len(item) > 2 else 0
@@ -747,9 +792,17 @@ def _worker_loop() -> None:
                         completed -= 1
                         _bump("retries")
                     else:
+                        exhausted.append(ev)
                         _dropped += 1
                         _bump("dropped_retry_exhausted")
                         _warn_events_lost(1, "retry budget exhausted")
+                if exhausted:
+                    _declare_delivery_gap(
+                        config,
+                        exhausted,
+                        len(exhausted),
+                        AUDIT_GAP_REASON_RETRY_EXHAUSTED,
+                    )
         except Exception:
             pass
         finally:
@@ -950,7 +1003,11 @@ def _stamp_integrity_flags(event: Dict[str, Any]) -> None:
     event["metadata"] = md
 
 
-def _build_gap_marker(config: ResolvedConfig, dropped: int) -> Dict[str, Any]:
+def _build_gap_marker(
+    config: ResolvedConfig,
+    dropped: int,
+    reason: str = AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+) -> Dict[str, Any]:
     """Build the gap-marker event declaring ``dropped`` lost events.
 
     Shaped after the ``governance_disabled`` event: an SDK-authored
@@ -974,7 +1031,7 @@ def _build_gap_marker(config: ResolvedConfig, dropped: int) -> Dict[str, Any]:
         "operation": AUDIT_GAP_OPERATION,
         "source": "obsvr_sdk",
         # The claim itself, in the signed content preimage (see audit_gap.py).
-        "prompt": format_audit_gap_prompt(dropped, AUDIT_GAP_REASON_QUEUE_OVERFLOW),
+        "prompt": format_audit_gap_prompt(dropped, reason),
         "response": "",
         "success": True,
         "latency_ms": 0,
@@ -990,10 +1047,52 @@ def _build_gap_marker(config: ResolvedConfig, dropped: int) -> Dict[str, Any]:
             # Structured copy for querying. Unsigned - `prompt` is authoritative.
             AUDIT_GAP_METADATA_KEY: {
                 "dropped": dropped,
-                "reason": AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+                "reason": reason,
             },
         },
     }
+
+
+def _declare_delivery_gap(
+    config: ResolvedConfig,
+    lost_events: list,
+    dropped: int,
+    reason: str,
+) -> Optional[Dict[str, Any]]:
+    """Start a fresh signed session after post-sign delivery loss.
+
+    Older already-signed work remains ahead of the marker. Holding the signing
+    lock across session rotation, signing, and queue insertion guarantees every
+    future event follows it. If the lost event is itself a marker, stop: an
+    unavailable ingest must not create an infinite marker-replacement loop.
+    """
+    global _sdk_session_id, _seq_no, _last_sig, _gap_marker_ordinal
+    if dropped <= 0 or any(read_audit_gap_claim(event) is not None for event in lost_events):
+        return None
+
+    with _sign_lock:
+        _sdk_session_id = str(uuid.uuid4())
+        _seq_no = 0
+        _last_sig = None
+        _gap_marker_ordinal = 0
+        marker = _build_gap_marker(config, dropped, reason)
+        sign_event(marker, config.api_key)
+        # This evidence may be armed while the bounded queue is full. Match the
+        # forced overflow-marker rule: exceed the bound by one on a queue that
+        # the current worker is already draining.
+        with _queue.mutex:
+            _queue.queue.append((config, marker, 0))
+            _queue.unfinished_tasks += 1
+            _queue.not_empty.notify()
+        _bump("enqueued")
+        _bump("gap_markers")
+        _bump("gap_events_declared", dropped)
+    _debug_warn(
+        config,
+        f"Starting a new signed audit session after {dropped} lost event(s): {reason}",
+    )
+    _mirror(config, marker)
+    return marker
 
 
 def _declare_pending_gap(

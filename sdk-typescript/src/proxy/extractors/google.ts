@@ -2,7 +2,7 @@
  * Google Gemini Extractor
  *
  * Extracts prompt and response from Google Generative AI SDK calls
- * (@google/generative-ai).
+ * (@google/genai and the legacy @google/generative-ai package).
  *
  * Handles:
  *  - Standard (non-streaming) generateContent responses
@@ -31,7 +31,7 @@ export interface GeminiPart {
  * A single content entry in a Gemini request
  */
 export interface GeminiContent {
-  role: "user" | "model";
+  role?: "user" | "model";
   parts: GeminiPart[];
 }
 
@@ -39,9 +39,16 @@ export interface GeminiContent {
  * Gemini request object shape (when not a plain string)
  */
 export interface GeminiRequestObject {
-  contents: GeminiContent[];
-  systemInstruction?: {
-    parts: Array<{ text: string }>;
+  /** Maintained SDK carries the model per call; legacy stores it on the model. */
+  model?: string;
+  contents: string | GeminiPart | GeminiContent | Array<string | GeminiPart | GeminiContent>;
+  systemInstruction?: string | GeminiPart | GeminiContent;
+  config?: {
+    systemInstruction?: string | GeminiPart | GeminiContent;
+    responseMimeType?: string;
+    responseSchema?: unknown;
+    responseJsonSchema?: unknown;
+    [key: string]: unknown;
   };
   generationConfig?: {
     maxOutputTokens?: number;
@@ -59,7 +66,7 @@ export type GeminiRequest = string | GeminiRequestObject;
  * Google Gemini generateContent response (bare GenerateContentResponse shape)
  */
 export interface GeminiResponse {
-  candidates: Array<{
+  candidates?: Array<{
     content: {
       parts: GeminiPart[];
       role: string;
@@ -73,6 +80,8 @@ export interface GeminiResponse {
   };
   /** The actual served model snapshot, e.g. "gemini-2.5-flash-002". */
   modelVersion?: string;
+  /** Maintained @google/genai exposes response text through a getter. */
+  readonly text?: string | (() => string);
 }
 
 /**
@@ -100,6 +109,40 @@ function unwrap(raw: unknown): GeminiResponse {
 // of reading fields directly off the still-wrapped `{ response: ... }` shape.
 export const unwrapGeminiResponse = unwrap;
 
+/** Extract text recursively from every request content union either SDK accepts. */
+function contentText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map(contentText).filter(Boolean).join("\n");
+  }
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+  if (Array.isArray(record.parts)) return contentText(record.parts);
+  return "";
+}
+
+/** Newest user turn, including the maintained SDK's string/part shorthand. */
+export function extractLastUserText(request: GeminiRequest): string {
+  if (typeof request === "string") return request;
+  const contents = request?.contents;
+  if (!Array.isArray(contents)) return contentText(contents);
+  for (let i = contents.length - 1; i >= 0; i--) {
+    const entry = contents[i];
+    if (
+      entry &&
+      typeof entry === "object" &&
+      "role" in entry &&
+      (entry as GeminiContent).role !== "user"
+    ) {
+      continue;
+    }
+    const text = contentText(entry);
+    if (text) return text;
+  }
+  return "";
+}
+
 // ---------------------------------------------------------------------------
 // Exported extractor functions (mirrors anthropic.ts API surface)
 // ---------------------------------------------------------------------------
@@ -118,28 +161,24 @@ export function extractPrompt(request: GeminiRequest): string {
 
   const parts: string[] = [];
 
-  // Include system instruction if present
-  if (request.systemInstruction && Array.isArray(request.systemInstruction.parts)) {
-    const systemText = request.systemInstruction.parts
-      .map((p) => p.text ?? "")
-      .filter((t) => t.length > 0)
-      .join("\n");
-    if (systemText.length > 0) {
-      parts.push(`system: ${systemText}`);
-    }
-  }
+  const systemText = contentText(
+    request.systemInstruction ?? request.config?.systemInstruction,
+  );
+  if (systemText) parts.push(`system: ${systemText}`);
 
-  // Include each content entry
   if (Array.isArray(request.contents)) {
     for (const content of request.contents) {
-      const text = Array.isArray(content.parts)
-        ? content.parts
-            .map((p) => p.text ?? "")
-            .filter((t) => t.length > 0)
-            .join("\n")
-        : "";
-      parts.push(`${content.role}: ${text}`);
+      const text = contentText(content);
+      if (!text) continue;
+      const role =
+        content && typeof content === "object" && "role" in content
+          ? (content as GeminiContent).role
+          : undefined;
+      parts.push(role ? `${role}: ${text}` : text);
     }
+  } else {
+    const text = contentText(request.contents);
+    if (text) parts.push(text);
   }
 
   return parts.join("\n");
@@ -151,11 +190,11 @@ export function extractPrompt(request: GeminiRequest): string {
  * Joins all text parts from the first candidate's content.
  */
 export function extractResponse(response: GeminiResponse): string {
-  const r = unwrap(response) as GeminiResponse & { text?: () => string };
+  const r = unwrap(response);
 
-  // Use the SDK's built-in text() helper - it handles multi-candidate and
-  // finish-reason edge cases and is always in sync with the actual SDK version.
-  if (typeof r?.text === 'function') {
+  // Maintained SDK: getter. Legacy SDK: text() helper.
+  if (typeof r?.text === "string") return r.text;
+  if (typeof r?.text === "function") {
     try {
       const t = r.text();
       if (t) return t;
@@ -186,7 +225,15 @@ export function extractResponse(response: GeminiResponse): string {
  * payload. If a modelHint is provided (e.g., from `target.model`), use it
  * after stripping the "models/" prefix. Otherwise return "gemini".
  */
-export function extractModel(_request: GeminiRequest, modelHint?: string): string {
+export function extractModel(request: GeminiRequest, modelHint?: string): string {
+  if (
+    request &&
+    typeof request === "object" &&
+    typeof request.model === "string" &&
+    request.model.length > 0
+  ) {
+    return request.model.replace(/^models\//, "");
+  }
   if (modelHint) return modelHint.replace(/^models\//, "");
   return "gemini";
 }

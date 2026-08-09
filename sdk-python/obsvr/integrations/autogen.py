@@ -340,7 +340,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # sampling gates ONLY audit emission, never enforcement —
             # the tool/step/PII agent-policy checks below must run for every
             # message, or a low sample_rate would silently disable the gate.
-            should_audit = _sender.should_sample(config.sample_rate)
+            should_audit = _sender.should_emit(config)
 
             # Build base metadata with agent_run_id if inside a traced run
             agent_run_id = getattr(_run_local, "agent_run_id", None)
@@ -508,7 +508,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # Thread caller identity into the rules context so USER-SCOPED (and
             # service-scoped) quota rules meter the right bucket, not 'default'.
             identity_meta = dict(meta)
-            if options.get("user_id"):
+            if options.get("user_id") is not None:
                 identity_meta["user_id"] = options["user_id"]
             if options.get("service_name"):
                 identity_meta["service_name"] = options["service_name"]

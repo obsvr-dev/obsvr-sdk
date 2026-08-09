@@ -78,12 +78,12 @@ describe('delivery counters: per-event rejects inside an accepted batch', () => 
     await sendOneThenBatchOf(3, getConfig());
 
     const stats = getSenderStats();
-    expect(stats.enqueued).toBe(4);
+    expect(stats.enqueued).toBe(5); // four calls plus the accepted gap marker
     expect(stats.dropped_rejected).toBe(2);
     // 1 single-event send + 1 accepted event out of the batch of 3.
-    expect(stats.sent).toBe(2);
-    // Rejects are not a transport failure: nothing retried, nothing
-    // dead-lettered, nothing overflowed.
+    expect(stats.sent).toBe(3); // two calls plus the marker
+    // Rejects are not a transport failure: nothing retried, permanently
+    // discarded, or overflowed.
     expect(stats.retries).toBe(0);
     expect(stats.dropped_permanent).toBe(0);
     expect(stats.dropped_overflow).toBe(0);
@@ -103,8 +103,8 @@ describe('delivery counters: per-event rejects inside an accepted batch', () => 
     await sendOneThenBatchOf(2, getConfig());
 
     const stats = getSenderStats();
-    expect(stats.enqueued).toBe(3);
-    expect(stats.dropped_permanent).toBe(3);
+    expect(stats.enqueued).toBe(5); // two failed requests each arm a marker
+    expect(stats.dropped_permanent).toBe(5); // the always-400 sink also drops both markers
     expect(stats.dropped_rejected).toBe(0);
     expect(stats.sent).toBe(0);
   });
@@ -131,7 +131,7 @@ describe('delivery counters: per-event rejects inside an accepted batch', () => 
     const stats = getSenderStats();
     // The duplicate is already recorded, so it is a delivery: 1 single + the
     // duplicate + the one clean event = 3 sent, 1 refused.
-    expect(stats.sent).toBe(3);
+    expect(stats.sent).toBe(4); // includes the accepted gap marker
     expect(stats.dropped_rejected).toBe(1);
     expect(stats.sent + stats.dropped_rejected).toBe(stats.enqueued);
   });
@@ -224,7 +224,7 @@ describe('delivery counters: 409 duplicate_event is idempotent success', () => {
 
     const stats = getSenderStats();
     expect(stats.sent).toBe(0);
-    expect(stats.dropped_permanent).toBe(1);
+    expect(stats.dropped_permanent).toBe(2); // original plus the non-recursively-failed marker
   });
 
   it('does not absorb a 409 whose body cannot be read', async () => {
@@ -241,6 +241,6 @@ describe('delivery counters: 409 duplicate_event is idempotent success', () => {
 
     const stats = getSenderStats();
     expect(stats.sent).toBe(0);
-    expect(stats.dropped_permanent).toBe(1);
+    expect(stats.dropped_permanent).toBe(2); // original plus the non-recursively-failed marker
   });
 });

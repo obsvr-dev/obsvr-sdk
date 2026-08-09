@@ -309,6 +309,8 @@ describe('the coverage boundary holds in both directions', () => {
       ['responses', 'create'],
       ['responses', 'parse'],
       ['generateContent'],
+      ['models', 'generateContent'],
+      ['models', 'generateContentStream'],
       ['beta', 'messages', 'create'],
       ['beta', 'responses', 'create'],
       ['beta', 'chat', 'completions', 'create'],

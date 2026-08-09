@@ -16,7 +16,7 @@ is produced by a script in this directory — re-run them and check.
 - **"No policy" still signs.** The SDKs sign and chain every audited event
   unconditionally (there is no off switch, by design), and build a decision
   record on every call — so the L0/BASE numbers include hashing, HMAC signing,
-  decision-record construction, and enqueue. That is the honest floor.
+  decision-record construction, and enqueue. That is the measured floor.
 
 ## Scripts
 
@@ -47,10 +47,11 @@ cost to that stage:
 | A4     | + no-op pre/post hooks + multi-turn injection + shadow rule (FULL)                     |
 
 Payload axis: ~100-char and ~10KB prompts (content-scanning stages scale with
-text length). The fire-and-forget proof re-runs A0 with the stubbed transport
-delayed 25ms/POST: hot-path latency must be unchanged (emission is queued, never
-awaited inline); once the bounded queue (1,000) fills, drops are **counted** in
-sender stats — never silent.
+text length). The fire-and-forget check re-runs A0 with the stubbed transport
+delayed 25ms/POST and reports the hot-path p95 comparison, transport errors,
+chain/accounting faults, and any silent overflow. It deliberately has no
+fixed latency threshold because shared-runner variance makes one misleading.
+Once the bounded queue (1,000) fills, drops are counted in sender stats.
 
 ## Part B — sustained stress tiers
 
@@ -83,7 +84,7 @@ burst that lost most of its events would report as a clean run.
 - Run on an otherwise-quiet machine; `run-all.sh` warns if load is high. Run
   serially only — never two benchmark processes at once.
 
-## Honesty rules baked into the harness
+## Validity rules baked into the harness
 
 1. No provider/network time in any number.
 2. Full percentile disclosure (p50/p95/p99/max) — never just the mean.

@@ -2,11 +2,12 @@
 
 Read this before trusting a green run on an integration surface.
 
-## One upstream framework package is real in CI. The rest are fakes.
+## Two upstream integration packages are real in CI. The rest are fakes.
 
 | Package | In CI | Driven by |
 |---|---|---|
 | `mcp` | **yes** — declared in the `dev` extra | `test_mcp_real_package.py` stands up a real `FastMCP` server and a real `ClientSession` over the package's own in-memory transport |
+| `google-genai` | **yes** — declared in the `dev` extra | `test_google_genai_real_package.py` drives the real 2.x request models and client resource shape with provider transport mocked |
 | everything else | no | hand-written fakes that duck-type the shape each integration reads |
 
 `langchain`, `llamaindex`, `crewai`, `autogen`, `haystack`, `pydantic_ai`,
@@ -16,15 +17,15 @@ tests construct objects that look like the framework's, so they
 pin the SDK's own logic and its assumptions about a shape — not that the shape
 is still the framework's.
 
-## Why `mcp` is the exception
+## Why these packages are exceptions
 
 `SECURITY.md` names the MCP tool gate as the surface to put a destructive
 capability behind. It is therefore the one surface where a test that restates
 the gate instead of driving it is most expensive, and the one where the cost of
 a real dependency is most clearly worth paying.
 
-The version is the same specifier the `mcp` extra declares, so the version this
-is tested against is the version a caller installs.
+Each version is constrained by the same major-bounded specifier its optional
+extra declares, so CI exercises a resolver-admitted package line.
 
 It does not enter the blocking dependency audit. That job runs
 `pip-audit --strict .` over declared **runtime** dependencies, which are still

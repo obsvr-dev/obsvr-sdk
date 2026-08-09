@@ -996,7 +996,8 @@ def test_crewai_step_callback_defers_to_an_installed_gate_hook(captured, monkeyp
 
     assert outcome.raised is None
     assert not any(
-        e.get("action_taken") == "not_evaluated" for e in outcome.events
+        e.get("operation") == "crewai.agent.policy.tool_not_evaluated"
+        for e in outcome.events
     ), outcome.describe()
     assert any(e.get("operation") == "crewai.step" for e in outcome.events)
 
@@ -1014,7 +1015,8 @@ def test_crewai_step_callback_defers_to_a_governed_tool(captured):
 
     assert outcome.raised is None
     assert not any(
-        e.get("action_taken") == "not_evaluated" for e in outcome.events
+        e.get("operation") == "crewai.agent.policy.tool_not_evaluated"
+        for e in outcome.events
     ), outcome.describe()
 
 

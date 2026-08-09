@@ -25,10 +25,14 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     messages.create               anthropic 0.16.0  the anthropic extra's floor
     messages.parse                anthropic 0.77.0  structured outputs
     *.with_raw_response.*         openai / anthropic (see note)
-    generate_content              google-generativeai  (see note)
-    generate_content_async        google-generativeai  (see note)
-    start_chat().send_message     google-generativeai  (see note)
-    start_chat().send_message_async google-generativeai (see note)
+    generate_content              google-generativeai  (legacy client)
+    generate_content_async        google-generativeai  (legacy client)
+    start_chat().send_message     google-generativeai  (legacy client)
+    start_chat().send_message_async google-generativeai (legacy client)
+    models.generate_content       google-genai          (current sync client)
+    models.generate_content_stream google-genai         (current sync stream)
+    aio.models.generate_content   google-genai          (current async client)
+    aio.models.generate_content_stream google-genai     (current async stream)
     beta.messages.tool_runner     anthropic>=0.68.0
     beta.sessions.events.tool_runner anthropic>=0.103.0 (async client)
 
@@ -37,11 +41,10 @@ Note on beta.messages.create: present from 0.8.0, then ABSENT 0.16.0 through
 namespace was dropped when that API graduated — not a coverage regression here.
 Raise the anthropic extra to >=0.36.0 if the beta namespace has to be covered.
 
-Note on generate_content / generate_content_async: this is the LEGACY Google client, distribution
-google-generativeai, declared as the `gemini` extra. Google's current SDK is a
-separate distribution with a different response shape and is NOT governed here
-— there is no detection for it and no adapter. Unlike the two clients above it
-is not reached by obsvr.init() either; it needs an explicit obsvr.wrap().
+The `gemini` extra includes both Google distributions. The legacy
+`google-generativeai` model object and the maintained `google-genai` Client use
+different paths, but both need an explicit `obsvr.wrap()`; construct-time auto
+registration remains limited to the OpenAI and Anthropic clients.
 
 Sync and async client methods are both supported: if the underlying method is
 a coroutine function the wrapper is async, otherwise sync. The wrapped object
@@ -75,17 +78,18 @@ from .policy import (
     outbound_redaction_blocked_compliance,
     outbound_redactor,
 )
-from .sender import send_audit_async, should_sample
+from .sender import send_audit_async, should_emit
 from .metering import record_token_usage_for_rules as _record_token_usage_for_rules
 from .metering import stamp_cost as _stamp_cost
 from .token_usage import read_token_usage
 
 
 def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] = None) -> None:
-    """Emit an audit event. Sampling (config.sample_rate) applies ONLY to clean
-    allowed events. Governed events (blocked / redacted / flagged / PII-detected)
-    and errors are forensic evidence and are NEVER dropped — EV-2 requires every
-    governed call to emit exactly one audit event.
+    """Emit an audit event. In enforce mode, sampling (config.sample_rate)
+    applies ONLY to clean allowed events; monitor mode emits every event.
+    Governed events (blocked / redacted / flagged / PII-detected) and errors are
+    forensic evidence and are NEVER dropped — EV-2 requires every governed call
+    to emit exactly one audit event.
 
     Mirrors the TS sender for enforcement actions and errors. It does NOT mirror
     it for allowed-but-FLAGGED events, and the header used to say it did. This
@@ -101,8 +105,9 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
         event.get("success") is False
         or c.get("action_taken", "allowed") != "allowed"
         or c.get("action_reason", "none") not in ("none", None)
+        or c.get("detector_failure") is not None
     )
-    if governed or should_sample(config.sample_rate):
+    if should_emit(config, governed=governed):
         send_audit_async(config, event)
 
 
@@ -134,6 +139,10 @@ AUDITABLE_METHODS = {
     "messages.with_raw_response.create",  # Anthropic raw response
     "generate_content",          # Google Gemini, google-generativeai only
     "generate_content_async",    # Google Gemini async, google-generativeai only
+    "models.generate_content",  # Google Gemini, maintained google-genai client
+    "models.generate_content_stream",  # Google Gemini sync iterator
+    "aio.models.generate_content",  # Google Gemini maintained async client
+    "aio.models.generate_content_stream",  # Google Gemini async iterator
     "send_message",              # Google Gemini ChatSession sync
     "send_message_async",        # Google Gemini ChatSession async
     "beta.messages.create",      # Anthropic beta
@@ -148,6 +157,14 @@ AUDITABLE_METHODS = {
     "chat.completions.with_raw_response.parse",  # OpenAI raw structured output
     "responses.with_raw_response.create",  # OpenAI Responses raw response
     "responses.with_raw_response.parse",  # OpenAI Responses raw structured output
+}
+
+#: Named iterator methods on the maintained Google client. They enter the
+#: ordinary pre-call pipeline above, but unlike OpenAI/Anthropic streams they do
+#: not carry ``stream=True`` in kwargs: the method name selects streaming.
+_DIRECT_STREAM_METHODS = {
+    "models.generate_content_stream",
+    "aio.models.generate_content_stream",
 }
 
 #: The ``.stream()`` helpers, which are the same request as ``create`` and
@@ -218,7 +235,8 @@ _GOVERNED_METHODS = (
 #: returned raw and every path beneath it is unreachable, which would leave
 #: those entries as dead code.
 _TRAVERSABLE = {
-    "beta", "chat", "completions", "events", "messages", "responses", "sessions",
+    "aio", "beta", "chat", "completions", "events", "messages", "models",
+    "responses", "sessions",
     "with_raw_response", "with_streaming_response",
 }
 
@@ -232,6 +250,9 @@ def _detect_provider(client: Any) -> str:
     if hasattr(client, "responses") and hasattr(getattr(client, "responses"), "create"):
         return "openai"
     if hasattr(client, "generate_content"):
+        return "google"
+    models = getattr(client, "models", None)
+    if models is not None and hasattr(models, "generate_content"):
         return "google"
     if (
         hasattr(client, "send_message")
@@ -307,16 +328,16 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
                         parts.append(block["text"])
 
     contents = kwargs.get("contents")
-    if isinstance(contents, list):
-        for item in contents:
-            if isinstance(item, str):
-                parts.append(item)
-            elif isinstance(item, dict):
-                for p in item.get("parts", []):
-                    if isinstance(p, str):
-                        parts.append(p)
-                    elif isinstance(p, dict) and isinstance(p.get("text"), str):
-                        parts.append(p["text"])
+    if contents is not None:
+        text = _google_content_text(contents)
+        if text:
+            parts.append(text)
+    if provider == "google":
+        system_instruction = _google_config_system_instruction(kwargs.get("config"))
+        if system_instruction is not None:
+            text = _google_content_text(system_instruction)
+            if text:
+                parts.append(text)
 
     return "\n".join(parts)
 
@@ -336,6 +357,8 @@ def _last_user_message(kwargs: dict) -> Optional[str]:
     # Responses API bare-string input IS the user message.
     if isinstance(kwargs.get("input"), str):
         return kwargs["input"]
+    if kwargs.get("contents") is not None:
+        return _google_content_text(kwargs["contents"]) or None
     return None
 
 
@@ -380,13 +403,13 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
 
     # Gemini contents: last user turn's text parts
     contents = kwargs.get("contents")
+    if isinstance(contents, str):
+        return contents
     if isinstance(contents, list):
         for item in reversed(contents):
-            if isinstance(item, dict) and item.get("role") == "user":
-                return " ".join(
-                    p["text"] for p in item.get("parts", [])
-                    if isinstance(p, dict) and isinstance(p.get("text"), str)
-                )
+            role = item.get("role") if isinstance(item, dict) else getattr(item, "role", None)
+            if role == "user":
+                return _google_content_text(item)
 
     # No identifiable user turn — fall back to the full prompt text.
     return _extract_prompt_text(provider, args, kwargs)
@@ -405,26 +428,89 @@ def _redact_text_blocks(blocks: list, redact_fn: Callable[[str], str]) -> list:
     return out
 
 
-def _redact_content_items(items: list, redact_fn: Callable[[str], str]) -> list:
-    """Redact a Gemini contents list into a NEW list: string items and dict
-    items with parts (string parts or {"text": ...} parts)."""
-    out = []
-    for item in items:
-        if isinstance(item, str):
-            out.append(redact_fn(item))
-        elif isinstance(item, dict) and isinstance(item.get("parts"), list):
-            parts = []
-            for p in item["parts"]:
-                if isinstance(p, str):
-                    parts.append(redact_fn(p))
-                elif isinstance(p, dict) and isinstance(p.get("text"), str):
-                    parts.append({**p, "text": redact_fn(p["text"])})
-                else:
-                    parts.append(p)
-            out.append({**item, "parts": parts})
-        else:
-            out.append(item)
-    return out
+def _google_content_text(value: Any) -> str:
+    """Text from legacy/current Gemini ``contents`` without importing Google.
+
+    Current ``google-genai`` accepts strings, nested lists, Content/Part
+    pydantic models, and their dict twins. Duck-typing keeps this SDK free of a
+    mandatory provider dependency while covering the real public shapes.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "\n".join(filter(None, (_google_content_text(item) for item in value)))
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text
+        parts = value.get("parts")
+        return _google_content_text(parts) if parts is not None else ""
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return text
+    parts = getattr(value, "parts", None)
+    return _google_content_text(parts) if parts is not None else ""
+
+
+def _google_config_system_instruction(config: Any) -> Any:
+    """Read the maintained client's text-bearing config field, if present."""
+    if isinstance(config, dict):
+        return config.get("system_instruction", config.get("systemInstruction"))
+    return getattr(config, "system_instruction", None)
+
+
+def _rebuild_google_model(value: Any, updates: Dict[str, Any]) -> Any:
+    """Copy a real google-genai Content/Part with selected fields replaced."""
+    model_copy = getattr(value, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update=updates)
+    try:
+        clone = _copy.copy(value)
+        for key, replacement in updates.items():
+            setattr(clone, key, replacement)
+        return clone
+    except Exception as err:
+        raise TypeError("Gemini content could not be copied for outbound redaction") from err
+
+
+def _redact_google_content(value: Any, redact_fn: Callable[[str], str]) -> Any:
+    """Redact every text-bearing google-genai/legacy contents shape into copies."""
+    if isinstance(value, str):
+        return redact_fn(value)
+    if isinstance(value, list):
+        return [_redact_google_content(item, redact_fn) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_google_content(item, redact_fn) for item in value)
+    if isinstance(value, dict):
+        if isinstance(value.get("text"), str):
+            return {**value, "text": redact_fn(value["text"])}
+        if value.get("parts") is not None:
+            return {
+                **value,
+                "parts": _redact_google_content(value["parts"], redact_fn),
+            }
+        return value
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return _rebuild_google_model(value, {"text": redact_fn(text)})
+    parts = getattr(value, "parts", None)
+    if parts is not None:
+        return _rebuild_google_model(
+            value, {"parts": _redact_google_content(parts, redact_fn)}
+        )
+    return value
+
+
+def _redact_google_config(config: Any, redact_fn: Callable[[str], str]) -> Any:
+    """Copy/redact ``GenerateContentConfig.system_instruction`` only."""
+    system_instruction = _google_config_system_instruction(config)
+    if system_instruction is None:
+        return config
+    replacement = _redact_google_content(system_instruction, redact_fn)
+    if isinstance(config, dict):
+        key = "system_instruction" if "system_instruction" in config else "systemInstruction"
+        return {**config, key: replacement}
+    return _rebuild_google_model(config, {"system_instruction": replacement})
 
 
 def _rebuild_message(msg: Any, new_content: Any) -> Any:
@@ -452,7 +538,9 @@ def _rebuild_message(msg: Any, new_content: Any) -> Any:
         return msg
 
 
-def _redact_messages_in_place(kwargs: dict, redact_fn: Callable[[str], str]) -> None:
+def _redact_messages_in_place(
+    provider: str, kwargs: dict, redact_fn: Callable[[str], str]
+) -> None:
     """Redact every text-bearing kwarg shape the scanner reads
     (_extract_prompt_text), symmetrically: what gets scanned outbound gets
     redacted outbound, or the provider receives the PII the stored copy
@@ -522,8 +610,10 @@ def _redact_messages_in_place(kwargs: dict, redact_fn: Callable[[str], str]) -> 
 
     # Gemini keyword contents
     contents = kwargs.get("contents")
-    if isinstance(contents, list):
-        kwargs["contents"] = _redact_content_items(contents, redact_fn)
+    if contents is not None:
+        kwargs["contents"] = _redact_google_content(contents, redact_fn)
+    if provider == "google" and kwargs.get("config") is not None:
+        kwargs["config"] = _redact_google_config(kwargs["config"], redact_fn)
 
 
 def _redact_positional_inputs(args: tuple, redact_fn: Callable[[str], str]) -> tuple:
@@ -536,7 +626,7 @@ def _redact_positional_inputs(args: tuple, redact_fn: Callable[[str], str]) -> t
     if isinstance(first, str):
         return (redact_fn(first),) + args[1:]
     if isinstance(first, list):
-        _redact_content_items(first, redact_fn)
+        return (_redact_google_content(first, redact_fn),) + args[1:]
     return args
 
 
@@ -801,6 +891,8 @@ def _extract_chunk_text(provider: str, chunk: Any) -> str:
             delta = getattr(chunk, "delta", None)
             text = getattr(delta, "text", None) if delta else None
             return text or ""
+        elif provider == "google":
+            return _extract_response_text(provider, chunk)
     except Exception:
         pass
     return ""
@@ -815,6 +907,10 @@ def _extract_chunk_usage(chunk: Any) -> Dict[str, Optional[int]]:
     usage = getattr(chunk, "usage", None)
     if usage is None and isinstance(chunk, dict):
         usage = chunk.get("usage")
+    if usage is None:
+        usage = getattr(chunk, "usage_metadata", None)
+        if usage is None and isinstance(chunk, dict):
+            usage = chunk.get("usage_metadata") or chunk.get("usageMetadata")
     return read_token_usage(usage)
 
 
@@ -1628,7 +1724,8 @@ def _govern_before_call(
     policy = apply_pre_call_policy(
         prompt_text, config, provider=provider, operation=operation,
         metadata=metadata, model=model,
-        scan_text=_last_user_message_text(provider, args, kwargs),
+        scan_text=prompt_text,
+        turn_text=_last_user_message_text(provider, args, kwargs),
     )
     compliance = policy["compliance"]
     security_normalized = policy.get("security_normalized")
@@ -1707,7 +1804,7 @@ def _govern_before_call(
 
         def _apply_redaction() -> None:
             nonlocal _redacted_args
-            _redact_messages_in_place(kwargs, _redactor)
+            _redact_messages_in_place(provider, kwargs, _redactor)
             _redacted_args = _redact_positional_inputs(args, _redactor)
 
         _not_redacted = apply_outbound_redaction(_apply_redaction)
@@ -1781,7 +1878,11 @@ def _governed_call(
     # Streaming: hand back a wrapped iterator that accumulates chunks and
     # emits one audit event when the stream ends. Non-iterable results fall
     # through to the normal single-event path.
-    if kwargs.get("stream") and hasattr(result, "__iter__") and not hasattr(result, "choices"):
+    if (
+        (kwargs.get("stream") or method_path in _DIRECT_STREAM_METHODS)
+        and hasattr(result, "__iter__")
+        and not hasattr(result, "choices")
+    ):
         return _GovernedStream(
             result,
             _wrap_stream_sync(
@@ -1855,7 +1956,11 @@ async def _governed_call_async(
         _emit_audit(config, event, compliance)
         raise
 
-    if kwargs.get("stream") and hasattr(result, "__aiter__") and not hasattr(result, "choices"):
+    if (
+        (kwargs.get("stream") or method_path in _DIRECT_STREAM_METHODS)
+        and hasattr(result, "__aiter__")
+        and not hasattr(result, "choices")
+    ):
         return _GovernedAsyncStream(
             result,
             _wrap_stream_async(
@@ -2093,8 +2198,9 @@ def wrap(client: Any, **options: Any) -> Any:
         client.chat.completions.create(model="gpt-4o", messages=[...])
 
     Supported (duck-typed): OpenAI/AzureOpenAI (chat.completions.create,
-    responses.create), Anthropic (messages.create), Gemini GenerativeModel
-    (generate_content).
+    responses.create), Anthropic (messages.create), legacy Gemini
+    GenerativeModel (generate_content), and the maintained google-genai Client
+    (models.generate_content / aio.models.generate_content).
     Sync and async clients both work. Pass options like user_id=, region=,
     source= to stamp every audit event from this wrapper.
 

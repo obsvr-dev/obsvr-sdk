@@ -1,7 +1,7 @@
 import { accumulateOpenAIStream } from '../../src/proxy/extractors/openai-chat';
-import { init, _reset } from '../../src/proxy/config';
+import { init, _reset, getConfig } from '../../src/proxy/config';
 import { wrap } from '../../src/proxy/wrapper';
-import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
+import { _resetSender, flushQueue } from '../../src/proxy/sender/fire-and-forget';
 
 // ---------------------------------------------------------------------------
 // accumulateOpenAIStream — pure function, no mocking needed
@@ -231,9 +231,23 @@ describe('wrap with streaming_mode:"wrap"', () => {
 // ---------------------------------------------------------------------------
 
 describe('wrap with streaming_mode:"skip"', () => {
+  const originalFetch = global.fetch;
+  let sentEvents: any[] = [];
+
   beforeEach(() => {
     _reset();
     _resetSender();
+    sentEvents = [];
+    global.fetch = (async (_url: unknown, opts?: { body?: string }) => {
+      const body = JSON.parse(opts?.body ?? 'null');
+      if (Array.isArray(body)) sentEvents.push(...body);
+      else if (body) sentEvents.push(body);
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
   });
 
   it('should return the exact same stream object reference when skip mode', async () => {
@@ -289,5 +303,76 @@ describe('wrap with streaming_mode:"skip"', () => {
       chunks.push(chunk);
     }
     expect(chunks).toHaveLength(2);
+  });
+
+  it('enforces a pre-call block before an enforce-mode skipped stream opens', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      streaming_mode: 'skip',
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    let providerCalls = 0;
+    const mockClient = {
+      chat: {
+        completions: {
+          create: (_args: unknown) => {
+            providerCalls += 1;
+            return Promise.resolve((async function* () {})());
+          },
+        },
+      },
+    };
+
+    const wrapped = wrap(mockClient);
+    await expect(
+      wrapped.chat.completions.create({
+        model: 'gpt-4',
+        messages: [{ role: 'user', content: 'ssn 123-45-6789' }],
+        stream: true,
+      } as any),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+    await flushQueue(getConfig());
+    expect(sentEvents).toHaveLength(1);
+    expect(sentEvents[0].event_type).toBe('blocked_call');
+  });
+
+  it('wraps and emits a clean skipped stream in monitor mode at sample_rate 0', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 0,
+      enforcement_mode: 'monitor',
+      streaming_mode: 'skip',
+    });
+    const originalStream = (async function* () {
+      yield { choices: [{ delta: { content: 'Hello' } }], model: 'gpt-4' };
+    })();
+    const mockClient = {
+      chat: {
+        completions: {
+          create: (_args: unknown) => Promise.resolve(originalStream),
+        },
+      },
+    };
+
+    const wrapped = wrap(mockClient);
+    const result = await wrapped.chat.completions.create({
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'Hi' }],
+      stream: true,
+    } as any);
+
+    expect(result).not.toBe(originalStream);
+    for await (const _chunk of result as AsyncIterable<unknown>) {
+      // consume to finalize stream evidence
+    }
+    await flushQueue(getConfig());
+    expect(sentEvents).toHaveLength(1);
+    expect(sentEvents[0]).toMatchObject({
+      action_taken: 'allowed',
+      response: 'Hello',
+    });
   });
 });

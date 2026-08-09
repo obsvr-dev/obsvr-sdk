@@ -1,7 +1,7 @@
 """Package metadata + README accuracy guards.
 
-Locks the pre-launch invariants: obsvr-sdk is Apache-2.0 everywhere
-(pyproject license + classifier, LICENSE text, NOTICE, README license
+Locks the release invariants: obsvr-sdk is Apache-2.0 everywhere
+(pyproject SPDX expression + license files, LICENSE text, NOTICE, README license
 section), and the README's built-in PII claim matches the real
 BUILTIN_PII_PATTERNS label count so scanner changes cannot silently
 leave the docs stale.
@@ -18,8 +18,9 @@ README = (ROOT / "README.md").read_text()
 
 
 def test_pyproject_declares_apache_2():
-    assert 'license = { text = "Apache-2.0" }' in PYPROJECT
-    assert "License :: OSI Approved :: Apache Software License" in PYPROJECT
+    assert 'license = "Apache-2.0"' in PYPROJECT
+    assert 'license-files = ["LICENSE", "NOTICE"]' in PYPROJECT
+    assert "license = { text" not in PYPROJECT
     assert "License :: OSI Approved :: MIT License" not in PYPROJECT
 
 

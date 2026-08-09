@@ -19,7 +19,7 @@ better half of the record.
 **Ids are allocated once and never reused.** A `KD-` number that appears in the
 History below is spent: the divergence it named was fixed, and that record is
 what the History is for. The next live entry takes the next free number, which
-is why the catalog currently holds KD-6, KD-9, KD-10 and KD-11 with gaps
+is why the catalog currently holds KD-6, KD-9 and KD-10 with gaps
 between them.
 
 **A row is added only after the divergence is re-measured, never transcribed
@@ -31,6 +31,31 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-09: KD-11's final empty-principal precedence edge is FIXED and the
+  live entry is gone. Python now treats an explicit `user_id` key as supplied
+  when its value is `""` or whitespace, so the ambient `use_subject()` scope
+  cannot replace it. `require_principal=True` consequently refuses the blank
+  principal exactly as TypeScript does, and the signed event preserves that
+  same explicit value instead of naming the ambient subject the decision did
+  not use. The choke-point and governed-tool regressions cover both empty and
+  whitespace-only values alongside an active ambient subject.
+- 2026-08-09: the final customer-regex verdict divergence is closed. TypeScript
+  now compiles accepted patterns in ECMAScript `u` mode, so `.`, negated
+  classes, and `[\s\S]` consume an astral character as one code point, matching
+  Python. The validators moved with the engine mode: legacy identity escapes,
+  unmatched braces/brackets, braced codepoint escapes, and surrogate escapes
+  are refused in both SDKs rather than reopening a syntax split. Three astral
+  match cases and five syntax cases pin the boundary; the differential runner
+  now includes astral input and drives 3,432 pairs with zero divergences.
+- 2026-08-09: the hidden-HTML pass now retains malformed content and matches
+  same-name nesting. The first bounded implementation stopped at the first
+  `</name>` and dropped the rest of the input when no closer existed. A nested
+  hidden element could therefore expose a hidden tail in the canonical view,
+  while an unterminated opening tag could remove the very payload the view was
+  meant to scan. Both SDKs now depth-count same-name elements and, when no
+  matching closer exists, remove only the opening tag while retaining the full
+  remainder. Cross-language cases `hidden_html_same_name_nesting` and
+  `hidden_html_unterminated_retains_remainder` pin both failure directions.
 - 2026-08-06: a customer `regex` rule now means one thing on both SDKs. The
   SYNTAX half of the dialect split had already been closed by rejection in both
   validators; the SEMANTIC half — `\d` `\w` `\s` `\b` `$` `.`, which read
@@ -54,19 +79,17 @@ History:
   Python's — so `\s` is rewritten to an explicit class rather than left to the
   flag. And the enumeration in `SECURITY.md` named U+000D and U+2028 for the `.`
   row: U+2029 PARAGRAPH SEPARATOR diverged just as far and was missing.
-  **Two residuals, both named rather than folded in.** `\S` inside a character
+  **Two residuals were named rather than folded in.** `\S` inside a character
   class is REFUSED in both languages instead of aligned, because a negated
   shorthand is not expressible inside a positive class without class
   subtraction, which Python `re` lacks; `[\s\S]` is exempt and provably so, so
-  the dotall idiom stays legal. And the code-unit / code-point model — JS
-  `RegExp` without `u` matches UTF-16 code units, Python `re` matches code
-  points — is a SEVENTH family that no escape rewrite reaches; closing it means
-  `u` mode, which changes syntax acceptance in the other direction. Neither is a
-  catalog entry: the first is not a divergence (both SDKs refuse the same
-  patterns) and the second is an open defect stated in the open.
+  the dotall idiom stays legal. The code-unit / code-point model was a SEVENTH
+  family no escape rewrite could reach; it was closed with `u` mode and a
+  matching validator update on 2026-08-09 (entry above). Neither entered the
+  catalog: the first is not a divergence and the second was a release blocker.
   Pinned by `conformance/fixtures/regex_dialect.json` (`semantic_cases`) and by
-  `scripts/check-regex-dialect-parity.mjs`, which drives 3,000 pattern/input
-  pairs through both real matchers. Without the fix that script reports 43
+  `scripts/check-regex-dialect-parity.mjs`, which drove 3,000 pattern/input
+  pairs through both real matchers at that point. Without the fix it reported 43
   divergences across all six families.
 - 2026-08-06: the Python sender installs `SIGTERM`/`SIGINT` handlers, closing the
   shutdown divergence. It flushed only from `atexit`, which a default-disposition
@@ -216,10 +239,9 @@ History:
   `String.prototype.trimEnd`, whose whitespace set is not Python's — Python also
   strips `\x1c`-`\x1f` and NEL, and does not strip U+FEFF — so the Python side
   spells the ECMAScript set out (`_JS_TRIM_WS`) instead of calling bare
-  `rstrip()`. The documented limits are shared too: first-matching-closer (so
-  same-name nesting leaves a tail, failing toward keeping content), an
-  unterminated hidden element drops the remainder, and only the `style`
-  attribute carries the CSS forms.
+  `rstrip()`. The original first-closer and unterminated-input limits were
+  closed on 2026-08-09 (entry above); only the `style` attribute carries the
+  CSS forms.
 - 2026-07-27: KD-4 (numeric canonicalization) was FIXED, not re-argued, and
   the row is gone. It had been an accepted risk pinned by hand-written
   vectors, scoped to "exotic numbers" — integers past the JS safe range and

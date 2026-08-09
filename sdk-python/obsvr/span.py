@@ -99,17 +99,17 @@ def _emit_span_event(
 ) -> None:
     """Emit a standalone execution span as a SIGNED audit event (M3B).
     Mirror of the TS emitSpanEvent: same pipeline, event_class execution_span,
-    respects disabled + sampling. Never raises."""
+    respects disabled + mode-aware sampling. Never raises."""
     try:
         from . import events
         from .config import try_get_config
         from .policy import DEFAULT_COMPLIANCE
-        from .sender import should_sample
+        from .sender import should_emit
 
         config = try_get_config()
         if config is None or getattr(config, "disabled", False):
             return
-        if not should_sample(getattr(config, "sample_rate", 1.0)):
+        if not should_emit(config):
             return
         envelope: Dict[str, Any] = {
             "span_id": span_id,

@@ -228,6 +228,18 @@ describe('raw PII does not reach the ingest service from the tracing processor',
     const delivered = bodies.join('');
     expect(delivered).not.toContain(RAW_SSN);
     expect(delivered.length).toBeGreaterThan(0);
+    const events = bodies.flatMap((body) => {
+      const parsed = JSON.parse(body) as unknown;
+      return Array.isArray(parsed) ? parsed : [parsed];
+    }) as Array<Record<string, any>>;
+    const event = events.find((item) => item.operation === 'llm');
+    expect(event?.action_taken).toBe('not_evaluated');
+    expect(event?.metadata?.obsvr_telemetry).toMatchObject({
+      stored_redaction_scope: 'observe_only',
+      stored_redaction_types: ['ssn'],
+      stored_redaction_outbound_unmodified: true,
+      stored_redaction_requested_action: 'redact',
+    });
   });
 });
 

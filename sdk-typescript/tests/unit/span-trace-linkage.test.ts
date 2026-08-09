@@ -1,5 +1,5 @@
 import { init, getConfig, _reset } from '../../src/proxy/config';
-import { withSpan, span, currentSpan } from '../../src/proxy/span';
+import { withSpan, span, emitSpan, currentSpan } from '../../src/proxy/span';
 import { _resetSender, flushQueue } from '../../src/proxy/sender/fire-and-forget';
 import type { AuditEvent } from '../../src/proxy/types';
 
@@ -75,6 +75,41 @@ describe('span trace_id on the wire (metadata.trace_id)', () => {
     for (const s of spans) {
       expect((s.metadata as Record<string, unknown>).trace_id).toBe('run-verify-1');
     }
+  });
+
+  it('monitor mode emits every standalone span at sampleRate zero', async () => {
+    init({
+      apiKey: 'test',
+      debug: false,
+      sampleRate: 0,
+      enforcementMode: 'monitor',
+    });
+
+    span('monitor_wrapped_span', 'tool', () => 'ok');
+    emitSpan({ kind: 'retrieval', name: 'monitor_direct_span', ok: true });
+    await flushQueue(getConfig());
+
+    expect(
+      sentEvents
+        .filter((e) => e.event_class === 'execution_span')
+        .map((e) => e.operation)
+        .sort(),
+    ).toEqual(['monitor_direct_span', 'monitor_wrapped_span']);
+  });
+
+  it('enforce mode retains standalone span sampling at sampleRate zero', async () => {
+    init({
+      apiKey: 'test',
+      debug: false,
+      sampleRate: 0,
+      enforcementMode: 'enforce',
+    });
+
+    span('enforce_wrapped_span', 'tool', () => 'ok');
+    emitSpan({ kind: 'retrieval', name: 'enforce_direct_span', ok: true });
+    await flushQueue(getConfig());
+
+    expect(sentEvents.filter((e) => e.event_class === 'execution_span')).toEqual([]);
   });
 
   it('a standalone span self-roots a distinct trace_id equal to its own span_id', async () => {

@@ -56,6 +56,7 @@ import {
   emitIntegrationEvent,
   getConfig,
   inferProviderFromString,
+  monitorModeRequiresEvidence,
   redactBuiltinPii,
   redactForStorage,
   setupExitHandlers,
@@ -367,11 +368,12 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
         }
       }
 
-      // Allowed: emit only when sampled in. A redaction that was applied is
-      // enforcement evidence and is always recorded (a block already threw).
+      // Enforce-mode allows are sampled. Monitor mode and redaction are
+      // complete evidence and always recorded (a block already threw).
       callState.set(params, {
         compliance: policy.compliance,
-        auditThisCall: sampled || policy.decision !== "allow",
+        auditThisCall:
+          monitorModeRequiresEvidence(config) || sampled || policy.decision !== "allow",
       });
       return params;
     },

@@ -72,17 +72,18 @@ describe('stripHiddenHtml: bounded-pass edge cases', () => {
     expect(stripHiddenHtml('a<span style="display:none"/>b')).toBe('ab');
   });
 
-  it('drops the remainder when a hidden element is never closed', () => {
-    expect(stripHiddenHtml('visible<div style="display:none">rest of it')).toBe('visible');
+  it('retains the remainder for scanning when a hidden element is never closed', () => {
+    expect(stripHiddenHtml('visible<div style="display:none">rest of it')).toBe(
+      'visiblerest of it',
+    );
   });
 
   it('does not end a region on a longer tag name that shares a prefix', () => {
     expect(stripHiddenHtml('a<p style="display:none">x</pre>y</p>b')).toBe('ab');
   });
 
-  it('leaves a tail on same-name nesting, which fails toward keeping content', () => {
-    // Documented limit of a non-parser pass: the FIRST matching closer wins.
-    expect(stripHiddenHtml('a<div style="display:none">x<div>y</div>z</div>b')).toBe('az</div>b');
+  it('depth-counts same-name nesting to the matching outer closer', () => {
+    expect(stripHiddenHtml('a<div style="display:none">x<div>y</div>z</div>b')).toBe('ab');
   });
 
   it('a > inside a quoted attribute does not end the tag early', () => {

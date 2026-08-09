@@ -12,8 +12,8 @@ import { useSubject } from '../../src/proxy/subject';
  *
  * `requirePrincipal: true` refuses a governed call whose enforcing channel
  * carries no user_id at all, with PRINCIPAL_REQUIRED, before any scanning
- * layer runs. An empty string is a supplied principal; only an absent one
- * refuses. The enforcement-integrity gate still wins outright, and monitor
+ * layer runs. Empty and whitespace-only strings are unattributed. The
+ * enforcement-integrity gate still wins outright, and monitor
  * mode converts the refusal like any non-integrity block.
  */
 
@@ -54,17 +54,16 @@ describe('integration pre-call pipeline', () => {
     expect(result.compliance.action_taken).toBe('allowed');
   });
 
-  it('treats an empty-string principal as supplied', async () => {
-    // The absent-vs-empty line: a truthiness check instead of a null check
-    // fails here.
+  it.each(['', '   '])('refuses a blank principal (%j)', async (userId) => {
     init({ api_key: 'k', require_principal: true } as never);
     const result = await applyPreCallPolicy('hello', {
       config: getConfig(),
       provider: 'bedrock',
       operation: 'test',
-      metadata: { user_id: '' },
+      metadata: { user_id: userId },
     });
-    expect(result.compliance.action_taken).toBe('allowed');
+    expect(result.compliance.action_taken).toBe('blocked');
+    expect(result.compliance.reason_code).toBe(ReasonCode.PRINCIPAL_REQUIRED);
   });
 
   it('resolves the ambient useSubject() identity', async () => {
@@ -119,7 +118,7 @@ describe('integration pre-call pipeline', () => {
 });
 
 describe('governance evaluate() surface', () => {
-  it('refuses an unattributed evaluation and permits an empty-string one', async () => {
+  it('refuses unattributed and blank evaluations', async () => {
     init({ api_key: 'k', require_principal: true } as never);
     const refused = await evaluate({ action_type: 'test', payload: { data: 'hi' } });
     expect(refused.decision).toBe('BLOCKED');
@@ -131,7 +130,13 @@ describe('governance evaluate() surface', () => {
       payload: { data: 'hi' },
       user_id: '',
     });
-    expect(empty.decision).toBe('PERMITTED');
+    expect(empty.decision).toBe('BLOCKED');
+    const whitespace = await evaluate({
+      action_type: 'test',
+      payload: { data: 'hi' },
+      user_id: '   ',
+    });
+    expect(whitespace.decision).toBe('BLOCKED');
   });
 
   it('converts the refusal in monitor mode and keeps the classification', async () => {

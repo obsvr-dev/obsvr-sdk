@@ -100,14 +100,22 @@ def _measure_governed(tier: str, prompt: str, iters: int, warmup: int,
     total_calls = warmup + iters
     enqueued = stats.get("enqueued", 0)
     dropped = stats.get("dropped_overflow", 0)
-    invariant_calls = (total_calls == enqueued + dropped)
+    markers = stats.get("gap_markers", 0)
+    declared = stats.get("gap_events_declared", 0)
+    # A gap marker is an SDK-generated signed event with no benchmark call
+    # behind it. Put it on the call side so overflow accounting closes without
+    # mistaking the marker itself for an extra governed call.
+    invariant_calls = (total_calls + markers == enqueued + dropped)
     invariant_verified = (verifier.events == enqueued)
+    invariant_declared = (declared == dropped)
     return {
         "pct": bl.percentiles(samples), "errors": errlog, "verifier": verifier,
         "stats": stats, "total_calls": total_calls, "enqueued": enqueued,
-        "dropped_overflow": dropped,
+        "dropped_overflow": dropped, "gap_markers": markers,
+        "gap_events_declared": declared,
         "invariant_calls_eq_enqueued_plus_dropped": invariant_calls,
         "invariant_verified_eq_enqueued": invariant_verified,
+        "invariant_drops_all_declared": invariant_declared,
     }
 
 
@@ -163,8 +171,11 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
                 "sender_stats": m["stats"],
                 "total_calls": m["total_calls"], "enqueued": m["enqueued"],
                 "dropped_overflow": m["dropped_overflow"],
+                "gap_markers": m["gap_markers"],
+                "gap_events_declared": m["gap_events_declared"],
                 "invariant_calls_eq_enqueued_plus_dropped": m["invariant_calls_eq_enqueued_plus_dropped"],
                 "invariant_verified_eq_enqueued": m["invariant_verified_eq_enqueued"],
+                "invariant_drops_all_declared": m["invariant_drops_all_declared"],
                 "errors": m["errors"].to_dict(),
             })
 
@@ -202,7 +213,7 @@ def _print_table(result: Dict[str, Any]) -> None:
         dp95 = f"{dp['p95']:.2f}" if dp else "-"
         if r["governed"]:
             c = r["chain"]
-            chain = f"ev={c['events']} clean={c['clean']} inv={r['invariant_calls_eq_enqueued_plus_dropped'] and r['invariant_verified_eq_enqueued']} err={r['errors']['count']}"
+            chain = f"ev={c['events']} clean={c['clean']} inv={r['invariant_calls_eq_enqueued_plus_dropped'] and r['invariant_verified_eq_enqueued'] and r['invariant_drops_all_declared']} err={r['errors']['count']}"
         else:
             chain = f"err={r['errors']['count']}"
         print(f"{r['tier']:<5} {r['payload']:<7} {p['n']:>7} {p['p50']:>9.2f} "
@@ -251,7 +262,8 @@ def main() -> None:
     any_bad_chain = any(not r["chain"]["clean"] for r in governed)
     any_bad_inv = any(
         not (r["invariant_calls_eq_enqueued_plus_dropped"]
-             and r["invariant_verified_eq_enqueued"])
+             and r["invariant_verified_eq_enqueued"]
+             and r["invariant_drops_all_declared"])
         for r in governed
     )
     if any_err or any_bad_chain or any_bad_inv:

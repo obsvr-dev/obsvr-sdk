@@ -52,6 +52,24 @@ function preCall(text: string, userId: string) {
 }
 
 describe('session taint: SET on injection, ENFORCE on later egress', () => {
+  it('detects and latches injection without a PII policy', async () => {
+    init({
+      api_key: 'k',
+      ingest_url: 'https://x',
+      sessionTaint: { enabled: true, action: 'block' },
+    });
+
+    const t1 = await preCall(INJECTION, 'alice');
+    expect(t1.decision).toBe('allow');
+    expect(t1.compliance.action_reason).toBe('none');
+    expect(t1.compliance).not.toHaveProperty('detected_types');
+    expect(sessionTaintSize()).toBe(1);
+
+    const t2 = await preCall('clean', 'alice');
+    expect(t2.decision).toBe('block');
+    expect(t2.compliance.rule_id).toBe('sdk:session_tainted');
+  });
+
   it('block mode: a session with a detected injection has its NEXT clean call blocked', async () => {
     init({
       api_key: 'k',
@@ -255,12 +273,12 @@ describe('session taint: wrapper end-to-end (per-session keying, not the global 
     init({
       api_key: 'k',
       ingest_url: 'https://x',
-      pii_policy: { default: 'detect_only' },
       sessionTaint: { enabled: true, action: 'block' },
     });
     const create = jest.fn(async (_a: any) => ({ choices: [{ message: { content: 'ok' } }] }));
     const wrapped = wrap({ chat: { completions: { create } } });
-    // Turn 1 (alice): injection (detect_only → passes), taints alice's session.
+    // Turn 1 (alice): the latch's own detector passes this turn and taints the
+    // session without requiring a PII policy.
     // The per-call convention is a TOP-LEVEL `metadata` audit field.
     await wrapped.chat.completions.create({
       model: 'gpt-4',

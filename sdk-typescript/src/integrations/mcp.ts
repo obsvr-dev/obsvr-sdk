@@ -1,9 +1,9 @@
 /**
  * MCP (Model Context Protocol) Integration
  *
- * Patches `@modelcontextprotocol/sdk` Client.prototype.callTool to intercept
- * tool invocations for auditing. Applies PII scanning on tool arguments and
- * enforces `mcpToolPolicy` (allowedTools / deniedTools).
+ * Governs `@modelcontextprotocol/sdk` clients through a returned Proxy. The
+ * deprecated `patchMCP` fallback patches Client.prototype. Both intercept tool
+ * invocations, scan arguments for PII, and enforce `mcpToolPolicy`.
  *
  * @example
  * ```ts
@@ -230,7 +230,10 @@ function checkMcpToolPolicy(
  * ```
  */
 /**
- * Govern an MCP Client — NON-MUTATING (no monkey-patching).
+ * Govern an MCP Client through a Proxy (no prototype or request-method patch).
+ * A task facade already returned by the raw client is the narrow exception:
+ * its client binding is repaired in place so the retained facade cannot evade
+ * governance.
  *
  * Pass the Client CLASS to get back a governed class (a construct-trap Proxy):
  * every `new GovernedClient()` is governed, the real Client prototype is never
@@ -273,8 +276,8 @@ export function obsvrGovernMCP<T>(
 
 /**
  * @deprecated Legacy prototype-mutating path — will be removed in the next
- * major release. Use {@link obsvrGovernMCP} instead: it is non-mutating and
- * coexists with other instrumentation.
+ * major release. Use {@link obsvrGovernMCP} instead: it avoids prototype and
+ * request-method patches and coexists with other instrumentation.
  */
 export function patchMCP(
   config: ResolvedConfig,
@@ -284,7 +287,7 @@ export function patchMCP(
     patchMCPDeprecationWarned = true;
     console.warn(
       "[obsvr] patchMCP() is deprecated and will be removed in the next major release. " +
-        "Use obsvrGovernMCP(Client, getConfig()) instead - it is non-mutating (no prototype patching).",
+        "Use obsvrGovernMCP(Client, getConfig()) instead - it is Proxy-based (no prototype patching).",
     );
   }
   // Resolve require - MCP SDK is an optional peer dependency. Every exit of
@@ -480,7 +483,7 @@ export function scanToolDescription(
 /**
  * Scan + record a listTools result: emit the `mcp.tools.list` inventory event
  * (every discovery, clean or flagged) and optionally strip poisoned tools.
- * Shared by the non-mutating Proxy path and the legacy prototype patch.
+ * Shared by the Proxy path and the legacy prototype patch.
  */
 function processListToolsResult(
   result: unknown,
@@ -1351,11 +1354,12 @@ function setFrameArguments(
 }
 
 /**
- * Non-mutating governance for a single MCP Client INSTANCE. Returns a Proxy
- * that intercepts callTool + listTools + request via the get trap — the
- * client's prototype is never touched, so it coexists with anything else and
- * other Client instances are unaffected. instanceof is preserved (the Proxy
- * target is the real instance).
+ * Proxy governance for a single MCP Client INSTANCE. It intercepts callTool +
+ * listTools + request via the get trap; the client's prototype and request
+ * methods are never patched, so other Client instances are unaffected and
+ * instanceof is preserved. If upstream already issued its cached experimental
+ * facade, that facade's task binding is repaired in place so the previously
+ * returned handle cannot retain the raw client.
  */
 function governClientInstance<T extends object>(
   client: T,
@@ -1420,6 +1424,15 @@ function governClientInstance<T extends object>(
       return typeof value === "function" ? (value as Function).bind(target) : value;
     },
   }) as T;
+  // Reading `raw.experimental` before governance creates and returns a facade
+  // that may already be held elsewhere. Repair it immediately; waiting for the
+  // first `proxy.experimental` read leaves that previously-issued handle live.
+  if (
+    Object.prototype.hasOwnProperty.call(client, "_experimental") &&
+    Reflect.get(client, "_experimental", client) !== undefined
+  ) {
+    governedExperimental(client, proxy);
+  }
   return proxy;
 }
 
@@ -1439,19 +1452,91 @@ const experimentalFacades = new WeakMap<object, unknown>();
 
 function governedExperimental(target: object, receiver: unknown): unknown {
   if (experimentalFacades.has(target)) return experimentalFacades.get(target);
+
+  const cached = Object.prototype.hasOwnProperty.call(target, "_experimental")
+    ? Reflect.get(target, "_experimental", target)
+    : undefined;
+  const hadCachedFacade = cached !== null && typeof cached === "object";
+  const cachedTasks = (cached as { tasks?: unknown } | null | undefined)?.tasks;
+
+  // @modelcontextprotocol/sdk 1.x exposes this TypeScript-private field as a
+  // normal own JS property. Re-seating it is the smallest possible repair: the
+  // raw Client methods/prototype remain untouched and every already-issued
+  // reference to the facade now reaches the governed receiver.
+  if (cachedTasks !== null && typeof cachedTasks === "object") {
+    try {
+      if (
+        Reflect.has(cachedTasks, "_client") &&
+        Reflect.set(cachedTasks, "_client", receiver, cachedTasks) &&
+        Reflect.get(cachedTasks, "_client", cachedTasks) === receiver
+      ) {
+        experimentalFacades.set(target, cached);
+        return cached;
+      }
+    } catch {
+      // Fall through to a public-method bridge for a future facade whose
+      // internal client field is not writable.
+    }
+  }
+
   try {
     Reflect.deleteProperty(target, "_experimental");
   } catch {
-    // Non-configurable: fall through and take whatever the getter returns.
+    // Checked below: returning the old raw facade would be an execution escape.
   }
   const facade = Reflect.get(target, "experimental", receiver);
+
+  // If the internal binding was opaque, bridge the one task method that can
+  // execute a tool. This preserves an already-issued facade reference while
+  // delegating to the newly-created facade seated on the governed receiver.
+  if (hadCachedFacade && cached !== facade) {
+    const governedTasks = (facade as { tasks?: unknown } | null | undefined)?.tasks;
+    const governedCall =
+      governedTasks !== null && typeof governedTasks === "object"
+        ? Reflect.get(governedTasks, "callToolStream", governedTasks)
+        : undefined;
+    if (
+      cachedTasks !== null &&
+      typeof cachedTasks === "object" &&
+      typeof governedCall === "function"
+    ) {
+      const bridge = (...args: unknown[]) =>
+        Reflect.apply(governedCall, governedTasks, args);
+      try {
+        Object.defineProperty(cachedTasks, "callToolStream", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: bridge,
+        });
+      } catch {
+        // The verification below converts an unrepairable cached facade into a
+        // loud unsupported shape instead of silently retaining a raw route.
+      }
+      if (Reflect.get(cachedTasks, "callToolStream", cachedTasks) !== bridge) {
+        throw new Error(
+          "[obsvr] cannot govern the MCP experimental facade cached before obsvrGovernMCP()",
+        );
+      }
+    } else {
+      throw new Error(
+        "[obsvr] cannot govern the MCP experimental facade cached before obsvrGovernMCP()",
+      );
+    }
+  } else if (hadCachedFacade && cached === facade) {
+    // Deletion failed and the getter handed back the same raw-bound object.
+    throw new Error(
+      "[obsvr] cannot govern the MCP experimental facade cached before obsvrGovernMCP()",
+    );
+  }
+
   experimentalFacades.set(target, facade);
   return facade;
 }
 
 /**
  * Legacy prototype-patch path (used only by patchMCP). Mutates
- * Client.prototype — prefer obsvrGovernMCP() which is non-mutating.
+ * Client.prototype — prefer the Proxy-based obsvrGovernMCP().
  */
 function _applyMCPPatch(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

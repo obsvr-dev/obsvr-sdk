@@ -19,11 +19,12 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
  * the Python harness) is a release blocker unless recorded in
  * conformance/known-divergences.md.
  *
- * Three case modes:
+ * Four case modes:
  *   rules     (default) drive the rules engine directly
  *   pipeline  drive the full pre-call pipeline - the only way to pin
  *             statements about step composition and the integrity gate
  *   explain   drive check-only evaluation and prove it consumes nothing
+ *   config    submit raw rules to init without remote-style filtering
  */
 
 function findFixture(rel: string): string {
@@ -39,7 +40,8 @@ function findFixture(rel: string): string {
 interface FixtureCase {
   id: string;
   ev: string;
-  mode?: 'rules' | 'pipeline' | 'explain';
+  mode?: 'rules' | 'pipeline' | 'explain' | 'config';
+  resolution?: 'first_match' | 'deny_wins';
   desc?: string;
   rules: unknown[];
   input: { text: string; target?: 'prompt' | 'response'; context?: Record<string, unknown> };
@@ -61,6 +63,7 @@ interface FixtureCase {
   explain_runs?: number;
   expect_first_real_call?: { decision: string; rule_id?: string | null };
   expect_second_real_call?: { decision: string; rule_id?: string | null };
+  expect_config?: { init: 'reject' };
 }
 
 const fixture = JSON.parse(
@@ -97,6 +100,7 @@ describe('conformance: eval_semantics fixtures', () => {
           c.input.text,
           target,
           c.input.context as never,
+          { resolution: c.resolution },
         );
         expect(result.decision).toBe(c.expect!.decision);
         if (c.expect!.rule_id === null) {
@@ -123,6 +127,17 @@ describe('conformance: eval_semantics fixtures', () => {
         } else {
           expect(shadow?.rule_id).toBe(c.expect_shadow.rule_id);
           expect(shadow?.would).toBe(c.expect_shadow.would);
+        }
+      });
+      continue;
+    }
+
+    if (mode === 'config') {
+      it(`${c.id} (${c.ev}): ${c.desc ?? ''}`, () => {
+        if (c.expect_config?.init === 'reject') {
+          expect(() =>
+            init({ api_key: 'test', policy_rules: c.rules as never }),
+          ).toThrow(/not a usable rule/);
         }
       });
       continue;

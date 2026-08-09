@@ -27,6 +27,7 @@
  */
 
 import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 
 /** Raised when a backend URL fails the SSRF guard. */
 export class SsrfError extends Error {
@@ -185,7 +186,7 @@ export function assertIpAllowed(ip: string, opts: SsrfOptions = {}): void {
 /**
  * STATIC guard (no DNS): validate scheme and, for a literal-IP host, its range.
  * Called at init() so a clearly-unsafe URL fails fast. Hostnames pass this
- * stage and are checked dynamically by {@link assertBackendUrlAllowed}.
+ * stage and are checked dynamically by {@link resolveBackendUrlAllowed}.
  */
 export function assertBackendUrlStatic(url: string, opts: SsrfOptions = {}): URL {
   let u: URL;
@@ -207,6 +208,25 @@ export function assertBackendUrlStatic(url: string, opts: SsrfOptions = {}): URL
 /** Resolve a hostname to all A/AAAA addresses. Injectable for tests. */
 export type Resolver = (host: string) => Promise<string[]>;
 
+/** One DNS result that passed the complete SSRF address policy. */
+export interface AllowedBackendAddress {
+  readonly address: string;
+  readonly family: 4 | 6;
+}
+
+/**
+ * The URL and immutable address snapshot approved for one connection attempt.
+ *
+ * Callers must connect through `addresses` rather than resolving `url` a
+ * second time. Keeping the original URL is intentional: HTTP Host routing and
+ * HTTPS certificate/SNI validation still use the configured hostname while the
+ * socket destination is pinned to an address that passed this guard.
+ */
+export interface AllowedBackendTarget {
+  readonly url: URL;
+  readonly addresses: readonly AllowedBackendAddress[];
+}
+
 const defaultResolver: Resolver = async (host: string): Promise<string[]> => {
   const results = await lookup(host, { all: true });
   return results.map((r) => r.address);
@@ -217,22 +237,50 @@ const defaultResolver: Resolver = async (host: string): Promise<string[]> => {
  * EVERY resolved address is permitted (resolve-before-connect). A public name
  * that resolves to a private IP is refused. Literal-IP hosts skip DNS.
  *
- * Residual TOCTOU: the subsequent fetch re-resolves the name, so a name that
- * flips to a private IP between this check and the connect could still be hit.
- * Literal-IP backends have no such gap; for hostnames this narrows, not closes,
- * the window. Callers fail closed on any thrown SsrfError.
+ * The returned address snapshot must be used to create the socket; resolving
+ * the hostname again after this check would reintroduce a DNS-rebinding gap.
+ * Callers fail closed on any thrown SsrfError.
+ */
+export async function resolveBackendUrlAllowed(
+  url: string,
+  opts: SsrfOptions = {},
+  resolver: Resolver = defaultResolver,
+): Promise<AllowedBackendTarget> {
+  const u = assertBackendUrlStatic(url, opts);
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  if (isIpLiteral(host)) {
+    const family = isIP(host);
+    if (family !== 4 && family !== 6) {
+      throw new SsrfError(`backend url contains an invalid IP literal: ${host}`);
+    }
+    return { url: u, addresses: [{ address: host, family }] };
+  }
+
+  const resolved = await resolver(host);
+  if (!resolved.length) {
+    throw new SsrfError(`backend url host did not resolve: ${host}`);
+  }
+  const addresses: AllowedBackendAddress[] = [];
+  for (const address of resolved) {
+    const family = isIP(address);
+    if (family !== 4 && family !== 6) {
+      throw new SsrfError(`backend url resolver returned a non-IP address for ${host}: ${address}`);
+    }
+    assertIpAllowed(address, opts);
+    addresses.push({ address, family });
+  }
+  return { url: u, addresses };
+}
+
+/**
+ * Compatibility assertion for callers that only need a verdict. Connection
+ * code must use {@link resolveBackendUrlAllowed} and retain its address snapshot
+ * so DNS cannot change between validation and socket creation.
  */
 export async function assertBackendUrlAllowed(
   url: string,
   opts: SsrfOptions = {},
   resolver: Resolver = defaultResolver,
 ): Promise<void> {
-  const u = assertBackendUrlStatic(url, opts);
-  const host = u.hostname.replace(/^\[|\]$/g, '');
-  if (isIpLiteral(host)) return; // already asserted in the static pass
-  const addrs = await resolver(host);
-  if (!addrs.length) {
-    throw new SsrfError(`backend url host did not resolve: ${host}`);
-  }
-  for (const addr of addrs) assertIpAllowed(addr, opts);
+  await resolveBackendUrlAllowed(url, opts, resolver);
 }

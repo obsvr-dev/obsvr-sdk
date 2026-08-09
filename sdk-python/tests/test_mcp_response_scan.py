@@ -144,6 +144,28 @@ class TestGovernedResponse:
         assert ev["event_type"] == "tool_call"
         assert ev["action_taken"] == "allowed"
 
+    def test_monitor_mode_emits_clean_allow_at_sample_rate_zero(self, monkeypatch):
+        _init(pii_policy={}, sample_rate=0, enforcement_mode="monitor")
+        captured = _captured(monkeypatch)
+        Session = make_session_returning("clean output")
+        patch_mcp(Session)
+
+        result = _run(Session().call_tool("read", {"path": "/tmp"}))
+
+        assert result.content[0].text == "clean output"
+        assert len(captured) == 1
+        assert captured[0]["action_taken"] == "allowed"
+
+    def test_enforce_mode_still_samples_clean_allow_at_rate_zero(self, monkeypatch):
+        _init(pii_policy={}, sample_rate=0, enforcement_mode="enforce")
+        captured = _captured(monkeypatch)
+        Session = make_session_returning("clean output")
+        patch_mcp(Session)
+
+        _run(Session().call_tool("read", {"path": "/tmp"}))
+
+        assert captured == []
+
     def test_sanitizes_pii_before_caller(self, monkeypatch):
         _init(pii_policy={"rules": {"ssn": "redact"}})
         captured = _captured(monkeypatch)

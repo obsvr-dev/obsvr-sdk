@@ -44,6 +44,7 @@ import {
   extractLastUserText,
   getConfig,
   isAsyncIterable,
+  monitorModeRequiresEvidence,
   redactBuiltinPii,
   redactForStorage,
   redactRequestMessagesInPlace,
@@ -263,9 +264,6 @@ function createAuditedRun(
     const shouldAudit = shouldSample(config.sample_rate);
 
     const isStreaming = inputs?.stream === true;
-    if (isStreaming && config.streaming_mode === "skip") {
-      return originalRun.apply(target, callArgs);
-    }
 
     const options: IntegrationOptions = {
       source: audit_fields.source || opts.source,
@@ -367,9 +365,22 @@ function createAuditedRun(
       }
     }
 
-    // Allowed: emit only when sampled in. Anything the policy acted on is
-    // enforcement evidence and is always recorded, as are errors below.
-    const auditThisCall = shouldAudit || policy.decision !== "allow";
+    // Enforce-mode allows are sampled. Monitor mode and anything the policy
+    // acted on are complete evidence and are always recorded, as are errors.
+    const monitorRequiresEvidence = monitorModeRequiresEvidence(config);
+    const auditThisCall =
+      monitorRequiresEvidence || shouldAudit || policy.decision !== "allow";
+
+    // Skip mode opts out of stream evidence in enforce mode, but it must not
+    // skip the pre-call boundary above. Monitor mode promises complete
+    // evidence, so it continues through the normal stream event path.
+    if (
+      isStreaming &&
+      config.streaming_mode === "skip" &&
+      !monitorRequiresEvidence
+    ) {
+      return originalRun.apply(target, callArgs);
+    }
 
     const startTime = performance.now();
     let result: unknown;

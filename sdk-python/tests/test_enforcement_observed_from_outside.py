@@ -57,7 +57,19 @@ def _quiesce_sender(timeout=5.0):
     while True:
         sender._reset_sender()
         time.sleep(0.05)
-        if sender.get_queue_size() == 0 and not any(sender.get_sender_stats().values()):
+        # qsize() reaches zero as soon as the worker DEQUEUES an event, before
+        # the HTTP request finishes. Queue keeps that work visible through its
+        # unfinished-task count until the worker's terminal accounting and gap
+        # declaration are complete. Without this check, reset zeroed the stats
+        # while a request was blocked, the 50 ms window looked quiet, and that
+        # stale request later retried inside the next test.
+        with sender._queue.all_tasks_done:
+            unfinished = sender._queue.unfinished_tasks
+        if (
+            sender.get_queue_size() == 0
+            and unfinished == 0
+            and not any(sender.get_sender_stats().values())
+        ):
             sender._reset_sender()
             return
         if time.monotonic() > deadline:
@@ -95,6 +107,47 @@ def no_delivery(monkeypatch):
     monkeypatch.setattr(
         WRAP_MODULE, "send_audit_async", lambda config, event: None
     )
+
+
+def test_sender_quiescence_waits_for_a_dequeued_request(monkeypatch):
+    """An empty queue is not an idle sender while its worker owns an item.
+
+    This is the deterministic form of the full-suite-only leak: hold the HTTP
+    send after dequeue, call the isolation helper, and prove it cannot report
+    quiet until that request has finished its terminal accounting.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    quiesced = threading.Event()
+
+    def blocked_send(_config, _event):
+        entered.set()
+        assert release.wait(5), "test never released the in-flight request"
+        return ("ok", 0)
+
+    monkeypatch.setattr(sender, "_send_event", blocked_send)
+    monkeypatch.setattr(sender, "_mirror", lambda _config, _event: None)
+
+    from obsvr.config import ResolvedConfig
+
+    sender.send_audit_async(
+        ResolvedConfig(api_key="test", ingest_url="https://ingest.invalid"),
+        {"request_id": "in-flight", "prompt": "p", "response": ""},
+    )
+    assert entered.wait(5), "worker never dequeued the request"
+    assert sender.get_queue_size() == 0
+
+    waiter = threading.Thread(
+        target=lambda: (_quiesce_sender(), quiesced.set()), daemon=True
+    )
+    waiter.start()
+    try:
+        assert not quiesced.wait(0.15), "quiescence ignored in-flight work"
+    finally:
+        release.set()
+        waiter.join(5)
+
+    assert quiesced.is_set(), "quiescence did not finish after delivery completed"
 
 
 def _init(**kwargs):
@@ -749,7 +802,7 @@ def test_a_refused_event_is_never_counted_as_delivered(ingest_server):
     not claim otherwise. This is the counter the reporter measured lying."""
     stats = _deliver_one(ingest_server, 403, {"error": "invalid_sdk_signature"})
     assert stats["sent"] == 0, "a refused event was counted as delivered"
-    assert stats["dropped_rejected"] == 1
+    assert stats["dropped_rejected"] == 2  # refused event plus its refused gap marker
 
 
 def test_a_2xx_that_enumerates_a_reject_is_not_a_delivery(ingest_server):
@@ -761,7 +814,7 @@ def test_a_2xx_that_enumerates_a_reject_is_not_a_delivery(ingest_server):
         {"count": 0, "rejected": [{"index": 0, "error": "policy_blocked"}]},
     )
     assert stats["sent"] == 0
-    assert stats["dropped_rejected"] == 1
+    assert stats["dropped_rejected"] == 2  # refused event plus its refused gap marker
 
 
 def test_a_short_accepted_count_is_reconciled(ingest_server):
@@ -769,7 +822,7 @@ def test_a_short_accepted_count_is_reconciled(ingest_server):
     refusal whether or not the server enumerated it."""
     stats = _deliver_one(ingest_server, 200, {"count": 0})
     assert stats["sent"] == 0
-    assert stats["dropped_rejected"] == 1
+    assert stats["dropped_rejected"] == 2  # refused event plus its refused gap marker
 
 
 def test_an_accepted_event_still_counts_as_delivered(ingest_server):
@@ -784,8 +837,9 @@ def test_a_refused_policy_change_uses_the_signed_sender(ingest_server):
     """A policy change used to POST outside the sender and ignore the status.
 
     The real server is the instrument: it receives the governance event and
-    refuses it, while the shared sender must report zero deliveries and one
-    rejection. No audit-event verdict is used to grade the outcome.
+    refuses it, while the shared sender must report zero deliveries and both
+    terminal refusals (the change and its one non-recursive gap marker). No
+    audit-event verdict is used to grade the outcome.
     """
     from obsvr.config import set_tenant_policy
     from obsvr.rules import PolicyRule
@@ -816,10 +870,11 @@ def test_a_refused_policy_change_uses_the_signed_sender(ingest_server):
 
     stats = sender.get_sender_stats()
     assert stats["sent"] == 0
-    assert stats["dropped_rejected"] == 1
-    assert len(ingest_server.obsvr_requests) == 1
+    assert stats["dropped_rejected"] == 2
+    assert len(ingest_server.obsvr_requests) == 2
     assert ingest_server.obsvr_requests[0]["event_type"] == "policy_changed"
     assert isinstance(ingest_server.obsvr_requests[0].get("sdk_sig"), str)
+    assert ingest_server.obsvr_requests[1]["operation"] == "audit.gap"
 
 
 def test_delivery_loss_is_reported_at_default_settings(ingest_server, caplog):

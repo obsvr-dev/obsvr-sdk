@@ -22,7 +22,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AuditEvent } from "./types.js";
 import { getConfig, isInitialized } from "./config.js";
-import { sendAuditAsync, shouldSample } from "./sender/index.js";
+import { sendAuditAsync, shouldEmitAllowedEvent } from "./sender/index.js";
 import { withRunMetadata } from "./agent-run.js";
 import { derivePolicyVersion } from "../policy/rules.js";
 
@@ -149,7 +149,8 @@ export function withSpanMetadata(
  * evidence: it flows through the same signing / chain / delivery pipeline as
  * every other event, tagged event_class = "execution_span" so the UI shows it
  * in traces rather than the main governance feed. Never throws; respects the
- * disabled flag and sampling. No-op if the SDK is not initialized.
+ * disabled flag and mode-aware sampling. Monitor mode emits every span; enforce
+ * mode samples them normally. No-op if the SDK is not initialized.
  *
  * Exported (as the options-object `emitSpan` below) for framework
  * integrations whose callback APIs surface start/end pairs rather than a
@@ -175,7 +176,7 @@ function emitSpanEvent(
     return;
   }
   if (config.disabled) return;
-  if (!shouldSample(config.sample_rate)) return;
+  if (!shouldEmitAllowedEvent(config.sample_rate, config.enforcementMode)) return;
 
   const envelope: SpanEnvelope & { event_class: string } = {
     span_id: spanId,

@@ -46,6 +46,7 @@ import {
   extractAllPromptText,
   extractLastUserText,
   getConfig,
+  monitorModeRequiresEvidence,
   redactBuiltinPii,
   redactForStorage,
   redactRequestMessagesInPlace,
@@ -235,11 +236,19 @@ function createAuditedMethod(
       }
     }
 
-    // Allowed/redacted: emit only when sampled in; redaction is always recorded.
-    const auditThisCall = shouldAudit || policy.decision !== "allow";
+    // Enforce-mode allows are sampled. Monitor mode, redaction, and other policy
+    // action are complete evidence and are always recorded.
+    const auditThisCall =
+      monitorModeRequiresEvidence(config) || shouldAudit || policy.decision !== "allow";
 
-    // streaming_mode:"skip" opts out of stream wrapping (enforcement already ran).
-    if (isStream && config.streaming_mode === "skip") {
+    // Enforce-mode skip opts out of stream observation only. Monitor mode is a
+    // complete evidence stream and therefore follows the normal observation
+    // path even when skip was configured.
+    if (
+      isStream &&
+      config.streaming_mode === "skip" &&
+      !monitorModeRequiresEvidence(config)
+    ) {
       return originalMethod.apply(target, cleaned_args);
     }
 

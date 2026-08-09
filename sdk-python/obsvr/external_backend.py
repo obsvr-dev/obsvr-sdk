@@ -21,14 +21,19 @@ Zero-config default is NO backend (unchanged behavior). Stdlib only.
 """
 
 import hashlib
+import http.client
 import json
 import socket
+import ssl
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.parse import urlsplit
 
-from .ssrf import SsrfError, assert_backend_url_allowed
+from .ssrf import (
+    AllowedBackendAddress,
+    AllowedBackendTarget,
+    SsrfError,
+    resolve_backend_url_allowed,
+)
 
 # Raw outcome before the shadow/fail-closed policy is applied. "error" and
 # "timeout" are the fail-closed cases (deny in enforce mode); kept distinct from
@@ -163,38 +168,132 @@ def _normalize_cedar(body: Any) -> Optional[Dict[str, Any]]:
 
 
 # Transport: fetch(url, headers, body, timeout_s) -> (status:int, parsed_json).
-# Raises TimeoutError on timeout, any other Exception on error. Injectable for
-# tests; the default uses urllib (zero runtime deps).
+# Raises TimeoutError on timeout, any other Exception on error. This injectable
+# seam is trusted to provide destination pinning equivalent to the production
+# connector; the default retains the guard's approved address snapshot.
 Transport = Callable[[str, Dict[str, str], str, float], Tuple[int, Any]]
 
 
-class _NoRedirect(HTTPRedirectHandler):
-    """Refuse redirects: the SSRF guard vetted the ORIGINAL URL's address only.
-    Following a 3xx to http://169.254.169.254/... (or a rebinding host) would
-    bypass it, so a redirect is turned into an error → DENY (fail-closed)."""
+def _connect_approved_socket(
+    addresses: tuple[AllowedBackendAddress, ...], port: int, timeout_s: float
+) -> socket.socket:
+    """Connect directly to one approved numeric address without another lookup."""
+    if timeout_s <= 0:
+        raise TimeoutError("external backend timeout budget exhausted")
+    last_error: Optional[OSError] = None
+    for approved in addresses:
+        sock = socket.socket(approved.family, socket.SOCK_STREAM)
+        sock.settimeout(timeout_s)
+        endpoint = (
+            (approved.address, port)
+            if approved.family == socket.AF_INET
+            else (approved.address, port, 0, 0)
+        )
+        try:
+            sock.connect(endpoint)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("external backend has no approved address")
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
-        raise URLError(f"redirect refused by SSRF guard: {code} -> {newurl}")
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """One-shot HTTP connection whose socket destination is DNS-pinned."""
+
+    def __init__(self, target: AllowedBackendTarget, timeout_s: float) -> None:
+        host = target.parts.hostname or ""
+        super().__init__(host, target.parts.port or 80, timeout=timeout_s)
+        self._approved_addresses = target.addresses
+
+    def connect(self) -> None:
+        self.sock = _connect_approved_socket(
+            self._approved_addresses, self.port, self.timeout
+        )
 
 
-_NO_REDIRECT_OPENER = build_opener(_NoRedirect())
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """One-shot pinned HTTPS connection with origin-host TLS verification."""
+
+    def __init__(
+        self,
+        target: AllowedBackendTarget,
+        timeout_s: float,
+        *,
+        context: Optional[ssl.SSLContext] = None,
+    ) -> None:
+        host = target.parts.hostname or ""
+        super().__init__(
+            host,
+            target.parts.port or 443,
+            timeout=timeout_s,
+            context=context,
+        )
+        self._approved_addresses = target.addresses
+
+    def connect(self) -> None:
+        raw_sock = _connect_approved_socket(
+            self._approved_addresses, self.port, self.timeout
+        )
+        try:
+            # The socket goes to an approved numeric address, but authentication
+            # remains bound to the configured hostname (SNI + certificate check).
+            self.sock = self._context.wrap_socket(raw_sock, server_hostname=self.host)
+        except Exception:
+            raw_sock.close()
+            raise
 
 
-def _urllib_transport(url: str, headers: Dict[str, str], body: str, timeout_s: float) -> Tuple[int, Any]:
-    req = Request(url, data=body.encode("utf-8"), method="POST", headers=headers)
+def _host_header(target: AllowedBackendTarget) -> str:
+    host = target.parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = 443 if target.parts.scheme == "https" else 80
+    if target.parts.port is not None and target.parts.port != default_port:
+        return f"{host}:{target.parts.port}"
+    return host
+
+
+def _urllib_transport(
+    target: AllowedBackendTarget,
+    headers: Dict[str, str],
+    body: str,
+    timeout_s: float,
+) -> Tuple[int, Any]:
+    """POST through a fresh connection pinned to the validated DNS snapshot."""
+    conn: http.client.HTTPConnection
+    if target.parts.scheme == "https":
+        conn = _PinnedHTTPSConnection(target, timeout_s)
+    else:
+        conn = _PinnedHTTPConnection(target, timeout_s)
+
+    request_headers = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in {"host", "connection", "content-length"}
+    }
+    request_headers.update(
+        {
+            "Host": _host_header(target),
+            "Connection": "close",
+            "Content-Length": str(len(body.encode("utf-8"))),
+        }
+    )
+    path = target.parts.path or "/"
+    if target.parts.query:
+        path = f"{path}?{target.parts.query}"
     try:
-        with _NO_REDIRECT_OPENER.open(req, timeout=timeout_s) as resp:  # noqa: S310 (scheme SSRF-guarded above; redirects refused)
-            status = getattr(resp, "status", None) or resp.getcode()
-            raw = resp.read()
-    except HTTPError as e:
-        # Non-2xx: surface the status so the caller maps it to an error outcome.
-        return e.code, None
-    except (socket.timeout, TimeoutError) as e:
-        raise TimeoutError(str(e)) from e
-    except URLError as e:
-        if isinstance(e.reason, (socket.timeout, TimeoutError)):
-            raise TimeoutError(str(e)) from e
-        raise
+        conn.request("POST", path, body=body.encode("utf-8"), headers=request_headers)
+        response = conn.getresponse()
+        status = response.status
+        raw = response.read()
+    except (socket.timeout, TimeoutError) as exc:
+        raise TimeoutError(str(exc)) from exc
+    finally:
+        # Never reuse a socket across validation snapshots.
+        conn.close()
     try:
         return status, json.loads(raw)
     except (ValueError, TypeError):
@@ -214,7 +313,7 @@ def evaluate_external_backend(
     control. Returns {"outcome", "reasons"}."""
     allow_priv = bool(cfg.get("allow_private_network"))
     try:
-        assert_backend_url_allowed(cfg["url"], allow_priv, resolver)
+        target = resolve_backend_url_allowed(cfg["url"], allow_priv, resolver)
     except SsrfError:
         return {"outcome": "error", "reasons": ["ssrf_guard_blocked_backend_url"]}
     except Exception:
@@ -229,10 +328,11 @@ def evaluate_external_backend(
     # uses `?? 2000` and honors 0 the same way.
     _timeout_ms = cfg.get("timeout_ms")
     timeout_s = (2000 if _timeout_ms is None else _timeout_ms) / 1000.0
-    send = transport or _urllib_transport
-
     try:
-        status, parsed = send(cfg["url"], headers, body, timeout_s)
+        if transport is not None:
+            status, parsed = transport(cfg["url"], headers, body, timeout_s)
+        else:
+            status, parsed = _urllib_transport(target, headers, body, timeout_s)
     except (socket.timeout, TimeoutError):
         return {"outcome": "timeout", "reasons": ["backend_timeout"]}
     except Exception:

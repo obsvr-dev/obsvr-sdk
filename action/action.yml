@@ -28,7 +28,7 @@ inputs:
       Version of @obsvr/sdk to install. The obsvr-verify CLI ships inside this
       package; pin an exact version for reproducible CI checks.
     required: false
-    default: '0.11.1'
+    default: '0.11.2'
   node-version:
     description: 'Node.js version used to run obsvr-verify.'
     required: false
@@ -36,8 +36,9 @@ inputs:
   allow-gaps:
     description: >-
       Accept a bundle that verifies but is INCOMPLETE. The SDK signs a gap
-      marker at the position of any dropped events, so a lossy run declares its
-      own loss instead of reading clean; obsvr-verify reports that as exit 3,
+      marker for sender-visible loss when that marker itself can be delivered,
+      so those lossy runs declare their loss instead of reading clean;
+      obsvr-verify reports that as exit 3,
       which fails the job by default. Set to 'true' to treat it as a pass
       (obsvr-verify --allow-gaps). Default 'false', because a bundle that is
       missing events should stop a check that exists to establish what happened

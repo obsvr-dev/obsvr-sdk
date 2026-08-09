@@ -9,10 +9,13 @@
  * external-backend-conformance.test.ts against conformance/fixtures/external_backend.json.
  */
 import { init, _reset, getConfig } from '../../src/proxy/config';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { applyPreCallPolicy } from '../../src/integrations/core';
 import { _resetSender, enqueueAuditEvent } from '../../src/proxy/sender/fire-and-forget';
 import {
   evaluateExternalBackend,
+  createPinnedBackendLookup,
   buildBackendInput,
   type ExternalPolicyBackendConfig,
   type BackendDecisionInput,
@@ -22,6 +25,7 @@ import {
   isAlwaysBlockedIp,
   assertBackendUrlStatic,
   assertBackendUrlAllowed,
+  resolveBackendUrlAllowed,
   SsrfError,
 } from '../../src/utils/ssrf';
 
@@ -161,11 +165,117 @@ describe('ssrf: resolve-before-connect', () => {
       assertBackendUrlAllowed('https://sneaky.example.com/x', { allowPrivateNetwork: true }, resolver),
     ).rejects.toBeInstanceOf(SsrfError);
   });
+  it('rejects the whole snapshot when any resolved address is private', async () => {
+    const resolver = async () => ['93.184.216.34', '10.1.2.3'];
+    await expect(
+      resolveBackendUrlAllowed('https://opa.example.com/x', {}, resolver),
+    ).rejects.toBeInstanceOf(SsrfError);
+  });
   it('allows a hostname resolving to a public address', async () => {
     const resolver = async () => ['93.184.216.34'];
     await expect(
       assertBackendUrlAllowed('https://opa.example.com/x', {}, resolver),
     ).resolves.toBeUndefined();
+  });
+
+  it('rejects a resolver result that is not an IP address', async () => {
+    await expect(
+      resolveBackendUrlAllowed('https://opa.example.com/x', {}, async () => ['another.example.com']),
+    ).rejects.toBeInstanceOf(SsrfError);
+  });
+
+  it('pins lookup to the approved snapshot instead of consulting DNS again', async () => {
+    const target = await resolveBackendUrlAllowed(
+      'https://backend.example.test/policy',
+      {},
+      async () => ['93.184.216.34'],
+    );
+    const pinnedLookup = createPinnedBackendLookup(target);
+    const resolved = await new Promise<{ address: string; family?: number }>((resolve, reject) => {
+      pinnedLookup('backend.example.test', { family: 0, hints: 0 }, (err, address, family) => {
+        if (err) reject(err);
+        else resolve({ address: address as string, family });
+      });
+    });
+    expect(resolved).toEqual({ address: '93.184.216.34', family: 4 });
+  });
+
+  it('connects through the checked address even when the configured hostname has no DNS record', async () => {
+    const server = createServer((_req, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ result: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const cfg: ExternalPolicyBackendConfig = {
+        type: 'opa',
+        url: `http://dns-rebind.invalid:${port}/policy`,
+        allowPrivateNetwork: true,
+      };
+      const result = await evaluateExternalBackend(cfg, INPUT, {
+        resolver: async () => ['127.0.0.1'],
+      });
+      expect(result.outcome).toBe('allow');
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
+  });
+
+  it('blocks a public-looking hostname that resolves to metadata before transport runs', async () => {
+    let called = false;
+    const fetchImpl = (async () => {
+      called = true;
+      return { ok: true, status: 200, json: async () => ({ result: true }) };
+    }) as unknown as typeof fetch;
+    const cfg: ExternalPolicyBackendConfig = {
+      type: 'opa',
+      url: 'https://public-looking.invalid/policy',
+      allowPrivateNetwork: true,
+    };
+    const result = await evaluateExternalBackend(cfg, INPUT, {
+      resolver: async () => ['169.254.169.254'],
+      fetchImpl,
+    });
+    expect(result).toEqual({
+      outcome: 'error',
+      reasons: ['ssrf_guard_blocked_backend_url'],
+    });
+    expect(called).toBe(false);
+  });
+
+  it('does not follow redirects after connecting to an approved address', async () => {
+    let redirectedRequestCount = 0;
+    const server = createServer((request, response) => {
+      if (request.url === '/redirected') {
+        redirectedRequestCount += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ result: true }));
+        return;
+      }
+      response.writeHead(302, { location: '/redirected' });
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const cfg: ExternalPolicyBackendConfig = {
+        type: 'opa',
+        url: `http://dns-rebind.invalid:${port}/policy`,
+        allowPrivateNetwork: true,
+      };
+      const result = await evaluateExternalBackend(cfg, INPUT, {
+        resolver: async () => ['127.0.0.1'],
+      });
+      expect(result).toEqual({ outcome: 'error', reasons: ['backend_http_302'] });
+      expect(redirectedRequestCount).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
   });
 });
 
@@ -304,14 +414,45 @@ function preCall() {
 }
 
 describe('applyPreCallPolicy: external backend integration', () => {
-  const originalFetch = global.fetch;
+  let server: Server;
+  let backendUrl: string;
+  let reply: unknown = { result: true };
+  let failConnection = false;
+
+  beforeAll(async () => {
+    server = createServer((_request, response) => {
+      if (failConnection) {
+        response.destroy();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(reply));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    backendUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+
   afterEach(() => {
-    global.fetch = originalFetch;
+    reply = { result: true };
+    failConnection = false;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve, reject) =>
+      server.close((err) => (err ? reject(err) : resolve())),
+    );
   });
 
   it('blocks the call when the backend denies (deny-wins from the backend)', async () => {
-    global.fetch = okJson({ result: { allow: false, reasons: ['blocked by corp policy'] } });
-    init({ api_key: 't', external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow' } });
+    reply = { result: { allow: false, reasons: ['blocked by corp policy'] } };
+    init({
+      api_key: 't',
+      external_policy_backend: {
+        type: 'opa',
+        url: `${backendUrl}/v1/data/obsvr/allow`,
+        allowPrivateNetwork: true,
+      },
+    });
     const result = await preCall();
     expect(result.decision).toBe('block');
     expect(result.compliance.action_source).toBe('external_backend');
@@ -320,25 +461,35 @@ describe('applyPreCallPolicy: external backend integration', () => {
       type: 'opa',
       outcome: 'deny',
       shadow: false,
-      identity: 'opa:8.8.8.8',
+      identity: `opa:${new URL(backendUrl).host}`,
     });
   });
 
   it('allows the call when the backend allows, and records provenance on the allowed event', async () => {
-    global.fetch = okJson({ result: true });
-    init({ api_key: 't', external_policy_backend: { type: 'cedar', url: 'https://1.1.1.1/authz' } });
-    // cedar shape: decision field. Re-point fetch to a cedar response.
-    global.fetch = okJson({ decision: 'Allow' });
+    reply = { decision: 'Allow' };
+    init({
+      api_key: 't',
+      external_policy_backend: {
+        type: 'cedar',
+        url: `${backendUrl}/authz`,
+        allowPrivateNetwork: true,
+      },
+    });
     const result = await preCall();
     expect(result.decision).toBe('allow');
     expect(result.compliance.external_backend).toMatchObject({ type: 'cedar', outcome: 'allow' });
   });
 
   it('fails closed: a backend error blocks the call (enforce mode)', async () => {
-    global.fetch = (async () => {
-      throw new Error('ECONNREFUSED');
-    }) as unknown as typeof fetch;
-    init({ api_key: 't', external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow' } });
+    failConnection = true;
+    init({
+      api_key: 't',
+      external_policy_backend: {
+        type: 'opa',
+        url: `${backendUrl}/v1/data/obsvr/allow`,
+        allowPrivateNetwork: true,
+      },
+    });
     const result = await preCall();
     expect(result.decision).toBe('block');
     expect(result.compliance.action_source).toBe('external_backend');
@@ -346,10 +497,15 @@ describe('applyPreCallPolicy: external backend integration', () => {
   });
 
   it('shadow mode never blocks, but records what the backend would have done', async () => {
-    global.fetch = okJson({ result: false });
+    reply = { result: false };
     init({
       api_key: 't',
-      external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow', shadow: true },
+      external_policy_backend: {
+        type: 'opa',
+        url: `${backendUrl}/v1/data/obsvr/allow`,
+        allowPrivateNetwork: true,
+        shadow: true,
+      },
     });
     const result = await preCall();
     expect(result.decision).toBe('allow');

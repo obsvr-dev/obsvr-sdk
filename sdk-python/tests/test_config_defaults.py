@@ -63,6 +63,11 @@ class TestNoDeliveryWhenUnset:
             raise AssertionError("the sender attempted a network call with no ingest_url")
 
         monkeypatch.setattr(sender, "urlopen", recording_urlopen)
+        # Invalid local configuration is classified through the retryable
+        # delivery path. Collapse its retry schedule so this test observes the
+        # terminal result instead of leaking worker-owned work into its sibling.
+        monkeypatch.setattr(sender, "MAX_SEND_RETRIES", 0)
+        monkeypatch.setattr(sender, "_apply_backoff", lambda: None)
 
         obsvr.init(api_key="test-key")
         event = {"prompt": "hello", "response": "world", "request_id": "r1"}
@@ -78,14 +83,21 @@ class TestNoDeliveryWhenUnset:
         monkeypatch.setattr(sender, "urlopen", lambda *a, **k: (_ for _ in ()).throw(
             AssertionError("should never be reached")
         ))
+        # Exercise the terminal accounting without leaving a real 5-retry,
+        # exponential-backoff delivery owned by the process-global worker
+        # after this test returns. _reset_sender() can drain queued work but
+        # cannot cancel an item the worker has already dequeued.
+        monkeypatch.setattr(sender, "MAX_SEND_RETRIES", 0)
+        monkeypatch.setattr(sender, "_apply_backoff", lambda: None)
 
         obsvr.init(api_key="test-key")
         sender.send_audit_async(get_config(), {"prompt": "a", "response": "b", "request_id": "r1"})
         sender.flush(timeout=1.0)
 
         stats = sender.get_sender_stats()
-        assert stats["enqueued"] == 1
+        # The original event and the one non-recursive gap marker both reach
+        # terminal accounting against the unusable URL.
+        assert stats["enqueued"] == 2
         assert stats["sent"] == 0
-        # Either still queued for retry or dropped after exhausting the budget -
-        # never counted as delivered.
-        assert stats["sent"] == 0
+        assert stats["dropped_retry_exhausted"] == 2
+        assert stats["gap_markers"] == 1

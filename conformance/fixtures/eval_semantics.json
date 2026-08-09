@@ -1,9 +1,9 @@
 {
   "claimable": true,
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "eval_semantics",
-  "description": "Cross-SDK evaluation-semantics fixtures. Each case pins a normative statement (EV-n). Both SDK harnesses (sdk-typescript/tests/unit/conformance.test.ts, sdk-python/tests/test_conformance.py) run every case through validator + evaluator + shadow evaluator and must produce identical results. A divergence is a release blocker unless recorded in conformance/known-divergences.md. Cases carry an optional `mode`: absent or \"rules\" drives the rules engine directly (the default); \"pipeline\" drives the full pre-call pipeline, which is the only way to pin statements about step composition and the enforcement-integrity gate; \"explain\" drives check-only evaluation and proves it consumes nothing.",
-"ev_coverage": {
+  "description": "Cross-SDK evaluation-semantics fixtures. Each case pins a normative statement (EV-n). Both SDK harnesses (sdk-typescript/tests/unit/conformance.test.ts, sdk-python/tests/test_conformance.py) must produce identical results. A divergence is a release blocker unless recorded in conformance/known-divergences.md. Cases carry an optional `mode`: absent or \"rules\" drives validator + evaluator + shadow evaluator (the default); \"pipeline\" drives the full pre-call pipeline; \"explain\" drives check-only evaluation; \"config\" submits the raw rule list to init without pre-filtering. A rules case may declare `resolution` as \"first_match\" or \"deny_wins\".",
+  "ev_coverage": {
     "desc": "Machine-readable coverage of the EV statements in conformance/SPEC-evaluation.md. `covered` maps each statement to the fixture file(s) whose cases pin it cross-language; `uncovered` records the statements exercised only indirectly by the SDK suites - the gap is a datum, not an absence. Both conformance runners check this object against the actual cases: an EV token appearing in a case's `ev` field must be listed as covered by this fixture, a statement listed covered-here must have such a case, covered and uncovered must partition `all` exactly, and every named fixture file must exist. Removing a case without moving its statement to `uncovered` (or vice versa) therefore fails BOTH suites.",
     "all": [
       "EV-1",
@@ -34,10 +34,14 @@
       "EV-3": [
         "eval_semantics.json"
       ],
+      "EV-4": [
+        "fail_mode.json"
+      ],
       "EV-6": [
         "eval_semantics.json"
       ],
       "EV-7": [
+        "eval_semantics.json",
         "fail_mode.json"
       ],
       "EV-8": [
@@ -50,7 +54,8 @@
         "eval_semantics.json"
       ],
       "EV-11": [
-        "eval_semantics.json"
+        "eval_semantics.json",
+        "approvals.json"
       ],
       "EV-12": [
         "eval_semantics.json"
@@ -83,7 +88,6 @@
     "uncovered": [
       "EV-1",
       "EV-2",
-      "EV-4",
       "EV-5",
       "EV-15",
       "EV-18",
@@ -167,6 +171,7 @@
       "id": "ev8_stored_order_decides",
       "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-8",
+      "resolution": "first_match",
       "rules": [
         {
           "id": "r-flag",
@@ -199,6 +204,46 @@
       "expect": {
         "decision": "allow",
         "rule_id": "r-flag"
+      }
+    },
+    {
+      "id": "ev8_declared_deny_wins",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "ev": "EV-8",
+      "resolution": "deny_wins",
+      "desc": "deny_wins evaluates past an earlier flag and selects the later block, unlike first_match over the same stored order.",
+      "rules": [
+        {
+          "id": "r-flag",
+          "name": "Flag first",
+          "enabled": true,
+          "action": "flag",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "dual"
+            ]
+          }
+        },
+        {
+          "id": "r-block",
+          "name": "Block second",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "dual"
+            ]
+          }
+        }
+      ],
+      "input": {
+        "text": "a dual matching prompt"
+      },
+      "expect": {
+        "decision": "block",
+        "rule_id": "r-block"
       }
     },
     {
@@ -346,9 +391,10 @@
       }
     },
     {
-      "id": "ev12_malformed_rule_skipped",
+      "id": "ev12_remote_malformed_rules_rejected",
       "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-12",
+      "desc": "Remote-poll validation rejects malformed entries individually and leaves the valid subset available for evaluation.",
       "rules": [
         {
           "id": "",
@@ -412,6 +458,45 @@
       }
     },
     {
+      "id": "ev12_init_malformed_rule_refused",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "ev": "EV-12",
+      "mode": "config",
+      "desc": "A malformed locally declared rule rejects init; local configuration is not filtered into a weaker valid subset.",
+      "rules": [
+        {
+          "id": "r-ok-local",
+          "name": "Valid local block",
+          "enabled": true,
+          "action": "block",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "anything"
+            ]
+          }
+        },
+        {
+          "id": "r-bad-local",
+          "name": "Malformed local action",
+          "enabled": true,
+          "action": "nuke",
+          "type": "keyword",
+          "conditions": {
+            "keywords": [
+              "anything"
+            ]
+          }
+        }
+      ],
+      "input": {
+        "text": "anything goes"
+      },
+      "expect_config": {
+        "init": "reject"
+      }
+    },
+    {
       "id": "ev13_pathological_regex_never_matches",
       "sdk_support": { "ts": "required", "py": "required" },
       "ev": "EV-13",
@@ -438,10 +523,11 @@
     {
       "id": "ev14_composition",
       "sdk_support": { "ts": "required", "py": "required" },
-      "ev": "EV-14",
+      "ev": "EV-7/EV-14",
       "mode": "pipeline",
-      "desc": "Most restrictive wins within a phase: a builtin PII block stands even though a later rule would only flag. A later step never weakens an earlier block.",
+      "desc": "Most restrictive wins within a phase: a builtin PII block stands even though a later rule would only flag and the customer hook explicitly allows. A later step never weakens an earlier block.",
       "pipeline": {
+        "hook": "allow",
         "pii_policy": {
           "default": "block"
         }
@@ -466,7 +552,8 @@
       "expect_pipeline": {
         "decision": "block",
         "action_reason": "pii_detected",
-        "action_source": "builtin"
+        "action_source": "builtin",
+        "hook_ran": true
       }
     },
     {

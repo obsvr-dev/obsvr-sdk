@@ -147,10 +147,9 @@ export interface ObsvrConfig {
 
   /**
    * Refuse an unattributed call (opt-in). When true, a governed call whose
-   * enforcing channel carries no user_id at all is blocked with
-   * PRINCIPAL_REQUIRED before any scanning layer runs. An empty string is a
-   * supplied principal; only an absent one refuses — the decision digest's
-   * presence byte draws the same absent-vs-empty line. Default false: a
+   * enforcing channel carries no non-blank user_id is blocked with
+   * PRINCIPAL_REQUIRED before any scanning layer runs. Empty and whitespace-
+   * only strings are unattributed. Default false: a
    * single-tenant deployment that legitimately passes no user_id must not
    * start refusing on upgrade.
    * @default false
@@ -655,6 +654,9 @@ export interface WrapOptions {
    * Service name for this client (V2)
    */
   service_name?: string;
+
+  /** Metadata merged into every event from this wrapped client. */
+  metadata?: Record<string, unknown>;
 }
 
 /**

@@ -342,7 +342,7 @@ def _audit_step(step: Any, _metadata: Optional[Dict[str, Any]] = None) -> None:
         # sample_rate silently dropped the scan and the redaction of the stored
         # copy on a fraction of traffic. Carry the decision to the emit site,
         # the same posture wrap.py ``_emit_audit`` already takes.
-        should_audit = _sender.should_sample(config.sample_rate)
+        should_audit = _sender.should_emit(config)
         text = _step_text(step)
         if not text:
             return

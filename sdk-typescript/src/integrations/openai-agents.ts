@@ -652,17 +652,14 @@ export class ObsvrTraceProcessor {
               ? JSON.stringify(rawInput)
               : "";
 
-        const toolStored = governStored(toolInputText, "", config);
-
         emitIntegrationEvent({
           config,
           provider: "unknown",
           model: "unknown",
           operation: "openai_agents.tool.call",
           source: SOURCE,
-          prompt: toolStored.prompt,
-          response: toolStored.response,
-          compliance: toolStored.compliance,
+          prompt: toolInputText,
+          response: "",
           metadata: {
             agent_run_id: traceId,
             tool_name: toolName,

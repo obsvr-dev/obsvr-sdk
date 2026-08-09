@@ -597,6 +597,44 @@
       ]
     },
     {
+      "id": "hidden_html_same_name_nesting",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "note": "The matching outer closer ends a hidden region; a same-name nested element cannot expose the hidden tail in the canonical view.",
+      "input": "pass<div style=\"display:none\">x<div>y</div>z</div>word",
+      "expect_views": [
+        {
+          "method": "deobfuscated",
+          "text": "password"
+        },
+        {
+          "method": "rot13",
+          "text": "cnff<qvi fglyr=\"qvfcynl:abar\">k<qvi>l</qvi>m</qvi>jbeq"
+        }
+      ]
+    },
+    {
+      "id": "hidden_html_unterminated_retains_remainder",
+      "sdk_support": {
+        "ts": "required",
+        "py": "required"
+      },
+      "note": "Malformed hidden markup removes only the opening tag. The remainder stays in the detection view instead of disappearing.",
+      "input": "pass<span style=\"display:none\">XYZword",
+      "expect_views": [
+        {
+          "method": "deobfuscated",
+          "text": "passXYZword"
+        },
+        {
+          "method": "rot13",
+          "text": "cnff<fcna fglyr=\"qvfcynl:abar\">KLMjbeq"
+        }
+      ]
+    },
+    {
       "id": "rot13_payload_decodes",
       "sdk_support": {
         "ts": "required",

@@ -44,7 +44,12 @@ def _init(rules):
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(monkeypatch):
+    # These cases grade config replacement and provider reachability, not event
+    # delivery. Prevent their example port from leaving retry-owned sender work
+    # in the process-global worker for later test modules.
+    wrap_module = sys.modules["obsvr.wrap"]
+    monkeypatch.setattr(wrap_module, "send_audit_async", lambda _config, _event: None)
     _reset()
     yield
     _reset()

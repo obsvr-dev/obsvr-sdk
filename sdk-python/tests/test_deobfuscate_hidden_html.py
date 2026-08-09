@@ -86,19 +86,25 @@ def test_removes_a_hidden_void_element_without_hunting_for_a_closing_tag():
     assert strip_hidden_html('a<span style="display:none"/>b') == "ab"
 
 
-def test_drops_the_remainder_when_a_hidden_element_is_never_closed():
-    assert strip_hidden_html('visible<div style="display:none">rest of it') == "visible"
+def test_retains_the_remainder_when_a_hidden_element_is_never_closed():
+    # Malformed markup must not become a content-deletion primitive. Remove
+    # the hidden-looking opening tag, then keep scanning the unclosed tail.
+    assert (
+        strip_hidden_html('visible<div style="display:none">rest of it')
+        == "visiblerest of it"
+    )
 
 
 def test_does_not_end_a_region_on_a_longer_tag_name_that_shares_a_prefix():
     assert strip_hidden_html('a<p style="display:none">x</pre>y</p>b') == "ab"
 
 
-def test_leaves_a_tail_on_same_name_nesting_which_fails_toward_keeping_content():
-    # Documented limit of a non-parser pass: the FIRST matching closer wins.
+def test_removes_the_entire_same_name_nested_hidden_region():
+    # Same-name nesting is depth-counted, so an inner closer cannot expose the
+    # remainder of a hidden outer region to the canonical view.
     assert (
         strip_hidden_html('a<div style="display:none">x<div>y</div>z</div>b')
-        == "az</div>b"
+        == "ab"
     )
 
 

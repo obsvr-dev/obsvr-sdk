@@ -236,10 +236,9 @@ class ResolvedConfig:
     # flight is stopped in any mode).
     enforcement_mode: str = "enforce"
     # Refuse an unattributed call (opt-in). When True, a governed call whose
-    # enforcing metadata carries no user_id at all is blocked with
-    # PRINCIPAL_REQUIRED before any scanning layer runs. An empty string is a
-    # supplied principal; only an absent one refuses — the decision digest's
-    # presence byte draws the same absent-vs-empty line. Default False: a
+    # enforcing metadata carries no non-blank user_id is blocked with
+    # PRINCIPAL_REQUIRED before any scanning layer runs. Empty and whitespace-
+    # only strings are unattributed. Default False: a
     # single-tenant deployment that legitimately passes no user_id must not
     # start refusing on upgrade.
     require_principal: bool = False

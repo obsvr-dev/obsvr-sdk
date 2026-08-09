@@ -135,6 +135,41 @@
       "note": "A quantifier in Python and three literal characters in JS - accepted by both, meaning different things."
     },
     {
+      "id": "legacy_identity_escape",
+      "pattern": "\\_",
+      "portable": false,
+      "family": "unicode-mode-syntax",
+      "note": "Legacy JavaScript treated an escaped underscore as the literal underscore; ECMAScript u mode rejects it while Python accepts it. Both SDKs refuse it."
+    },
+    {
+      "id": "unescaped_close_bracket",
+      "pattern": "a]b",
+      "portable": false,
+      "family": "unicode-mode-syntax",
+      "note": "Legacy JavaScript and Python treat the unmatched bracket as literal. The shared code-point dialect rejects it in both SDKs."
+    },
+    {
+      "id": "unescaped_open_brace",
+      "pattern": "a{b",
+      "portable": false,
+      "family": "unicode-mode-syntax",
+      "note": "An unmatched brace was literal in both legacy engines but is invalid in ECMAScript u mode; both SDKs refuse it rather than compiling under different modes."
+    },
+    {
+      "id": "braced_unicode_escape",
+      "pattern": "\\u{1F600}",
+      "portable": false,
+      "family": "unicode-mode-syntax",
+      "note": "ECMAScript u mode accepts this spelling while Python re does not. Use the literal Unicode character instead."
+    },
+    {
+      "id": "surrogate_escape",
+      "pattern": "\\uD83D",
+      "portable": false,
+      "family": "unicode-mode-syntax",
+      "note": "A surrogate code-unit escape has no single code-point meaning across the two engines and is refused. Use the literal astral character instead."
+    },
+    {
       "id": "portable_digit_class",
       "pattern": "\\d+",
       "portable": true,
@@ -366,6 +401,30 @@
       "matches": true,
       "family": "control",
       "note": "Its positive control."
+    },
+    {
+      "id": "dot_matches_one_astral_codepoint",
+      "pattern": "^.$",
+      "input": "😀",
+      "matches": true,
+      "family": "code-point",
+      "note": "TypeScript compiles in ECMAScript u mode, so dot consumes the astral character as one code point just as Python does."
+    },
+    {
+      "id": "negated_class_matches_one_astral_codepoint",
+      "pattern": "^[^a]$",
+      "input": "😀",
+      "matches": true,
+      "family": "code-point",
+      "note": "Negated classes also consume one code point rather than one UTF-16 surrogate half."
+    },
+    {
+      "id": "saturated_class_matches_one_astral_codepoint",
+      "pattern": "^[\\s\\S]$",
+      "input": "😀",
+      "matches": true,
+      "family": "code-point",
+      "note": "The portable dotall idiom remains one-character-wide for astral input in both engines."
     }
   ]
 }

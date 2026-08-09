@@ -235,6 +235,57 @@ def _unsaturated_negated_space_in_class(pattern: str) -> bool:
     return False
 
 
+def _unicode_mode_portability_violation(pattern: str) -> Optional[str]:
+    """Syntax legacy JS accepts but Python and ECMAScript ``u`` do not share."""
+    in_class = False
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            if i + 1 >= len(pattern):
+                return "trailing_escape"
+            nxt = pattern[i + 1]
+            if nxt == "u" and i + 2 < len(pattern) and pattern[i + 2] == "{":
+                return "unicode_codepoint_escape"
+            raw_hex = pattern[i + 2 : i + 6]
+            if nxt == "u" and len(raw_hex) == 4 and all(ch in "0123456789abcdefABCDEF" for ch in raw_hex):
+                value = int(raw_hex, 16)
+                if 0xD800 <= value <= 0xDFFF:
+                    return "surrogate_escape"
+                i += 6
+                continue
+            if not nxt.isalnum() or not nxt.isascii():
+                allowed = "^-]\\/" if in_class else "^$\\.*+?()[]{}|/"
+                if nxt not in allowed:
+                    return f"identity_escape (\\{nxt})"
+            i += 2
+            continue
+        if c == "[":
+            in_class = True
+            if i + 1 < len(pattern) and pattern[i + 1] == "^":
+                i += 1
+            if i + 1 < len(pattern) and pattern[i + 1] == "]":
+                return "leading_literal_close_bracket"
+            i += 1
+            continue
+        if c == "]":
+            if not in_class:
+                return "unescaped_close_bracket"
+            in_class = False
+            i += 1
+            continue
+        if not in_class and c == "{":
+            quantifier = re.match(r"\{\d+(?:,\d*)?\}", pattern[i:])
+            if not quantifier:
+                return "unescaped_open_brace"
+            i += len(quantifier.group(0))
+            continue
+        if not in_class and c == "}":
+            return "unescaped_close_brace"
+        i += 1
+    return None
+
+
 def cross_dialect_violation(pattern: str):
     """Reason a pattern does not mean the same thing in both engines, or None.
 
@@ -245,6 +296,9 @@ def cross_dialect_violation(pattern: str):
             return reason
     if _unsaturated_negated_space_in_class(pattern):
         return "negated_space_shorthand_in_class (\\S)"
+    unicode_mode = _unicode_mode_portability_violation(pattern)
+    if unicode_mode:
+        return unicode_mode
     i = 0
     while i < len(pattern) - 1:
         if pattern[i] != "\\":
@@ -347,12 +401,10 @@ def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
 # validator above cannot refuse them without banning ``\d``. The resolution is
 # to make one engine's meaning the meaning, and ECMAScript wins:
 #
-#   * Python can express ECMAScript's semantics exactly -- ``re.ASCII`` for the
-#     shorthand classes plus a mechanical rewrite for the rest -- while the
-#     reverse is not true. Making JS Unicode-aware would need ``\p{...}`` under
-#     the ``u`` flag, ``u`` mode CHANGES WHICH SYNTAX IS ACCEPTED, and a
-#     Unicode-aware ``\b`` has no JS spelling at all short of lookaround built
-#     from those same property escapes.
+#   * Python can express ECMAScript's shorthand semantics exactly -- ``re.ASCII``
+#     plus a mechanical rewrite for the rest. TypeScript compiles in ``u`` mode
+#     so both engines consume astral characters as code points; the shared
+#     portability guard rejects syntax accepted only by legacy JS mode.
 #   * ASCII classes are what a rule author means by ``\d`` in an SSN or a card
 #     number, which is what these rules are written for.
 #   * It is one compile call in one file, so nothing already measured on the
@@ -372,17 +424,10 @@ def validate_regex_pattern(pattern: str) -> Tuple[bool, Optional[str]]:
 #
 # ``^`` needs no rewrite: without MULTILINE / ``m`` both mean start-of-input.
 #
-# WHAT IS NOT CLOSED, stated rather than implied. ECMAScript ``RegExp`` without
-# the ``u`` flag matches over UTF-16 CODE UNITS while Python ``re`` matches over
-# CODE POINTS, so any single-character construct -- ``.``, a negated class, even
-# ``[^a]`` -- consumes one astral character in Python and one surrogate half in
-# JS. Measured: ``^.$`` matches U+1F600 in Python and not in JS, and the rewrite
-# above does not change that because it is not about escapes. Closing it means
-# putting the JS engine in ``u`` mode, which is a SECOND behaviour change of a
-# different kind: 6 of 18 sampled patterns change syntax verdict under ``u``
-# (identity escapes of non-syntax characters, an unbalanced ``{`` or ``]``), so
-# it would open a syntax split in the other direction unless the validator moves
-# with it. It is named here and in SECURITY.md rather than folded in quietly.
+# Code-point parity is closed at the TypeScript compile call with ``u`` mode.
+# The portability validator moved with it: identity escapes, unmatched braces
+# and brackets, braced codepoint escapes, and surrogate escapes are rejected in
+# both SDKs rather than reopening a syntax split in the other direction.
 
 #: ECMAScript ``\s``: WhiteSpace + LineTerminator (ECMA-262), as a class BODY so
 #: it can be spliced into a customer's own class as well as stand alone.

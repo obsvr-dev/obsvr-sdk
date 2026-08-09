@@ -62,6 +62,15 @@ _INJECTION_POINT = {
 _CUSTOMER_RULE_ID = "r1"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_delivery(monkeypatch):
+    # Detector resolution is the instrument in this module. Keep its synthetic
+    # ingest URL out of the process-global sender so retries cannot leak into
+    # later modules; tests that inspect events replace this seam locally.
+    wrap_mod = importlib.import_module("obsvr.wrap")
+    monkeypatch.setattr(wrap_mod, "send_audit_async", lambda _config, _event: None)
+
+
 def _init(fail_mode="open", **kw):
     _reset()
     obsvr.init(
@@ -146,6 +155,22 @@ def test_scanning_layer_failure_does_not_reach_the_host_under_open(monkeypatch, 
     result = _call(client)  # must NOT raise
     assert result.choices[0].message.content == "fake openai answer"
     assert get_detector_error_count() > before, "the failure must be counted"
+    _reset()
+
+
+def test_fail_open_detector_failure_bypasses_allowed_sampling(monkeypatch):
+    """Control-loss evidence must survive even when clean allows are sampled out."""
+    cfg = _init(fail_mode="open", sample_rate=0)
+    sent = []
+    wrap_mod = importlib.import_module("obsvr.wrap")
+    monkeypatch.setattr(wrap_mod, "send_audit_async", lambda _cfg, event: sent.append(event))
+    _arm_layer(monkeypatch, "policy_rules")
+
+    assert _call(obsvr.wrap(FakeOpenAI())).choices[0].message.content
+    assert len(sent) == 1
+    failure = sent[0]["metadata"]["obsvr_telemetry"]["detector_failure"]
+    assert failure["resolution"] == "open"
+    assert cfg.sample_rate == 0
     _reset()
 
 

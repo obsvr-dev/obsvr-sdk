@@ -112,7 +112,8 @@ async function load(name) {
 }
 
 async function isOffline(name) {
-  const { mod } = await load(name);
+  const { mod, error } = await load(name);
+  if (error) return false;
   return mod?.meta?.offline === true;
 }
 
@@ -124,7 +125,11 @@ async function selection(argv) {
     const rows = [];
     for (const n of avail) {
       if (!exists(n)) rows.push(`  ✗ MISSING   ${n}`);
-      else rows.push(`  ${(await isOffline(n)) ? "○ offline " : "· keyed   "} ${n}`);
+      else {
+        const loaded = await load(n);
+        if (loaded.error) rows.push(`  ✗ ERROR     ${n} (${loaded.error})`);
+        else rows.push(`  ${(await isOffline(n)) ? "○ offline " : "✗ NOT OFFLINE"} ${n}`);
+      }
     }
     console.log(
       "Available suites (○ = runs with no provider key, ✗ = declared but not written):\n" +
@@ -136,12 +141,12 @@ async function selection(argv) {
   if (args.length === 0 || args[0] === "all") return avail;
 
   if (args[0] === "offline") {
-    // A missing suite's offline-ness is unknowable — it has no meta to read.
-    // It is included anyway rather than quietly dropped: "not written yet" is
-    // exactly the state that must not pass as a clean offline run.
-    const out = [];
-    for (const n of avail) if (!exists(n) || (await isOffline(n))) out.push(n);
-    return out;
+    // This repository vendors only the keyless group, so every declared suite
+    // belongs in the offline gate. Importing a module merely to decide whether
+    // to select it made an import failure look like a keyed suite and silently
+    // reduced a broken run to zero suites. Selection is inventory-based; load
+    // and metadata failures are reported by main() as failed suites.
+    return avail;
   }
 
   const unknown = args.filter((a) => !avail.includes(a));
@@ -165,6 +170,12 @@ async function main() {
     if (error) {
       console.log(`   \x1b[31m${missing ? "MISSING" : "ERROR"}\x1b[0m  ${error}`);
       rollup.push({ name, error, missing, results: [], ms: 0 });
+      continue;
+    }
+    if (process.argv[2] === "offline" && mod?.meta?.offline !== true) {
+      const message = "suite is in the vendored keyless group but does not export meta.offline=true";
+      console.log(`   \x1b[31mERROR\x1b[0m  ${message}`);
+      rollup.push({ name, error: message, results: [], ms: 0 });
       continue;
     }
     const start = performance.now();

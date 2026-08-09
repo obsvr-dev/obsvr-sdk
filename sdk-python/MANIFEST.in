@@ -5,4 +5,3 @@
 # them failures with a missing-file cause rather than a real one. Tests run in
 # CI against the repository, where the fixtures exist.
 prune tests
-exclude conformance.pin

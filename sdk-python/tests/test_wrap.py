@@ -191,7 +191,9 @@ class FakeAnthropic:
 
 
 class FakeGeminiResponse:
-    text = "fake gemini answer"
+    def __init__(self, text="fake gemini answer"):
+        self.text = text
+
     usage_metadata = types.SimpleNamespace(
         prompt_token_count=2, candidates_token_count=3, total_token_count=5
     )
@@ -250,6 +252,43 @@ class FakeChatSession:
         return FakeGeminiResponse()
 
 
+class _CurrentGeminiModels:
+    def __init__(self):
+        self.calls = []
+
+    def generate_content(self, *, model, contents, config=None):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        return FakeGeminiResponse()
+
+    def generate_content_stream(self, *, model, contents, config=None):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        return iter((FakeGeminiResponse("current "), FakeGeminiResponse("stream")))
+
+
+class _CurrentGeminiAsyncModels:
+    def __init__(self):
+        self.calls = []
+
+    async def generate_content(self, *, model, contents, config=None):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        return FakeGeminiResponse()
+
+    async def generate_content_stream(self, *, model, contents, config=None):
+        self.calls.append({"model": model, "contents": contents, "config": config})
+
+        async def chunks():
+            yield FakeGeminiResponse("async ")
+            yield FakeGeminiResponse("stream")
+
+        return chunks()
+
+
+class FakeCurrentGeminiClient:
+    def __init__(self):
+        self.models = _CurrentGeminiModels()
+        self.aio = types.SimpleNamespace(models=_CurrentGeminiAsyncModels())
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _init(**extra):
@@ -306,6 +345,27 @@ class TestOpenAIInterception:
         assert ev["prompt"] == "hello"
         assert ev["response"] == "fake openai answer"
         assert ev["input_tokens"] == 7 and ev["output_tokens"] == 5
+
+    def test_monitor_mode_emits_clean_allow_at_sample_rate_zero(self, monkeypatch):
+        _init(sample_rate=0, enforcement_mode="monitor")
+        captured = _captured_events(monkeypatch)
+
+        obsvr.wrap(FakeOpenAI()).chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert len(captured) == 1
+        assert captured[0]["action_taken"] == "allowed"
+
+    def test_enforce_mode_still_samples_clean_allow_at_rate_zero(self, monkeypatch):
+        _init(sample_rate=0, enforcement_mode="enforce")
+        captured = _captured_events(monkeypatch)
+
+        obsvr.wrap(FakeOpenAI()).chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert captured == []
 
     def test_pii_block_prevents_provider_call(self, monkeypatch):
         _init(pii_policy={"rules": {"ssn": "block"}})
@@ -650,6 +710,125 @@ class TestGeminiInterception:
         assert ev["event_type"] == "blocked_call"
         assert ev["status_code"] == 403
         assert "123-45-6789" not in (ev.get("user_input") or "")
+
+    def test_current_client_generate_content_is_governed(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        result = obsvr.wrap(raw).models.generate_content(
+            model="gemini-2.5-flash",
+            contents="hello current gemini",
+            config={"response_mime_type": "application/json"},
+        )
+
+        assert result.text == "fake gemini answer"
+        assert raw.models.calls[0]["config"] == {
+            "response_mime_type": "application/json"
+        }
+        assert captured[0]["provider"] == "google"
+        assert captured[0]["model"] == "gemini-2.5-flash"
+        assert captured[0]["operation"] == "models.generate_content"
+        assert captured[0]["prompt"] == "hello current gemini"
+
+    def test_current_client_block_never_reaches_models_resource(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            obsvr.wrap(raw).models.generate_content(
+                model="gemini-2.5-flash", contents="ssn 123-45-6789"
+            )
+
+        assert raw.models.calls == []
+        assert captured[0]["event_type"] == "blocked_call"
+
+    def test_current_client_blocks_pii_in_config_system_instruction(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            obsvr.wrap(raw).models.generate_content(
+                model="gemini-2.5-flash",
+                contents="clean user content",
+                config={"system_instruction": "ssn 123-45-6789"},
+            )
+
+        assert raw.models.calls == []
+        assert captured[0]["event_type"] == "blocked_call"
+
+    def test_current_client_redacts_keyword_contents_on_the_wire(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        obsvr.wrap(raw).models.generate_content(
+            model="gemini-2.5-flash", contents="mail current@example.com"
+        )
+
+        sent = raw.models.calls[0]["contents"]
+        assert sent == "mail [REDACTED_EMAIL]"
+
+    def test_current_client_named_stream_accumulates_one_event(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        chunks = list(
+            obsvr.wrap(raw).models.generate_content_stream(
+                model="gemini-2.5-flash", contents="stream this"
+            )
+        )
+
+        assert [chunk.text for chunk in chunks] == ["current ", "stream"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "models.generate_content_stream"
+        assert captured[0]["response"] == "current stream"
+
+    def test_current_async_client_allow_redact_and_stream(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        async def run():
+            client = obsvr.wrap(raw)
+            result = await client.aio.models.generate_content(
+                model="gemini-2.5-flash", contents="mail async@example.com"
+            )
+            stream = await client.aio.models.generate_content_stream(
+                model="gemini-2.5-flash", contents="stream async@example.com"
+            )
+            return result, [chunk.text async for chunk in stream]
+
+        result, chunks = asyncio.run(run())
+
+        assert result.text == "fake gemini answer"
+        assert chunks == ["async ", "stream"]
+        assert raw.aio.models.calls[0]["contents"] == "mail [REDACTED_EMAIL]"
+        assert raw.aio.models.calls[1]["contents"] == "stream [REDACTED_EMAIL]"
+        assert [e["operation"] for e in captured] == [
+            "aio.models.generate_content",
+            "aio.models.generate_content_stream",
+        ]
+        assert captured[1]["response"] == "async stream"
+
+    def test_current_async_client_block_never_reaches_models_resource(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        captured = _captured_events(monkeypatch)
+        raw = FakeCurrentGeminiClient()
+
+        async def run():
+            await obsvr.wrap(raw).aio.models.generate_content(
+                model="gemini-2.5-flash", contents="ssn 123-45-6789"
+            )
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            asyncio.run(run())
+
+        assert raw.aio.models.calls == []
+        assert captured[0]["event_type"] == "blocked_call"
 
 
 class TestWireRedactionShapes:

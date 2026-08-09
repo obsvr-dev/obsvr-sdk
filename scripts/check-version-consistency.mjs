@@ -6,6 +6,7 @@
  * Checks: sdk-typescript/package.json .version  ==  sdk-typescript/src/constants.ts SDK_VERSION
  *         ==  sdk-python/obsvr/_version.py __version__
  *         ==  action/action.yml `version` input default
+ *         ==  every version literal in action/README.md
  *
  * The Action is in scope because it installs a pinned @obsvr/sdk to get the
  * obsvr-verify CLI. A stale default there means every CI job using the Action
@@ -63,6 +64,22 @@ if (distinct.length !== 1) {
   fail(`versions disagree: found ${JSON.stringify(distinct)}`);
 }
 const version = distinct[0];
+
+const actionReadme = read("action/README.md");
+const actionReadmeVersions = [
+  ...actionReadme.matchAll(/(?<![\w.])(\d+\.\d+\.\d+)(?![\w.])/g),
+].map((match) => match[1]);
+if (actionReadmeVersions.length === 0) {
+  fail("action/README.md contains no pinned SDK version");
+}
+const staleActionReadmeVersions = [
+  ...new Set(actionReadmeVersions.filter((candidate) => candidate !== version)),
+];
+if (staleActionReadmeVersions.length > 0) {
+  fail(
+    `action/README.md contains stale version literal(s) ${JSON.stringify(staleActionReadmeVersions)}; expected only ${version}`,
+  );
+}
 
 // Optional tag check.
 const tag = process.env.TAG || (process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : "");

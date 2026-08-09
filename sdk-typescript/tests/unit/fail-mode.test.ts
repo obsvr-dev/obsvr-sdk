@@ -316,19 +316,21 @@ describe('failure-disposition registry: declarations match observed behavior', (
       qualifier: 'shadow_exempt',
     });
 
-    const failingFetch = (async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    const unavailableBackend = {
+      type: 'opa' as const,
+      url: 'http://127.0.0.1:1/v1/data/obsvr/allow',
+      allowPrivateNetwork: true,
+    };
 
-    global.fetch = failingFetch;
-    init({ api_key: 't', external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow' } });
+    init({ api_key: 't', external_policy_backend: unavailableBackend });
     expect((await applyPreCallPolicy('hello world', {
       config: getConfig(), provider: 'openai', operation: 'chat.completions.create',
     })).decision).toBe('block');
 
     _reset();
-    global.fetch = failingFetch;
     init({
       api_key: 't',
-      external_policy_backend: { type: 'opa', url: 'https://8.8.8.8/v1/data/obsvr/allow', shadow: true },
+      external_policy_backend: { ...unavailableBackend, shadow: true },
     });
     expect((await applyPreCallPolicy('hello world', {
       config: getConfig(), provider: 'openai', operation: 'chat.completions.create',

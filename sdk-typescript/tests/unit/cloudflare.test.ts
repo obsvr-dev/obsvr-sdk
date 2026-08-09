@@ -24,6 +24,66 @@ async function waitForEvents(n = 1): Promise<void> {
 }
 
 describe('wrapWorkersAI', () => {
+  it('emits an ordinary monitor-mode call at sample_rate 0', async () => {
+    init({ api_key: 'test', sample_rate: 0, enforcement_mode: 'monitor' });
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => ({ response: 'ok' }),
+    });
+
+    await ai.run('@cf/model', { prompt: 'hello' });
+
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({ action_taken: 'allowed', response: 'ok' });
+  });
+
+  it('emits stream evidence in monitor mode even when streaming is configured to skip', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 0,
+      enforcement_mode: 'monitor',
+      streaming_mode: 'skip',
+    });
+    const originalStream = (async function* () {
+      yield { response: 'chunk' };
+    })();
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => originalStream,
+    });
+
+    const result = await ai.run('@cf/model', { prompt: 'hello', stream: true });
+
+    expect(result).toBe(originalStream);
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({
+      action_taken: 'allowed',
+      metadata: { streaming: true },
+    });
+  });
+
+  it('enforces a pre-call block before an enforce-mode skipped stream opens', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      streaming_mode: 'skip',
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    let providerCalls = 0;
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => {
+        providerCalls += 1;
+        return (async function* () {})();
+      },
+    });
+
+    await expect(
+      ai.run('@cf/model', { prompt: 'ssn 123-45-6789', stream: true }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+    await waitForEvents(1);
+    expect(sentEvents[0].event_type).toBe('blocked_call');
+  });
+
   it('audits ai.run with messages input', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     const ai = wrapWorkersAI({

@@ -1067,23 +1067,22 @@ def apply_pre_call_policy(
     metadata: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     scan_text: Optional[str] = None,
+    turn_text: Optional[str] = None,
     tool_name: Optional[str] = None,
     tool_declared_destructive: bool = False,
 ) -> Dict[str, Any]:
     """Compliance boundary before an LLM call (real enforcement).
 
     ``prompt_text`` is the FULL prompt — it is what gets stored/redacted.
-    ``scan_text`` is the text the PII / rules DECISION scans AND what
-    multi-turn injection scores; callers pass the last user message so each
-    turn is governed once, when it arrives, and the multi-turn gate
-    accumulates per-turn deltas (parity with the TS wrapper — scoring the
-    joined history would re-count early turns on every call and inflate the
-    decayed score into a false trip). Defaults to ``prompt_text`` when not
-    provided.
+    ``scan_text`` is the complete provider-bound text the PII, floor, and
+    structured-rule decision evaluates. ``turn_text`` is the newest user/tool
+    turn used only by canary and multi-turn accumulation, so earlier history is
+    not re-counted on every call. Both default to ``prompt_text``.
 
     Returns {"decision", "compliance", "redacted_prompt"}.
     """
     scan = scan_text if scan_text is not None else prompt_text
+    turn = turn_text if turn_text is not None else scan
     # Resolve tenant config if provided
     if tenant_id is not None:
         from .config import get_tenant_config
@@ -1093,13 +1092,16 @@ def apply_pre_call_policy(
     # before any layer reads it. Every user-scoped control below keys on this
     # dict — require_principal (0.4), the session-taint latch, the quota
     # bucket, the decision-input hash — and the signed record resolves its
-    # own user_id as ``opts.user_id or ambient`` (events.build_audit_event).
+    # own user_id with the same nullish precedence (events.build_audit_event).
     # Without this fold the two channels disagreed: an ambient-only principal
     # was attributed on the record but invisible to enforcement, so
     # require_principal refused a call whose signed event named the very
     # principal it claimed was absent — a record contradicting its own reason.
-    # Explicit metadata always wins; the ambient only fills what is unset,
-    # matching the signed channel's ``or`` precedence and tools._identity_meta.
+    # Explicit metadata always wins; the ambient only fills what is absent or
+    # None. In particular, an explicitly supplied empty string MUST survive:
+    # require_principal treats it as unattributed, while replacing it with an
+    # ambient subject would turn a refusal into a permit. This matches the
+    # signed channel's nullish precedence and tools._identity_meta.
     # A fresh dict, never the caller's — this is the enforcing view, not a
     # mutation of what the caller passed. No ambient scope active ⇒ identical
     # to before, byte for byte.
@@ -1108,7 +1110,7 @@ def apply_pre_call_policy(
     if _ambient_subject:
         metadata = dict(metadata or {})
         for _idk in ("user_id", "tenant_id", "service_name"):
-            if not metadata.get(_idk) and _ambient_subject.get(_idk):
+            if metadata.get(_idk) is None and _ambient_subject.get(_idk) is not None:
                 metadata[_idk] = _ambient_subject[_idk]
 
     action_taken = "allowed"
@@ -1173,15 +1175,14 @@ def apply_pre_call_policy(
         #     attribution, not content. Runs after the enforcement-integrity
         #     gate so a paused project keeps its own verdict and rule id, and
         #     reads the enforcing channel (metadata) that every user-scoped
-        #     control keys on. An empty string is a supplied principal; only
-        #     an absent one (None) refuses — the decision digest's presence
-        #     byte draws the same absent-vs-empty line. Monitor mode converts
+        #     control keys on. Only a non-blank string is attributable. Monitor mode converts
         #     this block like any non-integrity block: rolling the flag out
         #     in monitor first is the intended adoption path.
+        from .subject import has_meaningful_principal
         if (
             action_taken != "blocked"
             and getattr(config, "require_principal", False)
-            and (metadata or {}).get("user_id") is None
+            and not has_meaningful_principal((metadata or {}).get("user_id"))
         ):
             action_taken = "blocked"
             action_reason = "policy_violation"
@@ -1255,7 +1256,7 @@ def apply_pre_call_policy(
         from .canary import canary_registry_size
         if canary_registry_size() > 0 and action_taken != "blocked":
             from .canary import scan_for_canary, canary_leak_telemetry
-            leak = scan_for_canary(scan)
+            leak = scan_for_canary(turn)
             if leak["leaked"]:
                 action_taken = "blocked"
                 action_reason = "policy_violation"
@@ -1269,26 +1270,38 @@ def apply_pre_call_policy(
                     mark_tainted(taint_key, "canary_leak", time.monotonic())
 
         _layer = "builtin_pii_scan"
-        # 1. Built-in PII scan (note: empty-dict policy still enables it).
-        #    Presidio NLP results merge with the regex scan when configured,
-        #    matching the TS SDK (regex always runs; Presidio adds NLP types).
+        # 1. Built-in content scan (note: empty-dict PII policy still enables
+        #    it). Session taint owns its prompt-injection latch independently
+        #    of PII policy, so enabling the latch also enables this single scan.
+        #    PII verdicts/telemetry and Presidio remain gated by pii_policy.
         #    With deobfuscation enabled the scanner also sees decoded/stripped
         #    views (server-side normalizer mirror); ``via`` records which view surfaced a
         #    hit the raw text hid.
         pii_scan_via: Optional[str] = None
-        if config.pii_policy is not None and action_taken != "blocked":
+        if (config.pii_policy is not None or taint_cfg) and action_taken != "blocked":
             pii = run_configured_pii_scan(scan, getattr(config, "deobfuscation", None))
-            pii_scan_via = pii.get("via")
+            if config.pii_policy is not None:
+                pii_scan_via = pii.get("via")
             detected_types = list(pii["detected_types"])
             presidio_answered = False
-            if getattr(config, "presidio_analyzer_url", None):
+            if (
+                config.pii_policy is not None
+                and getattr(config, "presidio_analyzer_url", None)
+            ):
                 from .presidio import presidio_scan
                 nlp = presidio_scan(scan, config.presidio_analyzer_url)
                 presidio_answered = bool(nlp.get("answered"))
                 for t in nlp["detected_types"]:
                     if t not in detected_types:
                         detected_types.append(t)
-            if detected_types:
+
+            # SET is independent of PII resolution and affects later turns
+            # only. With pii_policy configured this reuses the exact same scan,
+            # so there is no duplicate work or telemetry.
+            if taint_cfg and "prompt_injection" in detected_types:
+                mark_tainted(taint_key, "prompt_injection", time.monotonic())
+
+            if config.pii_policy is not None and detected_types:
                 action_reason = "pii_detected"
                 detected_types_found = list(detected_types)
                 # Attributed to what ANSWERED, not to what was configured. A
@@ -1297,9 +1310,6 @@ def apply_pre_call_policy(
                 # — naming a detector on the record as having participated in a
                 # verdict it never saw.
                 action_source = "builtin+presidio" if presidio_answered else "builtin"
-                # A detected prompt-injection taints the session.
-                if taint_cfg and "prompt_injection" in detected_types:
-                    mark_tainted(taint_key, "prompt_injection", time.monotonic())
                 resolved = resolve_pii_policy(detected_types, config.pii_policy)
                 # A view-only hit has no locatable span in the raw text, so
                 # "redact" would no-op while the record claims "redacted" —
@@ -1359,14 +1369,14 @@ def apply_pre_call_policy(
             # lets turn 1 trip on its own. The phrase still accrues weak-signal
             # score in score_turn, so an attacker who wraps a payload in quotes
             # gets a quieter line in the log and nothing else.
-            _inj_scan = run_builtin_pii_scan(scan)
+            _inj_scan = run_builtin_pii_scan(turn)
             had_full = any(
                 m["label"] == "prompt_injection" and not m["quoted"]
                 for m in _inj_scan["matches"]
             )
             mt = score_turn(
                 session_key,
-                scan,
+                turn,
                 had_full,
                 threshold=float(mti.get("threshold", 1.0)),
                 half_life_s=float(mti.get("half_life_s", 600.0)),
@@ -2011,6 +2021,12 @@ def _observe_compliance(config: ResolvedConfig) -> Dict[str, Any]:
     observe-only paths must pin the policy state they ran under."""
     from .rules import derive_policy_version
     compliance = dict(DEFAULT_COMPLIANCE)
+    compliance["action_taken"] = "not_evaluated"
+    compliance["policy_not_evaluated"] = {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
     compliance["policy_version"] = derive_policy_version(
         getattr(config, "policy_rules", None) or [],
         getattr(config, "rule_resolution", None),
@@ -2020,8 +2036,8 @@ def _observe_compliance(config: ResolvedConfig) -> Dict[str, Any]:
 
 def apply_observe_policy(prompt_text: str, config: ResolvedConfig) -> Dict[str, Any]:
     """Observe-only policy for framework callbacks: the request already
-    went to the LLM, so policy applies to the *stored* copy.
-    "block" is downgraded to redact-in-event with action_reason pii_detected.
+    went to the LLM, so policy can only change the stored copy. The outbound
+    verdict remains not_evaluated and storage provenance is recorded separately.
     """
     if config.pii_policy is None:
         return {"should_redact_stored": False, "compliance": _observe_compliance(config)}
@@ -2038,14 +2054,25 @@ def apply_observe_policy(prompt_text: str, config: ResolvedConfig) -> Dict[str, 
         if via is not None:
             result["stored_redaction_via"] = via
         return result
-    # redact OR block (downgraded): redact the stored copy. A view-only hit
+    # redact OR block: redact the stored copy without claiming the already-sent
+    # provider request was changed. A view-only hit
     # (stored_redaction_via) has no locatable span — callers MUST redact
     # stored copies with redact_for_storage(text, via), never span redaction.
     compliance = _observe_compliance(config)
-    compliance["action_taken"] = "redacted"
+    compliance["action_taken"] = "not_evaluated"
     compliance["action_reason"] = "pii_detected"
     compliance["action_source"] = "builtin"
-    compliance["redacted_types"] = resolved["redacted_types"] + resolved["blocked_types"]
+    compliance["policy_not_evaluated"] = {
+        "surface": "observe_only_integration",
+        "gate": "pre_call_policy",
+        "reason": "callback_observed_after_operation",
+    }
+    compliance["stored_redaction_telemetry"] = {
+        "stored_redaction_scope": "observe_only",
+        "stored_redaction_types": resolved["redacted_types"] + resolved["blocked_types"],
+        "stored_redaction_outbound_unmodified": True,
+        "stored_redaction_requested_action": resolved["action"],
+    }
     result = {"should_redact_stored": True, "compliance": compliance}
     if via is not None:
         result["stored_redaction_via"] = via

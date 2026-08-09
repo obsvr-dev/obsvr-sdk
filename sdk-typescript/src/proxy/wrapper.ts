@@ -51,8 +51,13 @@ import {
   touchTaint,
   sessionTaintSize,
 } from "../policy/session-taint.js";
-import { getCurrentSubject } from "./subject.js";
-import { presidioScan, presidioRedactText, presidioRedactArgs } from "../policy/presidio.js";
+import { getCurrentSubject, hasMeaningfulPrincipal } from "./subject.js";
+import {
+  NLP_ONLY_PII_TYPES,
+  presidioScan,
+  presidioRedactText,
+  presidioRedactArgs,
+} from "../policy/presidio.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
 import {
   engineVersionFor,
@@ -96,6 +101,7 @@ import {
   applyPostCallPolicy,
   mergePostCallOutcome,
   emitIntegrationEvent,
+  monitorModeRequiresEvidence,
 } from "../integrations/core.js";
 import { spanEnvelopeFor, withSpanMetadata } from "./span.js";
 import { withRunMetadata } from "./agent-run.js";
@@ -116,6 +122,7 @@ import {
   extractResponse as extractGeminiResponse,
   extractModel as extractGeminiModel,
   extractTokenUsage as extractGeminiTokenUsage,
+  extractLastUserText as extractGeminiLastUserText,
   unwrapGeminiResponse,
 } from "./extractors/google.js";
 import type { GeminiRequest, GeminiResponse } from "./extractors/google.js";
@@ -224,8 +231,8 @@ type ApiShape =
  *      - countTokens / messages.countTokens, which carry full prompt text but
  *        return only an integer, so half the evidence a governed event records
  *        does not exist.
- *      - Gemini generateContentStream, whose result object is not itself an
- *        async iterable, and startChat(), whose ChatSession calls a
+ *      - Legacy @google/generative-ai generateContentStream, whose result
+ *        object is not itself an async iterable, and startChat(), whose ChatSession calls a
  *        module-level generateContent rather than a property on the model —
  *        so no property read on the proxy ever happens and NO path table can
  *        reach it.
@@ -244,6 +251,8 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["messages.create", "anthropic-messages"], // Anthropic
   ["messages.parse", "anthropic-messages"], // Anthropic structured outputs
   ["generateContent", "gemini-generate"], // Google Gemini
+  ["models.generateContent", "gemini-generate"], // Maintained @google/genai
+  ["models.generateContentStream", "gemini-generate"], // Maintained @google/genai
   ["responses.create", "openai-responses"], // OpenAI Responses API
   ["responses.parse", "openai-responses"], // OpenAI Responses structured outputs
   // The beta namespaces carry exactly the payload their GA twin carries, so
@@ -344,7 +353,23 @@ const WRAPPED_MARKER = Symbol("obsvr-wrapped");
 const REBIND_MARKER = Symbol("obsvr-rebind");
 
 /** What a governed proxy hands back under {@link REBIND_MARKER}. */
-type RebindTarget = { instance: object; options: WrapOptions };
+type RebindTarget = {
+  instance: object;
+  options: WrapOptions;
+  declaredProvider?: CanonicalProvider;
+};
+
+/** True when another front-door call would rebuild the exact same proxy. */
+function sameWrapOptions(left: WrapOptions, right: WrapOptions): boolean {
+  const keys = new Set([
+    ...Object.keys(left),
+    ...Object.keys(right),
+  ] as Array<keyof WrapOptions>);
+  for (const key of keys) {
+    if (left[key] !== right[key]) return false;
+  }
+  return true;
+}
 
 /**
  * Track the current method path during proxy traversal
@@ -389,6 +414,8 @@ type PathContext = {
   recordedProvider: CanonicalProvider;
   /** Reserved metadata: where the call goes, and how sure of it we are. */
   providerAttribution: Record<string, unknown>;
+  /** Optional fallback supplied by a named compatibility wrapper. */
+  declaredProvider?: CanonicalProvider;
 };
 
 /**
@@ -445,6 +472,10 @@ function detectProvider(
 
   // Google Gemini: generateContent lives directly on the GenerativeModel.
   if (typeof c.generateContent === "function") {
+    return "google";
+  }
+  const models = c.models as Record<string, unknown> | undefined;
+  if (typeof models?.generateContent === "function") {
     return "google";
   }
 
@@ -535,16 +566,9 @@ function extractPromptTextFromArgs(args: unknown): string {
     }
   }
 
-  if (Array.isArray(req.contents)) {
-    for (const c of req.contents as Record<string, unknown>[]) {
-      const cObj = c as Record<string, unknown>;
-      if (Array.isArray(cObj.parts)) {
-        for (const part of cObj.parts as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") parts.push(p.text);
-        }
-      }
-    }
+  if ("contents" in req) {
+    const geminiPrompt = extractGeminiPrompt(req as unknown as GeminiRequest);
+    if (geminiPrompt) parts.push(geminiPrompt);
   }
 
   // OpenAI Responses API: instructions (system) + input (string or item list)
@@ -594,16 +618,8 @@ function extractLastUserMessageText(args: unknown): string {
     }
   }
 
-  // Gemini: contents array
-  if (Array.isArray(req.contents)) {
-    for (let i = (req.contents as unknown[]).length - 1; i >= 0; i--) {
-      const c = (req.contents as Record<string, unknown>[])[i];
-      if (c.role === "user" && Array.isArray(c.parts)) {
-        return (c.parts as Record<string, unknown>[])
-          .map((p) => (typeof p.text === "string" ? p.text : ""))
-          .join(" ");
-      }
-    }
+  if ("contents" in req) {
+    return extractGeminiLastUserText(req as unknown as GeminiRequest);
   }
 
   // OpenAI Responses API: a plain-string input IS the user turn; item
@@ -668,6 +684,21 @@ function redactMessagesInPlace(args: unknown): void {
       return { ...p, text: redactBuiltinPii(p.text) };
     });
 
+  /** Redact every text carrier in the maintained SDK's ContentListUnion. */
+  const redactGeminiContent = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactGeminiContent);
+    if (!value || typeof value !== "object") return value;
+    const item = value as Record<string, unknown>;
+    if (typeof item.text === "string") {
+      return { ...item, text: redactBuiltinPii(item.text) };
+    }
+    if (Array.isArray(item.parts)) {
+      return { ...item, parts: item.parts.map(redactGeminiContent) };
+    }
+    return value;
+  };
+
   /** Redact a `.content` carrier (string or part list) into a NEW object. */
   const redactContentCarrier = (entry: unknown): unknown => {
     if (!entry || typeof entry !== "object") return entry;
@@ -689,13 +720,20 @@ function redactMessagesInPlace(args: unknown): void {
     req.messages = (req.messages as unknown[]).map(redactContentCarrier);
   }
 
-  if (Array.isArray(req.contents)) {
-    req.contents = (req.contents as unknown[]).map((c) => {
-      if (!c || typeof c !== "object") return c;
-      const cObj = c as Record<string, unknown>;
-      if (!Array.isArray(cObj.parts)) return c;
-      return { ...cObj, parts: redactTextParts(cObj.parts) };
-    });
+  if ("contents" in req) {
+    req.contents = redactGeminiContent(req.contents);
+  }
+  if ("systemInstruction" in req) {
+    req.systemInstruction = redactGeminiContent(req.systemInstruction);
+  }
+  if (req.config && typeof req.config === "object") {
+    const geminiConfig = req.config as Record<string, unknown>;
+    if ("systemInstruction" in geminiConfig) {
+      req.config = {
+        ...geminiConfig,
+        systemInstruction: redactGeminiContent(geminiConfig.systemInstruction),
+      };
+    }
   }
 
   // OpenAI Responses API: instructions + input (string or item list)
@@ -1041,6 +1079,18 @@ function applyStoredContentNet(
       ...telemetry,
     },
   };
+
+  // Match the integration event builder: a canary found by the final storage
+  // net on an otherwise-clean event is a policy signal, not an allowed call
+  // with a scrubbed response and no classification.
+  if (
+    scrubbed.telemetry !== undefined &&
+    (event.action_taken === "allowed" || event.action_taken === "not_evaluated")
+  ) {
+    event.event_type = "policy_flag";
+    event.rule_id = event.rule_id ?? "sdk:canary_leak";
+    event.policy_reason = event.policy_reason ?? "Canary token leaked in emitted content";
+  }
 }
 
 
@@ -1364,8 +1414,8 @@ interface PreCallOutcome {
   cleaned_args: unknown[];
   /** The audit fields that were filtered OUT of the caller's arguments. */
   audit_fields: AuditFields;
-  /** Whether an ALLOWED-call event should be emitted (sampling). Enforcement
-   *  already ran regardless; this gates emission only. */
+  /** Whether this event should be emitted after sampling and monitor-mode rules.
+   *  Enforcement already ran regardless; this gates emission only. */
   auditThisCall: boolean;
   /** The compliance verdict this call was governed under. */
   compliance: ComplianceCtx;
@@ -1416,7 +1466,6 @@ async function governCall(
     // Always filter audit fields from args (even if not auditing)
     // This ensures audit fields never reach the LLM provider
     const { cleaned_args, audit_fields } = filterArgs(args);
-
     // For Google providers, extract the model name from the GenerativeModel instance.
     // target.model contains the full path e.g. "models/gemini-1.5-pro".
     const modelHint =
@@ -1435,25 +1484,25 @@ async function governCall(
     // Derive policy version from active rules - stamped on every event emitted for this call.
     const policyVersion = derivePolicyVersion(config.policyRules ?? [], config.ruleResolution);
 
-    // The last user turn is what every builtin gate decides on, and it was
-    // being re-walked from the raw request eight times per governed call. The
-    // walk is pure, so it is computed once and memoized — but the request is
-    // MUTATED in place by outbound redaction, so the memo is explicitly
-    // invalidated at each of those three sites rather than trusted for the
-    // life of the call. A memo without that invalidation would hand the
-    // post-redaction event builders the pre-redaction text and quietly restore
-    // the raw PII this SDK had just removed.
+    // Single-turn accumulation and canary checks intentionally use only the
+    // newest user turn, while provider-bound content policy evaluates every
+    // text role that will leave the process. Memoize both views and invalidate
+    // both after an outbound redaction mutates the copied request.
     let lastUserTextMemo: string | undefined;
+    let decisionTextMemo: string | undefined;
     const lastUserText = (): string =>
       (lastUserTextMemo ??= extractLastUserMessageText(cleaned_args[0]) ?? "");
-    const invalidateLastUserText = (): void => {
+    const decisionText = (): string =>
+      (decisionTextMemo ??= extractPromptTextFromArgs(cleaned_args[0]) ?? "");
+    const invalidatePromptText = (): void => {
       lastUserTextMemo = undefined;
+      decisionTextMemo = undefined;
     };
 
     // Canonical decision record (ADR-2): capture the evaluated text ONCE,
     // before any redaction the pipeline may apply in place, so the sealed
     // digest commits the text as presented to the decision pipeline.
-    const decisionEvaluatedText = lastUserText();
+    const decisionEvaluatedText = decisionText();
 
     // Compliance boundary - runs for ALL calls, including streaming, before any LLM contact.
     // Builds one ComplianceCtx that is stamped on every audit event for this call.
@@ -1526,6 +1575,7 @@ async function governCall(
     // (integrations/core.ts, governance/evaluate.ts) return in their catch,
     // like Python, and need no flag.
     let detectorFailedClosed = false;
+    let detectorFailureObserved = false;
     // Same reason, one step earlier: the session-taint key and sub-config are
     // set by the first step INSIDE the guard and read by the canary, PII and
     // multi-turn steps further down it. A throw before the key is derived
@@ -1586,6 +1636,16 @@ async function governCall(
     let layer = "";
     try {
       layer = "session_taint";
+      // Metadata participates in detector identity/session derivation, so its
+      // caller-controlled accessors belong inside the same failure boundary.
+      // Merging it before the guard let a hostile getter escape into the host
+      // call instead of resolving through failMode.
+      if (ctx.options.metadata || audit_fields.metadata) {
+        audit_fields.metadata = {
+          ...(ctx.options.metadata ?? {}),
+          ...((audit_fields.metadata as Record<string, unknown> | undefined) ?? {}),
+        };
+      }
       // 0.5 Session taint latch: a session compromised on an earlier turn has
       //     its later egress (this LLM call) escalated. ENFORCE runs on PRIOR
       //     taint; SET happens at this call's detection points below. The taint
@@ -1617,12 +1677,12 @@ async function governCall(
       //     identity read is `resolvedUser` — the one resolution above, which
       //     the taint key, the rules context, the approval request and the
       //     signed event all read too, so the channel that refuses is the
-      //     channel that would have attributed. An empty string is a
-      //     supplied principal; only an absent one refuses (Python parity).
+      //     channel that would have attributed. Only a non-blank string is
+      //     attributable.
       if (
         actionTaken !== "blocked" &&
         config.requirePrincipal === true &&
-        resolvedUser == null
+        !hasMeaningfulPrincipal(resolvedUser)
       ) {
         actionTaken = "blocked";
         actionReason = "policy_violation";
@@ -1681,35 +1741,45 @@ async function governCall(
       }
 
       layer = "builtin_pii_scan";
-      // 1. Built-in PII scan (runs before customer hook; skipped when the
-      //    integrity gate already blocked the call)
-      if (config.pii_policy && actionTaken !== "blocked") {
-        const promptText = lastUserText();
+      // 1. Built-in content scan (runs before customer hook; skipped when the
+      //    integrity gate already blocked the call). Session taint owns its
+      //    prompt-injection latch independently of PII policy, so enabling the
+      //    latch also enables this single scan. PII verdicts and telemetry are
+      //    still emitted only when pii_policy is configured.
+      if ((config.pii_policy || taintCfg) && actionTaken !== "blocked") {
+        const promptText = decisionText();
 
         // Builtin regex scan (always runs, fast). With deobfuscation enabled
         // the scanner also sees decoded/stripped views of the text (the server-side normalizer
         // mirror); `via` records which view surfaced a hit that the raw text hid.
         const piiScan = runConfiguredPiiScan(promptText, config.deobfuscation);
         const regexTypes = piiScan.detected_types;
-        piiScanVia = piiScan.via;
+        if (config.pii_policy) piiScanVia = piiScan.via;
 
-        // Presidio NLP scan - always runs when configured, merged with regex results
+        // Presidio remains part of the PII-policy pipeline. Session taint needs
+        // only the built-in prompt-injection detector and does not wake a
+        // configured sidecar on its own.
         let allTypes = regexTypes;
-        if (config.presidio_analyzer_url) {
-          const { detected_types: nlpTypes } = await presidioScan(
+        let presidioAnswered = false;
+        if (config.pii_policy && config.presidio_analyzer_url) {
+          const { detected_types: nlpTypes, answered } = await presidioScan(
             promptText, config.presidio_analyzer_url,
           );
+          presidioAnswered = answered;
           allTypes = [...new Set([...regexTypes, ...nlpTypes])];
         }
 
-        if (allTypes.length > 0) {
+        // A detected prompt-injection taints the session even when no PII
+        // policy exists. The current turn retains its prior behavior; only
+        // subsequent egress is escalated by the latch above.
+        if (taintCfg && allTypes.includes("prompt_injection")) {
+          markTainted(taintKey, "prompt_injection", Date.now());
+        }
+
+        if (config.pii_policy && allTypes.length > 0) {
           actionReason = "pii_detected";
           detectedTypesFound = [...allTypes];
-          actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
-          // A detected prompt-injection taints the session (later egress escalated).
-          if (taintCfg && allTypes.includes("prompt_injection")) {
-            markTainted(taintKey, "prompt_injection", Date.now());
-          }
+          actionSource = presidioAnswered ? "builtin+presidio" : "builtin";
           // Server-side normalizer mirror: seal which view defeated the obfuscation, so
           // "detection survived obfuscation" is itself on the audit record.
           if (piiScanVia !== undefined) {
@@ -1734,6 +1804,9 @@ async function governCall(
               ? ReasonCode.INJECTION_DETECTED
               : ReasonCode.PII_DETECTED;
           } else if (piiAction === "redact") {
+            const requiresNlpRedaction = resolved.redactedTypes.some((type) =>
+              NLP_ONLY_PII_TYPES.has(type),
+            );
             // Enforcement APPLICATION, not detection: the scan already found
             // something and policy already said remove it, so a failure here
             // blocks regardless of failMode rather than send the prompt on
@@ -1741,12 +1814,21 @@ async function governCall(
             const notRedacted = await applyOutboundRedactionAsync(async () => {
               if (typeof cleaned_args[0] === 'string') {
                 if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-                  cleaned_args[0] =
-                    (await presidioRedactText(
-                      cleaned_args[0],
-                      config.presidio_analyzer_url,
-                      config.presidio_anonymizer_url,
-                    )) ?? redactBuiltinPii(cleaned_args[0]);
+                  const original = cleaned_args[0];
+                  const redacted = await presidioRedactText(
+                    original,
+                    config.presidio_analyzer_url,
+                    config.presidio_anonymizer_url,
+                  );
+                  if (
+                    requiresNlpRedaction &&
+                    (redacted === null || redacted === original)
+                  ) {
+                    throw new Error(
+                      "Presidio did not apply the detected NLP-only redaction",
+                    );
+                  }
+                  cleaned_args[0] = redacted ?? redactBuiltinPii(original);
                 } else {
                   cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
                 }
@@ -1756,6 +1838,8 @@ async function governCall(
                     cleaned_args[0],
                     config.presidio_analyzer_url,
                     config.presidio_anonymizer_url,
+                    500,
+                    requiresNlpRedaction,
                   );
                 } else {
                   redactMessagesInPlace(cleaned_args[0]);
@@ -1763,7 +1847,7 @@ async function governCall(
               }
             });
             // Both branches above rewrite the request in place.
-            invalidateLastUserText();
+            invalidatePromptText();
             if (notRedacted) {
               actionTaken = "blocked";
               actionReason = "policy_violation";
@@ -1792,7 +1876,7 @@ async function governCall(
         // joined history — otherwise a benign phrase in an early turn is re-counted
         // on every subsequent call and inflates the decayed score into a false trip
         // (the gate is designed to accumulate per-turn deltas).
-        const promptText = lastUserText();
+        const promptText = decisionText();
         // Keyed off the RESOLVED principal, so a wrap-time or ambient
         // identity gets its own accumulation bucket instead of sharing the
         // process-wide "global" one with every other such session (Python
@@ -1855,7 +1939,7 @@ async function governCall(
       floorOverrideIgnored = undefined;
       floorActive = !!(config.policyFloor && config.policyFloor.length > 0);
       if (floorActive && actionTaken !== "blocked") {
-        const promptText = lastUserText();
+        const promptText = decisionText();
         // The floor's authoritative context (environment, model, provider) is
         // pinned AFTER the caller-metadata spread, so a caller cannot set
         // metadata.model / metadata.currentEnvironment / metadata.provider to
@@ -1894,7 +1978,7 @@ async function governCall(
       ruleId = ruleIdOverride;
       policyReason = policyReasonOverride;
       if (config.policyRules?.length && actionTaken !== "blocked") {
-        const promptText = lastUserText();
+        const promptText = decisionText();
         // Build PolicyEvalContext from the ENFORCING metadata and config
         // environment. Scope-keyed rules (quota by user_id / service_name /
         // tenant_id, namespace and cross-tenant gates) bucket off this
@@ -2042,7 +2126,7 @@ async function governCall(
             }
           }, "policy_rules");
           // Both branches above rewrite the request in place.
-          invalidateLastUserText();
+          invalidatePromptText();
           if (notRedacted) {
             actionTaken = "blocked";
             actionReason = "policy_violation";
@@ -2059,6 +2143,7 @@ async function governCall(
         }
       }
     } catch (err) {
+      detectorFailureObserved = true;
       const failClosed = recordDetectorFailure(layer, err, config);
       if (failClosed) {
         actionTaken = "blocked";
@@ -2218,7 +2303,7 @@ async function governCall(
             }
           });
           // Both branches above rewrite the request in place.
-          invalidateLastUserText();
+          invalidatePromptText();
           if (notRedacted) {
             actionTaken = "blocked";
             actionReason = "policy_violation";
@@ -2352,7 +2437,7 @@ async function governCall(
     // final, check-only, recorded on the event, never decision-affecting.
     let shadowOutcome: ComplianceCtx["shadowOutcome"] = null;
     if (config.policyRules?.some((r) => r.enabled && r.mode === "shadow")) {
-      const promptText = lastUserText();
+      const promptText = decisionText();
       const evalCtx: PolicyEvalContext = {
         currentEnvironment: config.environment,
         model: String((cleaned_args[0] as { model?: unknown })?.model ?? modelHint ?? ""),
@@ -2455,14 +2540,15 @@ async function governCall(
       externalBackend,
     };
 
-    // Emit this call's audit event? Enforcement already ran unconditionally
-    // above; sampling only thins the record of *allowed* calls. Blocked/redacted
-    // (enforcement actions) and errors are always recorded, so a low sample_rate
-    // never hides a policy action.
-    // A monitor-converted event is enforcement evidence, not a plain allowed
-    // call: it is exempt from allowed-call sampling so the would-be verdict
-    // is never dropped, even at sample_rate=0 (Python parity).
-    const auditThisCall = shouldAudit || compliance.actionTaken !== "allowed" || monitorConverted;
+    // Enforce-mode sampling only thins ordinary allowed calls. Monitor mode is
+    // a complete evidence stream, so even ordinary allowed calls bypass it.
+    // Policy action, detector failures, and converted verdicts remain unsampled.
+    const auditThisCall =
+      monitorModeRequiresEvidence(config) ||
+      shouldAudit ||
+      compliance.actionTaken !== "allowed" ||
+      monitorConverted ||
+      detectorFailureObserved;
 
     // 3. Block: emit a forensic audit record, then throw.
     //    Prompt is stored in redacted form (typed placeholders, not raw PII).
@@ -2561,7 +2647,7 @@ async function governCall(
       // keyword block stores "[BLOCKED_BY_POLICY]" without ever having looked
       // at the roles behind it, and a class closed on four paths out of five is
       // a class that is still open.
-      applyStoredContentNet(blockedEvent, config, lastUserText());
+      applyStoredContentNet(blockedEvent, config, decisionText());
 
       sendAuditAsync(config, blockedEvent);
       debugLog(
@@ -2604,7 +2690,10 @@ function createAuditedMethod(
       firstArg !== null &&
       (firstArg as Record<string, unknown>).stream === true
     ) {
-      if (config.streaming_mode === "skip") {
+      if (
+        config.streaming_mode === "skip" &&
+        !monitorModeRequiresEvidence(config)
+      ) {
         debugLog(config, "info", `Skipping streaming request: ${methodPath}`);
         return originalMethod.apply(target, cleaned_args);
       }
@@ -3262,7 +3351,11 @@ function createRecursiveProxy<T extends object>(
       // existing return-unchanged path.
       if (prop === REBIND_MARKER) {
         return ctx.path.length === 0
-          ? ({ instance: obj, options: ctx.options } as RebindTarget)
+          ? ({
+              instance: obj,
+              options: ctx.options,
+              declaredProvider: ctx.declaredProvider,
+            } as RebindTarget)
           : undefined;
       }
 
@@ -3387,6 +3480,15 @@ export function wrap<T extends object>(
   client: T,
   options: WrapOptions = {},
 ): T {
+  return wrapWithProviderHint(client, options);
+}
+
+/** @internal Shared construction path for named compatibility wrappers. */
+export function wrapWithProviderHint<T extends object>(
+  client: T,
+  options: WrapOptions = {},
+  declaredProvider?: CanonicalProvider,
+): T {
   const config = getConfig();
 
   // If disabled, return original client
@@ -3410,18 +3512,32 @@ export function wrap<T extends object>(
     const rebind = (client as unknown as Record<symbol, unknown>)[REBIND_MARKER] as
       | RebindTarget
       | undefined;
+    const resolvedProvider = declaredProvider ?? rebind?.declaredProvider;
+    if (
+      rebind
+      && resolvedProvider === rebind.declaredProvider
+      && sameWrapOptions(rebind.options, options)
+    ) {
+      debugLog(config, "warn", "Client already wrapped with identical options");
+      return client;
+    }
     if (rebind && Object.keys(options).length > 0) {
       // Straight to the constructor, not back through wrap(): the first wrap
       // marked the underlying INSTANCE as wrapped too, so re-entering here
       // would take this same branch, find no rebind on a raw client, and
       // hand back an ungoverned one.
-      return governClient(rebind.instance, { ...rebind.options, ...options }, config) as T;
+      return governClient(
+        rebind.instance,
+        { ...rebind.options, ...options },
+        config,
+        resolvedProvider,
+      ) as T;
     }
     debugLog(config, "warn", "Client already wrapped, returning existing");
     return client;
   }
 
-  return governClient(client, options, config);
+  return governClient(client, options, config, declaredProvider);
 }
 
 /**
@@ -3434,6 +3550,7 @@ function governClient<T extends object>(
   client: T,
   options: WrapOptions,
   config: ResolvedConfig,
+  declaredProvider?: CanonicalProvider,
 ): T {
   // The client's SHAPE, which selects the extractors.
   const provider = detectProvider(client);
@@ -3443,7 +3560,7 @@ function governClient<T extends object>(
   // re-deriving it per call would buy nothing and cost a URL parse on the hot
   // path. Same resolver the compat integrations use — one endpoint table.
   const { provider: recordedProvider, attribution: providerAttribution } =
-    resolveDestination(client, provider);
+    resolveDestination(client, declaredProvider ?? provider);
   debugLog(
     config,
     "info",
@@ -3476,6 +3593,7 @@ function governClient<T extends object>(
     provider,
     recordedProvider,
     providerAttribution,
+    declaredProvider,
   };
 
   // COVERAGE, decided here rather than discovered from missing traffic. The

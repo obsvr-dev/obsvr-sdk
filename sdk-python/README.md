@@ -9,7 +9,8 @@ pip install obsvr-sdk
 ```
 
 > **Enforcement needs no account.** Policy, PII, and agent checks run entirely
-> in your process and block calls with nothing configured but an API key.
+> in your process, but you must configure the controls you want to enforce; an
+> API key enables signing and delivery, not a default block policy.
 > Delivering the signed audit record needs an obsvr ingest service, which is in
 > private beta; you receive its URL together with your key. Until `ingest_url`
 > is set the SDK still enforces — it warns once and delivers nothing.
@@ -23,7 +24,7 @@ Optional extras for the provider clients `obsvr.register` / `obsvr.auto` patch:
 pip install "obsvr-sdk[openai]"           # OpenAI client governance
 pip install "obsvr-sdk[anthropic]"        # Anthropic client governance
 pip install "obsvr-sdk[openai-agents]"    # OpenAI Agents tool gate + tracing processor
-pip install "obsvr-sdk[gemini]"           # Google Gemini (legacy google-generativeai)
+pip install "obsvr-sdk[gemini]"           # Google Gemini (current google-genai + legacy client)
 pip install "obsvr-sdk[mcp]"              # MCP tool governance (mcp 2.x)
 ```
 
@@ -65,35 +66,37 @@ obsvr.init(
 
 client = obsvr.wrap(OpenAI())
 
-# Every call is now intercepted, policy-checked, and audited
+# Supported text-generation methods are policy-checked; clean allows may be sampled.
 client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "What is 2+2?"}],
 )
 ```
 
-Anthropic and Google Gemini work the same way (sync and async clients both supported):
+Anthropic and current Google Gemini work the same way (sync and async clients supported):
 
 ```python
 client = obsvr.wrap(Anthropic())          # messages.create
-model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content / generate_content_async
+client = obsvr.wrap(GoogleGenAI())        # models.generate_content / aio.models.generate_content
 ```
 
-**Which Gemini SDK.** Google ships two, and obsvr integrates one of them:
+**Which Gemini SDK.** Google ships two, and obsvr integrates both:
 
 | Distribution | Extra | State |
 | --- | --- | --- |
 | `google-generativeai` | `obsvr-sdk[gemini]` | **supported, compatibility only** — the legacy line |
-| `google-genai` | — | **not yet supported** — the current SDK; obsvr has no adapter for it |
+| `google-genai` | `obsvr-sdk[gemini]` | **supported** — current 2.x client; unary and streaming generation |
 
-Compatibility only means fixes, not features: the legacy adapter is kept working because a large installed base still runs it, and instrumenting what people actually run is the point. `google-genai` has a different response shape, so support for it is new work rather than a rename.
+Compatibility only means fixes, not features: the legacy adapter is kept working for existing deployments. The two distributions have different method and response shapes and use separate adapters.
 
-Two things to know about the supported one. **It needs the explicit `obsvr.wrap()` above** — unlike the OpenAI and Anthropic clients it is not picked up by `obsvr.init()` alone, and a plainly constructed model emits no events at all. And its declared range is **unbounded on purpose**: one live cell (0.8.6) stands behind it, which shows that version works and locates no boundary, so no floor is claimed rather than one being guessed.
+Both Gemini clients need an explicit `obsvr.wrap()` — unlike OpenAI and Anthropic, Python auto-registration does not intercept either package. The current adapter wraps `GoogleGenAI` and governs `models.generate_content`, `models.generate_content_stream`, and the corresponding `aio.models` methods. The legacy adapter wraps `GenerativeModel` and remains compatibility-only.
 
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
 `messages.create` / `.parse`, their `with_raw_response` and
 `with_streaming_response` variants where the provider exposes them,
-`generate_content` / `generate_content_async`,
+legacy `generate_content` / `generate_content_async`, current
+`models.generate_content` / `models.generate_content_stream` and their
+`aio.models` counterparts,
 `start_chat().send_message` / `.send_message_async`, and the `beta.chat.completions.create` / `.parse`,
 `beta.messages.create`, and `beta.responses.create` namespaces. Anthropic's
 `beta.messages.tool_runner` is also governed from Anthropic 0.68.0, including
@@ -172,9 +175,11 @@ transform is pinned across both SDKs by
 
 ## Framework Integrations
 
-Each integration hooks its framework's real call/tool path and runs the same
-enforcement pipeline (pre-call PII/rules/HITL, and where the framework exposes
-it, post-call governance). **Whether a tool-policy block actually stops the tool
+Each enforcing integration hooks its framework's real call/tool path and runs
+the applicable pre-call PII/rules/HITL pipeline, plus post-call governance where
+the framework exposes it. LangChain, LlamaIndex, and OpenAI Agents model
+callbacks are observe-only; their tool gates are documented separately below.
+**Whether a tool-policy block actually stops the tool
 is a per-integration property, not a property of the SDK** — it depends on
 whether the framework hands obsvr a hook that runs *before* the tool does, and
 several do not. Each tool-policy state below was driven live against a real run
@@ -189,12 +194,12 @@ feature.
 | CrewAI | `integrations.crewai` | `before_tool_call` hook / `step_callback` / kickoff callbacks | observe (agent run, step, task) + post-run output policy. **Tool policy: enforces, through two independent pre-execution mechanisms — driven live on both executor paths with a side-effect-counting tool: a denied tool writes ZERO marker lines under either mechanism, exactly one on every paired allow control, and the two redden independently under mutation. Six further routes were driven live the same way and all gate: delegation to a coworker (including denying the injected delegation tool itself by name), the crew's result cache, the hierarchical manager, `kickoff_async` / `kickoff_for_each` / a Task's `async_execution`, tools attached to a Task rather than an Agent, and streaming — each asserting the tool's payload never reached the caller, not only that nothing ran.** Tool names in `denied_tools` / `allowed_tools` may be written the way CrewAI's docs and prompts spell them ("Delegate work to coworker") or the way CrewAI dispatches them (`delegate_work_to_coworker`): both sides of the comparison are normalized through CrewAI's own function. Before that normalization the two spellings did not match, so a policy written in the documented form governed nothing on this surface — a silent gap, not a false record. (1) `install_tool_gate_hook()` registers on CrewAI's own `before_tool_call` hook system, consulted before every tool execution on both the native function-calling and ReAct paths; it refuses by the hook system's returned sentinel — never by raising, which the dispatcher swallows fail-open — and the agent receives a blocked-tool observation while the run continues. Its record is `blocked` / `TOOL_DENIED`, which on this path is the truth. Process-global (the only scope CrewAI offers for tool hooks), allow/deny list only, and a 1.15.3+ capability: the installer feature-detects the DISPATCH half by attribute presence, never the version string, and on builds where hooks would be registered but never consulted — 1.8.0 through 1.15.2 ship exactly that trap — it refuses loudly and points at `govern_tool`. (2) `obsvr.govern_tool(tool)` gates inside the tool's own callable with the full pre-call policy net; it needs no CrewAI hook API and gates on every version in the supported range, measured through each release's own dispatch chains. With NEITHER mechanism installed the step callback is an audit rail and says so: it fires only after the step it reports, a denied tool that already ran on the ReAct path records `not_evaluated` with the reason in `metadata.obsvr_telemetry.policy_not_evaluated` — never a false `blocked`, and never a raise, because the executor retries raises and re-runs the side effect — and the native path delivers no per-tool callback at all. The **step limit does fire** on the step callback, post-hoc. Run-level audit wires through `before_kickoff_callbacks=[...]` / `after_kickoff_callbacks=[...]` — plural and list-valued. The singular `before_kickoff=` / `after_kickoff=` spellings are not Crew fields on current releases and are silently discarded by Crew's `extra="ignore"` pydantic config, so a crew wired that way emits no run-level audit and raises nothing to say so |
 | AutoGen (ag2) | `integrations.autogen` | `process_message_before_send` hook (message) / `execute_function` (execution) | pre-send block/redact. **Tool policy: enforces, through two independent mechanisms at opposite ends of the same call — driven live at ag2 0.3.2 and 0.9.9 with a side-effect-counting tool: a denied tool writes ZERO marker lines, exactly one on every paired allow control, and the two redden independently under mutation.** (1) The **send hook** inspects the outgoing message: every call in a `tool_calls` array is checked and the step budget is charged per call. It refuses by raising out of `send`, which the framework wraps in no `try`, so the message is never delivered and the chat stops. It used to read `tool_calls[0]` only, so a denied tool anywhere after the first was delivered and executed. Two conditions: register on every agent that can EMIT a tool call (the hook fires on the sender, and registering on the initiating proxy alone leaves tool policy inert), and install `patch_initiate_chat` whenever `max_steps` is set — it is what scopes the budget to a conversation, and **without it `max_steps` is not applied at all**: each affected tool call records `not_evaluated` with the reason rather than being charged against a counter that is per thread for the process lifetime. (2) `install_tool_gate()` gates `ConversableAgent.execute_function` / `a_execute_function`, governing the `_function_map` entry with the full pre-call net before the executor invokes it. **It exists because the send hook governs the MESSAGE, so it governs only routes that send one** — `_process_message_before_send` has exactly two call sites in the framework, `send` and `a_send`, and measured live with the hook installed, a tool-call dict handed straight to `generate_reply`, to `receive`, or to `execute_function` executed the denied tool and returned its payload to the caller. So does an agent the caller never constructs: `run()` builds a hidden executor holding every callable and no hooks, and group and swarm chats build their own the same way, which is why the gate patches the class rather than an instance. Its refusal raises inside the callable, which `execute_function` catches and reports as a failed tool — the body was never entered, the model is told, the conversation continues. Choose by what a denial should do to the run, and note the `run()` family catches the send hook's raise and demotes it to an `ErrorEvent` on the response stream. Not covered, stated rather than implied: `RealtimeAgent` keeps its tools in a separate registry no executor reads (gate those functions with `obsvr.govern_tool` before registering), and code-execution replies run code from message CONTENT rather than a `tool_calls` array, so no tool allow/deny list bounds them |
 | LlamaIndex | `integrations.llamaindex` | `BaseCallbackHandler` (audit) / `get_tools` (gate) | observe + stored-copy PII on the handler. **Tool policy: enforces, through `govern_agent(agent)` — driven live at llama-index-core 0.14.5 and 0.14.23 with a side-effect-counting tool: a denied tool writes ZERO marker lines, exactly one on every paired allow control, with the payload asserted absent from the `ToolCallResult` the caller received, on the plain, ReAct, tool-retriever and multi-agent-handoff routes.** The gate is on the tools and never on the callback, because on this framework a callback gate cannot work: `CBEventType.FUNCTION_CALL` has zero dispatch sites at any current version, and the newer instrumentation dispatcher swallows every handler exception, so nothing raised from one reaches the run. `govern_agent` binds to `get_tools`, where a workflow agent assembles the tools for a turn, and governs each with the full pre-call net. **Which mechanism you install decides the coverage:** `obsvr.govern_tool(tool)` applied by hand covers a `tools=[...]` list and does enforce (measured), but it governs an OBJECT — measured live, a tool supplied per turn by a `tool_retriever`, and a tool whose governed copy was discarded while the agent kept the original, both RAN under a policy that denied them. `govern_agent` reaches them because it governs whatever the agent hands back, whoever built it. Refusal is a raise from inside the tool, which the framework catches and reports as `ToolOutput(is_error=True)`, so the run continues and the model is told — the record, not an exception, is the evidence a refusal happened, and the exception TYPE is what separates a refusal from a tool that merely crashed. Not covered, stated rather than implied: `CodeActAgent`'s generated-code path runs model-written Python through the caller's own `code_execute_fn` instead of calling tools, so no tool allow/deny list bounds it — the gate does reach `real_fn`, so a denied tool called BY NAME from generated code is still refused, but arbitrary generated code is not a tool call; and tools invoked outside an agent (`llm.predict_and_call`, `tools.calling.call_tool`) never consult `get_tools`, so wrap those with `obsvr.govern_tool` at the call site, where the gate holds (measured live) |
-| OpenAI Agents | `integrations.openai_agents` | tool input guardrails / `TracingProcessor` | **Tool policy: enforces, through two independent pre-execution mechanisms — driven live at openai-agents 0.19.0 and 0.19.2 with a side-effect-counting tool: a denied tool writes ZERO marker lines under either mechanism, exactly one on every paired allow control, with the tool's payload asserted absent from the run result, on the plain, streamed and handoff routes; the two redden independently under mutation.** (1) `attach_tool_gate(agent)` appends obsvr's `ToolInputGuardrail` to every function tool reachable from the agent — handoff targets included, by tool OBJECT, so a tool shared between agents is gated for both. The executor consults tool input guardrails BEFORE invoking the tool; refusal is the guardrail contract's `reject_content` sentinel, so the model receives the block message as the tool's result and the run continues. Its record is `blocked` / `TOOL_DENIED`, which on this path is the truth. Allow/deny list only; a 0.4.0+ capability, feature-detected by attribute presence on BOTH framework halves (guardrail types AND the executor's consult site) — a build that would accept the registration and never consult it gets a loud `ImportError` pointing at `govern_tool`, never a silent no-op. Not covered, stated rather than implied: hosted provider-side tools (no client-side invocation to guard) and MCP-server tools, which the framework converts per turn — govern those at the MCP boundary. (2) `obsvr.govern_tool(tool)` gates inside the tool's own `on_invoke_tool` with the full pre-call policy net; its refusal RAISES, which this framework's per-tool error boundary converts to `UserError` — the run aborts with obsvr's typed error in the chain. Choose by what a denial should do to the run. The `TracingProcessor` beneath them is the audit rail: it cannot refuse (processor callbacks are wrapped in the framework's own `try/except`, and a function span ends after its tool returned), and with no mechanism installed a denied tool records `action_taken: "not_evaluated"` with the reason in `metadata.obsvr_telemetry.policy_not_evaluated`. Beside a real gate it defers — no `not_evaluated` next to the gate's own verdict. The step limit and loop detection are observed on the processor's terms. **Its MODEL-call path is observe + stored-copy PII**, the same posture as LangChain and LlamaIndex: until recently it ran no policy pipeline at all, so raw PII went into signed events at any sample rate while its two observe-only siblings on this SDK stored a redacted copy. The scan now runs over what the event will store, in `block` and `redact` modes; `detect_only` deliberately leaves the record readable, and the verdict is `redacted` — never `blocked`, because nothing was |
+| OpenAI Agents | `integrations.openai_agents` | tool input guardrails / `TracingProcessor` | **Tool policy: enforces, through two independent pre-execution mechanisms — driven live at openai-agents 0.19.0 and 0.19.2 with a side-effect-counting tool: a denied tool writes ZERO marker lines under either mechanism, exactly one on every paired allow control, with the tool's payload asserted absent from the run result, on the plain, streamed and handoff routes; the two redden independently under mutation.** (1) `attach_tool_gate(agent)` appends obsvr's `ToolInputGuardrail` to every function tool reachable from the agent — handoff targets included, by tool OBJECT, so a tool shared between agents is gated for both. The executor consults tool input guardrails BEFORE invoking the tool; refusal is the guardrail contract's `reject_content` sentinel, so the model receives the block message as the tool's result and the run continues. Its record is `blocked` / `TOOL_DENIED`, which on this path is the truth. Allow/deny list only; a 0.4.0+ capability, feature-detected by attribute presence on BOTH framework halves (guardrail types AND the executor's consult site) — a build that would accept the registration and never consult it gets a loud `ImportError` pointing at `govern_tool`, never a silent no-op. Not covered, stated rather than implied: hosted provider-side tools (no client-side invocation to guard) and MCP-server tools, which the framework converts per turn — govern those at the MCP boundary. (2) `obsvr.govern_tool(tool)` gates inside the tool's own `on_invoke_tool` with the full pre-call policy net; its refusal RAISES, which this framework's per-tool error boundary converts to `UserError` — the run aborts with obsvr's typed error in the chain. Choose by what a denial should do to the run. The `TracingProcessor` beneath them is the audit rail: it cannot refuse (processor callbacks are wrapped in the framework's own `try/except`, and a function span ends after its tool returned), and with no mechanism installed a denied tool records `action_taken: "not_evaluated"` with the reason in `metadata.obsvr_telemetry.policy_not_evaluated`. Beside a real gate it defers — no `not_evaluated` next to the gate's own verdict. The step limit and loop detection are observed on the processor's terms. **Its MODEL-call path is observe + stored-copy PII**, the same posture as LangChain and LlamaIndex: until recently it ran no policy pipeline at all, so raw PII went into signed events at any sample rate while its two observe-only siblings on this SDK stored a redacted copy. The scan now runs over what the event will store, in `block` and `redact` modes; `detect_only` deliberately leaves the record readable. When only the stored copy changes, the event records `action_taken: "not_evaluated"` and carries storage provenance in `metadata.obsvr_telemetry` — never `redacted` or `blocked`, because nothing changed the provider-bound call |
 | MCP | `integrations.mcp` | `ClientSession.send_request` / `call_tool` / `list_tools` | request + response + discovery governance. **Tool policy: enforces** — a denied tool's callback does not run, including under the default `flag` taint action, because the gate sits on the request path itself rather than on a callback near it. **Driven end to end over real JSON-RPC against a real server, on protocol majors 1 and 2**: a denied tool at ZERO executions with its payload absent from what the caller received, and a paired allow control at exactly one, on every client route into `tools/call` — the documented `call_tool`, a hand-built frame handed to `send_request`, `experimental.call_tool_as_task`, discovery-then-call, and a `ClientSessionGroup` holding the governed session. `call_tool` is a convenience over `send_request` and was not the only way in: before the gate also bound to `send_request`, the task API and a hand-built frame each executed a denied tool, the raw route additionally returning its payload to the caller. One route is uncovered and measured rather than described: a `ClientSessionGroup` handed the RAW session from underneath an instance wrapper dispatches through that object, so `govern_mcp` never sees the call and only the class-level `patch_mcp` reaches it — the same object-not-name property `govern_tool` carries. Descriptor fields are read under both protocol spellings (`inputSchema` / `input_schema`), so the 2.0 rename does not silently empty the schema-surface poisoning scan, the descriptor pin hash or the destructive-capability gate. No step limit is implemented in this integration |
 | **AWS Bedrock** | `integrations.bedrock` | boto3 `converse` / `invoke_model` (+ streams) | pre-call block/redact, post-call output governance |
 | **Vertex AI** | `integrations.vertex` | `GenerativeModel.generate_content` | pre-call block/redact, post-call output governance |
-| **PydanticAI** | `integrations.pydantic_ai` | `Agent._get_toolset` (`govern_agent`) / `WrapperToolset.call_tool` (`ObsvrToolset`) | tool block before delegation — the same pre-execution boundary MCP holds on. **Driven live at both ends of the declared range**, and at the latest version against a real provider whose model chose to call the tool: a denied tool at ZERO side-effect writes with its payload absent from the caller's result, paired allow controls at exactly one. **Which mechanism you install decides what is covered.** `govern_agent(agent)` binds to the toolset the agent assembles for its tool manager — the one object every dispatch crosses — so `@agent.tool`, `@agent.tool_plain`, `Agent(tools=[...])` and every toolset passed to `Agent(toolsets=[...])` are all governed, including tools registered after the call. `ObsvrToolset` governs the toolset it wraps and nothing beside it: an agent's own function toolset is a SIBLING of the wrapped one, and a combined toolset dispatches each call to whichever sibling owns the tool, so a tool registered with `@agent.tool` executed under a policy naming it — measured, not inferred. A refusal raises and is not a `ModelRetry`, so the run ends rather than the model being handed a retry prompt; callers should expect to catch it. Caller options (`user_id` / `service_name` / `metadata`) are declared fields so they survive the `dataclasses.replace` rebuild the agent performs on its toolset tree; held outside them they were dropped, and the events named no principal while still refusing correctly. No step limit is implemented |
-| **Haystack 2.x / 3.x** | `integrations.haystack` | `@component` pipeline node | block aborts the pipeline before the generator. **Driven live** against a real `Pipeline` and a real Generator at both ends of the declared range, graded on the bytes the provider received: a blocked run reaches the provider zero times where the same pipeline allowed reaches it once, and a redacted run puts the scrubbed text on the wire where the same prompt under no policy puts the raw value there. This is a pipeline node rather than a callback, which is why it can refuse. Catching it needs care at 3.x: a component's exception reaches the caller of `pipeline.run()` as `PipelineRuntimeError` with the obsvr error demoted to `__cause__`, so `except ObsvrHaystackBlocked` catches nothing there — use `is_obsvr_block(exc)`, which walks the chain. One limitation, measured rather than warned about: the host attaches a snapshot of the pipeline inputs to that error, so the prompt obsvr redacted out of its own record is still reachable on the exception object the caller holds |
+| **PydanticAI** | `integrations.pydantic_ai` | `Agent._get_toolset` (`govern_agent`) / `WrapperToolset.call_tool` (`ObsvrToolset`) | tool block before delegation — the same pre-execution boundary MCP holds on. **Driven live at both ends of the declared range**, and at the highest tested version against a real provider whose model chose to call the tool: a denied tool at ZERO side-effect writes with its payload absent from the caller's result, paired allow controls at exactly one. **Which mechanism you install decides what is covered.** `govern_agent(agent)` binds to the toolset the agent assembles for its tool manager — the one object every dispatch crosses — so `@agent.tool`, `@agent.tool_plain`, `Agent(tools=[...])` and every toolset passed to `Agent(toolsets=[...])` are all governed, including tools registered after the call. `ObsvrToolset` governs the toolset it wraps and nothing beside it: an agent's own function toolset is a SIBLING of the wrapped one, and a combined toolset dispatches each call to whichever sibling owns the tool, so a tool registered with `@agent.tool` executed under a policy naming it — measured, not inferred. A refusal raises and is not a `ModelRetry`, so the run ends rather than the model being handed a retry prompt; callers should expect to catch it. Caller options (`user_id` / `service_name` / `metadata`) are declared fields so they survive the `dataclasses.replace` rebuild the agent performs on its toolset tree; held outside them they were dropped, and the events named no principal while still refusing correctly. No step limit is implemented |
+| **Haystack 2.x / 3.x** | `integrations.haystack` | `@component` pipeline node | a block emits a terminal `blocked` branch and omits the connected `prompt` output, so the downstream generator never becomes runnable. **Driven through real Pipeline schedulers** against Haystack 2.0.0 sync and 3.0.0 sync/async with paired allow controls: blocked runs reach the generator zero times, return only the safe block branch, and create no `PipelineRuntimeError` snapshot carrying the prompt; allowed runs reach it once. A redacted run sends the scrubbed prompt downstream. Callers inspect `result["guard"]["blocked"]`. The caller still owns the input object it supplied, and host-level content tracing can observe inputs before any in-graph guard runs. |
 | **Haystack Agent tools** | `integrations.haystack` | `before_tool` hook | **Tool policy: enforces** — `install_tool_gate_hook()` registers obsvr's gate as `Agent(hooks={"before_tool": [...]})`. The Agent runs it before it resolves the pending tool calls and before it builds the executor that dispatches them, so a refusal takes the denied call out and leaves its siblings pending rather than racing one already in flight — driven with a denied call and a benign one in the same reply, and only the benign one runs. The gate rules on the CALL rather than on a tool object, which is what makes it total here: tools handed to `run(tools=...)`, tools inside a `Toolset` that respawns per run, and tools rebuilt by a serialization round-trip all still arrive as a named call in the Agent's own state. Refusal answers the model and the run continues; `on_denial="abort"` raises instead. Allow/deny only — `obsvr.govern_tool` carries the rest of the pre-call net and aborts. Requires the `before_tool` hook point, which 2.0.0 does not have: the installer probes for it and refuses loudly rather than arming a gate nothing would consult. **Survives serialization**, measured: an Agent saved with `to_dict` and rebuilt with `from_dict` comes back with the hook and still refuses at zero executions, where the same reload with no mechanism runs the denied tool. A `govern_tool`-wrapped tool does NOT survive that cycle — serialization records the tool's own `function` while the governor sits on `invoke`, so the reload succeeds and hands back an ungoverned tool. Register `obsvr.integrations.haystack` on Haystack's deserialization allowlist for the hook to load back |
 | **Haystack `ComponentTool` / `PipelineTool`** | `integrations.haystack` | — | **Not covered, and measured rather than warned about.** These wrap a component (or a pipeline) and keep it as a live attribute, so the gate covers the TOOL CALL while the wrapped object stays reachable to anyone holding the tool. Driven: a denied `ComponentTool` runs zero times through the Agent, and the same component invoked directly off the tool — or added to a Pipeline of its own — runs once and returns its payload, with nothing claiming to have blocked either. This is the object-scope limit every tool gate in this SDK has; put the capability behind MCP, or govern the component's own entry point, if a second reference must not reach it |
 
@@ -208,9 +213,13 @@ gate, the response-side scan and PII **blocking** do not run there, and metering
 is opt-in. So a `pii_policy` of `{"rules": {"ssn": "block"}}` refuses the call
 through `obsvr.wrap()`, Bedrock, Vertex and MCP, and through these three the call
 goes out with the SSN in it while the event honestly records that the stored
-copy was redacted. Put an enforcement decision on `obsvr.wrap()` or on MCP. This
-is about the model call only — all three of these surfaces carry a tool gate
-that enforces, graded in the table above.
+copy was redacted. This storage-only case records
+`action_taken: "not_evaluated"` plus
+`stored_redaction_scope`, `stored_redaction_types`,
+`stored_redaction_outbound_unmodified` and `stored_redaction_requested_action`
+under `metadata.obsvr_telemetry`. Put an enforcement decision on `obsvr.wrap()`
+or on MCP. This is about the model call only — all three of these surfaces carry
+a tool gate that enforces, graded in the table above.
 
 **"Metering is opt-in" means the default is OFF, and that is a decision.** ``meter_integration_events`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
 
@@ -268,17 +277,15 @@ pipe.connect("guard.prompt", "llm.prompt")    # haystack-ai 2.x, OpenAIGenerator
 pipe.connect("guard.prompt", "llm.messages")  # haystack-ai 3.x, OpenAIChatGenerator
 
 # Haystack tools are governed separately, by the Agent's own before_tool hook.
-from obsvr.integrations.haystack import install_tool_gate_hook, is_obsvr_block
+from obsvr.integrations.haystack import install_tool_gate_hook
 agent = Agent(chat_generator=..., tools=[...],
               hooks={"before_tool": [install_tool_gate_hook()]})
 
-# A component's refusal reaches the caller of pipeline.run() wrapped, so match
-# it by walking the cause chain rather than by catching the obsvr type.
-try:
-    pipe.run({"guard": {"prompt": "..."}})
-except Exception as exc:
-    if not is_obsvr_block(exc):
-        raise
+# The prompt guard uses a terminal result rather than an exception, which keeps
+# the raw prompt out of Haystack's PipelineRuntimeError snapshots.
+result = pipe.run({"guard": {"prompt": "..."}})
+if result.get("guard", {}).get("blocked"):
+    handle_policy_block(result["guard"]["block_reason"])
 ```
 
 ### Agent runs
@@ -299,9 +306,10 @@ never inferred. (TypeScript: `await obsvr.agentRun("support-agent", () => agent.
 
 ## Per-request identity
 
-Every governed call resolves a principal — the `user_id` that user-scoped quota
+When supplied, a governed call resolves one principal — the `user_id` that user-scoped quota
 buckets meter, the session-taint latch keys on, approval grants bind to, and the
-signed event carries inside the decision preimage. One resolution feeds both
+signed event carries inside the decision preimage. Attribution is optional unless
+`require_principal=True`. One resolution feeds both
 enforcement and the record: per-call `metadata` first, then the wrap-time
 `user_id=` option, then the ambient subject below. This used to be two channels
 on the generic tool governor — the wrap-time kwarg reached the **signed record
@@ -334,9 +342,9 @@ nothing on the record to say so. If a tool body hops to a worker thread, pass
 `user_id` explicitly on that path.
 
 **`require_principal=True`** (off by default) refuses a governed call whose
-enforcing channel carries no `user_id` at all — `PRINCIPAL_REQUIRED`, after the
-enforcement-integrity gate, before any scanning layer. An empty string is a
-supplied principal; only an absent one refuses. It is enforced in the shared
+enforcing channel carries no non-blank `user_id` — `PRINCIPAL_REQUIRED`, after the
+enforcement-integrity gate, before any scanning layer. Empty and whitespace-
+only strings are unattributed. It is enforced in the shared
 pre-call pipeline (`wrap()`, the integrations, `govern_tool`, MCP) and arms the
 tool and MCP pre-call nets by itself, so a config whose only policy is this
 flag still refuses there.
@@ -370,11 +378,11 @@ obsvr.init(
 
 Built-in regex detection covers 13 PII types including SSN, credit cards, API keys, AWS access keys, private keys, GitHub tokens, Slack webhooks, JWTs, and prompt-injection patterns. Optional [Presidio](https://microsoft.github.io/presidio/) integration (set `presidio_analyzer_url`) adds the 6 NLP types (`name`, `address`, `person`, `location`, `medical`, `national_id`) for the full 19-type taxonomy. Detection parity with the TypeScript SDK is enforced by shared test vectors.
 
-**Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; **`require_principal=True`** — refuse a call that arrives with no `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; an empty string counts as supplied — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md) for each control's exact guarantee and boundary.
+**Opt-in security controls** (all off by default): **`policy_floor`** — a non-overridable operator baseline (same shape as a policy rule) that customer rules and the `on_pre_call` hook can't weaken, with a floor `redact` failing closed to a block; **`deobfuscation={"enabled": True}`** — also scan base64/hex/percent-decoded and invisible/confusable-folded views so encoded payloads can't dodge detection; **`mcp_tool_policy={"pinning": {"enabled": True, "mode": "block"}}`** — content-hash MCP tool descriptors to catch a rug-pull swap; **`session_taint={"enabled": True}`** — latch a session as compromised on an injection/canary leak and escalate later egress, with `destructive_tools` naming exact tools a tainted session may never invoke even in flag mode; **`require_principal=True`** — refuse a call that arrives with no non-blank `user_id` on the enforcing channel (`PRINCIPAL_REQUIRED`; empty and whitespace-only strings are unattributed — see [Per-request identity](#per-request-identity)); and **canary honeytokens** via `mint_canary()` — plant a unique token and get a CRITICAL signal if it resurfaces. See [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md) for each control's exact guarantee and boundary.
 
 **Global monitor mode.** `enforcement_mode="monitor"` is one flip meaning
-"keep deciding and recording, stop enforcing": every layer still evaluates,
-every event still emits, and a final block is converted to an allow whose
+"keep deciding and recording, stop enforcing": every applicable layer still evaluates,
+every governed decision and execution-span event emits, and a final block is converted to an allow whose
 `shadow_outcome` carries the would-be verdict with the same `rule_id` and
 `reason_code` an enforcing run records. Two classes enforce in **both**
 modes: the enforcement-integrity gate (kill switch / fail-closed staleness),
@@ -450,7 +458,7 @@ Semantics (byte-identical to the TypeScript SDK, pinned by shared conformance fi
 
 - **Deny-wins merge.** A `deny` from *either* the local rules or the backend blocks the call. A backend `allow` never downgrades a local block.
 - **Fail-closed.** A backend error or timeout counts as `deny`. Use `"shadow": True` for a safe, observe-only rollout that records what the backend *would* have done without ever blocking.
-- **SSRF-guarded.** The backend URL must be `http(s)`; private / loopback / link-local / cloud-metadata addresses (`169.254.169.254`, `10/8`, `127/8`, `::1`, …) are refused, resolving the hostname before connecting. A legitimate sidecar on `localhost`/a private network needs `"allow_private_network": True`; the cloud-metadata and link-local ranges are blocked even then.
+- **SSRF-guarded.** The production transport resolves the backend hostname once, rejects the complete address snapshot if any answer is private / loopback / link-local / cloud metadata, and pins a fresh connection to an approved numeric address while retaining the original Host header and TLS server name. Redirects are not followed. A legitimate sidecar on `localhost`/a private network needs `"allow_private_network": True`; cloud-metadata and link-local ranges remain blocked. An explicitly injected transport is a trusted embedding seam and must provide equivalent address pinning.
 - **Provenance.** Each event records which backend decided via `external_backend` (identity, backend type, raw outcome, shadow flag, and a hash of the effective backend policy).
 
 The **OPA** endpoint is POSTed `{"input": <decision document>}` and its `result` is read as allow (boolean, or `{allow, reasons}`); the **Cedar** endpoint receives the decision document and its `decision` (`Allow`/`Deny`) is read. The decision document carries non-content fields only — operation, provider, model, principal, the local decision so far, the rules hash, and a SHA-256 **digest** of the prompt (never the raw prompt). Zero-config default is no backend.
@@ -459,19 +467,18 @@ The **OPA** endpoint is POSTed `{"input": <decision document>}` and its `result`
 
 Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature (`prev_sig`). The signing algorithm is byte-for-byte identical to the TypeScript SDK, verified by shared cross-language test vectors, so the ingest service verifies events from both SDKs with the same code and countersigns each accepted event.
 
-Exported bundles verify offline with the `obsvr-verify` CLI (shipped in `@obsvr/sdk`), and merges can be gated on it in CI via the [obsvr Evidence Verification GitHub Action](https://github.com/obsvr-dev/obsvr-sdk/blob/main/action/README.md).
+Exported bundles verify offline with the `obsvr-verify` CLI shipped by both SDK packages, and merges can be gated on it in CI via the [obsvr Evidence Verification GitHub Action](https://github.com/obsvr-dev/obsvr-sdk/blob/main/action/README.md).
 
 ## Known Limitations & Architecture Notes
 
-We document enforcement limits honestly.
+The boundaries below are enforcement limits.
 
 ### Before you install: the five limits of the Python SDK
 
 **Scope: this list is the Python SDK only.** The two SDKs do not have the same
-limitations — the TypeScript SDK has three of its own that do not apply here (it
-is ESM-only, its named compatibility wrappers govern one method, and its
-zero-code auto-register misses two import shapes), and one below does not apply
-to it. The combined list for both, with the scope marked on each entry, is in the
+limitations — the TypeScript SDK has two of its own that do not apply here (it
+is ESM-only, and its zero-code auto-register misses documented import and timing
+shapes), and one below does not apply to it. The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 **A limit measured on one SDK is a hypothesis about the other, not a fact about
@@ -487,7 +494,7 @@ it could not support. Read each list as scoped, not as a guarantee about what is
 absent elsewhere.
 
 1. **Most integration tests drive hand-written fakes, not the real frameworks.**
-   Only the MCP surface runs against the real upstream package in CI. A green
+   MCP and maintained Google Gen AI run against real upstream packages in CI. A green
    integration suite says the shape is right, not that the framework behaves the
    way the test models it. [`tests/README.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-python/tests/README.md) says which
    surfaces are which.
@@ -536,9 +543,11 @@ absent elsewhere.
    tool-policy decision means what it says.
    [Grading](#framework-integrations).
 
-5. **The current Google Gemini SDK is not supported.** obsvr binds
-   `google-generativeai`, the legacy line, which reached end-of-life in August
-   2025. `google-genai` has no adapter and is not intercepted.
+5. **Current Gemini coverage is method-bounded.** `google-genai` 2.x is
+   governed through explicit wrapping on unary and streaming generation for
+   sync and async clients. Chat sessions, Live API, Interactions, batches,
+   token counting, and binary/multimodal payload contents remain outside this
+   wrapper.
 
 - **Transport**: `init()` raises when a non-localhost `ingest_url` uses plaintext `http` (localhost, `127.0.0.1`, and `[::1]` are exempt for local development — compared as the parsed hostname, never as a substring). Set the environment variable `OBSVR_ALLOW_HTTP=1` to explicitly allow http, e.g. behind a TLS-terminating proxy on a private network. `ingest_url` also runs the SSRF guard at `init()`: the scheme must be `http(s)`, so `file:`, `gopher:` and `ftp:` are refused, and the cloud-metadata address is refused in every spelling — including over `https`, and regardless of `OBSVR_ALLOW_HTTP`, which relaxes the TLS posture only. The guard is static, so a hostname that *resolves* to a private address is not refused; see `SECURITY.md`.
 - **Signing model**: signatures are derived from your API key inside the SDK. They prove capture order and detect after-the-fact modification, but a party holding the API key could construct validly-signed events. Server-side countersigning at ingest binds accepted events to a key that never leaves the server. For local non-repudiation without trusting ingest, set `device_signing_key_file` to an operator-generated Ed25519 key: every event also carries a `device_sig` over the same preimage the HMAC covers, verified offline with `obsvr-verify --device-pubkey <pinned key>` (with or without the API key). Pinned keys are trusted; an unpinned key id is foreign, never trusted on first use; a missing seal on a pinned chain is a break. The SDK never generates the key (a key it cannot read refuses at init; signing needs an Ed25519 backend — `pip install "obsvr-sdk[crypto]"` or PyNaCl). See [`SECURITY.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md).

@@ -11,6 +11,7 @@ import { issueExecutionToken } from './token.js';
 import { getConfig, isInitialized, isPolicyEnforcementDegraded } from '../proxy/config.js';
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from '../policy/rules.js';
 import type { PolicyEvalContext, ShadowOutcome } from '../policy/rules.js';
+import { hasMeaningfulPrincipal } from '../proxy/subject.js';
 
 /**
  * Whether monitor mode may convert THIS final block into an allow.
@@ -93,12 +94,15 @@ export async function evaluate(
   //     before any scanning layer runs — the refusal is about attribution,
   //     not content. Runs after the enforcement-integrity gate so a paused
   //     project keeps its own verdict and rule id, and reads the same folded
-  //     identity the rules context receives (`request.user_id`). An empty
-  //     string is a supplied principal; only an absent one refuses — the
-  //     decision digest's presence byte draws the same absent-vs-empty line.
+  //     identity the rules context receives (`request.user_id`). Only a
+  //     non-blank string is attributable.
   //     Monitor mode converts this block like any non-integrity block. Twin:
   //     the require_principal gate in the Python pre-call pipeline.
-  if (decision === 'PERMITTED' && cfg.requirePrincipal === true && request.user_id == null) {
+  if (
+    decision === 'PERMITTED' &&
+    cfg.requirePrincipal === true &&
+    !hasMeaningfulPrincipal(request.user_id)
+  ) {
     decision = 'BLOCKED';
     reasonCode = ReasonCode.PRINCIPAL_REQUIRED;
     ruleId = 'sdk:principal_required';

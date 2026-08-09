@@ -263,7 +263,7 @@ class _GovernedGenerativeModel:
             if cfg is None:
                 return original(*args, **kwargs)
             # sampling gates ONLY audit emission, never enforcement.
-            should_audit = _sender.should_sample(cfg.sample_rate)
+            should_audit = _sender.should_emit(cfg)
 
             request = args[0] if args else kwargs.get("contents")
             is_stream = bool(kwargs.get("stream"))

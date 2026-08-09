@@ -21,11 +21,9 @@ const INTERCEPT_PARAM = 'obsvr-intercept';
 /**
  * Bare specifiers we intercept, mapped to obsvr provider ids.
  *
- * Google ships two SDKs and this table lists one of them, which is the state
- * the READMEs publish: `@google/generative-ai` is SUPPORTED, COMPATIBILITY
- * ONLY — fixes, not features — and `@google/genai` is NOT YET SUPPORTED. There
- * is no entry for the latter anywhere in this source tree, so an application
- * on it gets no zero-code interception at all.
+ * Google ships two SDKs. The maintained `@google/genai` and legacy
+ * `@google/generative-ai` packages have different client exports and method
+ * paths, so they keep distinct shim ids while both route to provider `google`.
  *
  * The legacy line is end-of-life: last published 0.24.1 in April 2025,
  * upstream repo renamed to `deprecated-generative-ai-js`, ended August 2025.
@@ -33,13 +31,21 @@ const INTERCEPT_PARAM = 'obsvr-intercept';
  * still run it, and instrumenting what people run is the job. npm carries no
  * deprecation flag on any version of either package, so neither `npm outdated`
  * nor `npm audit` says a word about which one a project is on — hence this
- * note. Adding `@google/genai` is a separate change, not a rename, because its
- * response shape differs; it is scheduled work rather than an oversight.
+ * note.
  */
 const PROVIDER_SPECIFIERS: Record<string, string> = {
   openai: 'openai',
   '@anthropic-ai/sdk': 'anthropic',
   '@google/generative-ai': 'google',
+  '@google/genai': 'google-genai',
+};
+
+/** Shim id -> canonical provider passed to the runtime interceptor. */
+const CANONICAL_PROVIDER: Record<string, string> = {
+  openai: 'openai',
+  anthropic: 'anthropic',
+  google: 'google',
+  'google-genai': 'google',
 };
 
 /**
@@ -63,7 +69,7 @@ const KNOWN_PROVIDERS = new Set(Object.values(PROVIDER_SPECIFIERS));
  *
  * Membership is the fix: `resolve` records what it tagged, `load` serves a shim
  * only for those. The set is bounded by the number of distinct provider module
- * URLs in the process (three specifiers), and hooks registered with
+ * URLs in the process (four specifiers), and hooks registered with
  * `module.register()` share one module instance on the loader thread, so the
  * two halves see the same set. A worker that registers separately gets its own
  * instance and its own `resolve`, so it is self-consistent too.
@@ -162,6 +168,7 @@ const PROVIDER_CLIENT_EXPORTS: Record<string, readonly string[]> = {
   openai: ['OpenAI', 'AzureOpenAI', 'BedrockOpenAI'],
   anthropic: ['Anthropic'],
   google: ['GoogleGenerativeAI'],
+  'google-genai': ['GoogleGenAI'],
 };
 
 /**
@@ -187,11 +194,12 @@ function buildShim(provider: string, originalUrl: string, runtimeUrl: string): s
   ];
   // The default export is the primary client for openai and anthropic; google
   // has no default and is reached only through its named export.
-  const hasDefault = provider !== 'google';
+  const canonicalProvider = CANONICAL_PROVIDER[provider] ?? provider;
+  const hasDefault = canonicalProvider !== 'google';
   if (hasDefault) {
     lines.push(
       `import { default as $obsvrDefault } from ${orig};`,
-      `const $obsvrPatchedDefault = $obsvrIntercept(${JSON.stringify(provider)}, $obsvrDefault);`,
+      `const $obsvrPatchedDefault = $obsvrIntercept(${JSON.stringify(canonicalProvider)}, $obsvrDefault);`,
       `export default $obsvrPatchedDefault;`,
     );
   }
@@ -205,7 +213,7 @@ function buildShim(provider: string, originalUrl: string, runtimeUrl: string): s
     }
     lines.push(
       `import { ${name} as $obsvrOriginal${index} } from ${orig};`,
-      `const $obsvrPatched${index} = $obsvrIntercept(${JSON.stringify(provider)}, $obsvrOriginal${index});`,
+      `const $obsvrPatched${index} = $obsvrIntercept(${JSON.stringify(canonicalProvider)}, $obsvrOriginal${index});`,
       `export { $obsvrPatched${index} as ${name} };`,
     );
   });

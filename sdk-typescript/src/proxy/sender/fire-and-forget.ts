@@ -20,8 +20,12 @@ import {
   AUDIT_GAP_GOVERNANCE_EVENT,
   AUDIT_GAP_METADATA_KEY,
   AUDIT_GAP_OPERATION,
+  AUDIT_GAP_REASON_INGEST_REJECTED,
+  AUDIT_GAP_REASON_PERMANENT_FAILURE,
   AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+  AUDIT_GAP_REASON_RETRY_EXHAUSTED,
   formatAuditGapPrompt,
+  readAuditGapClaim,
 } from "../audit-gap.js";
 import {
   MAX_QUEUE_SIZE,
@@ -210,8 +214,8 @@ let gapMarkerOrdinal = 0;
 
 // ─── SDK integrity state (Phase 1 + 2 + 3) ───────────────────────────────────
 
-/** Stable session UUID for this SDK process lifetime - groups the monotonic sequence */
-const sdkSessionId: string = randomUUID();
+/** Current session UUID. Post-sign delivery loss starts a fresh chain. */
+let sdkSessionId: string = randomUUID();
 
 /** Monotonic event counter - 1-based, increments per enqueued event */
 let seqNo = 0;
@@ -469,7 +473,8 @@ async function sendEventBatch(
  * preserving order, up to MAX_SEND_RETRIES attempts per item. Items past
  * the retry budget are dropped and counted.
  */
-function requeueFront(config: ResolvedConfig, items: QueueItem[]): void {
+function requeueFront(config: ResolvedConfig, items: QueueItem[]): QueueItem[] {
+  const exhausted: QueueItem[] = [];
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
     if (item.retries < MAX_SEND_RETRIES) {
@@ -477,6 +482,7 @@ function requeueFront(config: ResolvedConfig, items: QueueItem[]): void {
       senderStats.retries++;
       pendingQueue.unshift(item);
     } else {
+      exhausted.unshift(item);
       droppedCount++;
       senderStats.dropped_retry_exhausted++;
       debugLog(
@@ -487,6 +493,7 @@ function requeueFront(config: ResolvedConfig, items: QueueItem[]): void {
       warnEventsLost(1, "retry budget exhausted");
     }
   }
+  return exhausted;
 }
 
 /**
@@ -521,11 +528,17 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
       let batchBytes = 0;
       while (items.length < SEND_BATCH_SIZE && pendingQueue.length > 0) {
         const next = pendingQueue[0];
+        const nextIsGapMarker = readAuditGapClaim(next.event) !== null;
+        // A marker is its own delivery unit. That makes a refusal attributable
+        // to the marker itself, which is what lets the terminal-loss guard stop
+        // instead of recursively emitting replacement markers forever.
+        if (items.length > 0 && nextIsGapMarker) break;
         const nextBytes = JSON.stringify(next.event).length;
         if (items.length > 0 && batchBytes + nextBytes > MAX_BATCH_BYTES) break;
         pendingQueue.shift();
         items.push(next);
         batchBytes += nextBytes;
+        if (nextIsGapMarker) break;
       }
       if (items.length === 0) break;
 
@@ -542,6 +555,12 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           senderStats.dropped_rejected += rejected;
           droppedCount += rejected;
           warnEventsLost(rejected, "refused by the ingest service");
+          declareDeliveryGap(
+            config,
+            items,
+            rejected,
+            AUDIT_GAP_REASON_INGEST_REJECTED,
+          );
         }
       } else if (verdict === "rejected") {
         // The server saw the request and refused it outright. Final, so never
@@ -555,19 +574,39 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           `Audit request refused by the ingest service: ${items.length} event(s) (total dropped: ${droppedCount})`
         );
         warnEventsLost(items.length, "refused by the ingest service");
+        declareDeliveryGap(
+          config,
+          items,
+          items.length,
+          AUDIT_GAP_REASON_INGEST_REJECTED,
+        );
       } else if (verdict === "permanent") {
         // The same bytes will always fail (bad key, malformed event, body
-        // too large): dead-letter now, loudly, instead of burning retries.
+        // too large): discard and count now instead of burning retries.
         droppedCount += items.length;
         senderStats.dropped_permanent += items.length;
         debugLog(
           config,
           "warn",
-          `Audit batch dead-lettered after permanent failure: ${items.length} event(s) (total dropped: ${droppedCount})`
+          `Audit batch discarded after permanent failure: ${items.length} event(s) (total dropped: ${droppedCount})`
         );
         warnEventsLost(items.length, "permanently undeliverable to the ingest service");
+        declareDeliveryGap(
+          config,
+          items,
+          items.length,
+          AUDIT_GAP_REASON_PERMANENT_FAILURE,
+        );
       } else {
-        requeueFront(config, items);
+        const exhausted = requeueFront(config, items);
+        if (exhausted.length > 0) {
+          declareDeliveryGap(
+            config,
+            exhausted,
+            exhausted.length,
+            AUDIT_GAP_REASON_RETRY_EXHAUSTED,
+          );
+        }
       }
     }
   } finally {
@@ -723,7 +762,11 @@ function withinBudget(md: Record<string, unknown>): boolean {
  * `policy_version` is "none" rather than the live ruleset hash: no policy
  * evaluated this event, and stamping a hash would assert that one did.
  */
-function buildGapMarker(config: ResolvedConfig, dropped: number): AuditEvent {
+function buildGapMarker(
+  config: ResolvedConfig,
+  dropped: number,
+  reason: string = AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+): AuditEvent {
   return {
     request_id: `audit-gap-${sdkSessionId}-${++gapMarkerOrdinal}`,
     environment: config.environment,
@@ -733,7 +776,7 @@ function buildGapMarker(config: ResolvedConfig, dropped: number): AuditEvent {
     operation: AUDIT_GAP_OPERATION,
     source: "obsvr_sdk",
     // The claim itself, in the signed content preimage (see audit-gap.ts).
-    prompt: formatAuditGapPrompt(dropped, AUDIT_GAP_REASON_QUEUE_OVERFLOW),
+    prompt: formatAuditGapPrompt(dropped, reason),
     response: "",
     success: true,
     latency_ms: 0,
@@ -749,10 +792,46 @@ function buildGapMarker(config: ResolvedConfig, dropped: number): AuditEvent {
       // Structured copy for querying. Unsigned — `prompt` is authoritative.
       [AUDIT_GAP_METADATA_KEY]: {
         dropped,
-        reason: AUDIT_GAP_REASON_QUEUE_OVERFLOW,
+        reason,
       },
     },
   };
+}
+
+/**
+ * Record loss of events that were already signed into a session.
+ *
+ * The old chain cannot honestly continue through a missing signature, so the
+ * marker begins a fresh session. Already-signed queued events stay ahead of it;
+ * the JavaScript turn is otherwise atomic, so every event signed afterward
+ * links to the marker. A failed marker is counted and warned about, but never
+ * replaced: recursive markers cannot make an unavailable ingest available.
+ */
+function declareDeliveryGap(
+  config: ResolvedConfig,
+  lostItems: QueueItem[],
+  dropped: number,
+  reason: string,
+): void {
+  if (dropped <= 0 || lostItems.some((item) => readAuditGapClaim(item.event) !== null)) {
+    return;
+  }
+
+  sdkSessionId = randomUUID();
+  seqNo = 0;
+  lastSig = null;
+  gapMarkerOrdinal = 0;
+  senderStats.gap_markers++;
+  senderStats.gap_events_declared += dropped;
+  debugLog(
+    config,
+    "warn",
+    `Starting a new signed audit session after ${dropped} lost event(s): ${reason}`,
+  );
+  // Queue first on this path. The normal sender mirrors before queueing, but a
+  // synchronous OTel exporter can re-enter the SDK; it must not sign a future
+  // event behind the marker and enqueue that event ahead of the marker.
+  signAndEnqueue(config, buildGapMarker(config, dropped, reason), true);
 }
 
 /**
@@ -818,7 +897,11 @@ export function enqueueAuditEvent(
  * Stamp, sign, chain-link, and queue an event. The caller has already
  * established there is room for it.
  */
-function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
+function signAndEnqueue(
+  config: ResolvedConfig,
+  event: AuditEvent,
+  enqueueBeforeMirror: boolean = false,
+): void {
   // Reconcile the event's wire shape with the ingest schema before signing.
   normalizeWireShape(event);
 
@@ -878,32 +961,30 @@ function signAndEnqueue(config: ResolvedConfig, event: AuditEvent): void {
   // Update chain state for the next event
   lastSig = event.sdk_sig;
 
-  // Optional OTel mirror. NOT fire-and-forget: this call is synchronous and it
-  // runs BEFORE the enqueue below, so a slow exporter delays the audit event
-  // rather than trailing it — measured at 300ms of caller-visible block with a
-  // span that takes 300ms to start. It cannot LOSE the event: resolveOtel and
-  // the span body are each try/caught, so a throwing exporter still falls
-  // through to the enqueue. Ordering is the reason it is here and not after
-  // the push: the mirror reads `event` before the queue can hand it off.
+  const queueSignedEvent = (): void => {
+    pendingQueue.push({
+      event,
+      timestamp: Date.now(),
+      retries: 0,
+    });
+    senderStats.enqueued++;
+    processQueue(config).catch((error) => {
+      debugLog(
+        config,
+        "error",
+        "Queue processing error:",
+        error instanceof Error ? error.message : String(error)
+      );
+    });
+  };
+
+  // Normal events preserve the historical mirror-before-queue ordering: the
+  // mirror reads the event before delivery can consume it. A fresh-session gap
+  // marker reverses those two operations so a re-entrant exporter cannot queue
+  // a future event ahead of the marker that its signature follows.
+  if (enqueueBeforeMirror) queueSignedEvent();
   mirrorToOtel(config, event);
-
-  // Add to queue
-  pendingQueue.push({
-    event,
-    timestamp: Date.now(),
-    retries: 0,
-  });
-  senderStats.enqueued++;
-
-  // Start processing asynchronously (fire-and-forget)
-  processQueue(config).catch((error) => {
-    debugLog(
-      config,
-      "error",
-      "Queue processing error:",
-      error instanceof Error ? error.message : String(error)
-    );
-  });
+  if (!enqueueBeforeMirror) queueSignedEvent();
 }
 
 /**

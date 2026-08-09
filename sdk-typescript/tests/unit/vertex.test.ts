@@ -131,8 +131,13 @@ describe('wrapVertexAI', () => {
     expect(sentReq).toContain('[REDACTED_EMAIL]');
   });
 
-  it('audits streaming calls via the aggregated response promise', async () => {
-    init({ api_key: 'test', sample_rate: 1, streaming_mode: 'wrap' as any });
+  it('audits monitor-mode streams via the aggregated response even when configured to skip', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 0,
+      enforcement_mode: 'monitor',
+      streaming_mode: 'skip',
+    });
     const model = wrapVertexAI({
       model: 'gemini-1.5-pro',
       generateContentStream: async (_req: any) => ({
@@ -153,6 +158,38 @@ describe('wrapVertexAI', () => {
     await waitForEvents(1);
     expect(sentEvents[0].operation).toBe('generateContentStream');
     expect(sentEvents[0].response).toBe('Hello from Gemini!');
+  });
+
+  it('enforces a pre-call block before an enforce-mode skipped stream opens', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      streaming_mode: 'skip',
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    let providerCalls = 0;
+    const model = wrapVertexAI({
+      model: 'gemini-1.5-pro',
+      generateContentStream: async (_req: any) => {
+        providerCalls += 1;
+        return {
+          stream: (async function* () {})(),
+          response: Promise.resolve(GEMINI_RESPONSE),
+        };
+      },
+    });
+
+    await expect(
+      model.generateContentStream({
+        contents: [
+          { role: 'user', parts: [{ text: 'my ssn is 123-45-6789' }] },
+        ],
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+    await waitForEvents(1);
+    expect(sentEvents[0].event_type).toBe('blocked_call');
   });
 
   it('emits failure events on error', async () => {

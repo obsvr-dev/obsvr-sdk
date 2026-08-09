@@ -42,6 +42,24 @@ describe('obsvrLlamaIndexHandler', () => {
     );
   });
 
+  it('samples out a clean observe-only call at sample_rate 0 in enforce mode', async () => {
+    init({ api_key: 'test', sample_rate: 0 });
+    const manager = new FakeCallbackManager();
+    obsvrLlamaIndexHandler(manager);
+
+    manager.dispatch('llm-start', {
+      id: 'evt-sampled',
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    manager.dispatch('llm-end', {
+      id: 'evt-sampled',
+      response: { message: { content: 'ok' } },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sentEvents).toHaveLength(0);
+  });
+
   it('attributes the provider and captures tokens off the raw provider response', async () => {
     // Two defects at once, and neither was a reader that broke: `provider` was
     // a hardcoded "unknown" literal, and there was no token-reading code on
@@ -169,7 +187,7 @@ describe('obsvrLlamaIndexHandler', () => {
   });
 
   it('accumulates llm-stream chunks as fallback response', async () => {
-    init({ api_key: 'test', sample_rate: 1 });
+    init({ api_key: 'test', sample_rate: 0, enforcement_mode: 'monitor' });
     const manager = new FakeCallbackManager();
     obsvrLlamaIndexHandler(manager);
 
@@ -201,8 +219,14 @@ describe('obsvrLlamaIndexHandler', () => {
 
     await waitForEvents(1);
     expect(sentEvents[0].event_type).toBe('llm_call');
-    expect(sentEvents[0].action_taken).toBe('redacted');
+    expect(sentEvents[0].action_taken).toBe('not_evaluated');
     expect(sentEvents[0].prompt).toContain('[REDACTED_SSN]');
+    expect(sentEvents[0].metadata.obsvr_telemetry).toMatchObject({
+      stored_redaction_scope: 'observe_only',
+      stored_redaction_types: ['ssn'],
+      stored_redaction_outbound_unmodified: true,
+      stored_redaction_requested_action: 'block',
+    });
   });
 
   it('ignores llm-end with no matching start', async () => {

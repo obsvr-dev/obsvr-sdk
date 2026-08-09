@@ -133,6 +133,23 @@ describe("the keyless tier requires linkage after the first event", () => {
   });
 });
 
+describe("the keyless tier is an unauthenticated consistency check", () => {
+  test("consistently rewritten signatures and links pass only keyless", () => {
+    const c = chain();
+    c[0].action_taken = "allowed";
+    c[0].sdk_sig = "a".repeat(64);
+    c[1].prev_sig = c[0].sdk_sig;
+    c[1].sdk_sig = "b".repeat(64);
+
+    const structural = run([write(c)]);
+    expect(structural.status).toBe(0);
+    expect(structural.stdout).toContain("STRUCTURAL verification passed");
+
+    const authenticated = run([write(c), "--api-key", API_KEY]);
+    expect(authenticated.status).toBe(1);
+  });
+});
+
 describe("the success banner states the preimage boundary", () => {
   // The banner must say what the format-3 preimage covers (content, order,
   // the eight decision/attribution fields) and what it does not (tenant_id

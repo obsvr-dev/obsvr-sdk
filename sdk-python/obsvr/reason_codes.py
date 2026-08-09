@@ -68,9 +68,8 @@ class ReasonCode(str, Enum):
     # know the fact it asserts would be a fabricated record.
     APPROVAL_TIMEOUT = "APPROVAL_TIMEOUT"
     # An unattributed call refused because require_principal is set: the
-    # enforcing metadata carried no user_id at all. An empty string is a
-    # supplied principal (the decision digest's presence byte draws the same
-    # absent-vs-empty line); only an absent one refuses. Distinct from
+    # enforcing metadata carried no non-blank user_id. Empty and whitespace-
+    # only strings are unattributed. Distinct from
     # POLICY_VIOLATION so an attribution refusal is never conflated with a
     # content verdict.
     PRINCIPAL_REQUIRED = "PRINCIPAL_REQUIRED"

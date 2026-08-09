@@ -1,0 +1,239 @@
+{
+  "meta": {
+    "lang": "py",
+    "part": "B",
+    "sdk_version_manifest": "0.11.2",
+    "sdk_version_stamped": "python/0.11.2",
+    "python": "3.13.2",
+    "os": "macOS 26.5.2",
+    "cpu": "Apple M3 Pro",
+    "cores": 11,
+    "ram_gb": 18,
+    "date_utc": "2026-08-09T15:42:54.256025+00:00",
+    "git_rev": "dc372d5fecfb501a853ffe8a3e033cf25835eba5",
+    "args": {
+      "calls": 100000,
+      "tier": "L2",
+      "burst_calls": 0,
+      "out": "bench/results/run2/py-stress-L2.json",
+      "quick": false
+    },
+    "load_check": {
+      "load_avg_1m": 3.96142578125,
+      "warn": false
+    }
+  },
+  "rows": [
+    {
+      "tier": "L2",
+      "phase": "sequential",
+      "calls": 100000,
+      "wall_s": 57.766,
+      "throughput_calls_per_s": 1731.1,
+      "latency_us": {
+        "p50": 565.458,
+        "p95": 646.875,
+        "p99": 671.833,
+        "mean": 572.72484227,
+        "max": 15648.917,
+        "min": 465.75,
+        "n": 100000
+      },
+      "memory": {
+        "curve": [
+          {
+            "call": 0,
+            "rss_mb": 34.83
+          },
+          {
+            "call": 5000,
+            "rss_mb": 37.84
+          },
+          {
+            "call": 10000,
+            "rss_mb": 37.92
+          },
+          {
+            "call": 15000,
+            "rss_mb": 37.92
+          },
+          {
+            "call": 20000,
+            "rss_mb": 38.0
+          },
+          {
+            "call": 25000,
+            "rss_mb": 38.05
+          },
+          {
+            "call": 30000,
+            "rss_mb": 38.08
+          },
+          {
+            "call": 35000,
+            "rss_mb": 38.14
+          },
+          {
+            "call": 40000,
+            "rss_mb": 38.17
+          },
+          {
+            "call": 45000,
+            "rss_mb": 38.22
+          },
+          {
+            "call": 50000,
+            "rss_mb": 38.28
+          },
+          {
+            "call": 55000,
+            "rss_mb": 38.34
+          },
+          {
+            "call": 60000,
+            "rss_mb": 38.47
+          },
+          {
+            "call": 65000,
+            "rss_mb": 38.5
+          },
+          {
+            "call": 70000,
+            "rss_mb": 38.55
+          },
+          {
+            "call": 75000,
+            "rss_mb": 38.58
+          },
+          {
+            "call": 80000,
+            "rss_mb": 38.62
+          },
+          {
+            "call": 85000,
+            "rss_mb": 38.67
+          },
+          {
+            "call": 90000,
+            "rss_mb": 38.7
+          },
+          {
+            "call": 95000,
+            "rss_mb": 38.75
+          },
+          {
+            "call": 100000,
+            "rss_mb": 38.78
+          },
+          {
+            "call": 100000,
+            "rss_mb": 38.78
+          }
+        ],
+        "leak": {
+          "evaluated": true,
+          "baseline_rss_mb": 38.05,
+          "baseline_call": 25000,
+          "end_rss_mb": 38.78,
+          "growth_mb": 0.73,
+          "threshold_mb": 30.0,
+          "leak_ok": true,
+          "last_quartile_growth_mb": 0.2,
+          "last_quartile_positive_beyond_noise": false
+        },
+        "peak_rss_mb": 42.6875
+      },
+      "chain": {
+        "events": 41532,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "signing_vectors_crosscheck": {
+        "path": "conformance/fixtures/signing_vectors.json",
+        "passed": true,
+        "key_match": true,
+        "events_checked": 4,
+        "mismatches": []
+      },
+      "sender_stats": {
+        "enqueued": 41532,
+        "sent": 41532,
+        "retries": 0,
+        "dropped_overflow": 58521,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 53,
+        "gap_events_declared": 58521
+      },
+      "enqueued": 41532,
+      "dropped_overflow": 58521,
+      "gap_markers": 53,
+      "gap_events_declared": 58521,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      },
+      "tier_pass": true
+    },
+    {
+      "tier": "L2",
+      "phase": "burst",
+      "burst_calls": 10000,
+      "post_delay_ms": 50.0,
+      "chain": {
+        "events": 1151,
+        "first_seq": 1,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "unsupported_format": 0,
+        "link_failures": 0,
+        "out_of_order": 0,
+        "session_mismatches": 0,
+        "feed_errors": 0,
+        "max_reorder_pending": 1,
+        "clean": true
+      },
+      "sender_stats": {
+        "enqueued": 1151,
+        "sent": 1151,
+        "retries": 0,
+        "dropped_overflow": 8855,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 6,
+        "gap_events_declared": 8855
+      },
+      "enqueued": 1151,
+      "dropped_overflow": 8855,
+      "gap_markers": 6,
+      "gap_events_declared": 8855,
+      "rss_before_mb": 42.22,
+      "rss_after_mb": 42.28,
+      "rss_growth_mb": 0.06,
+      "invariant_calls_eq_enqueued_plus_dropped": true,
+      "invariant_verified_eq_enqueued": true,
+      "invariant_drops_all_declared": true,
+      "errors": {
+        "count": 0,
+        "first_tracebacks": []
+      },
+      "burst_pass": true,
+      "drops_exercised": true
+    }
+  ]
+}

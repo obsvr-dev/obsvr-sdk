@@ -112,7 +112,12 @@ describe("the per-event record, on the proxy wrapper's own path", () => {
   }
 
   it('names the lost layer on the call it was lost for', async () => {
-    init({ api_key: 'test', ingest_url: 'https://x.test', fail_mode: 'open' });
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      sample_rate: 0,
+    });
 
     await client().chat.completions.create({
       model: 'gpt-4o',

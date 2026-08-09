@@ -1,0 +1,519 @@
+{
+  "meta": {
+    "lang": "ts",
+    "part": "A",
+    "sdk_version_manifest": "0.11.2",
+    "sdk_version_stamped": "node/0.11.2",
+    "node": "v22.23.1",
+    "os": "macOS 26.5.2",
+    "cpu": "Apple M3 Pro",
+    "cores": 11,
+    "ram_gb": 18,
+    "date_utc": "2026-08-09T15:35:03.661Z",
+    "git_rev": "dc372d5",
+    "args": {
+      "quick": false,
+      "warmup": 2000,
+      "timed": 10000,
+      "payloads": [
+        100,
+        10000
+      ]
+    }
+  },
+  "rows": [
+    {
+      "tier": "U",
+      "payload_bytes": 100,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 0.25,
+        "p95": 0.5,
+        "p99": 1.25,
+        "mean": 0.347,
+        "max": 59.666
+      },
+      "stats": null,
+      "chain": null,
+      "invariants": null,
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A0",
+      "payload_bytes": 100,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 25.375,
+        "p95": 34.709,
+        "p99": 53.084,
+        "mean": 29.191,
+        "max": 1213.458
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A1",
+      "payload_bytes": 100,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 34.291,
+        "p95": 38.167,
+        "p99": 42.708,
+        "mean": 36.487,
+        "max": 537.708
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A2",
+      "payload_bytes": 100,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 48.834,
+        "p95": 51.25,
+        "p99": 56.792,
+        "mean": 50.658,
+        "max": 427
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A3",
+      "payload_bytes": 100,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 50.625,
+        "p95": 54.583,
+        "p99": 61.334,
+        "mean": 52.55,
+        "max": 362.5
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A4",
+      "payload_bytes": 100,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 63.459,
+        "p95": 66.375,
+        "p99": 74.625,
+        "mean": 65.539,
+        "max": 381.917
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "U",
+      "payload_bytes": 10000,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 0.292,
+        "p95": 0.334,
+        "p99": 0.375,
+        "mean": 0.32,
+        "max": 187.5
+      },
+      "stats": null,
+      "chain": null,
+      "invariants": null,
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A0",
+      "payload_bytes": 10000,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 128.708,
+        "p95": 190.625,
+        "p99": 401.833,
+        "mean": 142.162,
+        "max": 2607.208
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A2",
+      "payload_bytes": 10000,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 978.833,
+        "p95": 1319.292,
+        "p99": 1807.291,
+        "mean": 1038.146,
+        "max": 25696.5
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    },
+    {
+      "tier": "A4",
+      "payload_bytes": 10000,
+      "warmup": 2000,
+      "timed": 10000,
+      "us": {
+        "p50": 1756.625,
+        "p95": 2064.375,
+        "p99": 2315.458,
+        "mean": 1811.617,
+        "max": 10857.708
+      },
+      "stats": {
+        "enqueued": 12000,
+        "sent": 12000,
+        "retries": 0,
+        "dropped_overflow": 0,
+        "dropped_permanent": 0,
+        "dropped_retry_exhausted": 0,
+        "dropped_rejected": 0,
+        "gap_markers": 0,
+        "gap_events_declared": 0
+      },
+      "chain": {
+        "events": 12000,
+        "gaps": 0,
+        "dupes": 0,
+        "sig_failures": 0,
+        "chain_breaks": 0,
+        "unsupported_format": 0,
+        "session_mismatches": 0,
+        "reorder_observed": false,
+        "max_reorder_held": 0,
+        "valid": true
+      },
+      "invariants": {
+        "calls_eq_enqueued_plus_overflow": true,
+        "verified_eq_enqueued": true,
+        "chain_valid": true
+      },
+      "errors": {
+        "count": 0,
+        "stacks": []
+      }
+    }
+  ],
+  "overhead_vs_u": [
+    {
+      "tier": "A0",
+      "payload_bytes": 100,
+      "overhead_us": {
+        "p50": 25.125,
+        "p95": 34.209,
+        "p99": 51.834,
+        "mean": 28.844
+      }
+    },
+    {
+      "tier": "A1",
+      "payload_bytes": 100,
+      "overhead_us": {
+        "p50": 34.041,
+        "p95": 37.667,
+        "p99": 41.458,
+        "mean": 36.14
+      }
+    },
+    {
+      "tier": "A2",
+      "payload_bytes": 100,
+      "overhead_us": {
+        "p50": 48.584,
+        "p95": 50.75,
+        "p99": 55.542,
+        "mean": 50.311
+      }
+    },
+    {
+      "tier": "A3",
+      "payload_bytes": 100,
+      "overhead_us": {
+        "p50": 50.375,
+        "p95": 54.083,
+        "p99": 60.084,
+        "mean": 52.203
+      }
+    },
+    {
+      "tier": "A4",
+      "payload_bytes": 100,
+      "overhead_us": {
+        "p50": 63.209,
+        "p95": 65.875,
+        "p99": 73.375,
+        "mean": 65.192
+      }
+    },
+    {
+      "tier": "A0",
+      "payload_bytes": 10000,
+      "overhead_us": {
+        "p50": 128.416,
+        "p95": 190.291,
+        "p99": 401.458,
+        "mean": 141.842
+      }
+    },
+    {
+      "tier": "A2",
+      "payload_bytes": 10000,
+      "overhead_us": {
+        "p50": 978.541,
+        "p95": 1318.958,
+        "p99": 1806.916,
+        "mean": 1037.826
+      }
+    },
+    {
+      "tier": "A4",
+      "payload_bytes": 10000,
+      "overhead_us": {
+        "p50": 1756.333,
+        "p95": 2064.041,
+        "p99": 2315.083,
+        "mean": 1811.297
+      }
+    }
+  ],
+  "fire_and_forget_proof": {
+    "n": 5000,
+    "fast_p95_us": 33.542,
+    "slow_p95_us": 15.666,
+    "fast_p50_us": 26.875,
+    "slow_p50_us": 7.125,
+    "slow_dropped_overflow": 4199,
+    "slow_chain_valid": true,
+    "slow_chain_events": 1002,
+    "p95_delta_pct": -53.3
+  }
+}

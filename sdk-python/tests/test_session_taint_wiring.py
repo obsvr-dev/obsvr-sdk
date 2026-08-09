@@ -32,6 +32,19 @@ def _pre_call(text, user_id):
 
 
 class TestTaintSetEnforce:
+    def test_detects_and_latches_injection_without_pii_policy(self):
+        _init(session_taint={"enabled": True, "action": "block"})
+
+        t1 = _pre_call(INJECTION, "alice")
+        assert t1["decision"] == "allow"
+        assert t1["compliance"]["action_reason"] == "none"
+        assert "detected_types" not in t1["compliance"]
+        assert session_taint_size() == 1
+
+        t2 = _pre_call("clean", "alice")
+        assert t2["decision"] == "block"
+        assert t2["compliance"]["rule_id"] == "sdk:session_tainted"
+
     def test_block_mode_next_call_blocked(self):
         _init(
             pii_policy={"default": "detect_only"},

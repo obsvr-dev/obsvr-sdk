@@ -23,6 +23,7 @@ const PROVIDER_SPECIFIERS: Record<string, string> = {
   openai: "openai",
   anthropic: "@anthropic-ai/sdk",
   google: "@google/generative-ai",
+  "google-genai": "@google/genai",
 };
 
 /**

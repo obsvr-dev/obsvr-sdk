@@ -18,7 +18,7 @@ import {
 } from "../proxy/extractors/telemetry.js";
 import { spanEnvelopeFor, withSpanMetadata } from "../proxy/span.js";
 import { withRunMetadata } from "../proxy/agent-run.js";
-import { getCurrentSubject } from "../proxy/subject.js";
+import { getCurrentSubject, hasMeaningfulPrincipal } from "../proxy/subject.js";
 import { createPolicyError, resolveReasonCode, type ObsvrPolicyError } from "../policy/policy-error.js";
 import { ReasonCode } from "../governance/reason-codes.js";
 import { meterEvent } from "../governance/metering.js";
@@ -99,6 +99,11 @@ export { shouldSample, sendAuditAsync, setupExitHandlers, getConfig, debugLog };
 export { redactBuiltinPii };
 export { redactForStorage };
 export type { DeobfuscationView };
+
+/** Monitor mode is a complete evidence stream, independent of allowed-call sampling. */
+export function monitorModeRequiresEvidence(config: ResolvedConfig): boolean {
+  return (config.enforcementMode ?? "enforce") === "monitor";
+}
 
 /**
  * Whole-text placeholder for a stored response the policy FLOOR redacted. A
@@ -186,6 +191,15 @@ export interface ComplianceInfo {
    * proposed rather than taken, exactly as `detector_failure` reasoned.
    */
   policy_not_evaluated?: PolicyNotEvaluated;
+  /** Stored-copy redaction performed after an observe-only callback. This is
+   * storage provenance, not a claim that the provider-bound operation was
+   * changed. It is mirrored onto metadata.obsvr_telemetry for ingest. */
+  stored_redaction_telemetry?: {
+    stored_redaction_scope: "observe_only";
+    stored_redaction_types: string[];
+    stored_redaction_outbound_unmodified: true;
+    stored_redaction_requested_action: "block" | "redact";
+  };
 }
 
 /** Why a surface carries no policy verdict, in terms an operator can act on. */
@@ -662,9 +676,7 @@ export async function applyPreCallPolicy(
   //     project keeps its own verdict and rule id. The identity read here is
   //     the one the taint key and the scoped-quota context resolve below:
   //     explicit ctx identity, else the ambient subject, else a
-  //     metadata-supplied user_id. An empty string is a supplied principal;
-  //     only an absent one refuses — the decision digest's presence byte
-  //     draws the same absent-vs-empty line (Python parity).
+  //     metadata-supplied user_id. Only a non-blank string is attributable.
   // The metadata read happens ONLY when the flag is on, and defensively: this
   // gate sits outside the guarded detector section, so a caller-supplied
   // metadata object whose property getter throws must not escape here — with
@@ -686,7 +698,7 @@ export async function applyPreCallPolicy(
   if (
     actionTaken !== "blocked" &&
     config.requirePrincipal === true &&
-    principalForGate == null
+    !hasMeaningfulPrincipal(principalForGate)
   ) {
     actionTaken = "blocked";
     actionReason = "policy_violation";
@@ -789,33 +801,37 @@ export async function applyPreCallPolicy(
     }
 
     layer = "builtin_pii_scan";
-    // 1. Built-in PII scan (runs before customer hook; skipped when the
-    //    integrity gate already blocked the call). The regex scan always runs;
-    //    Presidio NLP results merge in when configured — same contract as the
-    //    proxy wrapper and the Python shared pre-call, so the integrations path
-    //    no longer silently ignores presidio_analyzer_url.
+    // 1. Built-in content scan (runs before customer hook; skipped when the
+    //    integrity gate already blocked the call). Session taint owns its
+    //    prompt-injection latch independently of PII policy, so enabling the
+    //    latch also enables this single scan. PII verdicts and telemetry remain
+    //    gated by pii_policy. Presidio stays in that PII-only branch.
     let piiScanVia: DeobfuscationView["method"] | undefined;
-    if (config.pii_policy && actionTaken !== "blocked") {
+    if ((config.pii_policy || taintCfg) && actionTaken !== "blocked") {
       // With deobfuscation enabled the scanner also sees decoded/stripped views
       // (server-side normalizer mirror); `via` records which view surfaced a hidden hit.
       const piiScan = runConfiguredPiiScan(promptText, config.deobfuscation);
       const regexTypes = piiScan.detected_types;
-      piiScanVia = piiScan.via;
+      if (config.pii_policy) piiScanVia = piiScan.via;
       let allTypes = regexTypes;
-      if (config.presidio_analyzer_url) {
-        const { detected_types: nlpTypes } = await presidioScan(
+      let presidioAnswered = false;
+      if (config.pii_policy && config.presidio_analyzer_url) {
+        const { detected_types: nlpTypes, answered } = await presidioScan(
           promptText, config.presidio_analyzer_url,
         );
+        presidioAnswered = answered;
         allTypes = [...new Set([...regexTypes, ...nlpTypes])];
       }
-      if (allTypes.length > 0) {
+
+      // SET is independent of PII resolution and affects later turns only.
+      if (taintCfg && allTypes.includes("prompt_injection")) {
+        markTainted(taintKey, "prompt_injection", Date.now());
+      }
+
+      if (config.pii_policy && allTypes.length > 0) {
         actionReason = "pii_detected";
         detectedTypesFound = [...allTypes];
-        actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
-        // A detected prompt-injection taints the session (later egress escalated).
-        if (taintCfg && allTypes.includes("prompt_injection")) {
-          markTainted(taintKey, "prompt_injection", Date.now());
-        }
+        actionSource = presidioAnswered ? "builtin+presidio" : "builtin";
         const resolved = resolvePiiPolicy(allTypes, config.pii_policy);
         // A view-only hit has no locatable span in the raw text, so "redact"
         // would no-op while the record claims "redacted" — escalate to block.
@@ -1718,9 +1734,9 @@ export function blockedUserInputForStorage(
 }
 
 /**
- * Observe-only policy for framework callbacks: the request was already
- * sent to the LLM, so PII policy applies to the *stored* copy.
- * "block" is downgraded to redact-in-event with action_reason pii_detected.
+ * Observe-only policy for framework callbacks: the request was already sent
+ * to the LLM, so PII policy can only change the stored copy. The outbound
+ * verdict remains not_evaluated and storage provenance is recorded separately.
  */
 /**
  * DEFAULT_COMPLIANCE copy with the REAL policy_version (derived rules hash)
@@ -1731,6 +1747,12 @@ export function blockedUserInputForStorage(
 function observeCompliance(config: ResolvedConfig): ComplianceInfo {
   return {
     ...DEFAULT_COMPLIANCE,
+    action_taken: "not_evaluated",
+    policy_not_evaluated: {
+      surface: "observe_only_integration",
+      gate: "pre_call_policy",
+      reason: "callback_observed_after_operation",
+    },
     policy_version: derivePolicyVersion(config.policyRules ?? [], config.ruleResolution),
   };
 }
@@ -1782,16 +1804,26 @@ export function applyObservePolicy(
         ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
       };
     }
-    // redact OR block (downgraded): redact the stored copy
+    // redact OR block: redact the stored copy without claiming the already-sent
+    // provider request was changed.
     return {
       shouldRedactStored: true,
       compliance: {
         ...observeCompliance(config),
-        action_taken: "redacted",
+        action_taken: "not_evaluated",
         action_reason: "pii_detected",
         action_source: "builtin",
-        redacted_types: [...resolved.redactedTypes, ...resolved.blockedTypes],
-        blocked_types: [],
+        policy_not_evaluated: {
+          surface: "observe_only_integration",
+          gate: "pre_call_policy",
+          reason: "callback_observed_after_operation",
+        },
+        stored_redaction_telemetry: {
+          stored_redaction_scope: "observe_only",
+          stored_redaction_types: [...resolved.redactedTypes, ...resolved.blockedTypes],
+          stored_redaction_outbound_unmodified: true,
+          stored_redaction_requested_action: resolved.action,
+        },
       },
       ...(scan.via !== undefined ? { storedRedactionVia: scan.via } : {}),
     };
@@ -1935,18 +1967,72 @@ export function buildIntegrationEvent(
   // front doors cannot answer this differently again — they already did once,
   // in both directions: `wrap()` stored a honeytoken this path redacted, and
   // this path stored unreached-role PII that `wrap()` redacts.
-  const scannedForDecision = params.scannedText ?? params.userInput;
-  let storedRedactionTelemetry: Record<string, unknown> | undefined;
-  if (scannedForDecision !== undefined) {
-    const unscanned = redactUnscannedForStorage(
-      scrubbedPrompt,
-      scannedForDecision,
-      config,
-      (err) => recordDetectorFailure("builtin_pii_scan", err, config),
-    );
-    scrubbedPrompt = unscanned.prompt;
-    storedRedactionTelemetry = unscanned.telemetry;
+  const scannedForDecision = params.scannedText ?? params.userInput ?? "";
+  const storageScans: Array<{
+    surface: "prompt" | "response" | "user_input";
+    result: ReturnType<typeof redactUnscannedForStorage>;
+  }> = [
+    {
+      surface: "prompt",
+      result: redactUnscannedForStorage(
+        scrubbedPrompt,
+        scannedForDecision,
+        config,
+        (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+      ),
+    },
+    {
+      surface: "response",
+      result: redactUnscannedForStorage(
+        scrubbedResponse,
+        "",
+        config,
+        (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+      ),
+    },
+  ];
+  if (scrubbedUserInput !== undefined) {
+    storageScans.push({
+      surface: "user_input",
+      result: redactUnscannedForStorage(
+        scrubbedUserInput,
+        params.userInput ?? "",
+        config,
+        (err) => recordDetectorFailure("builtin_pii_scan", err, config),
+      ),
+    });
   }
+  scrubbedPrompt = storageScans[0].result.prompt;
+  scrubbedResponse = storageScans[1].result.prompt;
+  if (scrubbedUserInput !== undefined && storageScans[2]) {
+    scrubbedUserInput = storageScans[2].result.prompt;
+  }
+  const firedStorageScans = storageScans.filter(({ result }) => result.telemetry !== undefined);
+  const storedRedactionTypes = Array.from(
+    new Set(
+      firedStorageScans.flatMap(({ result }) =>
+        Array.isArray(result.telemetry?.stored_redaction_types)
+          ? (result.telemetry.stored_redaction_types as string[])
+          : [],
+      ),
+    ),
+  ).sort();
+  const storedRedactionTelemetry: Record<string, unknown> | undefined =
+    firedStorageScans.length > 0
+      ? {
+          stored_redaction_scope: "all_event_content",
+          ...(storedRedactionTypes.length > 0
+            ? { stored_redaction_types: storedRedactionTypes }
+            : {}),
+          stored_redaction_surfaces: firedStorageScans.map(({ surface }) => surface),
+          stored_redaction_outbound_unmodified: true,
+          ...(firedStorageScans.some(
+            ({ result }) => result.telemetry?.stored_redaction_scan_failed === true,
+          )
+            ? { stored_redaction_scan_failed: true }
+            : {}),
+        }
+      : undefined;
 
   const errorMessage = (() => {
     const m =
@@ -2130,6 +2216,15 @@ export function buildIntegrationEvent(
     metadata.obsvr_telemetry = {
       ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
       policy_not_evaluated: compliance.policy_not_evaluated,
+    };
+    event.metadata = metadata;
+  }
+
+  if (compliance.stored_redaction_telemetry) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      ...compliance.stored_redaction_telemetry,
     };
     event.metadata = metadata;
   }

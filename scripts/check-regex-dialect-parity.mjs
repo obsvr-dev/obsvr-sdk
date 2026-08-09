@@ -21,12 +21,11 @@
  * newline, a bare CR — so a regression re-opens a case rather than sliding past
  * an ASCII-only sample.
  *
- * WHAT IT DOES NOT COVER, and it is measured rather than assumed: ECMAScript
- * `RegExp` without the `u` flag matches over UTF-16 CODE UNITS while Python `re`
- * matches over CODE POINTS, so a single-character construct consumes one astral
- * character in Python and one surrogate half in JS. Astral inputs are therefore
- * NOT in the corpus below — including them would fail by design and hide every
- * other regression behind a known one. That residual is named in SECURITY.md.
+ * ECMAScript runs in `u` mode so both engines match over Unicode code points.
+ * Astral inputs are part of the corpus: removing the flag makes those rows fail
+ * immediately. The validators also refuse legacy-JS identity escapes, unmatched
+ * brackets/braces, braced codepoint escapes, and surrogate escapes that the two
+ * engines cannot compile with one meaning.
  *
  * Usage:  node scripts/check-regex-dialect-parity.mjs
  * Exit 0 when every verdict agrees, 1 on any divergence (with the inputs).
@@ -64,7 +63,7 @@ const PATTERNS = [
   // $ — Python also matches before a trailing newline
   "secret$", "^secret$", "secret\\b$", "\\d+$",
   // . — ECMAScript excludes all four LineTerminators
-  "a.b", "^.$", "^.+$", "a.*b", "^.{3}$",
+  "a.b", "^.$", "^[^a]$", "^.+$", "a.*b", "^.{3}$",
   // ordinary rules, as controls
   "secret", "[a-z]{2,8}", "(?<=USD)\\d+", "\\$[0-9]+\\.[0-9]{2}",
   "(foo|bar)baz", "[A-Z][a-z]+", "wire transfer",
@@ -72,6 +71,8 @@ const PATTERNS = [
   "(?P<x>secret)", "(?<x>secret)", "(?i)secret", "a*+b", "(?>a+)b", "\\Asecret",
   "secret\\Z", "\\hello", "\\p{L}+", "a{,3}b", "(?<=USD\\s*)\\d+", "[\\w--[0-9]]",
   "[\\S]", "[a\\S]", "[^\\S]", "(a+)+$", "(a|aa)+",
+  // accepted by legacy JS mode but deliberately refused by the shared `u` dialect
+  "\\_", "a]b", "a{b", "\\u{1F600}", "\\uD83D",
 ];
 
 /**
@@ -102,6 +103,9 @@ const INPUTS = [
   // .: CR and the two Unicode line separators, which ECMAScript's dot excludes
   // and Python's does not.
   "\r", "\u2028", "\u2029", "a\rb", "a\u2029b", "abc\n",
+  // Code-point parity: each single-character construct consumes one astral
+  // character in both engines. Without JS `u`, these are the historical split.
+  "\ud83d\ude00", "a\ud83d\ude00b",
   // ordinary rule inputs
   "USD42", "$19.99", "foobaz", "a@b.co", "user_id", "user-id", "SSN 123-45-6789",
 ];

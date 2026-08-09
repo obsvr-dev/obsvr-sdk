@@ -405,6 +405,42 @@ def build_audit_event(
         if _hits:
             _canary_tel = canary_leak_telemetry(_hits, _leak_surface or "response")
 
+    # Final PII storage net. Framework callbacks and several infrastructure
+    # adapters cannot rewrite provider-bound or caller-visible content, but no
+    # actionable PII may therefore be copied raw into the audit record. Scan
+    # every final content field here, at the common event-construction seam,
+    # without changing the already-made enforcement verdict.
+    from .stored_content import redact_unscanned_for_storage
+
+    _stored_parts = []
+    prompt, _prompt_tel = redact_unscanned_for_storage(prompt or "", "", config)
+    _stored_parts.append(("prompt", _prompt_tel))
+    response, _response_tel = redact_unscanned_for_storage(response or "", "", config)
+    _stored_parts.append(("response", _response_tel))
+    if user_input is not None:
+        user_input, _user_tel = redact_unscanned_for_storage(user_input, "", config)
+        _stored_parts.append(("user_input", _user_tel))
+    _fired_stored_parts = [(surface, tel) for surface, tel in _stored_parts if tel]
+    _stored_redaction_tel: Optional[Dict[str, Any]] = None
+    if _fired_stored_parts:
+        _stored_types = sorted({
+            pii_type
+            for _, tel in _fired_stored_parts
+            for pii_type in (tel or {}).get("stored_redaction_types", [])
+        })
+        _stored_redaction_tel = {
+            "stored_redaction_scope": "all_event_content",
+            "stored_redaction_surfaces": [surface for surface, _ in _fired_stored_parts],
+            "stored_redaction_outbound_unmodified": True,
+        }
+        if _stored_types:
+            _stored_redaction_tel["stored_redaction_types"] = _stored_types
+        if any(
+            (tel or {}).get("stored_redaction_scan_failed") is True
+            for _, tel in _fired_stored_parts
+        ):
+            _stored_redaction_tel["stored_redaction_scan_failed"] = True
+
     error_message: Optional[str] = None
     if error is not None:
         m = str(error)
@@ -431,8 +467,12 @@ def build_audit_event(
         # one canonical string both offline verifiers recompute identically.
         "user_id": _principal_string(
             (metadata or {}).get("user_id")
-            or opts.get("user_id")
-            or _ambient_subject.get("user_id")
+            if (metadata or {}).get("user_id") is not None
+            else (
+                opts.get("user_id")
+                if opts.get("user_id") is not None
+                else _ambient_subject.get("user_id")
+            )
         ),
         # Network fields. This SDK has no capture path for either, so they are
         # always None rather than sometimes None — there is no per-call kwarg
@@ -591,6 +631,19 @@ def build_audit_event(
         _md = dict(_event.get("metadata") or {})
         _tel = dict(_md.get("obsvr_telemetry") or {})
         _tel["policy_not_evaluated"] = _policy_not_evaluated
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
+    _stored_redaction_telemetry = comp.get("stored_redaction_telemetry")
+    if _stored_redaction_telemetry is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel.update(_stored_redaction_telemetry)
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
+    if _stored_redaction_tel is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel.update(_stored_redaction_tel)
         _md["obsvr_telemetry"] = _tel
         _event["metadata"] = _md
     if bool(getattr(config, "policy_floor", None)):

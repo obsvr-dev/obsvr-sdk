@@ -8,7 +8,7 @@
  */
 
 /** Reported on the /policies poll (fleet status). Bump with package.json. */
-export const SDK_VERSION         = '0.11.1';
+export const SDK_VERSION         = '0.11.2';
 
 export const DEFAULT_INGEST_URL  = '';
 export const INGEST_PATH         = '/ingest';

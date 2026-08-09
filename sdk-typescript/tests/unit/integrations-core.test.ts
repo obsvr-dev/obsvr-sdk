@@ -149,17 +149,28 @@ describe('applyPreCallPolicy', () => {
 });
 
 describe('applyObservePolicy', () => {
-  it('downgrades block to redact-in-event', () => {
+  it('records a stored-copy redaction without claiming outbound enforcement', () => {
     init({ api_key: 'test', pii_policy: {} });
     const { shouldRedactStored, compliance } = applyObservePolicy(
       'ssn 123-45-6789',
       getConfig(),
     );
     expect(shouldRedactStored).toBe(true);
-    expect(compliance.action_taken).toBe('redacted');
+    expect(compliance.action_taken).toBe('not_evaluated');
     expect(compliance.action_reason).toBe('pii_detected');
     expect(compliance.blocked_types).toEqual([]);
-    expect(compliance.redacted_types).toContain('ssn');
+    expect(compliance.redacted_types).toEqual([]);
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
+    expect(compliance.stored_redaction_telemetry).toEqual({
+      stored_redaction_scope: 'observe_only',
+      stored_redaction_types: ['ssn'],
+      stored_redaction_outbound_unmodified: true,
+      stored_redaction_requested_action: 'block',
+    });
   });
 
   it('passes through clean prompts', () => {
@@ -173,8 +184,44 @@ describe('applyObservePolicy', () => {
     // placeholder), so the sealed policy_version is accurate for framework events.
     expect(compliance.policy_version).not.toBe('v1');
     expect(compliance.policy_version).toBe(derivePolicyVersion(getConfig().policyRules ?? []));
-    // every other field still matches the default compliance shape
-    expect({ ...compliance, policy_version: 'v1' }).toEqual(DEFAULT_COMPLIANCE);
+    expect(compliance.action_taken).toBe('not_evaluated');
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
+    expect(compliance.stored_redaction_telemetry).toBeUndefined();
+  });
+
+  it('does not claim enforcement when no observe policy is configured', () => {
+    init({ api_key: 'test' });
+    const { shouldRedactStored, compliance } = applyObservePolicy(
+      'ssn 123-45-6789',
+      getConfig(),
+    );
+    expect(shouldRedactStored).toBe(false);
+    expect(compliance.action_taken).toBe('not_evaluated');
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
+  });
+
+  it('reports detect-only findings without claiming enforcement', () => {
+    init({ api_key: 'test', pii_policy: { default: 'detect_only' } });
+    const { shouldRedactStored, compliance } = applyObservePolicy(
+      'ssn 123-45-6789',
+      getConfig(),
+    );
+    expect(shouldRedactStored).toBe(false);
+    expect(compliance.action_taken).toBe('not_evaluated');
+    expect(compliance.action_reason).toBe('pii_detected');
+    expect(compliance.policy_not_evaluated).toEqual({
+      surface: 'observe_only_integration',
+      gate: 'pre_call_policy',
+      reason: 'callback_observed_after_operation',
+    });
   });
 });
 
@@ -350,8 +397,10 @@ describe('applyPreCallPolicy: presidio merge', () => {
       provider: 'bedrock',
       operation: 'test',
     });
-    // presidioScan returns [] on error; the regex scan still detected email.
+    // The regex scan still detects email, but an unavailable NLP tier must not
+    // be represented as if both detector tiers answered.
     expect(result.compliance.action_reason).toBe('pii_detected');
+    expect(result.compliance.action_source).toBe('builtin');
   });
 });
 

@@ -37,6 +37,7 @@ import {
   createDelegationTracker,
   emitIntegrationEvent,
   inferProviderFromString,
+  monitorModeRequiresEvidence,
   redactForStorage,
   type DeobfuscationView,
   setupExitHandlers,
@@ -918,11 +919,13 @@ export class ObsvrCallbackHandler {
         compliance,
         shouldRedactStored,
         storedRedactionVia,
-        // Allowed: emit only when sampled in. Anything the scan acted on is
-        // enforcement evidence and is always recorded, as are errors.
+        // Observe-only is classified `not_evaluated` even when the scan found
+        // nothing, so that status alone must not bypass sampling. Actual scan /
+        // storage action and monitor mode remain unsampled evidence.
         auditThisCall:
+          monitorModeRequiresEvidence(config) ||
           shouldAudit ||
-          compliance.action_taken !== "allowed" ||
+          shouldRedactStored ||
           compliance.action_reason !== "none",
         agentRunId,
       });
