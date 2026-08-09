@@ -16,8 +16,8 @@
  *      (records what it WOULD have done, never blocks) for safe rollout.
  *   3. SSRF guard on the backend URL (see utils/ssrf.ts): non-http(s) schemes and
  *      private/loopback/link-local/metadata addresses are refused, resolving
- *      before connect and over every address the resolver returns. Any guard
- *      failure is an error outcome -> fail-closed. "Metadata addresses" means
+ *      every address once and pinning the socket to that approved snapshot. Any
+ *      guard failure is an error outcome -> fail-closed. "Metadata addresses" means
  *      every IPv6 form that carries the v4 address, not only the mapped one:
  *      until this was measured, `http://[::169.254.169.254]/` reached `fetch`
  *      while `::ffff:169.254.169.254` was refused.
@@ -30,8 +30,12 @@
  */
 
 import { createHash } from 'node:crypto';
+import * as http from 'node:http';
+import * as https from 'node:https';
+import { isIP, type LookupFunction } from 'node:net';
 import {
-  assertBackendUrlAllowed,
+  resolveBackendUrlAllowed,
+  type AllowedBackendTarget,
   type Resolver,
   type SsrfOptions,
 } from '../utils/ssrf.js';
@@ -240,8 +244,108 @@ function normalizeCedar(body: unknown): { allow: boolean; reasons: string[] } | 
 
 /** Dependencies injectable for tests. */
 export interface EvaluateDeps {
+  /**
+   * Explicit transport seam for tests/embedders. The production path does not
+   * use fetch: it pins the socket to the address snapshot returned by the SSRF
+   * guard. A supplied fetch implementation is trusted to provide equivalent
+   * destination pinning and must not be used with an untrusted URL.
+   */
   fetchImpl?: typeof fetch;
   resolver?: Resolver;
+}
+
+interface BackendHttpResponse {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  type?: string;
+}
+
+/**
+ * DNS lookup function backed only by the addresses the SSRF guard approved.
+ * It never consults DNS. Returning the full snapshot for `all: true` preserves
+ * Node's address-family selection without opening a second resolution window.
+ */
+export function createPinnedBackendLookup(target: AllowedBackendTarget): LookupFunction {
+  return (_hostname, options, callback): void => {
+    const requestedFamily = options.family === 4 || options.family === 6 ? options.family : 0;
+    const candidates = requestedFamily === 0
+      ? target.addresses
+      : target.addresses.filter((entry) => entry.family === requestedFamily);
+    if (candidates.length === 0) {
+      const err = Object.assign(new Error('No approved backend address for requested family'), {
+        code: 'EAI_ADDRFAMILY',
+      }) as NodeJS.ErrnoException;
+      callback(err, '', requestedFamily || undefined);
+      return;
+    }
+    if (options.all) {
+      callback(null, candidates.map(({ address, family }) => ({ address, family })));
+      return;
+    }
+    callback(null, candidates[0].address, candidates[0].family);
+  };
+}
+
+/**
+ * POST through Node's native HTTP stack with a pinned lookup. Passing the
+ * original URL preserves its Host header. For HTTPS, `servername` is kept as
+ * the configured hostname, so certificate validation remains hostname-based
+ * even though the socket connects to the approved numeric address.
+ */
+async function postPinnedJson(
+  target: AllowedBackendTarget,
+  body: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+): Promise<BackendHttpResponse> {
+  const hostname = target.url.hostname.replace(/^\[|\]$/g, '');
+  const transport = target.url.protocol === 'https:' ? https : http;
+  const requestHeaders = {
+    ...headers,
+    host: target.url.host,
+    'content-length': String(Buffer.byteLength(body)),
+  };
+
+  return new Promise<BackendHttpResponse>((resolve, reject) => {
+    const req = transport.request(
+      target.url,
+      {
+        method: 'POST',
+        headers: requestHeaders,
+        lookup: createPinnedBackendLookup(target),
+        // A pooled socket is keyed by hostname/port, not by this approved
+        // address snapshot. A one-shot agent prevents an older connection
+        // (for example one opened while private-network access was enabled)
+        // from bypassing the current request's pin.
+        agent: false,
+        signal,
+        // Explicit SNI keeps TLS authentication bound to the configured host,
+        // not to the numeric address selected by the pinned lookup.
+        ...(target.url.protocol === 'https:' && isIP(hostname) === 0
+          ? { servername: hostname }
+          : {}),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on('error', reject);
+        response.on('end', () => {
+          const responseBody = Buffer.concat(chunks).toString('utf8');
+          const status = response.statusCode ?? 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            json: async () => JSON.parse(responseBody),
+          });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 /**
@@ -255,13 +359,13 @@ export async function evaluateExternalBackend(
   deps: EvaluateDeps = {},
 ): Promise<{ outcome: BackendOutcome; reasons: string[] }> {
   const ssrfOpts: SsrfOptions = { allowPrivateNetwork: cfg.allowPrivateNetwork };
+  let target: AllowedBackendTarget;
   try {
-    await assertBackendUrlAllowed(cfg.url, ssrfOpts, deps.resolver);
+    target = await resolveBackendUrlAllowed(cfg.url, ssrfOpts, deps.resolver);
   } catch {
     return { outcome: 'error', reasons: ['ssrf_guard_blocked_backend_url'] };
   }
 
-  const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = cfg.timeoutMs ?? 2000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -271,19 +375,19 @@ export async function evaluateExternalBackend(
 
   // OPA reads the decision under `input`; Cedar receives the document directly.
   const payload = cfg.type === 'opa' ? { input } : input;
+  const requestBody = JSON.stringify(payload);
+  const requestHeaders = { 'content-type': 'application/json', ...(cfg.headers ?? {}) };
 
   try {
-    const resp = await fetchImpl(cfg.url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(cfg.headers ?? {}) },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-      // Do NOT follow redirects: the SSRF guard vetted the ORIGINAL URL's
-      // address, but a 3xx to http://169.254.169.254/... (or a rebinding host)
-      // would bypass it. A redirect surfaces as a non-ok/opaqueredirect
-      // response → treated as a backend error → DENY (fail-closed).
-      redirect: 'manual',
-    });
+    const resp: BackendHttpResponse = deps.fetchImpl
+      ? await deps.fetchImpl(cfg.url, {
+          method: 'POST',
+          headers: requestHeaders,
+          body: requestBody,
+          signal: controller.signal,
+          redirect: 'manual',
+        })
+      : await postPinnedJson(target, requestBody, requestHeaders, controller.signal);
     if (!resp.ok || (resp as { type?: string }).type === 'opaqueredirect') {
       return { outcome: 'error', reasons: [`backend_http_${resp.status}`] };
     }
