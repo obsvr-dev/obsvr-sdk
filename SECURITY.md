@@ -423,9 +423,9 @@ What the SDKs do about it:
   ECMAScript wins because Python can express its semantics exactly (`re.ASCII`
   plus a mechanical rewrite) while the reverse is not true — a Unicode-aware
   `\b` has no JavaScript spelling short of lookaround built from `\p{...}`
-  escapes, which need the `u` flag, and `u` mode changes which *syntax* the
-  engine accepts. The TypeScript engine is untouched, so nothing already measured
-  on that side moves.
+  escapes. TypeScript compiles in `u` mode so both engines consume astral
+  characters as code points; the shared validator rejects the legacy-only
+  syntax that mode no longer accepts.
 
   | Construct | was, in Python | is now, in both |
   |---|---|---|
@@ -444,7 +444,7 @@ What the SDKs do about it:
   than left to a flag. And the `.` row above used to name U+000D and U+2028 only:
   U+2029 PARAGRAPH SEPARATOR diverged just as far and is now covered and pinned.
 
-  **What is not closed, named rather than folded in.** Two residuals:
+  **The remaining portability restriction is refused, not divergent:**
 
   - **`\S` inside a character class is REFUSED rather than aligned**, in both
     languages, because a negated shorthand cannot be expressed inside a positive
@@ -454,32 +454,21 @@ What the SDKs do about it:
     which keeps the dotall idiom legal. `[\S]`, `[a\S]` and `[^\S]` are
     refused loudly — by the `sdk:rule_rejected` signal on the poll tier, by an
     `init()` throw on the declared tier; the fix is one character (`[^\s]`).
-  - **The code-unit / code-point model.** ECMAScript `RegExp` without the `u`
-    flag matches over UTF-16 code units while Python `re` matches over code
-    points, so any single-character construct — `.`, a negated class, even
-    `[^a]` — consumes one astral character in Python and one surrogate half in
-    JavaScript. Measured: `^.$` matches U+1F600 in Python and not in JavaScript.
-    This is not an escape-semantics question and no rewrite reaches it. Closing
-    it means putting the JavaScript engine in `u` mode, which is a second
-    behaviour change of a different kind: 6 of 18 sampled patterns change SYNTAX
-    verdict under `u` (identity escapes of non-syntax characters, an unbalanced
-    `{` or `]`), so it would open a syntax split in the other direction unless
-    the validator moved with it. Not done here, and not claimed.
-
-  **Neither residual is in `known-divergences.json`,** for the reason that
-  catalog states about itself: an entry whose allowed difference would cover an
-  enforcement-verdict difference is invalid. The first is not a divergence at all
-  — both SDKs refuse the same patterns — and the second is an open defect stated
-  in the open.
+  The former code-unit/code-point split is closed: TypeScript uses `u` mode,
+  and `^.$`, `^[^a]$`, and `^[\s\S]$` now match U+1F600 in both SDKs. The
+  validator moved with that change and refuses legacy identity escapes,
+  unmatched braces/brackets, braced codepoint escapes, and surrogate escapes
+  in both languages. No enforcement-verdict difference is accepted in
+  `known-divergences.json`.
 
   Both halves are pinned cross-language by `conformance/fixtures/regex_dialect.json`
   (`cases` for the syntax verdicts, `semantic_cases` for the match verdicts) and
   by `scripts/check-regex-dialect-parity.mjs`, which runs the cross product of a
-  pattern corpus and an input corpus — 3,000 pattern/input pairs, built from the
+  pattern corpus and an input corpus — 3,432 pattern/input pairs, built from the
   codepoints the two engines were measured to disagree on — through both real
   matchers and fails on any divergence.
 
-  Practical consequence: a `regex` rule now behaves identically on both SDKs for every construct either validator accepts, with the astral residual above as the one exception. `[a-z]`-style explicit classes, bounded quantifiers, groups, alternation and fixed-width lookaround remain the most predictable way to write one. `keyword`, `topic_deny` and the built-in PII scanners are unaffected — they do not use customer regex.
+  Practical consequence: a `regex` rule now behaves identically on both SDKs for every construct either validator accepts. `[a-z]`-style explicit classes, bounded quantifiers, groups, alternation and fixed-width lookaround remain the most predictable way to write one. `keyword`, `topic_deny` and the built-in PII scanners are unaffected — they do not use customer regex.
 
 - **A duplicated install costs coverage, loudly.** If the SDK ends up in one process twice (installed directly and again as a transitive dependency), the first copy to `init()` claims a process-global slot and governs; the second logs a warning and stands down rather than both polling, both wrapping, and both emitting duplicate evidence for a single call. The copy that stood down does not wrap, so **clients wrapped only through it are not governed** — the warning says so and names the fix (deduplicate the dependency). Semantics are pinned in `conformance/fixtures/instance_guard.json`.
 

@@ -175,8 +175,9 @@ const QUANTIFIED_ALTERNATION = /\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)*\)\s*[+*{]/;
  * rejection is the wrong instrument for them: they carry no syntactic marker,
  * and banning them would ban the most common constructs in the language. They
  * are closed by NORMALIZATION on the Python side instead, at that SDK's one
- * compile call — ECMAScript's meaning is the meaning, so this engine is
- * untouched and nothing already measured here moves. See
+ * compile call — ECMAScript's meaning is the meaning. This engine compiles in
+ * `u` mode so both runtimes consume astral characters as code points; the
+ * portability guard rejects syntax that legacy JS accepted but `u` does not. See
  * `_ecmascript_equivalent` in sdk-python/obsvr/safe_regex.py for the rewrite and
  * the per-codepoint measurement behind it.
  *
@@ -283,6 +284,50 @@ function unsaturatedNegatedSpaceInClass(pattern: string): boolean {
   });
 }
 
+/** Syntax accepted by legacy JS regex mode but not portable to Python + `u`. */
+function unicodeModePortabilityViolation(pattern: string): string | null {
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    if (c === "\\") {
+      const next = pattern[i + 1];
+      if (next === undefined) return "trailing_escape";
+      if (next === "u" && pattern[i + 2] === "{") return "unicode_codepoint_escape";
+      if (next === "u" && /^[0-9a-fA-F]{4}$/.test(pattern.slice(i + 2, i + 6))) {
+        const value = Number.parseInt(pattern.slice(i + 2, i + 6), 16);
+        if (value >= 0xd800 && value <= 0xdfff) return "surrogate_escape";
+        i += 5;
+        continue;
+      }
+      if (!/[a-zA-Z0-9]/.test(next)) {
+        const allowed = inClass ? "^-]\\/" : "^$\\.*+?()[]{}|/";
+        if (!allowed.includes(next)) return `identity_escape (\\${next})`;
+      }
+      i++;
+      continue;
+    }
+    if (c === "[") {
+      inClass = true;
+      if (pattern[i + 1] === "^") i++;
+      if (pattern[i + 1] === "]") return "leading_literal_close_bracket";
+      continue;
+    }
+    if (c === "]") {
+      if (!inClass) return "unescaped_close_bracket";
+      inClass = false;
+      continue;
+    }
+    if (!inClass && c === "{") {
+      const quantifier = /^\{\d+(?:,\d*)?\}/.exec(pattern.slice(i));
+      if (!quantifier) return "unescaped_open_brace";
+      i += quantifier[0].length - 1;
+      continue;
+    }
+    if (!inClass && c === "}") return "unescaped_close_brace";
+  }
+  return null;
+}
+
 /**
  * Reject any construct that does not mean the same thing in both engines.
  * Returns a reason, or null when the pattern is dialect-portable.
@@ -294,6 +339,8 @@ export function crossDialectViolation(pattern: string): string | null {
   if (unsaturatedNegatedSpaceInClass(pattern)) {
     return "negated_space_shorthand_in_class (\\S)";
   }
+  const unicodeMode = unicodeModePortabilityViolation(pattern);
+  if (unicodeMode) return unicodeMode;
   // Alphabetic escapes outside the shared set: a literal in JS, an error in
   // Python (\h), or an anchor in Python and a literal in JS (\A, \Z, \z).
   for (let i = 0; i < pattern.length - 1; i++) {
@@ -318,7 +365,7 @@ export function validateRegexPattern(pattern: string): RegexValidationResult {
 
   // Syntactic validity first
   try {
-    new RegExp(pattern);
+    new RegExp(pattern, "u");
   } catch {
     return { ok: false, reason: "invalid_syntax" };
   }
@@ -367,7 +414,7 @@ export function compileSafeRegex(pattern: string): RegExp | null {
     return compiledCache.get(pattern) ?? null;
   }
   const verdict = validateRegexPattern(pattern);
-  const compiled = verdict.ok ? new RegExp(pattern) : null;
+  const compiled = verdict.ok ? new RegExp(pattern, "u") : null;
   if (compiledCache.size >= CACHE_MAX) {
     // Simple reset - policy rulesets are small; churn here means misuse
     compiledCache.clear();

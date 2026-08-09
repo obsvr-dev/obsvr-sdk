@@ -31,6 +31,14 @@ catalogued a divergence that no longer existed. Only the one that still
 reproduces is here.
 
 History:
+- 2026-08-09: the final customer-regex verdict divergence is closed. TypeScript
+  now compiles accepted patterns in ECMAScript `u` mode, so `.`, negated
+  classes, and `[\s\S]` consume an astral character as one code point, matching
+  Python. The validators moved with the engine mode: legacy identity escapes,
+  unmatched braces/brackets, braced codepoint escapes, and surrogate escapes
+  are refused in both SDKs rather than reopening a syntax split. Three astral
+  match cases and five syntax cases pin the boundary; the differential runner
+  now includes astral input and drives 3,432 pairs with zero divergences.
 - 2026-08-09: the hidden-HTML pass now retains malformed content and matches
   same-name nesting. The first bounded implementation stopped at the first
   `</name>` and dropped the rest of the input when no closer existed. A nested
@@ -63,19 +71,17 @@ History:
   Python's — so `\s` is rewritten to an explicit class rather than left to the
   flag. And the enumeration in `SECURITY.md` named U+000D and U+2028 for the `.`
   row: U+2029 PARAGRAPH SEPARATOR diverged just as far and was missing.
-  **Two residuals, both named rather than folded in.** `\S` inside a character
+  **Two residuals were named rather than folded in.** `\S` inside a character
   class is REFUSED in both languages instead of aligned, because a negated
   shorthand is not expressible inside a positive class without class
   subtraction, which Python `re` lacks; `[\s\S]` is exempt and provably so, so
-  the dotall idiom stays legal. And the code-unit / code-point model — JS
-  `RegExp` without `u` matches UTF-16 code units, Python `re` matches code
-  points — is a SEVENTH family that no escape rewrite reaches; closing it means
-  `u` mode, which changes syntax acceptance in the other direction. Neither is a
-  catalog entry: the first is not a divergence (both SDKs refuse the same
-  patterns) and the second is an open defect stated in the open.
+  the dotall idiom stays legal. The code-unit / code-point model was a SEVENTH
+  family no escape rewrite could reach; it was closed with `u` mode and a
+  matching validator update on 2026-08-09 (entry above). Neither entered the
+  catalog: the first is not a divergence and the second was a release blocker.
   Pinned by `conformance/fixtures/regex_dialect.json` (`semantic_cases`) and by
-  `scripts/check-regex-dialect-parity.mjs`, which drives 3,000 pattern/input
-  pairs through both real matchers. Without the fix that script reports 43
+  `scripts/check-regex-dialect-parity.mjs`, which drove 3,000 pattern/input
+  pairs through both real matchers at that point. Without the fix it reported 43
   divergences across all six families.
 - 2026-08-06: the Python sender installs `SIGTERM`/`SIGINT` handlers, closing the
   shutdown divergence. It flushed only from `atexit`, which a default-disposition
