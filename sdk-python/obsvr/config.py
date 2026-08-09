@@ -823,7 +823,7 @@ def _emit_governance_disabled_event(cfg: ResolvedConfig) -> None:
 
 def set_tenant_policy(tenant_id: str, rules: list, changed_by: Optional[str] = None) -> None:
     """Set policy rules for a specific tenant."""
-    from .policy_log import snapshot_policy, emit_policy_changed_event, send_policy_event
+    from .policy_log import snapshot_policy, emit_policy_changed_event
     existing = _tenant_registry.get(tenant_id, {})
     prev_rules = existing.get("policy_rules", []) or []
     _tenant_registry[tenant_id] = {"policy_rules": rules}
@@ -833,9 +833,13 @@ def set_tenant_policy(tenant_id: str, rules: list, changed_by: Optional[str] = N
     event = emit_policy_changed_event(
         prev_rules, rules, tenant_id, changed_by, resolution=resolution
     )
-    # actually record the change in the audit trail (was built + dropped).
+    # Put policy changes through the SAME signed sender as every other audit
+    # event. The old standalone POST ignored HTTP status, retried nothing,
+    # updated no counters, and swallowed every failure — a rejected governance
+    # event was indistinguishable from a recorded one.
     if cfg is not None and getattr(cfg, "ingest_url", None):
-        send_policy_event(event, cfg.ingest_url, cfg.api_key)
+        from . import sender
+        sender.send_audit_async(cfg, dataclasses.asdict(event))
 
 
 def get_tenant_config(tenant_id: str) -> "ResolvedConfig":

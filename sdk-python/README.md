@@ -76,7 +76,7 @@ Anthropic and Google Gemini work the same way (sync and async clients both suppo
 
 ```python
 client = obsvr.wrap(Anthropic())          # messages.create
-model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content
+model = obsvr.wrap(genai.GenerativeModel("gemini-2.5-flash"))  # generate_content / generate_content_async
 ```
 
 **Which Gemini SDK.** Google ships two, and obsvr integrates one of them:
@@ -91,7 +91,7 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 Two things to know about the supported one. **It needs the explicit `obsvr.wrap()` above** — unlike the OpenAI and Anthropic clients it is not picked up by `obsvr.init()` alone, and a plainly constructed model emits no events at all. And its declared range is **unbounded on purpose**: one live cell (0.8.6) stands behind it, which shows that version works and locates no boundary, so no floor is claimed rather than one being guessed.
 
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
-`messages.create` / `.parse`, `generate_content`, and the `beta.chat.completions.create` / `.parse`,
+`messages.create` / `.parse`, `generate_content` / `generate_content_async`, and the `beta.chat.completions.create` / `.parse`,
 `beta.messages.create`, and `beta.responses.create` namespaces. Everything else on the client passes through
 ungoverned and unaudited — see the coverage boundary in `obsvr/wrap.py` for which of
 those carry no chat text at all and which are text-bearing but not yet reachable from
@@ -349,7 +349,9 @@ obsvr.init(
         "rules": {"ssn": "block", "credit_card": "block", "email": "redact"},
     },
 
-    # Custom pre-call hook: return "allow" | "block" | "redact"
+    # Custom pre-call hook: return "allow" | "block" | "redact".
+    # Enforcement is monotonic: "allow" keeps a clean call allowed but never
+    # erases a PII/rule block rendered by an earlier layer.
     on_pre_call=lambda event: "block" if is_high_risk(event["prompt"]) else "allow",
     hook_timeout_ms=2000,
 

@@ -1,12 +1,9 @@
 """Policy change audit log — parity with sdk-typescript/src/policy/policy-log.ts."""
 import json
-import logging
-import threading
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib.request import Request, urlopen
 
 from .rules import PolicyRule, derive_policy_version
 
@@ -141,27 +138,6 @@ def emit_policy_changed_event(
             }
         },
     )
-
-
-def send_policy_event(event: PolicyChangedEvent, ingest_url: str, api_key: str) -> None:
-    """Fire-and-forget POST of a policy_changed event to /ingest (twin of TS
-    sendPolicyEvent). Never raises — must not break the caller."""
-
-    def _post() -> None:
-        try:
-            body = json.dumps(asdict(event)).encode("utf-8")
-            req = Request(
-                f"{ingest_url}/ingest",
-                data=body,
-                method="POST",
-                headers={"Content-Type": "application/json", "X-API-Key": api_key},
-            )
-            with urlopen(req, timeout=5.0):  # noqa: S310 (ingest_url is operator config)
-                pass
-        except Exception:
-            logging.getLogger("obsvr").debug("policy_changed event delivery failed", exc_info=False)
-
-    threading.Thread(target=_post, name="obsvr-policy-event", daemon=True).start()
 
 
 def _reset_policy_log() -> None:

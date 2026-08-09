@@ -27,7 +27,7 @@ import { PROXY_TIMEOUT_MS, SDK_VERSION } from "../constants.js";
 const SDK_INSTANCE_ID = randomUUID();
 import type { PolicyRule } from "../policy/rules.js";
 import { derivePolicyVersion, ensureRuleResolution } from "../policy/rules.js";
-import { snapshotPolicy, emitPolicyChangedEvent, sendPolicyEvent } from "../policy/policy-log.js";
+import { snapshotPolicy, emitPolicyChangedEvent } from "../policy/policy-log.js";
 import { validateRegexPattern } from "../utils/safe-regex.js";
 import { updateApprovals, type ApprovalGrant } from "../policy/approvals.js";
 import { loadDeviceSigner } from "./device-identity.js";
@@ -765,10 +765,18 @@ export function setTenantPolicy(tenantId: string, rules: PolicyRule[], changedBy
   const event = emitPolicyChangedEvent(
     prevRules, rules, tenantId, changedBy, state.config?.ruleResolution,
   );
-  // actually record the change in the audit trail (was built + dropped).
+  // Put policy changes through the SAME signed sender as every other audit
+  // event. The old standalone POST ignored HTTP status, retried nothing,
+  // updated no counters, and swallowed every failure — a rejected governance
+  // event was indistinguishable from a recorded one.
   const cfg = state.config;
   if (cfg?.ingest_url) {
-    void sendPolicyEvent(event, cfg.ingest_url, cfg.api_key);
+    import("./sender/index.js")
+      .then(({ sendAuditAsync }) => sendAuditAsync(cfg, event as unknown as AuditEvent))
+      .catch(() => {
+        // Import failure must not break the policy update. The sender's own
+        // delivery failures are classified, counted, and reported normally.
+      });
   }
 }
 

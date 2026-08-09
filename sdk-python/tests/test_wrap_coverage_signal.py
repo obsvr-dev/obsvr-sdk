@@ -111,14 +111,17 @@ def test_a_governed_client_is_not_reported(caplog):
     assert _gap_lines(caplog) == []
 
 
-def test_a_gemini_shaped_client_is_not_reported(caplog):
-    """``generate_content`` sits directly on the model object, not under a
-    namespace — the one governed path with no dots in it."""
+@pytest.mark.parametrize("method_name", ["generate_content", "generate_content_async"])
+def test_a_gemini_shaped_client_is_not_reported(caplog, method_name):
+    """Gemini generation methods sit directly on the model object, not under a
+    namespace — the governed paths with no dots in them."""
     boot()
 
     class Model:
-        def generate_content(self, *_a, **_k):
+        def generation(self, *_a, **_k):
             return {}
+
+    setattr(Model, method_name, Model.generation)
 
     with caplog.at_level(logging.WARNING, logger="obsvr"):
         wrap_mod.wrap(Model())

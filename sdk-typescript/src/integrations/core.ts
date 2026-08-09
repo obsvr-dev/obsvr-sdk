@@ -553,7 +553,7 @@ export interface PreCallPolicyResult {
  * Apply the compliance boundary (built-in PII scan + customer hook) to a
  * prompt before the LLM call. Mirrors the proxy wrapper semantics exactly:
  *  - builtin scan resolves per-type block/redact/detect_only
- *  - the customer hook ALWAYS runs and may escalate or override
+ *  - the customer hook ALWAYS runs and may escalate, but never weaken a block
  */
 export async function applyPreCallPolicy(
   promptText: string,
@@ -897,9 +897,9 @@ export async function applyPreCallPolicy(
     // 1.4. Anti-tamper policy FLOOR (runs BEFORE customer rules so a customer
     //      topic_allow cannot pre-empt a floor block; floor rules always enforce
     //      regardless of their declared enabled/mode). A floor block is
-    //      non-overridable: floorBlock excludes it from the hook-override
-    //      branches below, and the floor lives in its own config field so a
-    //      remote sync can never delete it.
+    //      non-overridable and an attempted hook downgrade is recorded;
+    //      the floor also lives in its own config field so a remote sync can
+    //      never delete it.
     let floorBlock = false;
     let floorRuleId: string | undefined;
     let floorPolicyReason: string | undefined;
@@ -1144,24 +1144,14 @@ export async function applyPreCallPolicy(
         hookDecision === "allow" &&
         hookDisposition === "allow" &&
         actionTaken === "blocked" &&
-        !canaryFloor
+        floorBlock
       ) {
-        if (floorBlock) {
-          // The hook tried to un-block a FLOOR rule. Refused — and recorded on
-          // the tamper-evident audit event (the differentiator over a swallowed
-          // stderr line). The block stands.
-          floorOverrideIgnored = { rule_id: floorRuleId, attempted: "allow" };
-        } else {
-          // Only an EXPLICIT hook allow overrides a builtin block (logged
-          // transparently). A fail-open timeout/error default must NOT — its
-          // disposition is "timeout"/"error", not "allow". A canary-leak block is
-          // unsuppressible: the hook can never un-block it (canaryFloor).
-          actionTaken = "allowed";
-          actionReason = "customer_override";
-          actionSource = "customer_hook";
-          rulesReasonCode = undefined; // the overridden block's code no longer applies
-          detectorReasonCode = undefined;
-        }
+        // Enforcement is monotonic: a hook may add a restriction, but an
+        // allow verdict never erases a block already rendered by PII, policy
+        // rules, taint, protocol facets, or another detector. Floor override
+        // attempts retain their explicit record because the floor is a
+        // separately sealed operator boundary.
+        floorOverrideIgnored = { rule_id: floorRuleId, attempted: "allow" };
       } else if (
         hookDecision === "redact" &&
         actionTaken !== "redacted" &&
@@ -1272,7 +1262,7 @@ export async function applyPreCallPolicy(
       hookReasonCode ??
       rulesReasonCode ??
       detectorReasonCode ??
-      (actionReason === "none" || actionReason === "customer_override"
+      (actionReason === "none"
         ? ReasonCode.PERMITTED
         : resolveReasonCode({ action_reason: actionReason, action_source: actionSource }));
     // Canary wins (unsuppressible), then the integrity gate, then the rest;

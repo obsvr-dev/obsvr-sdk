@@ -8,6 +8,7 @@ path beneath it was unreachable — a stricter version of the same gap the
 TypeScript proxy had. Nothing failed when that was true, and nothing would fail
 if the list silently widened either.
 """
+import asyncio
 import sys
 
 import pytest
@@ -167,6 +168,7 @@ class TestBoundaryHoldsInBothDirections:
             (["responses", "create"], 1),
             (["responses", "parse"], 1),
             (["generate_content"], 1),
+            (["generate_content_async"], 1),
             (["beta", "messages", "create"], 1),
             (["beta", "responses", "create"], 1),
             (["beta", "chat", "completions", "create"], 1),
@@ -195,7 +197,10 @@ class TestBoundaryHoldsInBothDirections:
             def __call__(self, **kwargs):
                 return FakeAnthropicResponse()
 
-        node = _Leaf()
+        async def _async_leaf(**kwargs):
+            return FakeAnthropicResponse()
+
+        node = _async_leaf if path == ["generate_content_async"] else _Leaf()
         for seg in reversed(path):
             holder = type("Node", (), {})()
             setattr(holder, seg, node)
@@ -210,7 +215,9 @@ class TestBoundaryHoldsInBothDirections:
         cursor = client
         for seg in path:
             cursor = getattr(cursor, seg)
-        cursor(model="m", messages=[{"role": "user", "content": "hi"}])
+        result = cursor(model="m", messages=[{"role": "user", "content": "hi"}])
+        if path == ["generate_content_async"]:
+            asyncio.run(result)
 
         assert len(captured) == expected_events
 

@@ -197,9 +197,10 @@ obsvr.init({
     }, // enforce | shadow
   ],
 
-  // Custom pre-call hook: allow | block | redact. Budgeted by hookTimeoutMs
-  // and resolved by failMode on expiry — for human approval, use
-  // approvalWaitMs below, not a hook that waits.
+  // Custom pre-call hook: allow | block | redact. Enforcement is monotonic:
+  // "allow" keeps a clean call allowed but never erases a PII/rule block.
+  // Budgeted by hookTimeoutMs and resolved by failMode on expiry — for human
+  // approval, use approvalWaitMs below, not a hook that waits.
   onPreCall: async (event) =>
     isHighRisk(event.prompt) ? "block" : "allow",
   hookTimeoutMs: 2000,
@@ -728,8 +729,8 @@ than only in a source comment.
 - **Text-bearing paths in neither table, in both languages:** the legacy
   `completions.create` on both providers, `beta.messages.parse`, the batch
   surfaces, `count_tokens`, and Gemini's `start_chat` → `ChatSession`.
-  Python additionally does not reach `generate_content_async`, the
-  `with_raw_response` / `with_streaming_response` accessor chains, or anything
+  Python additionally does not reach the `with_raw_response` /
+  `with_streaming_response` accessor chains or anything
   under the current `google-genai` package.
 
 ### Does a tool-policy block actually stop the tool?

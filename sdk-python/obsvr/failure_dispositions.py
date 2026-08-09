@@ -107,7 +107,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("not_applicable"),
         "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": "Guarded at the pre-call span in both languages and at the tool-execution path. An exception resolves by failMode: open loses this layer's escalation for the call, closed refuses it.",
     },
     {
@@ -125,7 +125,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("not_applicable"),
         "error": _s("fail_mode", "redaction_application_closed"),
         "degraded": _s("not_applicable"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": "Guarded at every pre-call span. Detection resolves by failMode; APPLYING a resolved redaction to outbound content resolves closed - see the redaction_application_closed qualifier.",
     },
     {
@@ -134,7 +134,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("open"),
         "error": _s("open"),
         "degraded": _s("open"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": (
             "Out-of-process NER sidecar. Timeout or transport error yields no findings and the "
             "builtin regex tier still decides, so the layer degrades rather than disappears."
@@ -146,7 +146,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("not_applicable"),
         "error": _s("fail_mode", "redaction_application_closed"),
         "degraded": _s("not_applicable"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": "Guarded with the scan it feeds. Detection resolves by failMode; the stored-copy redactor fails closed to [UNSCANNED:detector_error] rather than persist text nothing vetted, and outbound application resolves closed - see the redaction_application_closed qualifier.",
     },
     {
@@ -155,7 +155,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("not_applicable"),
         "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": "Guarded at the pre-call span in both languages. Resolves by failMode; a lost score costs this call's accumulated-probing signal only.",
     },
     {
@@ -173,7 +173,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("not_applicable"),
         "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": "Guarded at every span that evaluates rules. Resolves by failMode. Two units of this layer are structurally always OPEN and cannot block whatever failMode says: shadow evaluation, which is defined as never decision-affecting, and the policy-version hash, which is provenance rather than a control.",
     },
     {
@@ -252,7 +252,7 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "timeout": _s("not_applicable"),
         "error": _s("fail_mode"),
         "degraded": _s("not_applicable"),
-        "hook_overridable": True,
+        "hook_overridable": False,
         "notes": "Lexical decomposition of a protocol statement into facets a rule can address. Runs inside the policy_rules span, so an exception resolves the way that layer does. Its own decision on input it CANNOT decompose is separate from an exception and is closed: unparseable text matches the rule, so a facet rule refuses rather than permitting what it could not read. That distinction is why this has its own row.",
     },
     {

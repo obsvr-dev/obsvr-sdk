@@ -384,6 +384,22 @@ def test_a_streaming_block_holds_on_the_create_form(no_delivery):
     assert _drive_stream("create", pii_policy=SSN_BLOCK_POLICY) == []
 
 
+def test_an_allow_hook_cannot_unblock_pii(no_delivery):
+    """F011, measured at the provider rather than from the verdict record.
+
+    The published options example combined an SSN block with a hook whose
+    normal path returned ``allow``. The provider received the SSN because that
+    allow erased the earlier block. Monotonic enforcement means it now receives
+    no call at all.
+    """
+    received = _drive_stream(
+        "create",
+        pii_policy=SSN_BLOCK_POLICY,
+        on_pre_call=lambda _event: "allow",
+    )
+    assert received == [], "an allow hook erased a PII block"
+
+
 def test_a_streaming_block_holds_on_the_stream_helper(no_delivery):
     """Same client, same policy, the other documented streaming entry point.
 
@@ -668,7 +684,11 @@ class _IngestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's spelling
         length = int(self.headers.get("Content-Length", 0))
-        self.rfile.read(length)
+        raw = self.rfile.read(length)
+        try:
+            self.server.obsvr_requests.append(json.loads(raw or b"{}"))
+        except Exception:
+            self.server.obsvr_requests.append(None)
         status, body = self.server.obsvr_response
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
@@ -682,6 +702,7 @@ class _IngestHandler(BaseHTTPRequestHandler):
 def ingest_server():
     server = HTTPServer(("127.0.0.1", 0), _IngestHandler)
     server.obsvr_response = (200, {"count": 1})
+    server.obsvr_requests = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server
@@ -757,6 +778,48 @@ def test_an_accepted_event_still_counts_as_delivered(ingest_server):
     stats = _deliver_one(ingest_server, 200, {"count": 1})
     assert stats["sent"] == 1
     assert stats["dropped_rejected"] == 0
+
+
+def test_a_refused_policy_change_uses_the_signed_sender(ingest_server):
+    """A policy change used to POST outside the sender and ignore the status.
+
+    The real server is the instrument: it receives the governance event and
+    refuses it, while the shared sender must report zero deliveries and one
+    rejection. No audit-event verdict is used to grade the outcome.
+    """
+    from obsvr.config import set_tenant_policy
+    from obsvr.rules import PolicyRule
+
+    sender._reset_sender()
+    obsvr.init(
+        api_key="test-key",
+        ingest_url=f"http://127.0.0.1:{ingest_server.server_address[1]}",
+        environment="development",
+        auto=False,
+    )
+    ingest_server.obsvr_requests.clear()
+    ingest_server.obsvr_response = (403, {"error": "invalid_sdk_signature"})
+
+    set_tenant_policy(
+        "tenant-policy-log",
+        [PolicyRule(
+            id="deny-export",
+            name="deny export",
+            enabled=True,
+            action="block",
+            type="keyword",
+            conditions={"keywords": ["export"]},
+        )],
+        changed_by="admin",
+    )
+    sender.flush(timeout=5)
+
+    stats = sender.get_sender_stats()
+    assert stats["sent"] == 0
+    assert stats["dropped_rejected"] == 1
+    assert len(ingest_server.obsvr_requests) == 1
+    assert ingest_server.obsvr_requests[0]["event_type"] == "policy_changed"
+    assert isinstance(ingest_server.obsvr_requests[0].get("sdk_sig"), str)
 
 
 def test_delivery_loss_is_reported_at_default_settings(ingest_server, caplog):

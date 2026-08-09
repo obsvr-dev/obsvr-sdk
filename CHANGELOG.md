@@ -17,6 +17,37 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Python now governs legacy Gemini's async generation method.** The declared
+  `google-generativeai` integration intercepted `generate_content` but handed
+  `generate_content_async` straight to the provider with no policy or audit
+  event. The real 0.8.6 package exposes it as a coroutine with the same request
+  shape; it now runs through the async governance pipeline, including outbound
+  redaction and pre-provider blocking.
+
+- **Python retry and byte-split items cannot fall out of the signed chain when
+  producers refill the public queue.** The worker put an already-signed item
+  back into that bounded queue; a concurrent producer could fill the slot first,
+  making `put_nowait` drop the signed item while later events still chained to
+  it. Worker-owned pending lanes now retain those items in order until terminal
+  delivery, and queue-drain accounting follows the original submission.
+
+- **BREAKING: a customer hook can no longer erase an existing block.** The
+  published advanced-options example combined an SSN block with an
+  `on_pre_call` / `onPreCall` hook whose ordinary path returned `allow`; that
+  explicit allow replaced the PII verdict and sent the SSN to the provider.
+  Pre-call enforcement is now monotonic in both SDKs and on both TypeScript
+  pipelines: hooks may add a block or redaction, while `allow` only preserves
+  a call that no earlier layer blocked. External-oracle regressions assert the
+  provider receives zero calls for the published composition.
+
+- **Policy-change events use the signed delivery queue.** `set_tenant_policy`
+  / `setTenantPolicy` posted through a private one-off HTTP client that ignored
+  every response status, retried nothing, updated no delivery counter, emitted
+  no default warning, and placed the governance event outside the SDK chain.
+  Both SDKs now enqueue the event through their normal sender, so rejection,
+  retry exhaustion, shutdown flushing, counters, signatures, and loss reporting
+  have the same semantics as every other audit event.
+
 - **A `policy_rules` entry written as a mapping enforces.** It reached the rule
   engine uncoerced and raised on the first attribute read, where the detector
   guard resolved the raise by `failMode` — open by default — so a `block` rule

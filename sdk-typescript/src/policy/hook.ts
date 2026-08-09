@@ -15,7 +15,8 @@ import { normalizeForMatching, stripInvisibleChars, nfkcWithSourceMap } from './
 
 /**
  * Decision returned by a policy hook.
- * - allow  : proceed with the LLM call as normal
+ * - allow  : keep a call allowed when no earlier layer blocked it; never
+ *            erase an existing PII, policy-rule, taint, or protocol block
  * - block  : throw an error before calling the LLM
  * - redact : strip prompt/response content before the call proceeds
  */

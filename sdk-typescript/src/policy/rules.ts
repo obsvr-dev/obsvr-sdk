@@ -998,8 +998,8 @@ export function deriveRuleHash(rule: PolicyRule): string {
  * rule to `enabled:false` or `mode:'shadow'` cannot make it inert. Because the
  * engine is first-match-in-order and a customer `topic_allow` short-circuits
  * to allow, the floor is evaluated as its OWN pass BEFORE the customer rules,
- * and its decision is non-overridable (the caller excludes a floor block from
- * the hook-override branches, and the floor lives in its own config field so a
+ * and its decision is non-overridable (the caller separately records a hook's
+ * attempted floor override, and the floor lives in its own config field so a
  * remote /policies sync — which replaces only the SERVER rule set — can never delete
  * it). Byte-identical to the Python `evaluate_floor`.
  */

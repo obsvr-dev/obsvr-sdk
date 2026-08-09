@@ -6,7 +6,7 @@ EXACT parity with sdk-typescript/src/policy/hook.ts:
   - same confidence-based overlap suppression over positioned spans
   - same BUILTIN_SEVERITY defaults
   - same resolution order: rules[type] -> default -> builtin -> detect_only
-  - same compliance semantics (incl. customer hook override behavior)
+  - same compliance semantics (including monotonic customer-hook behavior)
 
 Patterns are compiled with re.ASCII so \\d, \\w, \\s and \\b match exactly what
 JavaScript's ASCII character classes match. Without it, Python's Unicode-aware
@@ -1398,8 +1398,8 @@ def apply_pre_call_policy(
 
         _layer = "policy_floor"
         # 1.4. Anti-tamper policy FLOOR (before customer rules; floor rules always
-        #      enforce, and a floor block is excluded from the hook-override
-        #      branches below). Lives in its own config field so a remote sync
+        #      enforce, and an attempted hook downgrade is recorded below).
+        #      Lives in its own config field so a remote sync
         #      replacing the SERVER rule set can never delete it. TS parity: core.ts 1.4.
         floor_block = False
         floor_rule_id: Optional[str] = None
@@ -1429,8 +1429,8 @@ def apply_pre_call_policy(
                 # core.ts, and the governance surface): there is no span-level
                 # redaction for an arbitrary floor-rule match, so blocking is the
                 # only way the non-overridable baseline can guarantee the matched
-                # content is not forwarded. floor_block=True so the hook-override
-                # exclusion + floor_override_ignored record cover the redact case.
+                # content is not forwarded. floor_block=True so the
+                # floor_override_ignored record covers the redact case.
                 floor_block = True
                 floor_rule_id = floor_result.get("rule_id")
                 floor_reason = floor_result.get("reason") or "Blocked by policy floor"
@@ -1683,26 +1683,18 @@ def apply_pre_call_policy(
                 hook_decision == "allow"
                 and hook_disposition == "allow"
                 and action_taken == "blocked"
-                and not canary_floor
+                and floor_block
             ):
-                if floor_block:
-                    # The hook tried to un-block a FLOOR rule. Refused +
-                    # recorded on the tamper-evident event; the block stands.
-                    floor_override_ignored = {
-                        "rule_id": floor_rule_id,
-                        "attempted": "allow",
-                    }
-                else:
-                    # Only an EXPLICIT hook allow overrides a builtin block
-                    # (logged transparently). A fail-open timeout/error default
-                    # must NOT un-block builtin PII/rules enforcement. A
-                    # canary-leak block is unsuppressible (canary_floor).
-                    action_taken = "allowed"
-                    action_reason = "customer_override"
-                    action_source = "customer_hook"
-                    # The overridden block's code no longer applies.
-                    rules_reason_code = None
-                    detector_reason_code = None
+                # Enforcement is monotonic: a hook may add a restriction, but
+                # an allow verdict never erases a block already rendered by
+                # PII, policy rules, taint, protocol facets, or another
+                # detector. Floor override attempts retain their stronger,
+                # explicit audit record because the floor is a separately
+                # sealed operator boundary.
+                floor_override_ignored = {
+                    "rule_id": floor_rule_id,
+                    "attempted": "allow",
+                }
             elif (
                 hook_decision == "redact"
                 and action_taken != "redacted"
@@ -1867,7 +1859,7 @@ def apply_pre_call_policy(
     explicit_reason_code = hook_reason_code or rules_reason_code or detector_reason_code
     resolved_reason_code = explicit_reason_code or (
         ReasonCode.PERMITTED.value
-        if action_reason in ("none", "customer_override")
+        if action_reason == "none"
         else _resolve_reason_code(action_reason, action_source, None)
     )
 

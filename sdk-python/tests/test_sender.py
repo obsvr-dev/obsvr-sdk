@@ -178,6 +178,63 @@ def test_batch_splits_on_byte_budget():
     assert len(json.dumps(small)) < sender.MAX_BATCH_BYTES
 
 
+def test_retry_survives_when_producers_refill_the_public_queue(monkeypatch):
+    """An already-signed retry must not compete with producers for a slot.
+
+    The first request is held in flight while a second event fills a one-slot
+    public queue. The old worker tried to put the first event back, hit Full,
+    dropped it, and left the chain pointing through an event ingest never saw.
+    The worker-local carry now sends both in sequence without an overflow.
+    """
+    sender._reset_sender()
+    original_maxsize = sender._queue.maxsize
+    sender._queue.maxsize = 1
+    in_flight = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def send_one(_cfg, event):
+        calls.append(("single", event["request_id"]))
+        if event["request_id"] == "retry-first" and calls.count(("single", "retry-first")) == 1:
+            in_flight.set()
+            assert release.wait(5), "test never released the first request"
+            return ("retryable", 0)
+        return ("ok", 0)
+
+    def send_batch(_cfg, events):
+        calls.append(("batch", [event["request_id"] for event in events]))
+        return ("ok", 0)
+
+    monkeypatch.setattr(sender, "_send_event", send_one)
+    monkeypatch.setattr(sender, "_send_event_batch", send_batch)
+    cfg = _cfg()
+    try:
+        sender.send_audit_async(
+            cfg, {"request_id": "retry-first", "prompt": "p1", "response": ""}
+        )
+        assert in_flight.wait(5), "worker never started the first request"
+        sender.send_audit_async(
+            cfg, {"request_id": "queued-second", "prompt": "p2", "response": ""}
+        )
+        assert sender.get_queue_size() == 1
+        release.set()
+        sender.flush(timeout=5)
+
+        stats = sender.get_sender_stats()
+        assert stats["sent"] == 2
+        assert stats["retries"] == 1
+        assert stats["dropped_overflow"] == 0
+        assert sender.get_pending_gap_count() == 0
+        assert calls == [
+            ("single", "retry-first"),
+            ("batch", ["retry-first", "queued-second"]),
+        ]
+    finally:
+        release.set()
+        sender._queue.maxsize = original_maxsize
+        sender._reset_sender()
+
+
 def test_disabled_config_skips_send():
     """Disabled config: send_audit_async enqueues nothing (no HTTP call)."""
     import obsvr

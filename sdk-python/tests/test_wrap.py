@@ -138,6 +138,10 @@ class FakeGenerativeModel:
         self.calls.append(prompt)
         return FakeGeminiResponse()
 
+    async def generate_content_async(self, prompt, **kwargs):
+        self.calls.append(prompt)
+        return FakeGeminiResponse()
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -315,6 +319,37 @@ class TestGeminiInterception:
         assert ev["model"] == "gemini-2.5-flash"
         assert ev["prompt"] == "hello gemini"
         assert ev["total_tokens"] == 5
+
+    def test_generate_content_async_intercepted(self, monkeypatch):
+        _init()
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        model = obsvr.wrap(raw)
+
+        result = asyncio.run(model.generate_content_async("hello async gemini"))
+
+        assert result.text == "fake gemini answer"
+        assert raw.calls == ["hello async gemini"]
+        assert len(captured) == 1
+        assert captured[0]["operation"] == "generate_content_async"
+        assert captured[0]["prompt"] == "hello async gemini"
+
+    def test_generate_content_async_block_prevents_provider_call(self, monkeypatch):
+        _init(pii_policy={})
+        captured = _captured_events(monkeypatch)
+        raw = FakeGenerativeModel()
+        model = obsvr.wrap(raw)
+
+        async def run():
+            await model.generate_content_async("my ssn is 123-45-6789")
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            asyncio.run(run())
+
+        assert raw.calls == []
+        assert len(captured) == 1
+        assert captured[0]["event_type"] == "blocked_call"
+        assert "123-45-6789" not in (captured[0].get("user_input") or "")
 
     def test_gemini_positional_block_emits_and_raises_no_crash(self, monkeypatch):
         # Regression: the block path called redact_builtin_pii(_last_user_message(kwargs)),

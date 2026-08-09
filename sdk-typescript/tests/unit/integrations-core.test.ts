@@ -130,7 +130,7 @@ describe('applyPreCallPolicy', () => {
     expect(result.compliance.action_source).toBe('customer_hook');
   });
 
-  it('customer hook allow overrides builtin block (customer_override)', async () => {
+  it('customer hook allow cannot override a builtin block', async () => {
     init({
       api_key: 'test',
       pii_policy: {},
@@ -141,8 +141,10 @@ describe('applyPreCallPolicy', () => {
       provider: 'bedrock',
       operation: 'test',
     });
-    expect(result.decision).toBe('allow');
-    expect(result.compliance.action_reason).toBe('customer_override');
+    expect(result.decision).toBe('block');
+    expect(result.compliance.action_reason).toBe('pii_detected');
+    expect(result.compliance.action_source).toBe('builtin');
+    expect(result.compliance.reason_code).toBe('PII_DETECTED');
   });
 });
 

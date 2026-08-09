@@ -82,6 +82,14 @@ SIGNING_SALT = b"obsvr-sdk-signing-v1"
 SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
 
 _queue: "Queue[Any]" = Queue(maxsize=MAX_QUEUE_SIZE)
+# Unbounded, worker-only carry for ALREADY-SIGNED items that need the next
+# byte-bounded batch or a retry. Its size is bounded by construction (one split
+# item plus one failed SEND_BATCH_SIZE batch), while keeping it separate means
+# producers can never consume the slot an older signed item needs to survive.
+_worker_pending: "Queue[Any]" = Queue()
+# One item that crossed the byte budget belongs before every other pending
+# retry/item, so it gets its own front slot rather than going to the tail.
+_worker_front: "Queue[Any]" = Queue(maxsize=1)
 _backoff: Dict[str, float] = {"until": 0.0, "multiplier": 1.0}
 # Set at process exit so the worker breaks out of its (up to 60s) backoff sleep
 # and drains immediately — otherwise the atexit flush budget is defeated by a
@@ -200,7 +208,8 @@ def _reseed_chain_after_fork() -> None:
     Twin: none. The TypeScript SDK has no ``fork()`` to survive.
     """
     global _sdk_session_id, _seq_no, _last_sig
-    global _queue, _sign_lock, _stats_lock, _worker_lock, _worker
+    global _queue, _worker_pending, _worker_front
+    global _sign_lock, _stats_lock, _worker_lock, _worker
     global _gap_pending, _gap_marker_ordinal, _dropped
 
     _sign_lock = threading.RLock()
@@ -214,6 +223,8 @@ def _reseed_chain_after_fork() -> None:
     # A fresh queue: drops the parent's undelivered events (the parent still has
     # them) and discards any queue-internal lock inherited in a locked state.
     _queue = Queue(maxsize=MAX_QUEUE_SIZE)
+    _worker_pending = Queue()
+    _worker_front = Queue(maxsize=1)
 
     # These describe the PARENT's losses and its markers. The child has had none.
     _gap_pending = 0
@@ -644,28 +655,49 @@ def _worker_loop() -> None:
     requeue with a bounded per-item budget; permanent failures (4xx other
     than 408/429) dead-letter immediately: the same bytes will always fail."""
     global _dropped
+    # Items removed from Queue must never be put back into a queue producers
+    # can refill between get() and put_nowait(). Two such requeues existed:
+    # byte-budget carry-over and retryable delivery. If either raced a full
+    # queue, an ALREADY-SIGNED event was dropped, the next event linked to its
+    # missing signature, and no gap marker was armed. Keep the bounded carry
+    # locally instead: at most one byte-split item plus SEND_BATCH_SIZE retries,
+    # and always drain it before reading newer queue entries.
     while True:
-        first = _queue.get()
+        try:
+            first = _worker_front.get_nowait()
+            _worker_front.task_done()
+        except Empty:
+            try:
+                first = _worker_pending.get_nowait()
+                _worker_pending.task_done()
+            except Empty:
+                first = _queue.get()
         batch = [first]
+        completed = 1
         try:
             batch_bytes = len(json.dumps(first[1]))
             while len(batch) < SEND_BATCH_SIZE:
                 try:
-                    item = _queue.get_nowait()
+                    item = _worker_front.get_nowait()
+                    _worker_front.task_done()
                 except Empty:
-                    break
+                    try:
+                        item = _worker_pending.get_nowait()
+                        _worker_pending.task_done()
+                    except Empty:
+                        try:
+                            item = _queue.get_nowait()
+                        except Empty:
+                            break
                 item_bytes = len(json.dumps(item[1]))
                 if batch and batch_bytes + item_bytes > MAX_BATCH_BYTES:
-                    # Byte budget reached: send what we have, put this one
-                    # back for the next batch.
-                    try:
-                        _queue.put_nowait(item)
-                    except Full:
-                        _dropped += 1
-                        _bump("dropped_overflow")
-                    _queue.task_done()
+                    # Byte budget reached: carry this already-signed item
+                    # locally into the next batch. Requeueing it could race a
+                    # producer for the last slot and silently break the chain.
+                    _worker_front.put(item)
                     break
                 batch.append(item)
+                completed += 1
                 batch_bytes += item_bytes
 
             wait = _backoff["until"] - time.time()
@@ -707,12 +739,13 @@ def _worker_loop() -> None:
                     cfg, ev = item[0], item[1]
                     retries = item[2] if len(item) > 2 else 0
                     if retries < MAX_SEND_RETRIES:
-                        try:
-                            _queue.put_nowait((cfg, ev, retries + 1))
-                            _bump("retries")
-                        except Full:
-                            _dropped += 1
-                            _bump("dropped_overflow")
+                        # Retry older signed events before newer queue entries.
+                        # The carry is bounded by this batch and retains the
+                        # original Queue unfinished-task obligation until the
+                        # event reaches a terminal verdict.
+                        _worker_pending.put((cfg, ev, retries + 1))
+                        completed -= 1
+                        _bump("retries")
                     else:
                         _dropped += 1
                         _bump("dropped_retry_exhausted")
@@ -720,7 +753,7 @@ def _worker_loop() -> None:
         except Exception:
             pass
         finally:
-            for _ in batch:
+            for _ in range(completed):
                 _queue.task_done()
 
 
@@ -1135,6 +1168,21 @@ def _reset_sender() -> None:
     """Reset sender state (tests only). The worker thread stays alive."""
     global _dropped, _seq_no, _last_sig, _signing_key, _signing_key_source
     global _gap_pending, _gap_marker_ordinal, _last_config, _device_signer
+    # Every carried item still owns an unfinished task on the public queue.
+    while True:
+        try:
+            _worker_front.get_nowait()
+            _worker_front.task_done()
+            _queue.task_done()
+        except Empty:
+            break
+    while True:
+        try:
+            _worker_pending.get_nowait()
+            _worker_pending.task_done()
+            _queue.task_done()
+        except Empty:
+            break
     while True:
         try:
             _queue.get_nowait()

@@ -1,6 +1,10 @@
-import { init, _reset, setTenantPolicy } from '../../src/proxy/config';
+import { init, _reset, getConfig, setTenantPolicy } from '../../src/proxy/config';
 import { snapshotPolicy, getPolicyAtTime, emitPolicyChangedEvent, _resetPolicyLog } from '../../src/policy/policy-log';
-import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
+import {
+  _resetSender,
+  flushQueue,
+  getSenderStats,
+} from '../../src/proxy/sender/fire-and-forget';
 import type { PolicyRule } from '../../src/policy/rules';
 
 beforeEach(() => { _reset(); _resetSender(); _resetPolicyLog(); });
@@ -59,5 +63,35 @@ describe('policy log', () => {
     // The structured change rides in metadata (the channel canonical preserves).
     expect(event.metadata.policy_change.new_version).toBe(event.new_version);
     expect(event.metadata.policy_change.diff.added).toContain('r1');
+  });
+
+  it('routes a refused policy change through signed sender accounting', async () => {
+    const requests: any[] = [];
+    (global as any).fetch = async (_url: unknown, options: { body?: string }) => {
+      requests.push(JSON.parse(options.body ?? '{}'));
+      return { ok: false, status: 403, json: async () => ({ error: 'invalid_sdk_signature' }) };
+    };
+    init({ api_key: 'test', ingest_url: 'https://ingest.example' });
+
+    const rules: PolicyRule[] = [{
+      id: 'r1', name: 'block-bad', enabled: true,
+      action: 'block', type: 'keyword', conditions: { keywords: ['bad'] },
+    }];
+    setTenantPolicy('tenant1', rules, 'admin');
+
+    // setTenantPolicy uses a dynamic import to avoid config -> sender cycles.
+    for (let i = 0; i < 100 && getSenderStats().enqueued === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await flushQueue(getConfig(), 2000);
+
+    const stats = getSenderStats();
+    expect(stats.sent).toBe(0);
+    expect(stats.dropped_rejected).toBe(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].event_type).toBe('policy_changed');
+    expect(typeof requests[0].sdk_sig).toBe('string');
+
+    delete (global as any).fetch;
   });
 });

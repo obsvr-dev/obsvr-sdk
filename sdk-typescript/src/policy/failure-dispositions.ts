@@ -70,9 +70,9 @@ export interface FailureDispositionEntry {
   error: StateDisposition;
   degraded: StateDisposition;
   /**
-   * Whether an EXPLICIT customer-hook allow can downgrade this layer's block.
-   * A hook timeout or error never can, on any layer: only a hook that actually
-   * rendered an allow verdict overrides builtin enforcement.
+   * Whether a customer-hook allow can downgrade this layer's block. Enforcement
+   * is monotonic, so every shipped layer declares false: hooks may add a
+   * restriction, never erase one already rendered.
    */
   hookOverridable: boolean;
   /** Why the disposition is what it is. Kept short and checkable. */
@@ -113,7 +113,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes: "Guarded at the pre-call span in both languages and at the tool-execution path. An exception resolves by failMode: open loses this layer's escalation for the call, closed refuses it.",
   },
   {
@@ -131,7 +131,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("not_applicable"),
     error: s("fail_mode", "redaction_application_closed"),
     degraded: s("not_applicable"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes: "Guarded at every pre-call span. Detection resolves by failMode; APPLYING a resolved redaction to outbound content resolves closed - see the redaction_application_closed qualifier.",
   },
   {
@@ -140,7 +140,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("open"),
     error: s("open"),
     degraded: s("open"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes:
       "Out-of-process NER sidecar. Timeout or transport error yields no findings and the builtin regex tier still decides, so the layer degrades rather than disappears.",
   },
@@ -150,7 +150,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("not_applicable"),
     error: s("fail_mode", "redaction_application_closed"),
     degraded: s("not_applicable"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes: "Guarded with the scan it feeds. Detection resolves by failMode; the stored-copy redactor fails closed to [UNSCANNED:detector_error] rather than persist text nothing vetted, and outbound application resolves closed - see the redaction_application_closed qualifier.",
   },
   {
@@ -159,7 +159,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes: "Guarded at the pre-call span in both languages. Resolves by failMode; a lost score costs this call's accumulated-probing signal only.",
   },
   {
@@ -177,7 +177,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes: "Guarded at every span that evaluates rules. Resolves by failMode. Two units of this layer are structurally always OPEN and cannot block whatever failMode says: shadow evaluation, which is defined as never decision-affecting, and the policy-version hash, which is provenance rather than a control.",
   },
   {
@@ -236,7 +236,7 @@ export const FAILURE_DISPOSITIONS: readonly FailureDispositionEntry[] = Object.f
     timeout: s("not_applicable"),
     error: s("fail_mode"),
     degraded: s("not_applicable"),
-    hookOverridable: true,
+    hookOverridable: false,
     notes:
       "Lexical decomposition of a protocol statement into facets a rule can address. Runs inside the policy_rules span, so an exception resolves the way that layer does. Its own decision on input it CANNOT decompose is separate from an exception and is closed: unparseable text matches the rule, so a facet rule refuses rather than permitting what it could not read. That distinction is why this has its own row.",
   },
