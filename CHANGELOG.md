@@ -9,7 +9,7 @@ changes to closed enums count as breaking, because they break exhaustive
 switches in consumer code. Entries are kept short by default; the long ones are
 the ones that change something you depend on.
 
-Each entry links the commit that made the change.
+Entries link the implementing commit when a stable public hash is available.
 
 ## [Unreleased]
 
@@ -19,10 +19,98 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Stored evidence is scrubbed independently of outbound enforcement.** Both
+  SDKs scan the final prompt and response before signing and emission, preserving
+  `not_evaluated` verdicts on observe-only callbacks while keeping PII whose
+  configured action resolves to `block` or `redact` out of the stored copy.
+  ([`1c7bc68`](https://github.com/obsvr-dev/obsvr-sdk/commit/1c7bc68), [`31efaa2`](https://github.com/obsvr-dev/obsvr-sdk/commit/31efaa2))
+
+- **Provider-bound PII enforcement covers every text role on direct wrapper
+  paths.** System, user, assistant, and tool-result text now share the pre-call
+  block/redaction pass. ([`52d80c6`](https://github.com/obsvr-dev/obsvr-sdk/commit/52d80c6))
+
+- **The vendored integration gate cannot pass zero suites.** Import failures and
+  a suite-count mismatch are terminal, and the offline gate requires all 23
+  declared suites. ([`aac7744`](https://github.com/obsvr-dev/obsvr-sdk/commit/aac7744))
+
+- **Sender-visible terminal delivery loss starts a signed fresh chain.** Ingest
+  rejection, permanent failure, and retry exhaustion arm reasoned gap markers;
+  failed markers are counted without recursive replacement.
+  ([`7b041e1`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b041e1))
+
+- **Both external policy connectors pin their approved DNS snapshot.** Mixed
+  public/private answers are refused, sockets use approved numeric addresses
+  while retaining Host/SNI, redirects are not followed, and injected transport
+  seams are explicitly trusted. ([`bcd7ce5`](https://github.com/obsvr-dev/obsvr-sdk/commit/bcd7ce5), [`5c8de50`](https://github.com/obsvr-dev/obsvr-sdk/commit/5c8de50), [`7dcb9a1`](https://github.com/obsvr-dev/obsvr-sdk/commit/7dcb9a1))
+
+- **Current Gemini clients are governed in both SDKs.** TypeScript supports
+  `@google/genai` unary/streaming methods with explicit wrapping and module
+  interception; Python supports the corresponding sync/async `google-genai`
+  resource methods through explicit wrapping. ([`b3695e8`](https://github.com/obsvr-dev/obsvr-sdk/commit/b3695e8), [`461d73d`](https://github.com/obsvr-dev/obsvr-sdk/commit/461d73d))
+
+- **Applied NLP-only redaction fails closed in TypeScript.** A Presidio analyzer
+  or anonymizer failure can no longer fall back to a regex redactor that cannot
+  locate the detected type; the provider call is refused even under fail-open
+  detector posture. ([`1712bd5`](https://github.com/obsvr-dev/obsvr-sdk/commit/1712bd5))
+
+- **Session taint detects injection without a separate PII rule.** Enabling the
+  latch now runs its built-in injection scan directly in both SDKs, without
+  fabricating PII telemetry when no PII policy exists, and escalates later
+  session egress as configured. ([`6c315e5`](https://github.com/obsvr-dev/obsvr-sdk/commit/6c315e5))
+
+- **Python preserves explicit blank principal precedence.** An ambient subject
+  no longer replaces an explicitly empty or whitespace `user_id`; required
+  principal enforcement refuses it consistently with TypeScript, and the
+  signed record keeps the same explicit value. ([`4b6f272`](https://github.com/obsvr-dev/obsvr-sdk/commit/4b6f272))
+
+- **The evaluation conformance contract matches the hardened engines.** Spec
+  version 1.2 and cross-SDK fixtures now pin deny-wins resolution, local versus
+  remote malformed-rule handling, action-bound approvals, current rule hashing,
+  and detection-versus-application failure posture. KD-11 is closed.
+  ([`062bfc8`](https://github.com/obsvr-dev/obsvr-sdk/commit/062bfc8))
+
+- **Monitor mode retains clean governed events at any sample rate.** The shared
+  emission gates cover wrapper, integration, and standalone execution-span
+  paths while enforce mode keeps ordinary allowed-call sampling.
+  ([`3d3e2f1`](https://github.com/obsvr-dev/obsvr-sdk/commit/3d3e2f1), [`7fd5495`](https://github.com/obsvr-dev/obsvr-sdk/commit/7fd5495), [`3e11332`](https://github.com/obsvr-dev/obsvr-sdk/commit/3e11332))
+
+- **Stream evidence opt-out no longer bypasses enforcement.** TypeScript
+  `streamingMode: "skip"` still avoids wrapping an allowed stream in enforce
+  mode, but only after pre-call block/redaction has run; monitor mode records
+  the stream despite the opt-out. ([`8e1bbb1`](https://github.com/obsvr-dev/obsvr-sdk/commit/8e1bbb1))
+
+- **Haystack prompt blocks no longer create raw-input exception snapshots.** A
+  terminal conditional output prevents the downstream generator from becoming
+  runnable and returns only a safe block branch. ([`027663d`](https://github.com/obsvr-dev/obsvr-sdk/commit/027663d))
+
+- **A retained MCP task facade cannot keep a raw client binding.** TypeScript
+  repairs an already-issued experimental facade onto the governed Proxy and
+  fails loudly for an opaque shape it cannot repair. ([`8ad7d65`](https://github.com/obsvr-dev/obsvr-sdk/commit/8ad7d65))
+
+- **Optional integration ranges stop before untested future majors.** Resolver
+  metadata now matches the reviewed major lines instead of making open-ended
+  compatibility promises. ([`0484553`](https://github.com/obsvr-dev/obsvr-sdk/commit/0484553))
+
+- **Python package metadata uses the current SPDX license form.** Builds retain
+  `LICENSE` and `NOTICE` without deprecated classifier or manifest warnings.
+  ([`dc372d5`](https://github.com/obsvr-dev/obsvr-sdk/commit/dc372d5))
+
+- **Release benchmark evidence is reproducible and retained.** Two complete
+  TypeScript/Python passes publish raw overhead, stress, chain, loss, and memory
+  results for the measured revision; fake ingest transports acknowledge the
+  exact accepted count used by current sender reconciliation.
+  ([`a6fe59c`](https://github.com/obsvr-dev/obsvr-sdk/commit/a6fe59c), [`a8c8185`](https://github.com/obsvr-dev/obsvr-sdk/commit/a8c8185), [`c970505`](https://github.com/obsvr-dev/obsvr-sdk/commit/c970505))
+
 - **Observe-only PII storage no longer claims outbound redaction.** Framework
   callbacks now report `action_taken: "not_evaluated"` when they redact only
   the stored event copy, and preserve the requested action, detected types, and
   unchanged outbound status under `metadata.obsvr_telemetry`.
+  ([`b015b58`](https://github.com/obsvr-dev/obsvr-sdk/commit/b015b58), [`0d8b9f2`](https://github.com/obsvr-dev/obsvr-sdk/commit/0d8b9f2))
+
+- **Detector failures and tool observations retain their correct reporting
+  boundary.** Hostile metadata access resolves through fail mode, response-only
+  canary findings become policy flags, and OpenAI Agents tool spans no longer
+  duplicate model-observer compliance. ([`7b091cc`](https://github.com/obsvr-dev/obsvr-sdk/commit/7b091cc))
 
 - **Python now governs Anthropic provider tool runners.** Messages runner
   construction sends the initial prompt through the normal pre-call policy and
@@ -68,7 +156,7 @@ Changes land here and are renamed at the next release cut.
   it. Worker-owned pending lanes now retain those items in order until terminal
   delivery, and queue-drain accounting follows the original submission.
 
-- **BREAKING: a customer hook can no longer erase an existing block.** The
+- **Security correction: a customer hook can no longer erase an existing block.** The
   published advanced-options example combined an SSN block with an
   `on_pre_call` / `onPreCall` hook whose ordinary path returned `allow`; that
   explicit allow replaced the PII verdict and sent the SSN to the provider.
@@ -104,7 +192,8 @@ Changes land here and are renamed at the next release cut.
   `{ssn: "block"}` refused `create(stream=True)` and let `messages.stream(...)`
   through with the SSN in it. `messages.stream`, `beta.messages.stream`,
   `chat.completions.stream` and `responses.stream` are governed now and emit one
-  event per run. The provider tool runners remain TypeScript-only.
+  event per run. Python also governs the Anthropic runner surfaces described
+  earlier in this release section.
   ([`0db5816`](https://github.com/obsvr-dev/obsvr-sdk/commit/0db5816))
 
 - **The TypeScript OpenAI Agents tracing processor scans what it stores.** It
@@ -180,6 +269,18 @@ Changes land here and are renamed at the next release cut.
   stored-copy scrub holds on the framework integrations in TypeScript only; and
   the package table was two releases stale.
   ([`d6c5bb3`](https://github.com/obsvr-dev/obsvr-sdk/commit/d6c5bb3))
+
+## [0.11.1] - 2026-08-07
+
+### Changed
+
+- **The package description names both agent and model governance.** The public
+  metadata and README use the same product scope.
+  ([`5a78872`](https://github.com/obsvr-dev/obsvr-sdk/commit/5a78872))
+
+- **npm publishing uses GitHub OIDC trusted publishing.** The release workflow
+  no longer depends on a long-lived npm token.
+  ([`6f84fc8`](https://github.com/obsvr-dev/obsvr-sdk/commit/6f84fc8))
 
 ## [0.11.0] - 2026-08-06
 
@@ -866,7 +967,7 @@ deploy` no longer passes on a record missing most of its events. **If you gate
   [`5ab19ec`](https://github.com/obsvr-dev/obsvr-sdk/commit/5ab19ec),
   [`fd05442`](https://github.com/obsvr-dev/obsvr-sdk/commit/fd05442))
 - **HTTP 409 `duplicate_event` counts as a delivery, not a drop.** A retry that
-  raced a lost 2xx was dead-lettered, fabricating a coverage gap for an event
+  raced a lost 2xx was discarded, fabricating a coverage gap for an event
   the server had already sealed. Only that code: `409 sequence_fork` stays a
   failure, and an unreadable 409 body is never absorbed.
   ([`4dd99b4`](https://github.com/obsvr-dev/obsvr-sdk/commit/4dd99b4))
@@ -1416,7 +1517,7 @@ deploy` no longer passes on a record missing most of its events. **If you gate
 
   **No behaviour changed and none of these puts a false record in the trail**:
   an escaped client emits no event rather than a wrong one, which is a coverage
-  gap rather than a lie, and `obsvr.wrap(client)` governs every one of them
+  gap rather than a false record, and `obsvr.wrap(client)` governs every one of them
   including a CommonJS caller's. What changed is that the three are now written
   where the feature is advertised instead of being discoverable only by
   measuring. The CommonJS row is structural; the other two are open gaps, and
