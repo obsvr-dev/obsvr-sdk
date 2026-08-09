@@ -1267,26 +1267,38 @@ def apply_pre_call_policy(
                     mark_tainted(taint_key, "canary_leak", time.monotonic())
 
         _layer = "builtin_pii_scan"
-        # 1. Built-in PII scan (note: empty-dict policy still enables it).
-        #    Presidio NLP results merge with the regex scan when configured,
-        #    matching the TS SDK (regex always runs; Presidio adds NLP types).
+        # 1. Built-in content scan (note: empty-dict PII policy still enables
+        #    it). Session taint owns its prompt-injection latch independently
+        #    of PII policy, so enabling the latch also enables this single scan.
+        #    PII verdicts/telemetry and Presidio remain gated by pii_policy.
         #    With deobfuscation enabled the scanner also sees decoded/stripped
         #    views (server-side normalizer mirror); ``via`` records which view surfaced a
         #    hit the raw text hid.
         pii_scan_via: Optional[str] = None
-        if config.pii_policy is not None and action_taken != "blocked":
+        if (config.pii_policy is not None or taint_cfg) and action_taken != "blocked":
             pii = run_configured_pii_scan(scan, getattr(config, "deobfuscation", None))
-            pii_scan_via = pii.get("via")
+            if config.pii_policy is not None:
+                pii_scan_via = pii.get("via")
             detected_types = list(pii["detected_types"])
             presidio_answered = False
-            if getattr(config, "presidio_analyzer_url", None):
+            if (
+                config.pii_policy is not None
+                and getattr(config, "presidio_analyzer_url", None)
+            ):
                 from .presidio import presidio_scan
                 nlp = presidio_scan(scan, config.presidio_analyzer_url)
                 presidio_answered = bool(nlp.get("answered"))
                 for t in nlp["detected_types"]:
                     if t not in detected_types:
                         detected_types.append(t)
-            if detected_types:
+
+            # SET is independent of PII resolution and affects later turns
+            # only. With pii_policy configured this reuses the exact same scan,
+            # so there is no duplicate work or telemetry.
+            if taint_cfg and "prompt_injection" in detected_types:
+                mark_tainted(taint_key, "prompt_injection", time.monotonic())
+
+            if config.pii_policy is not None and detected_types:
                 action_reason = "pii_detected"
                 detected_types_found = list(detected_types)
                 # Attributed to what ANSWERED, not to what was configured. A
@@ -1295,9 +1307,6 @@ def apply_pre_call_policy(
                 # — naming a detector on the record as having participated in a
                 # verdict it never saw.
                 action_source = "builtin+presidio" if presidio_answered else "builtin"
-                # A detected prompt-injection taints the session.
-                if taint_cfg and "prompt_injection" in detected_types:
-                    mark_tainted(taint_key, "prompt_injection", time.monotonic())
                 resolved = resolve_pii_policy(detected_types, config.pii_policy)
                 # A view-only hit has no locatable span in the raw text, so
                 # "redact" would no-op while the record claims "redacted" —

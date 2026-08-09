@@ -801,33 +801,35 @@ export async function applyPreCallPolicy(
     }
 
     layer = "builtin_pii_scan";
-    // 1. Built-in PII scan (runs before customer hook; skipped when the
-    //    integrity gate already blocked the call). The regex scan always runs;
-    //    Presidio NLP results merge in when configured — same contract as the
-    //    proxy wrapper and the Python shared pre-call, so the integrations path
-    //    no longer silently ignores presidio_analyzer_url.
+    // 1. Built-in content scan (runs before customer hook; skipped when the
+    //    integrity gate already blocked the call). Session taint owns its
+    //    prompt-injection latch independently of PII policy, so enabling the
+    //    latch also enables this single scan. PII verdicts and telemetry remain
+    //    gated by pii_policy. Presidio stays in that PII-only branch.
     let piiScanVia: DeobfuscationView["method"] | undefined;
-    if (config.pii_policy && actionTaken !== "blocked") {
+    if ((config.pii_policy || taintCfg) && actionTaken !== "blocked") {
       // With deobfuscation enabled the scanner also sees decoded/stripped views
       // (server-side normalizer mirror); `via` records which view surfaced a hidden hit.
       const piiScan = runConfiguredPiiScan(promptText, config.deobfuscation);
       const regexTypes = piiScan.detected_types;
-      piiScanVia = piiScan.via;
+      if (config.pii_policy) piiScanVia = piiScan.via;
       let allTypes = regexTypes;
-      if (config.presidio_analyzer_url) {
+      if (config.pii_policy && config.presidio_analyzer_url) {
         const { detected_types: nlpTypes } = await presidioScan(
           promptText, config.presidio_analyzer_url,
         );
         allTypes = [...new Set([...regexTypes, ...nlpTypes])];
       }
-      if (allTypes.length > 0) {
+
+      // SET is independent of PII resolution and affects later turns only.
+      if (taintCfg && allTypes.includes("prompt_injection")) {
+        markTainted(taintKey, "prompt_injection", Date.now());
+      }
+
+      if (config.pii_policy && allTypes.length > 0) {
         actionReason = "pii_detected";
         detectedTypesFound = [...allTypes];
         actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
-        // A detected prompt-injection taints the session (later egress escalated).
-        if (taintCfg && allTypes.includes("prompt_injection")) {
-          markTainted(taintKey, "prompt_injection", Date.now());
-        }
         const resolved = resolvePiiPolicy(allTypes, config.pii_policy);
         // A view-only hit has no locatable span in the raw text, so "redact"
         // would no-op while the record claims "redacted" — escalate to block.

@@ -1736,9 +1736,12 @@ async function governCall(
       }
 
       layer = "builtin_pii_scan";
-      // 1. Built-in PII scan (runs before customer hook; skipped when the
-      //    integrity gate already blocked the call)
-      if (config.pii_policy && actionTaken !== "blocked") {
+      // 1. Built-in content scan (runs before customer hook; skipped when the
+      //    integrity gate already blocked the call). Session taint owns its
+      //    prompt-injection latch independently of PII policy, so enabling the
+      //    latch also enables this single scan. PII verdicts and telemetry are
+      //    still emitted only when pii_policy is configured.
+      if ((config.pii_policy || taintCfg) && actionTaken !== "blocked") {
         const promptText = decisionText();
 
         // Builtin regex scan (always runs, fast). With deobfuscation enabled
@@ -1746,25 +1749,30 @@ async function governCall(
         // mirror); `via` records which view surfaced a hit that the raw text hid.
         const piiScan = runConfiguredPiiScan(promptText, config.deobfuscation);
         const regexTypes = piiScan.detected_types;
-        piiScanVia = piiScan.via;
+        if (config.pii_policy) piiScanVia = piiScan.via;
 
-        // Presidio NLP scan - always runs when configured, merged with regex results
+        // Presidio remains part of the PII-policy pipeline. Session taint needs
+        // only the built-in prompt-injection detector and does not wake a
+        // configured sidecar on its own.
         let allTypes = regexTypes;
-        if (config.presidio_analyzer_url) {
+        if (config.pii_policy && config.presidio_analyzer_url) {
           const { detected_types: nlpTypes } = await presidioScan(
             promptText, config.presidio_analyzer_url,
           );
           allTypes = [...new Set([...regexTypes, ...nlpTypes])];
         }
 
-        if (allTypes.length > 0) {
+        // A detected prompt-injection taints the session even when no PII
+        // policy exists. The current turn retains its prior behavior; only
+        // subsequent egress is escalated by the latch above.
+        if (taintCfg && allTypes.includes("prompt_injection")) {
+          markTainted(taintKey, "prompt_injection", Date.now());
+        }
+
+        if (config.pii_policy && allTypes.length > 0) {
           actionReason = "pii_detected";
           detectedTypesFound = [...allTypes];
           actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
-          // A detected prompt-injection taints the session (later egress escalated).
-          if (taintCfg && allTypes.includes("prompt_injection")) {
-            markTainted(taintKey, "prompt_injection", Date.now());
-          }
           // Server-side normalizer mirror: seal which view defeated the obfuscation, so
           // "detection survived obfuscation" is itself on the audit record.
           if (piiScanVia !== undefined) {
