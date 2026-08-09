@@ -61,6 +61,20 @@ def test_explicit_span_trace_id_overrides_enclosing_scope(sent):
     assert spans[0]["metadata"]["trace_id"] == "run-pinned"
 
 
+def test_monitor_mode_emits_span_at_sample_rate_zero(sent):
+    obsvr.init(api_key="test", sample_rate=0, enforcement_mode="monitor")
+    with span("monitor_span", "tool"):
+        pass
+    assert [e for e in sent if e.get("operation") == "monitor_span"]
+
+
+def test_enforce_mode_still_samples_span_at_rate_zero(sent):
+    obsvr.init(api_key="test", sample_rate=0, enforcement_mode="enforce")
+    with span("sampled_span", "tool"):
+        pass
+    assert not [e for e in sent if e.get("operation") == "sampled_span"]
+
+
 # The two rows below guard behaviour of the public `span()` that had exactly one
 # consumer in this repository — an ASGI middleware, since removed. Its test was
 # the only thing holding either contract, and deleting it left both unguarded

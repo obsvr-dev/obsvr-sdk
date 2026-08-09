@@ -340,7 +340,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # sampling gates ONLY audit emission, never enforcement —
             # the tool/step/PII agent-policy checks below must run for every
             # message, or a low sample_rate would silently disable the gate.
-            should_audit = _sender.should_sample(config.sample_rate)
+            should_audit = _sender.should_emit(config)
 
             # Build base metadata with agent_run_id if inside a traced run
             agent_run_id = getattr(_run_local, "agent_run_id", None)

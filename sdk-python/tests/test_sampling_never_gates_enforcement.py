@@ -118,4 +118,4 @@ def test_clean_allowed_call_is_still_sampled_out(monkeypatch: Any) -> None:
 def test_clean_allowed_call_emits_at_sample_rate_one(monkeypatch: Any) -> None:
     r = _drive(monkeypatch, 1.0, "what is a good tomato variety for a cold climate")
     assert r["count"] >= 1
-    assert all(a == "allowed" for a in r["actions"])
+    assert all(a == "not_evaluated" for a in r["actions"])

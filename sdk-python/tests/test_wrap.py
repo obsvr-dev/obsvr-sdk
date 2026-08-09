@@ -346,6 +346,27 @@ class TestOpenAIInterception:
         assert ev["response"] == "fake openai answer"
         assert ev["input_tokens"] == 7 and ev["output_tokens"] == 5
 
+    def test_monitor_mode_emits_clean_allow_at_sample_rate_zero(self, monkeypatch):
+        _init(sample_rate=0, enforcement_mode="monitor")
+        captured = _captured_events(monkeypatch)
+
+        obsvr.wrap(FakeOpenAI()).chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert len(captured) == 1
+        assert captured[0]["action_taken"] == "allowed"
+
+    def test_enforce_mode_still_samples_clean_allow_at_rate_zero(self, monkeypatch):
+        _init(sample_rate=0, enforcement_mode="enforce")
+        captured = _captured_events(monkeypatch)
+
+        obsvr.wrap(FakeOpenAI()).chat.completions.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "hello"}]
+        )
+
+        assert captured == []
+
     def test_pii_block_prevents_provider_call(self, monkeypatch):
         _init(pii_policy={"rules": {"ssn": "block"}})
         captured = _captured_events(monkeypatch)

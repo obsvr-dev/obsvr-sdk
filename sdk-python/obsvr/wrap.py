@@ -78,17 +78,18 @@ from .policy import (
     outbound_redaction_blocked_compliance,
     outbound_redactor,
 )
-from .sender import send_audit_async, should_sample
+from .sender import send_audit_async, should_emit
 from .metering import record_token_usage_for_rules as _record_token_usage_for_rules
 from .metering import stamp_cost as _stamp_cost
 from .token_usage import read_token_usage
 
 
 def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] = None) -> None:
-    """Emit an audit event. Sampling (config.sample_rate) applies ONLY to clean
-    allowed events. Governed events (blocked / redacted / flagged / PII-detected)
-    and errors are forensic evidence and are NEVER dropped — EV-2 requires every
-    governed call to emit exactly one audit event.
+    """Emit an audit event. In enforce mode, sampling (config.sample_rate)
+    applies ONLY to clean allowed events; monitor mode emits every event.
+    Governed events (blocked / redacted / flagged / PII-detected) and errors are
+    forensic evidence and are NEVER dropped — EV-2 requires every governed call
+    to emit exactly one audit event.
 
     Mirrors the TS sender for enforcement actions and errors. It does NOT mirror
     it for allowed-but-FLAGGED events, and the header used to say it did. This
@@ -106,7 +107,7 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
         or c.get("action_reason", "none") not in ("none", None)
         or c.get("detector_failure") is not None
     )
-    if governed or should_sample(config.sample_rate):
+    if should_emit(config, governed=governed):
         send_audit_async(config, event)
 
 

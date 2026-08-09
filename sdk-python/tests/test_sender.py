@@ -79,6 +79,20 @@ def test_should_sample_one():
     assert sender.should_sample(1) is True
 
 
+def test_monitor_mode_bypasses_allowed_event_sampling():
+    config = type(
+        "Config", (), {"sample_rate": 0.0, "enforcement_mode": "monitor"}
+    )()
+    assert sender.should_emit(config) is True
+
+
+def test_enforce_mode_keeps_allowed_event_sampling():
+    config = type(
+        "Config", (), {"sample_rate": 0.0, "enforcement_mode": "enforce"}
+    )()
+    assert sender.should_emit(config) is False
+
+
 def test_should_sample_fraction():
     # statistical: with 1000 samples at rate=0.5 we expect ~50% pass
     hits = sum(1 for _ in range(1000) if sender.should_sample(0.5))

@@ -362,7 +362,7 @@ class _GovernedBedrockClient:
             # sampling gates ONLY audit emission, never enforcement —
             # the pre-call boundary and post-call response redaction must run for
             # every governed call. Blocked/redacted/error events always emit.
-            should_audit = _sender.should_sample(cfg.sample_rate)
+            should_audit = _sender.should_emit(cfg)
 
             model = str(kwargs.get("modelId") or "unknown")
             invoke_body: Optional[Dict[str, Any]] = None

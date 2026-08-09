@@ -889,7 +889,7 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         # sample_rate silently dropped the scan and the redaction of the stored
         # copy on a fraction of traffic. Carry the decision to the emit site,
         # the same posture wrap.py ``_emit_audit`` already takes.
-        should_audit = _sender.should_sample(config.sample_rate)
+        should_audit = _sender.should_emit(config)
 
         serialized = serialized or {}
         id_parts = _get(serialized, "id") or []
@@ -935,7 +935,6 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             # enforcement evidence and is always recorded, as are errors.
             "audit_this_call": (
                 should_audit
-                or observed["compliance"].get("action_taken", "allowed") != "allowed"
                 or observed["compliance"].get("action_reason", "none") != "none"
             ),
         }

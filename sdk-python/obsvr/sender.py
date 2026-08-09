@@ -362,6 +362,19 @@ def should_sample(rate: float) -> bool:
     return random.random() < rate
 
 
+def should_emit(config: Any, *, governed: bool = False) -> bool:
+    """Whether an audit event should pass the emission sampling gate.
+
+    Monitor mode is an evidence-collection mode, so it records clean allowed
+    events even when ``sample_rate`` is zero. Enforce mode retains the ordinary
+    allowed-event sampling contract. Governed/error evidence is unconditional
+    in either mode.
+    """
+    if governed or getattr(config, "enforcement_mode", "enforce") == "monitor":
+        return True
+    return should_sample(getattr(config, "sample_rate", 1.0))
+
+
 def _apply_backoff() -> None:
     """Jittered exponential backoff (equal jitter): the deterministic half
     guarantees spacing, the random half prevents many clients from

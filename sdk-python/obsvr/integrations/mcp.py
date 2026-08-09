@@ -57,7 +57,7 @@ from ..tool_pinning import (
     tool_descriptor_hash,
 )
 from ..rules import derive_policy_version
-from ..sender import _debug_warn, send_audit_async, should_sample
+from ..sender import _debug_warn, send_audit_async, should_emit
 
 SOURCE = "mcp_python"
 _PATCHED_ATTR = "_obsvr_mcp_patched"
@@ -269,12 +269,13 @@ def _mcp_tool_policy(config: ResolvedConfig) -> Optional[Dict[str, Any]]:
 def _emit(config: ResolvedConfig, **kwargs: Any) -> None:
     event = build_audit_event(config, **kwargs)
     # EV-2: a governed MCP event (blocked tool, redaction, tool-poisoning flag)
-    # is ALWAYS recorded — only clean allowed tool calls are subject to sampling.
+    # is ALWAYS recorded. Clean allowed tool calls are sampled in enforce mode;
+    # monitor mode records all of them through the shared emission gate.
     # The TS MCP path routes through emitIntegrationEvent, which never samples;
     # gating every emission on should_sample dropped forensic evidence for
     # denied tools under sample_rate < 1.
     governed = event.get("action_taken", "allowed") != "allowed" or event.get("success") is False
-    if governed or should_sample(config.sample_rate):
+    if should_emit(config, governed=governed):
         send_audit_async(config, event)
 
 

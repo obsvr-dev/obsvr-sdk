@@ -87,6 +87,25 @@ def test_converse_allowed_passes_and_audits(sent):
     assert ev["success"] is True
 
 
+def test_monitor_mode_emits_clean_allow_at_sample_rate_zero(sent):
+    _init(sample_rate=0, enforcement_mode="monitor")
+    client = wrap_bedrock(FakeBedrockClient())
+
+    client.converse(**_converse_kwargs("What is 2+2?"))
+
+    assert len(sent) == 1
+    assert sent[0]["action_taken"] == "allowed"
+
+
+def test_enforce_mode_still_samples_clean_allow_at_rate_zero(sent):
+    _init(sample_rate=0, enforcement_mode="enforce")
+    client = wrap_bedrock(FakeBedrockClient())
+
+    client.converse(**_converse_kwargs("What is 2+2?"))
+
+    assert sent == []
+
+
 def test_converse_pii_block_stops_execution(sent):
     _init(pii_policy={"rules": {"ssn": "block"}})
     fake = FakeBedrockClient()

@@ -570,7 +570,7 @@ class ObsvrTracingProcessor:
             # agent policy on a fraction of traffic. Carry the decision to the
             # emit sites; the policy events below are enforcement evidence and
             # are emitted regardless, as wrap.py ``_emit_audit`` already does.
-            should_audit = _sender.should_sample(config.sample_rate)
+            should_audit = _sender.should_emit(config)
 
             span_data = getattr(span, "span_data", span)
             stype = _span_type(span)
