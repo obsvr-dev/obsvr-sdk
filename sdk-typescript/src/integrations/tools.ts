@@ -373,8 +373,8 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
 
       // 1.2) Required principal (opt-in): an unattributed tool call is
       // refused before any scanning layer runs — the refusal is about
-      // attribution, not content. An empty string is a supplied principal;
-      // only an absent one refuses (Python parity: the same gate inside the
+      // attribution, not content. Empty and whitespace-only strings are
+      // unattributed (Python parity: the same gate inside the
       // shared pre-call pipeline). A metadata object that throws on read is
       // an ABSENT principal, not a readable one: this gate runs ahead of the
       // detector guard, and refusing an unattributed call is the safe answer
