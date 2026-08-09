@@ -52,7 +52,12 @@ import {
   sessionTaintSize,
 } from "../policy/session-taint.js";
 import { getCurrentSubject, hasMeaningfulPrincipal } from "./subject.js";
-import { presidioScan, presidioRedactText, presidioRedactArgs } from "../policy/presidio.js";
+import {
+  NLP_ONLY_PII_TYPES,
+  presidioScan,
+  presidioRedactText,
+  presidioRedactArgs,
+} from "../policy/presidio.js";
 import { evaluatePolicyRules, derivePolicyVersion, evaluateShadowRules, evaluateFloor, deriveFloorVersion } from "../policy/rules.js";
 import {
   engineVersionFor,
@@ -1755,10 +1760,12 @@ async function governCall(
         // only the built-in prompt-injection detector and does not wake a
         // configured sidecar on its own.
         let allTypes = regexTypes;
+        let presidioAnswered = false;
         if (config.pii_policy && config.presidio_analyzer_url) {
-          const { detected_types: nlpTypes } = await presidioScan(
+          const { detected_types: nlpTypes, answered } = await presidioScan(
             promptText, config.presidio_analyzer_url,
           );
+          presidioAnswered = answered;
           allTypes = [...new Set([...regexTypes, ...nlpTypes])];
         }
 
@@ -1772,7 +1779,7 @@ async function governCall(
         if (config.pii_policy && allTypes.length > 0) {
           actionReason = "pii_detected";
           detectedTypesFound = [...allTypes];
-          actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
+          actionSource = presidioAnswered ? "builtin+presidio" : "builtin";
           // Server-side normalizer mirror: seal which view defeated the obfuscation, so
           // "detection survived obfuscation" is itself on the audit record.
           if (piiScanVia !== undefined) {
@@ -1797,6 +1804,9 @@ async function governCall(
               ? ReasonCode.INJECTION_DETECTED
               : ReasonCode.PII_DETECTED;
           } else if (piiAction === "redact") {
+            const requiresNlpRedaction = resolved.redactedTypes.some((type) =>
+              NLP_ONLY_PII_TYPES.has(type),
+            );
             // Enforcement APPLICATION, not detection: the scan already found
             // something and policy already said remove it, so a failure here
             // blocks regardless of failMode rather than send the prompt on
@@ -1804,12 +1814,21 @@ async function governCall(
             const notRedacted = await applyOutboundRedactionAsync(async () => {
               if (typeof cleaned_args[0] === 'string') {
                 if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-                  cleaned_args[0] =
-                    (await presidioRedactText(
-                      cleaned_args[0],
-                      config.presidio_analyzer_url,
-                      config.presidio_anonymizer_url,
-                    )) ?? redactBuiltinPii(cleaned_args[0]);
+                  const original = cleaned_args[0];
+                  const redacted = await presidioRedactText(
+                    original,
+                    config.presidio_analyzer_url,
+                    config.presidio_anonymizer_url,
+                  );
+                  if (
+                    requiresNlpRedaction &&
+                    (redacted === null || redacted === original)
+                  ) {
+                    throw new Error(
+                      "Presidio did not apply the detected NLP-only redaction",
+                    );
+                  }
+                  cleaned_args[0] = redacted ?? redactBuiltinPii(original);
                 } else {
                   cleaned_args[0] = redactBuiltinPii(cleaned_args[0]);
                 }
@@ -1819,6 +1838,8 @@ async function governCall(
                     cleaned_args[0],
                     config.presidio_analyzer_url,
                     config.presidio_anonymizer_url,
+                    500,
+                    requiresNlpRedaction,
                   );
                 } else {
                   redactMessagesInPlace(cleaned_args[0]);

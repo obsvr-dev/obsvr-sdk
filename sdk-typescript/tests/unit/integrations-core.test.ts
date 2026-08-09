@@ -397,8 +397,10 @@ describe('applyPreCallPolicy: presidio merge', () => {
       provider: 'bedrock',
       operation: 'test',
     });
-    // presidioScan returns [] on error; the regex scan still detected email.
+    // The regex scan still detects email, but an unavailable NLP tier must not
+    // be represented as if both detector tiers answered.
     expect(result.compliance.action_reason).toBe('pii_detected');
+    expect(result.compliance.action_source).toBe('builtin');
   });
 });
 

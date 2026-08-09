@@ -814,10 +814,12 @@ export async function applyPreCallPolicy(
       const regexTypes = piiScan.detected_types;
       if (config.pii_policy) piiScanVia = piiScan.via;
       let allTypes = regexTypes;
+      let presidioAnswered = false;
       if (config.pii_policy && config.presidio_analyzer_url) {
-        const { detected_types: nlpTypes } = await presidioScan(
+        const { detected_types: nlpTypes, answered } = await presidioScan(
           promptText, config.presidio_analyzer_url,
         );
+        presidioAnswered = answered;
         allTypes = [...new Set([...regexTypes, ...nlpTypes])];
       }
 
@@ -829,7 +831,7 @@ export async function applyPreCallPolicy(
       if (config.pii_policy && allTypes.length > 0) {
         actionReason = "pii_detected";
         detectedTypesFound = [...allTypes];
-        actionSource = config.presidio_analyzer_url ? "builtin+presidio" : "builtin";
+        actionSource = presidioAnswered ? "builtin+presidio" : "builtin";
         const resolved = resolvePiiPolicy(allTypes, config.pii_policy);
         // A view-only hit has no locatable span in the raw text, so "redact"
         // would no-op while the record claims "redacted" — escalate to block.

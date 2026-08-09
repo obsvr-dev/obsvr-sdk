@@ -258,4 +258,57 @@ describe('the proxy wrapper, end to end', () => {
     expect(res).toEqual({ choices: [{ message: { content: 'ok' } }] });
     expect(getDetectorErrorCount()).toBe(0);
   });
+
+  it('blocks an NLP-only redaction when the anonymizer is unavailable, even in failMode open', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      pii_policy: { default: 'detect_only', rules: { name: 'redact' } },
+      presidio_analyzer_url: 'http://analyzer.local',
+      presidio_anonymizer_url: 'http://anonymizer.local',
+    });
+
+    (global as any).fetch = async (url: any, opts: any) => {
+      if (String(url).includes('/analyze')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [
+            { entity_type: 'PERSON', start: 12, end: 21, score: 0.99 },
+          ],
+        };
+      }
+      if (String(url).includes('/anonymize')) {
+        throw new Error('anonymizer unavailable');
+      }
+      const body = JSON.parse(opts.body);
+      Array.isArray(body) ? sentEvents.push(...body) : sentEvents.push(body);
+      return { ok: true, status: 200, json: async () => ({ count: 1 }) };
+    };
+
+    let providerCalls = 0;
+    const wrapped = wrap({
+      chat: {
+        completions: {
+          create: async () => {
+            providerCalls += 1;
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        },
+      },
+    }) as { chat: { completions: { create: (a: unknown) => Promise<unknown> } } };
+
+    await expect(wrapped.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: 'escalate to Bob Smith today' }],
+    })).rejects.toThrow(/blocked by policy/i);
+
+    expect(providerCalls).toBe(0);
+    expect(getDetectorErrorCount()).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const event = sentEvents.find((e) => e.rule_id === 'sdk:detector_error');
+    expect(event?.action_taken).toBe('blocked');
+    expect(event?.redacted_types).toEqual([]);
+  });
 });
