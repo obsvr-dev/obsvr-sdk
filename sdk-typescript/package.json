@@ -145,7 +145,7 @@
     "@google/genai": "^2.16.0",
     "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@openai/agents": "^0.13.4",
+    "@openai/agents": "^0.14.3",
     "@opentelemetry/api": "^1.9.1",
     "@types/jest": "^29.5.12",
     "@types/node": "^22",
