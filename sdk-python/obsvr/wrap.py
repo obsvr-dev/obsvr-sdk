@@ -101,6 +101,7 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
         event.get("success") is False
         or c.get("action_taken", "allowed") != "allowed"
         or c.get("action_reason", "none") not in ("none", None)
+        or c.get("detector_failure") is not None
     )
     if governed or should_sample(config.sample_rate):
         send_audit_async(config, event)

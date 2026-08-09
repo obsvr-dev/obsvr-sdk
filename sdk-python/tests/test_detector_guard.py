@@ -149,6 +149,22 @@ def test_scanning_layer_failure_does_not_reach_the_host_under_open(monkeypatch, 
     _reset()
 
 
+def test_fail_open_detector_failure_bypasses_allowed_sampling(monkeypatch):
+    """Control-loss evidence must survive even when clean allows are sampled out."""
+    cfg = _init(fail_mode="open", sample_rate=0)
+    sent = []
+    wrap_mod = importlib.import_module("obsvr.wrap")
+    monkeypatch.setattr(wrap_mod, "send_audit_async", lambda _cfg, event: sent.append(event))
+    _arm_layer(monkeypatch, "policy_rules")
+
+    assert _call(obsvr.wrap(FakeOpenAI())).choices[0].message.content
+    assert len(sent) == 1
+    failure = sent[0]["metadata"]["obsvr_telemetry"]["detector_failure"]
+    assert failure["resolution"] == "open"
+    assert cfg.sample_rate == 0
+    _reset()
+
+
 @pytest.mark.parametrize("layer", SCANNING_LAYERS)
 def test_scanning_layer_failure_blocks_under_closed(monkeypatch, layer):
     _init(fail_mode="closed")

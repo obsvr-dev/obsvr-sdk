@@ -1526,6 +1526,7 @@ async function governCall(
     // (integrations/core.ts, governance/evaluate.ts) return in their catch,
     // like Python, and need no flag.
     let detectorFailedClosed = false;
+    let detectorFailureObserved = false;
     // Same reason, one step earlier: the session-taint key and sub-config are
     // set by the first step INSIDE the guard and read by the canary, PII and
     // multi-turn steps further down it. A throw before the key is derived
@@ -2059,6 +2060,7 @@ async function governCall(
         }
       }
     } catch (err) {
+      detectorFailureObserved = true;
       const failClosed = recordDetectorFailure(layer, err, config);
       if (failClosed) {
         actionTaken = "blocked";
@@ -2462,7 +2464,11 @@ async function governCall(
     // A monitor-converted event is enforcement evidence, not a plain allowed
     // call: it is exempt from allowed-call sampling so the would-be verdict
     // is never dropped, even at sample_rate=0 (Python parity).
-    const auditThisCall = shouldAudit || compliance.actionTaken !== "allowed" || monitorConverted;
+    const auditThisCall =
+      shouldAudit ||
+      compliance.actionTaken !== "allowed" ||
+      monitorConverted ||
+      detectorFailureObserved;
 
     // 3. Block: emit a forensic audit record, then throw.
     //    Prompt is stored in redacted form (typed placeholders, not raw PII).
