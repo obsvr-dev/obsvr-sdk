@@ -672,8 +672,10 @@ So a `pii_policy` of `{ssn: "block"}` **blocks** through `obsvr.wrap()`, Bedrock
 Vertex, Vercel AI and MCP, and through LangChain, LlamaIndex or the OpenAI
 Agents tracing processor it does not: the
 call goes out with the SSN in it and the event records the stored copy as
-redacted. That is a real difference between things this README lists in the
-same table, and it is stated here rather than left to be discovered. On their
+redacted. The event reports `action_taken: "not_evaluated"` and records the
+requested action, detected types, and unchanged outbound status separately in
+`metadata.obsvr_telemetry`. That is a real difference between things this README
+lists in the same table, and it is stated here rather than left to be discovered. On their
 MODEL-call paths these three are **observability integrations with a PII scan**,
 not policy enforcement points — put an enforcement decision on `obsvr.wrap()` or
 on MCP. Their tool gates are a separate question, graded in the table below.
@@ -773,9 +775,10 @@ not agree, so neither column may be read across to the other.
   a redacted copy. The scan runs over what the event will store **in both
   languages as of this release**; it reached Python first, and for one release
   the sentence above was true of Python and not of TypeScript while this table
-  stated it unconditionally. The verdict on those events is `redacted`, never
-  `blocked`, because a tracing processor cannot refuse and the call has already
-  completed.
+  stated it unconditionally. The verdict on those events is `not_evaluated`,
+  never `redacted` or `blocked`, because a tracing processor cannot modify or
+  refuse a call that has already completed. Stored-copy provenance is separate
+  in `metadata.obsvr_telemetry`.
 - **provider tool runners** — a runner invokes its tools itself, so obsvr was
   off that boundary entirely until it began gating each tool's callback before
   the runner is constructed. Tool execution is now gated; the model calls the

@@ -17,6 +17,11 @@ Changes land here and are renamed at the next release cut.
 
 ### Fixed
 
+- **Observe-only PII storage no longer claims outbound redaction.** Framework
+  callbacks now report `action_taken: "not_evaluated"` when they redact only
+  the stored event copy, and preserve the requested action, detected types, and
+  unchanged outbound status under `metadata.obsvr_telemetry`.
+
 - **Python now governs Anthropic provider tool runners.** Messages runner
   construction sends the initial prompt through the normal pre-call policy and
   installs governed copies of local runnable tools before dispatch is
