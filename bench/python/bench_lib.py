@@ -208,8 +208,7 @@ class ChainVerifier:
 
 # ── Transport stub (patched over obsvr.sender.urlopen) ───────────────────────
 class _StubResponse:
-    """Minimal stand-in for the urllib response sender._post reads:
-    it only looks at ``.status`` (then ``.getcode()``) and never the body."""
+    """Minimal stand-in for the urllib response consumed by the sender."""
 
     def __init__(self, status: int = 200, body: bytes = b"{}") -> None:
         self.status = status
@@ -233,13 +232,19 @@ class _StubResponse:
 
 def make_transport_stub(verifier: ChainVerifier, delay_s: float = 0.0) -> Callable[..., _StubResponse]:
     """Return a urlopen replacement that parses the POSTed audit body, feeds
-    each event to the verifier, and returns a 200. ``delay_s`` sleeps IN THE
-    WORKER THREAD (this stub runs on the sender worker), modeling a slow ingest
-    so the bounded queue overflows and drops are forced + counted."""
+    each event to the verifier, and explicitly acknowledges every captured
+    event. ``delay_s`` sleeps IN THE WORKER THREAD (this stub runs on the sender
+    worker), modeling a slow ingest so bounded-queue drops are forced + counted.
+
+    The acknowledgement mirrors ingest's current accepted-batch response. An
+    empty body used to be sufficient, but would no longer exercise the sender's
+    accepted-count reconciliation contract.
+    """
 
     def stub(req: Any, *args: Any, **kwargs: Any) -> _StubResponse:
         if delay_s:
             time.sleep(delay_s)
+        events = []
         try:
             full_url = getattr(req, "full_url", "") or ""
             data = getattr(req, "data", None)
@@ -260,7 +265,8 @@ def make_transport_stub(verifier: ChainVerifier, delay_s: float = 0.0) -> Callab
                     verifier.feed(ev)
         except Exception:
             verifier.feed_errors += 1
-        return _StubResponse(200)
+        acknowledgement = json.dumps({"count": len(events), "rejected": []}).encode("utf-8")
+        return _StubResponse(200, acknowledgement)
 
     return stub
 

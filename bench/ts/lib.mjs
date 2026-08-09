@@ -337,6 +337,7 @@ export function installFetchCapture({ verifier, collector, delayMs = 0 } = {}) {
     }
     const u = String(url);
     let body;
+    let acceptedCount;
     try {
       body = opts && typeof opts.body === "string" ? JSON.parse(opts.body) : undefined;
     } catch {
@@ -345,18 +346,23 @@ export function installFetchCapture({ verifier, collector, delayMs = 0 } = {}) {
     if (u.endsWith("/ingest/batch")) {
       handle.batchPosts++;
       const arr = Array.isArray(body) ? body : body ? [body] : [];
+      acceptedCount = arr.length;
       handle.eventsPosted += arr.length;
       if (verifier) verifier.ingestBody(u, body);
       if (collector) collector.ingestBody(u, body);
     } else if (u.endsWith("/ingest")) {
       handle.singlePosts++;
-      handle.eventsPosted += 1;
+      acceptedCount = body === undefined ? 0 : 1;
+      handle.eventsPosted += acceptedCount;
       if (verifier) verifier.ingestBody(u, body);
       if (collector) collector.ingestBody(u, body);
     } else {
       handle.otherRequests++;
     }
-    return { ok: true, status: 200, json: async () => ({ count: 0 }) };
+    const acknowledgement = acceptedCount === undefined
+      ? {}
+      : { count: acceptedCount, rejected: [] };
+    return { ok: true, status: 200, json: async () => acknowledgement };
   };
   return handle;
 }
