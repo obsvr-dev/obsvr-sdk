@@ -184,11 +184,11 @@ FAILURE_DISPOSITIONS: List[Dict[str, object]] = [
         "degraded": _s("not_applicable"),
         "hook_overridable": False,
         "notes": (
-            "The request-phase hook, and the one layer whose disposition the operator "
-            "chooses: open by default, closed on opt-in. A timeout or error is recorded as "
-            "its own hook disposition and can never un-block builtin enforcement - only an "
-            "explicit allow verdict does that. The response-phase hook is a separate row: "
-            "its failure states resolve differently."
+            "The request-phase hook, and the one layer whose failure disposition the "
+            "operator chooses: open by default, closed on opt-in. A timeout or error is "
+            "recorded as its own hook disposition. No hook result, including an explicit "
+            "allow verdict, can weaken an earlier enforcement decision. The response-phase "
+            "hook is a separate row: its failure states resolve differently."
         ),
     },
     {

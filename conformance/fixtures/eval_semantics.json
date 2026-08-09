@@ -37,8 +37,9 @@
       "EV-6": [
         "eval_semantics.json"
       ],
-      "EV-7": [
-        "fail_mode.json"
+    "EV-7": [
+      "eval_semantics.json",
+      "fail_mode.json"
       ],
       "EV-8": [
         "eval_semantics.json"
@@ -438,10 +439,11 @@
     {
       "id": "ev14_composition",
       "sdk_support": { "ts": "required", "py": "required" },
-      "ev": "EV-14",
+      "ev": "EV-7/EV-14",
       "mode": "pipeline",
-      "desc": "Most restrictive wins within a phase: a builtin PII block stands even though a later rule would only flag. A later step never weakens an earlier block.",
+      "desc": "Most restrictive wins within a phase: a builtin PII block stands even though a later rule would only flag and the customer hook explicitly allows. A later step never weakens an earlier block.",
       "pipeline": {
+        "hook": "allow",
         "pii_policy": {
           "default": "block"
         }
@@ -466,7 +468,8 @@
       "expect_pipeline": {
         "decision": "block",
         "action_reason": "pii_detected",
-        "action_source": "builtin"
+        "action_source": "builtin",
+        "hook_ran": true
       }
     },
     {

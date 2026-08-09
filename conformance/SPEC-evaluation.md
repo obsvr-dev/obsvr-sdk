@@ -1,6 +1,6 @@
 # Obsvr Evaluation Semantics Specification
 
-Spec version: 1.0 (2026-07-07)
+Spec version: 1.1 (2026-08-09)
 Status: normative. Both SDKs (TypeScript, Python) MUST implement these
 semantics identically. Every normative statement carries an ID (EV-n)
 and is pinned by conformance fixtures in `conformance/fixtures/`
@@ -18,8 +18,10 @@ file is right.
 - EV-1: Governance runs in two phases relative to the provider call:
   `pre_call` (before the request leaves the process) and `post_call`
   (after the full response is available; for streams, at stream end).
-- EV-2: Every governed call emits exactly one audit event, stamped
-  with the outcome of both phases.
+- EV-2: Every governed call selected by sampling emits exactly one audit event,
+  stamped with the outcome of both phases. Any non-clean outcome (including a
+  block, redaction, error, monitor-converted block, or detector failure) emits
+  regardless of sampling; only clean allowed calls may be sampled out.
 
 ## 2. Pre-call evaluation order
 
@@ -45,10 +47,12 @@ Steps run in this exact order. Numbering matches the code sections in
   stored order (see section 3). The fired rule's id and reason are
   recorded.
 - EV-7 (Step 2, customer hook): the hook runs according to
-  hook-trigger configuration and MAY escalate (allow -> block/redact)
-  or explicitly override a builtin content decision. It MUST NOT
-  override an enforcement-integrity gate block (EV-3). Hook timeout
-  or error leaves the pre-hook decision unchanged.
+  hook-trigger configuration and MAY escalate (allow -> block/redact),
+  but MUST NOT weaken a decision made by any earlier enforcement layer.
+  In particular, an explicit hook allow cannot erase a builtin, floor,
+  structured-rule, canary, or enforcement-integrity block. Hook timeout
+  or error follows the configured fail mode: open keeps the pre-hook
+  decision, while closed blocks.
 
 ## 3. Rule evaluation semantics
 
@@ -82,8 +86,7 @@ Steps run in this exact order. Numbering matches the code sections in
 
 - EV-14: Outcome precedence within a phase, most restrictive wins
   when steps disagree: block > redact > flag > allow. A later step
-  never weakens an earlier block except the explicit customer-hook
-  override in EV-7 (which cannot weaken EV-3 gates).
+  never weakens an earlier decision.
 - EV-15: The audit event records the DETERMINING step: rule_id (or
   sdk: pseudo-rule id), action_taken, action_reason, action_source.
 
@@ -103,8 +106,11 @@ Steps run in this exact order. Numbering matches the code sections in
 
 - EV-18: post_call runs (1) structured rules against the response
   text, then (2) the onPostCall hook with timeout. Post-call rules
-  cannot un-send the request; their actions apply to the stored
-  record and the returned/streamed content per action semantics.
+  cannot un-send the request; their actions apply to the stored audit
+  record. The base wrapper contract does not modify the response value
+  returned to the caller. A provider-specific adapter may explicitly
+  document and test caller-visible non-streaming redaction, but that is
+  outside this cross-SDK base contract.
 - EV-19 (streams): stream chunks pass through unmodified; the
   accumulated text is evaluated at stream end and exactly one event
   is emitted (EV-2). (Mid-stream interval checking is reserved for a
@@ -157,7 +163,7 @@ worse than an honest gap, because it stops anyone from closing the gap.
 | EV-11 | eval_semantics.json | `ev11_approval_required_block_shape` |
 | EV-12 | eval_semantics.json | `ev12_malformed_rule_skipped` |
 | EV-13 | eval_semantics.json | `ev13_pathological_regex_never_matches` |
-| EV-14 | eval_semantics.json | `ev14_composition` (most restrictive wins; a later step never weakens an earlier block) |
+| EV-7, EV-14 | eval_semantics.json | `ev14_composition` (most restrictive wins; an explicit hook allow cannot weaken an earlier builtin block) |
 | EV-20, EV-21 | eval_semantics.json | `ev20_shadow_inert_active_allow`, `ev20_shadow_beside_active_block` |
 | EV-16, EV-17 | rules_hash.json | canonical projection and hash vectors |
 | EV-22 | eval_semantics.json | `ev22_explain_pure` (check-only evaluation consumes no quota) |
