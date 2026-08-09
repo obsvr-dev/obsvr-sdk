@@ -1092,13 +1092,16 @@ def apply_pre_call_policy(
     # before any layer reads it. Every user-scoped control below keys on this
     # dict — require_principal (0.4), the session-taint latch, the quota
     # bucket, the decision-input hash — and the signed record resolves its
-    # own user_id as ``opts.user_id or ambient`` (events.build_audit_event).
+    # own user_id with the same nullish precedence (events.build_audit_event).
     # Without this fold the two channels disagreed: an ambient-only principal
     # was attributed on the record but invisible to enforcement, so
     # require_principal refused a call whose signed event named the very
     # principal it claimed was absent — a record contradicting its own reason.
-    # Explicit metadata always wins; the ambient only fills what is unset,
-    # matching the signed channel's ``or`` precedence and tools._identity_meta.
+    # Explicit metadata always wins; the ambient only fills what is absent or
+    # None. In particular, an explicitly supplied empty string MUST survive:
+    # require_principal treats it as unattributed, while replacing it with an
+    # ambient subject would turn a refusal into a permit. This matches the
+    # signed channel's nullish precedence and tools._identity_meta.
     # A fresh dict, never the caller's — this is the enforcing view, not a
     # mutation of what the caller passed. No ambient scope active ⇒ identical
     # to before, byte for byte.
@@ -1107,7 +1110,7 @@ def apply_pre_call_policy(
     if _ambient_subject:
         metadata = dict(metadata or {})
         for _idk in ("user_id", "tenant_id", "service_name"):
-            if not metadata.get(_idk) and _ambient_subject.get(_idk):
+            if metadata.get(_idk) is None and _ambient_subject.get(_idk) is not None:
                 metadata[_idk] = _ambient_subject[_idk]
 
     action_taken = "allowed"

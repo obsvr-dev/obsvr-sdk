@@ -177,6 +177,37 @@ class TestAmbientReachesEnforcement:
             result = apply_pre_call_policy("hi", cfg, metadata=None)
         assert result["decision"] == "allow"
 
+    @pytest.mark.parametrize("user_id", ["", "   "])
+    def test_an_explicit_blank_beats_the_ambient_principal_at_the_choke_point(
+        self, user_id
+    ):
+        cfg = ResolvedConfig(api_key="k", require_principal=True)
+        with use_subject("user:ambient"):
+            result = apply_pre_call_policy(
+                "hi", cfg, metadata={"user_id": user_id}
+            )
+        assert result["decision"] == "block"
+        assert result["compliance"]["reason_code"] == (
+            ReasonCode.PRINCIPAL_REQUIRED.value
+        )
+
+    @pytest.mark.parametrize("user_id", ["", "   "])
+    def test_an_explicit_blank_tool_principal_cannot_fall_back_to_ambient(
+        self, sent, user_id
+    ):
+        _init(require_principal=True)
+        tool = _SpyTool()
+        governed = govern_tool(tool, user_id=user_id)
+
+        with use_subject("user:ambient"):
+            with pytest.raises(ObsvrPolicyError):
+                governed._run(note="hello")
+
+        assert tool.calls == []
+        event = _blocked_tool_event(sent)
+        assert event["reason_code"] == ReasonCode.PRINCIPAL_REQUIRED.value
+        assert event["user_id"] == user_id
+
     def test_the_wrap_path_admits_an_ambient_only_principal_and_names_it(self, sent):
         # End to end on the surface the bug reproduced against: an ambient-only
         # principal under require_principal. The call must succeed and the

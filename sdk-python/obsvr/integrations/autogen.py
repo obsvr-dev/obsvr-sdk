@@ -508,7 +508,7 @@ def register_obsvr(agent: Any, **options: Any) -> Any:
             # Thread caller identity into the rules context so USER-SCOPED (and
             # service-scoped) quota rules meter the right bucket, not 'default'.
             identity_meta = dict(meta)
-            if options.get("user_id"):
+            if options.get("user_id") is not None:
                 identity_meta["user_id"] = options["user_id"]
             if options.get("service_name"):
                 identity_meta["service_name"] = options["service_name"]

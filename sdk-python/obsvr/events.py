@@ -467,8 +467,12 @@ def build_audit_event(
         # one canonical string both offline verifiers recompute identically.
         "user_id": _principal_string(
             (metadata or {}).get("user_id")
-            or opts.get("user_id")
-            or _ambient_subject.get("user_id")
+            if (metadata or {}).get("user_id") is not None
+            else (
+                opts.get("user_id")
+                if opts.get("user_id") is not None
+                else _ambient_subject.get("user_id")
+            )
         ),
         # Network fields. This SDK has no capture path for either, so they are
         # always None rather than sometimes None — there is no per-call kwarg
