@@ -65,10 +65,15 @@ function accepted(hash: string, status = 'accepted') {
     ok: true, status, receipt_hash: hash, accepted_at_ms: 10 }));
 }
 function setup(base: IntentV2BaseResult = { action_taken: 'allowed' },
-  response: (hash: string) => { status: number; body: Uint8Array } = (hash) => ({ status: 200, body: accepted(hash) })) {
+  response: (hash: string) => { status: number; body: Uint8Array } = (hash) => ({ status: 200, body: accepted(hash) }),
+  failCommit = false) {
   const events: string[] = []; const checkpoints: StrictRuntimeExecutionJournalV21[] = [];
   const subject = coordinator(base); const originalCommit = subject.commitPrepared.bind(subject);
-  subject.commitPrepared = (token, hash) => { events.push('commit'); return originalCommit(token, hash); };
+  subject.commitPrepared = (token, hash) => {
+    events.push('commit');
+    if (failCommit) throw new Error('commit failed');
+    return originalCommit(token, hash);
+  };
   const runtime = new StrictReceiptRuntimeV21(subject, {
     ingest_url: 'https://example.com', api_key: 'key', max_attempts: 1,
     resolver: async () => ['8.8.8.8'], trusted_pinned_transport: async (_target, _body, headers) => {
@@ -153,7 +158,7 @@ describe('strict profile 2.1 runtime', () => {
     expect(first).toMatchObject({ status: 'nonexecuted', reason: 'admission_uncertain' });
     expect(uncertain.subject.inspectState()).toMatchObject({ frozen: true });
 
-    const failed = setup(); failed.subject.commitPrepared = () => { throw new Error('commit failed'); };
+    const failed = setup(undefined, undefined, true);
     const second = await failed.runtime.runDecision({ decision: decision('commit-fail', bound.arguments_hash),
       action: { runtime_action_id: 'commit-fail', original_arguments: bound,
         invoke: () => { invokes += 1; } } });

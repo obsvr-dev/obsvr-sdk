@@ -142,13 +142,15 @@ class Store:
         self.events.append(f"persist:{checkpoint['phase']}")
 
 
-def _setup(tmp_path, base=None, response=None, store=None):
+def _setup(tmp_path, base=None, response=None, store=None, fail_commit=False):
     events = []
     subject = _coordinator(tmp_path, base)
     original_commit = subject.commit_prepared
 
     def commit(token, receipt_hash):
         events.append("commit")
+        if fail_commit:
+            raise RuntimeError("commit failed")
         return original_commit(token, receipt_hash)
 
     subject.commit_prepared = commit
@@ -327,10 +329,7 @@ def test_admission_and_commit_uncertainty_freeze_without_invoking(tmp_path):
     assert result["reason"] == "admission_uncertain"
     assert subject.inspect_state()["frozen"] is True
 
-    subject2, runtime2, _events2, _store2 = _setup(tmp_path)
-    subject2.commit_prepared = lambda *_args: (_ for _ in ()).throw(
-        RuntimeError("commit failed")
-    )
+    subject2, runtime2, _events2, _store2 = _setup(tmp_path, fail_commit=True)
     result2 = runtime2.run_decision(
         decision=_decision("commit-fail", bound.arguments_hash),
         action={
