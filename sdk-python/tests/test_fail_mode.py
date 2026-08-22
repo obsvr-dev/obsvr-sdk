@@ -233,6 +233,7 @@ class TestRegistryGate:
         "strict_receipt_recovery_v2.py",
         "strict_receipt_runtime.py",
         "strict_receipt_runtime_v2.py",
+        "strict_receipt_runtime_v2_1.py",
         "strict_receipt_runtime_v2_bindings.py",
         "strict_receipt_runtime_v2_recovery_support.py",
         "strict_receipt_v2.py",
