@@ -12,12 +12,13 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 0bddfcd08fc470d05f4dfc64a1f685a5a0d8aaef3b6f3e9570dd6a9da880ba7a
+# corpus_sha256 = 4ee89a4bcc59689f2cc3a6a6ecde1474fc4a004e8eb58b87146a3e0510389f24
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
 9e6f3c3cc427622c0edeadc4e4f57b87076a4ff0949a64e6e1e5aa583a2a048b  SPEC-evaluation.md
 6925e80df12c0383f27dd579ad91b78ce22c7460d1d2b7062942219983b918ab  fixtures/aarm_outcomes.json
+e8ca59cc9269bb8881efa59e7dbfa274d2cc398d5768d7f047e1282a75c5def7  fixtures/action_context.json
 e84f388e8e89835cf1ccd7131e5796ec032a4f7ba80bcee342b7fb02c16c59b3  fixtures/action_taken.json
 dfa5263a33002d856b7fe07b8c2b62ce14427ff55c27eab4179443d4e49e22db  fixtures/agent_controls.json
 e789a00484700552e1a41f3bca57edc5ce19ff23489621fd0acb5e7e4976496b  fixtures/approvals.json
