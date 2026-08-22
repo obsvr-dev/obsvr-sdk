@@ -30,7 +30,11 @@ def _mutated(case):
     cursor = input_value
     for segment in case["mutation"]["path"][:-1]:
         cursor = cursor[segment]
-    cursor[case["mutation"]["path"][-1]] = case["mutation"]["value"]
+    last = case["mutation"]["path"][-1]
+    if case["mutation"].get("delete") is True:
+        del cursor[last]
+    else:
+        cursor[last] = case["mutation"]["value"]
     return input_value
 
 

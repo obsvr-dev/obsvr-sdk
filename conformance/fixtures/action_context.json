@@ -9,12 +9,13 @@
       "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "agent_id": "agent-7",
-        "intent": "summarize contract",
+        "active_intents": ["summarize contract"],
         "current_action": {
           "kind": "model_call",
           "name": "summarize",
           "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "data_classifications": []
+          "data_classifications": [],
+          "requested_scopes": []
         },
         "run_id": "run-7",
         "prior_actions": []
@@ -24,19 +25,20 @@
           "schema": "obsvr-action-context-v1",
           "agent": {
             "agent_id": "agent-7",
-            "intent": "summarize contract"
+            "active_intents": ["summarize contract"]
           },
           "action": {
             "kind": "model_call",
             "name": "summarize",
             "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "data_classifications": []
+            "data_classifications": [],
+            "requested_scopes": []
           },
           "run_id": "run-7",
           "prior_actions": []
         },
-        "canonical": "{\"action\":{\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"data_classifications\":[],\"kind\":\"model_call\",\"name\":\"summarize\"},\"agent\":{\"agent_id\":\"agent-7\",\"intent\":\"summarize contract\"},\"prior_actions\":[],\"run_id\":\"run-7\",\"schema\":\"obsvr-action-context-v1\"}",
-        "hash": "32eb5e9dd57ff5155b010685c2c13e0eecdf26c369a125fda9b8ccdc2e99241d"
+        "canonical": "{\"action\":{\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"data_classifications\":[],\"kind\":\"model_call\",\"name\":\"summarize\",\"requested_scopes\":[]},\"agent\":{\"active_intents\":[\"summarize contract\"],\"agent_id\":\"agent-7\"},\"prior_actions\":[],\"run_id\":\"run-7\",\"schema\":\"obsvr-action-context-v1\"}",
+        "hash": "45ab1af6bebe15cb83e7f80affad86fa904821005a1bb117e602dad5cff0a887"
       }
     },
     {
@@ -44,7 +46,11 @@
       "sdk_support": { "ts": "required", "py": "required" },
       "input": {
         "agent_id": "代理-Ω",
-        "intent": "Review café NDA for 租户",
+        "active_intents": [
+          "Review café NDA for 租户",
+          "Extract obligations",
+          "Review café NDA for 租户"
+        ],
         "agent_role": "reviewer",
         "privilege_scope": ["🔒:audit", "contracts:read", "admin:α", "contracts:read"],
         "current_action": {
@@ -52,7 +58,8 @@
           "name": "réviser_合同",
           "arguments_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "target": "workspace/租户",
-          "data_classifications": ["🛡️", "PII", "合同", "Confidential", "PII"]
+          "data_classifications": ["🛡️", "PII", "合同", "Confidential", "PII"],
+          "requested_scopes": ["contracts:write", "contracts:read", "contracts:write"]
         },
         "run_id": "run-国际",
         "session_id": "session-é",
@@ -81,7 +88,7 @@
           "schema": "obsvr-action-context-v1",
           "agent": {
             "agent_id": "代理-Ω",
-            "intent": "Review café NDA for 租户",
+            "active_intents": ["Extract obligations", "Review café NDA for 租户"],
             "role": "reviewer",
             "privilege_scope": ["admin:α", "contracts:read", "🔒:audit"]
           },
@@ -90,7 +97,8 @@
             "name": "réviser_合同",
             "arguments_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "target": "workspace/租户",
-            "data_classifications": ["Confidential", "PII", "合同", "🛡️"]
+            "data_classifications": ["Confidential", "PII", "合同", "🛡️"],
+            "requested_scopes": ["contracts:read", "contracts:write"]
           },
           "run_id": "run-国际",
           "session_id": "session-é",
@@ -114,14 +122,14 @@
             }
           ]
         },
-        "canonical": "{\"action\":{\"arguments_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"data_classifications\":[\"Confidential\",\"PII\",\"合同\",\"🛡️\"],\"kind\":\"tool_call\",\"name\":\"réviser_合同\",\"target\":\"workspace/租户\"},\"agent\":{\"agent_id\":\"代理-Ω\",\"intent\":\"Review café NDA for 租户\",\"privilege_scope\":[\"admin:α\",\"contracts:read\",\"🔒:audit\"],\"role\":\"reviewer\"},\"prior_actions\":[{\"data_classifications\":[\"PII\",\"Public\"],\"kind\":\"model_call\",\"name\":\"classify\",\"outcome\":\"ALLOW\",\"receipt_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"sequence\":0},{\"data_classifications\":[\"PII\",\"Secret\",\"🔐\"],\"kind\":\"tool_call\",\"name\":\"redact\",\"outcome\":\"MODIFY\",\"receipt_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"sequence\":2}],\"run_id\":\"run-国际\",\"schema\":\"obsvr-action-context-v1\",\"session_id\":\"session-é\",\"thread_id\":\"thread-東京\"}",
-        "hash": "2a2593156f1cd3a0594b09298f673cfa3baf4aff39e9e38a7ed4918f3860d13b"
+        "canonical": "{\"action\":{\"arguments_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"data_classifications\":[\"Confidential\",\"PII\",\"合同\",\"🛡️\"],\"kind\":\"tool_call\",\"name\":\"réviser_合同\",\"requested_scopes\":[\"contracts:read\",\"contracts:write\"],\"target\":\"workspace/租户\"},\"agent\":{\"active_intents\":[\"Extract obligations\",\"Review café NDA for 租户\"],\"agent_id\":\"代理-Ω\",\"privilege_scope\":[\"admin:α\",\"contracts:read\",\"🔒:audit\"],\"role\":\"reviewer\"},\"prior_actions\":[{\"data_classifications\":[\"PII\",\"Public\"],\"kind\":\"model_call\",\"name\":\"classify\",\"outcome\":\"ALLOW\",\"receipt_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"sequence\":0},{\"data_classifications\":[\"PII\",\"Secret\",\"🔐\"],\"kind\":\"tool_call\",\"name\":\"redact\",\"outcome\":\"MODIFY\",\"receipt_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"sequence\":2}],\"run_id\":\"run-国际\",\"schema\":\"obsvr-action-context-v1\",\"session_id\":\"session-é\",\"thread_id\":\"thread-東京\"}",
+        "hash": "d42f76873688bfccf84dac591a3b333b07833c6c8e158d2a2c002377b3603911"
       }
     }
   ],
   "invalid_base": {
     "agent_id": "agent-7",
-    "intent": "perform governed work",
+    "active_intents": ["perform governed work"],
     "agent_role": "operator",
     "privilege_scope": ["contracts:read"],
     "current_action": {
@@ -129,7 +137,8 @@
       "name": "send",
       "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "target": "customer",
-      "data_classifications": ["Confidential"]
+      "data_classifications": ["Confidential"],
+      "requested_scopes": ["contracts:send"]
     },
     "run_id": "run-7",
     "session_id": "session-7",
@@ -155,7 +164,10 @@
   },
   "invalid_cases": [
     { "id": "blank_agent_id", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["agent_id"], "value": "  " } },
-    { "id": "blank_intent", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["intent"], "value": "" } },
+    { "id": "active_intents_missing", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["active_intents"], "delete": true } },
+    { "id": "active_intents_not_array", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["active_intents"], "value": "perform governed work" } },
+    { "id": "active_intents_empty", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["active_intents"], "value": [] } },
+    { "id": "active_intent_blank", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["active_intents", 0], "value": " " } },
     { "id": "blank_run_id", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["run_id"], "value": "\t" } },
     { "id": "wrong_agent_id_type", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["agent_id"], "value": 7 } },
     { "id": "blank_action_kind", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "kind"], "value": " " } },
@@ -164,6 +176,9 @@
     { "id": "short_arguments_hash", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "arguments_hash"], "value": "abc" } },
     { "id": "classifications_must_be_array", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "data_classifications"], "value": "PII" } },
     { "id": "classification_must_be_nonblank_string", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "data_classifications", 0], "value": 3 } },
+    { "id": "requested_scopes_missing", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "requested_scopes"], "delete": true } },
+    { "id": "requested_scopes_not_array", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "requested_scopes"], "value": "contracts:send" } },
+    { "id": "requested_scope_blank", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "requested_scopes", 0], "value": " " } },
     { "id": "agent_role_cannot_be_null", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["agent_role"], "value": null } },
     { "id": "privilege_scope_must_be_array", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["privilege_scope"], "value": "contracts:read" } },
     { "id": "target_cannot_be_blank", "sdk_support": { "ts": "required", "py": "required" }, "mutation": { "path": ["current_action", "target"], "value": " " } },

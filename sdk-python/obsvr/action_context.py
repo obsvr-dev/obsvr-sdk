@@ -111,7 +111,7 @@ def build_action_context(input_value: Any) -> Dict[str, Any]:
         root,
         {
             "agent_id",
-            "intent",
+            "active_intents",
             "agent_role",
             "privilege_scope",
             "current_action",
@@ -125,13 +125,23 @@ def build_action_context(input_value: Any) -> Dict[str, Any]:
     current = _record(root.get("current_action"), "current_action")
     _exact_keys(
         current,
-        {"kind", "name", "arguments_hash", "target", "data_classifications"},
+        {
+            "kind",
+            "name",
+            "arguments_hash",
+            "target",
+            "data_classifications",
+            "requested_scopes",
+        },
         "current_action",
     )
 
+    active_intents = _normalized_set(root.get("active_intents"), "active_intents")
+    if not active_intents:
+        raise ActionContextValidationError("active_intents must not be empty")
     agent: Dict[str, Any] = {
         "agent_id": _nonblank(root.get("agent_id"), "agent_id"),
-        "intent": _nonblank(root.get("intent"), "intent"),
+        "active_intents": active_intents,
     }
     role = _optional_nonblank(root, "agent_role", "agent_role")
     if role is not None:
@@ -150,6 +160,10 @@ def build_action_context(input_value: Any) -> Dict[str, Any]:
         "data_classifications": _normalized_set(
             current.get("data_classifications"),
             "current_action.data_classifications",
+        ),
+        "requested_scopes": _normalized_set(
+            current.get("requested_scopes"),
+            "current_action.requested_scopes",
         ),
     }
     target = _optional_nonblank(current, "target", "current_action.target")

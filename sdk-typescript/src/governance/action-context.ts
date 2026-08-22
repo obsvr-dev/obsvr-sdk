@@ -18,7 +18,7 @@ export interface PriorActionInput {
 
 export interface ActionContextInput {
   agent_id: string;
-  intent: string;
+  active_intents: string[];
   agent_role?: string;
   privilege_scope?: string[];
   current_action: {
@@ -27,6 +27,7 @@ export interface ActionContextInput {
     arguments_hash: string;
     target?: string;
     data_classifications: string[];
+    requested_scopes: string[];
   };
   run_id: string;
   session_id?: string;
@@ -38,7 +39,7 @@ export interface ActionContextDocument {
   schema: typeof ACTION_CONTEXT_SCHEMA;
   agent: {
     agent_id: string;
-    intent: string;
+    active_intents: string[];
     role?: string;
     privilege_scope?: string[];
   };
@@ -48,6 +49,7 @@ export interface ActionContextDocument {
     arguments_hash: string;
     target?: string;
     data_classifications: string[];
+    requested_scopes: string[];
   };
   run_id: string;
   session_id?: string;
@@ -163,7 +165,7 @@ export function buildActionContext(input: ActionContextInput): ActionContextDocu
     root,
     [
       'agent_id',
-      'intent',
+      'active_intents',
       'agent_role',
       'privilege_scope',
       'current_action',
@@ -178,14 +180,24 @@ export function buildActionContext(input: ActionContextInput): ActionContextDocu
   const current = record(root.current_action, 'current_action');
   exactKeys(
     current,
-    ['kind', 'name', 'arguments_hash', 'target', 'data_classifications'],
+    [
+      'kind',
+      'name',
+      'arguments_hash',
+      'target',
+      'data_classifications',
+      'requested_scopes',
+    ],
     'current_action',
   );
 
   const agent: ActionContextDocument['agent'] = {
     agent_id: nonblank(root.agent_id, 'agent_id'),
-    intent: nonblank(root.intent, 'intent'),
+    active_intents: normalizedSet(root.active_intents, 'active_intents'),
   };
+  if (agent.active_intents.length === 0) {
+    throw new ActionContextValidationError('active_intents must not be empty');
+  }
   const role = optionalNonblank(root, 'agent_role', 'agent_role');
   if (role !== undefined) agent.role = role;
   if (Object.prototype.hasOwnProperty.call(root, 'privilege_scope')) {
@@ -199,6 +211,10 @@ export function buildActionContext(input: ActionContextInput): ActionContextDocu
     data_classifications: normalizedSet(
       current.data_classifications,
       'current_action.data_classifications',
+    ),
+    requested_scopes: normalizedSet(
+      current.requested_scopes,
+      'current_action.requested_scopes',
     ),
   };
   const target = optionalNonblank(current, 'target', 'current_action.target');

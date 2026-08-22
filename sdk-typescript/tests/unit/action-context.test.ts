@@ -34,7 +34,8 @@ interface InvalidCase {
   id: string;
   mutation: {
     path: Array<string | number>;
-    value: unknown;
+    value?: unknown;
+    delete?: boolean;
   };
 }
 
@@ -55,7 +56,11 @@ function mutated(case_: InvalidCase): ActionContextInput {
     cursor = (cursor as Record<string | number, unknown>)[segment];
   }
   const last = case_.mutation.path[case_.mutation.path.length - 1];
-  (cursor as Record<string | number, unknown>)[last] = case_.mutation.value;
+  if (case_.mutation.delete === true) {
+    delete (cursor as Record<string | number, unknown>)[last];
+  } else {
+    (cursor as Record<string | number, unknown>)[last] = case_.mutation.value;
+  }
   return input as unknown as ActionContextInput;
 }
 
