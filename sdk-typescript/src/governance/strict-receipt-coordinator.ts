@@ -6,24 +6,18 @@ import {
   type IntentAlignmentResult,
   type IntentBaseResult,
   type IntentPolicyDocument,
-  type IntentPolicyInput,
 } from '../policy/intent-alignment.js';
 import {
   type ActionContextDocument,
-  type ActionContextInput,
   type PriorActionInput,
 } from './action-context.js';
 import type { AarmOutcome } from './aarm-outcome.js';
 import {
-  STRICT_RECEIPT_PROFILE_VERSION,
-  STRICT_RECEIPT_SCHEMA,
-  signStrictReceipt,
   strictReceiptKeyId,
   type StrictReceiptBody,
   type StrictReceiptEnvelope,
 } from './strict-receipt.js';
 import {
-  addSafeIntegers,
   buildCoordinatorContext,
   canonicalHash,
   cloneCoordinatorValue,
@@ -32,66 +26,35 @@ import {
   coordinatorSafeInteger,
   coordinatorText,
   requestFingerprint,
+  signCoordinatorDecision,
   signCoordinatorResolution,
   trustedApprovalResult,
   validateDeferredChanges,
   type StrictApprovalVerifier,
 } from './strict-receipt-coordinator-support.js';
+import {
+  PreparedReceiptState,
+  type DefinitiveNoStore,
+  type PreparedReconciliation,
+} from './strict-receipt-prepared-state.js';
+import type {
+  PreparedDecision, PreparedResolution, StrictCoordinatorStateInspection,
+  StrictDecisionInput, StrictDecisionResult, StrictReceiptCoordinatorOptions,
+  StrictResolutionInput, StrictTimeoutInput,
+} from './strict-receipt-coordinator-types.js';
+export type {
+  PreparedDecision, PreparedResolution, StrictCoordinatorContextInput,
+  StrictCoordinatorStateInspection, StrictDecisionInput, StrictDecisionResult,
+  StrictReceiptCoordinatorOptions, StrictResolutionInput, StrictTimeoutInput,
+} from './strict-receipt-coordinator-types.js';
 
 const FINAL_OUTCOMES = new Set<AarmOutcome>(['ALLOW', 'DENY', 'MODIFY']);
-type ResolutionMethod = NonNullable<StrictReceiptBody['resolution']>['method'];
-
 interface PendingState {
   receipt: StrictReceiptEnvelope;
   context: ActionContextDocument;
   baseResult: IntentBaseResult;
 }
 
-export type StrictCoordinatorContextInput = Omit<
-  ActionContextInput,
-  'prior_actions' | 'session_id'
->;
-export interface StrictReceiptCoordinatorOptions {
-  signer: DeviceSigner;
-  policy: IntentPolicyInput;
-  sdk_language: 'typescript';
-  sdk_version: string;
-  session_id: string;
-  clock: () => number;
-  defer_ttl_ms: number;
-  approval_verifier: StrictApprovalVerifier;
-  include_public_key?: boolean;
-  pid?: () => number;
-  session_factory?: () => string;
-}
-export interface StrictDecisionInput {
-  context: StrictCoordinatorContextInput;
-  base_result: IntentBaseResult;
-  policy_version: string;
-  rule_ids: string[];
-  action_id: string;
-}
-export interface StrictDecisionResult {
-  evaluation: IntentAlignmentResult;
-  receipt: StrictReceiptEnvelope;
-}
-export interface StrictResolutionInput {
-  suspended_receipt_hash: string;
-  method: ResolutionMethod;
-  resolver_principal_id?: string;
-  resolution_source_hash?: string;
-  context: StrictCoordinatorContextInput;
-  base_result: IntentBaseResult;
-  policy_version: string;
-  rule_ids: string[];
-  approval_evidence?: unknown;
-}
-
-export interface StrictTimeoutInput {
-  suspended_receipt_hash: string;
-  policy_version: string;
-  rule_ids: string[];
-}
 
 export class StrictReceiptCoordinatorError extends Error {
   constructor(message: string) {
@@ -120,6 +83,7 @@ export class StrictReceiptCoordinator {
   private resolved = new Set<string>();
   private decisions = new Map<string, { fingerprint: string; result: StrictDecisionResult }>();
   private approvalRequests = new Map<string, string>();
+  private readonly preparedState: PreparedReceiptState;
 
   constructor(options: StrictReceiptCoordinatorOptions) {
     if (options.sdk_language !== 'typescript') {
@@ -142,20 +106,35 @@ export class StrictReceiptCoordinator {
     this.pidSource = options.pid ?? (() => process.pid);
     this.sessionFactory = options.session_factory ?? (() => randomUUID());
     this.ownerPid = coordinatorSafeInteger(this.pidSource(), 'pid');
+    this.preparedState = new PreparedReceiptState(
+      options.prepared_token_factory ?? (() => randomUUID()),
+    );
     strictReceiptKeyId(this.signer.rawPublicKey);
   }
 
   decide(input: StrictDecisionInput): StrictDecisionResult {
     this.ensureProcess();
-    const actionId = coordinatorText(input.action_id, 'action_id');
     const fingerprint = requestFingerprint({ ...input, session_id: this.sessionId });
-    const cached = this.decisions.get(actionId);
+    const cached = this.decisions.get(input.action_id);
     if (cached) {
       if (cached.fingerprint !== fingerprint) {
         throw new StrictReceiptCoordinatorError('action_id was reused with different input');
       }
       return cloneCoordinatorValue(cached.result);
     }
+    const prepared = this.prepareDecision(input);
+    return this.commitPrepared(prepared.token, prepared.receipt_hash) as StrictDecisionResult;
+  }
+
+  prepareDecision(input: StrictDecisionInput): PreparedDecision {
+    this.ensureProcess();
+    const actionId = coordinatorText(input.action_id, 'action_id');
+    const fingerprint = requestFingerprint({ ...input, session_id: this.sessionId });
+    if (this.decisions.has(actionId)) {
+      throw new StrictReceiptCoordinatorError('action_id is already committed');
+    }
+    const retry = this.preparedState.retry<StrictDecisionResult>(fingerprint, 'decision');
+    if (retry) return cloneCoordinatorValue(retry);
     const baseResult = { ...input.base_result };
     const context = buildCoordinatorContext(input.context, this.sessionId, this.priorActions);
     const evaluation = evaluateIntentAlignment({
@@ -165,86 +144,37 @@ export class StrictReceiptCoordinator {
     });
     const { timestamp, clamped } = this.allocateTimestamp();
     const sequence = this.sequence + 1;
-    const body: StrictReceiptBody = {
-      schema: STRICT_RECEIPT_SCHEMA,
-      profile_version: STRICT_RECEIPT_PROFILE_VERSION,
-      record_type: 'decision',
-      receipt_id: `${this.sessionId}:${sequence}`,
-      session_id: this.sessionId,
-      sequence,
-      timestamp_ms: timestamp,
-      clock_regression_clamped: clamped,
-      previous_receipt_hash: this.lastReceiptHash,
-      sdk: { language: 'typescript', version: this.sdkVersion },
-      initiator: {
-        agent_id: context.agent.agent_id,
-        key_id: strictReceiptKeyId(this.signer.rawPublicKey),
-      },
-      action: {
-        action_id: actionId,
-        kind: context.action.kind,
-        name: context.action.name,
-        arguments_hash: context.action.arguments_hash,
-      },
-      context: {
-        schema: 'obsvr-action-context-v1',
-        context_hash: evaluation.context_hash,
-        run_id: context.run_id,
-      },
-      evaluation: {
-        input_hash: evaluation.input_hash,
-        policy_hash: evaluation.policy_hash,
-        evaluator_hash: evaluation.evaluator_hash,
-        engine_version: evaluation.engine_version,
-        policy_version: input.policy_version,
-        outcome: evaluation.outcome,
-        reason_code: evaluation.reason_code,
-        rule_ids: input.rule_ids,
-      },
-      execution_authorized: evaluation.outcome === 'ALLOW' || evaluation.outcome === 'MODIFY',
-    };
-    if (context.action.target !== undefined) body.action.target = context.action.target;
-    if (context.thread_id !== undefined) body.context.thread_id = context.thread_id;
-    if (evaluation.outcome === 'MODIFY') {
-      body.action.effective_arguments_hash = baseResult.modified_arguments_hash;
-    }
-    if (evaluation.outcome === 'STEP_UP') {
-      const approvalRequestId = baseResult.approval_request_id as string;
-      if (this.approvalRequests.has(approvalRequestId)) {
-        throw new StrictReceiptCoordinatorError('approval_request_id is already pending');
-      }
-      body.suspension = {
-        suspension_id: approvalRequestId,
-        type: 'approval',
-        status: 'pending',
-        required_fields: [],
-        expires_at_ms: baseResult.approval_expires_at_ms as number,
-        approval_request_id: baseResult.approval_request_id,
-        approval_action_hash: baseResult.approval_action_hash,
-      };
-      if (body.suspension.expires_at_ms <= timestamp) {
-        throw new StrictReceiptCoordinatorError('approval expiry must follow decision timestamp');
-      }
-    } else if (evaluation.outcome === 'DEFER') {
-      body.suspension = {
-        suspension_id: `defer:${this.sessionId}:${sequence}`,
-        type: 'context',
-        status: 'pending',
-        required_fields: evaluation.required_fields as string[],
-        expires_at_ms: addSafeIntegers(timestamp, this.deferTtlMs),
-      };
-    }
-    const receipt = signStrictReceipt(body, this.signer, this.includePublicKey);
+    const receipt = signCoordinatorDecision({
+      action_id: actionId, context, base_result: baseResult, evaluation,
+      policy_version: input.policy_version, rule_ids: input.rule_ids,
+      timestamp, clamped, sequence, session_id: this.sessionId,
+      previous_hash: this.lastReceiptHash, sdk_version: this.sdkVersion,
+      signer: this.signer, include_public_key: this.includePublicKey,
+      defer_ttl_ms: this.deferTtlMs,
+      approval_request_pending: (requestId) => this.approvalRequests.has(requestId),
+    });
     const result = { evaluation, receipt };
-    this.commitDecision(result, context, baseResult, fingerprint);
-    return cloneCoordinatorValue(result);
+    return cloneCoordinatorValue(this.preparedState.prepare({
+      fingerprint, receipt_hash: receipt.receipt_hash, kind: 'decision', value: result,
+      commit: () => this.commitDecision(result, context, baseResult, fingerprint),
+    }));
   }
 
   resolve(input: StrictResolutionInput): StrictReceiptEnvelope {
+    const prepared = this.prepareResolution(input);
+    return this.commitPrepared(prepared.token, prepared.receipt_hash) as StrictReceiptEnvelope;
+  }
+
+  prepareResolution(input: StrictResolutionInput): PreparedResolution {
     this.ensureProcess();
     if (input.method === 'expired') {
       throw new StrictReceiptCoordinatorError('expired suspensions must use timeout');
     }
+    const fingerprint = canonicalHash({
+      schema: 'obsvr-strict-prepare-resolution-v1', session_id: this.sessionId, input,
+    });
+    const retry = this.preparedState.retry<StrictReceiptEnvelope>(fingerprint, 'resolution');
+    if (retry) return cloneCoordinatorValue(retry);
     coordinatorHash(input.suspended_receipt_hash, 'suspended_receipt_hash');
     const pending = this.suspended.get(input.suspended_receipt_hash);
     if (!pending) throw new StrictReceiptCoordinatorError('suspended receipt is not known');
@@ -265,6 +195,12 @@ export class StrictReceiptCoordinator {
     const evidence = this.validateResolution(
       input, pending, context, baseResult, evaluation, timestamp,
     );
+    const priorIndex = this.priorActions.findIndex(
+      (item) => item.receipt_hash === input.suspended_receipt_hash,
+    );
+    if (priorIndex < 0) {
+      throw new StrictReceiptCoordinatorError('suspended action summary is missing');
+    }
     const receipt = signCoordinatorResolution({
       prior, evaluation, context, base_result: baseResult,
       policy_version: input.policy_version, rule_ids: input.rule_ids,
@@ -274,12 +210,24 @@ export class StrictReceiptCoordinator {
       previous_hash: this.lastReceiptHash, sdk_version: this.sdkVersion,
       signer: this.signer, include_public_key: this.includePublicKey,
     });
-    this.commitResolution(receipt, input.suspended_receipt_hash);
-    return cloneCoordinatorValue(receipt);
+    return cloneCoordinatorValue(this.preparedState.prepare({
+      fingerprint, receipt_hash: receipt.receipt_hash, kind: 'resolution', value: receipt,
+      commit: () => this.commitResolution(receipt, input.suspended_receipt_hash, priorIndex),
+    }));
   }
 
   timeout(input: StrictTimeoutInput): StrictReceiptEnvelope {
+    const prepared = this.prepareTimeout(input);
+    return this.commitPrepared(prepared.token, prepared.receipt_hash) as StrictReceiptEnvelope;
+  }
+
+  prepareTimeout(input: StrictTimeoutInput): PreparedResolution {
     this.ensureProcess();
+    const fingerprint = canonicalHash({
+      schema: 'obsvr-strict-prepare-timeout-v1', session_id: this.sessionId, input,
+    });
+    const retry = this.preparedState.retry<StrictReceiptEnvelope>(fingerprint, 'timeout');
+    if (retry) return cloneCoordinatorValue(retry);
     const receiptHash = coordinatorHash(input.suspended_receipt_hash, 'suspended_receipt_hash');
     const pending = this.suspended.get(receiptHash);
     if (!pending) throw new StrictReceiptCoordinatorError('suspended receipt is not known');
@@ -298,6 +246,10 @@ export class StrictReceiptCoordinator {
     const { timestamp, clamped } = this.allocateTimestamp();
     if (timestamp < suspension.expires_at_ms) {
       throw new StrictReceiptCoordinatorError('suspension has not expired');
+    }
+    const priorIndex = this.priorActions.findIndex((item) => item.receipt_hash === receiptHash);
+    if (priorIndex < 0) {
+      throw new StrictReceiptCoordinatorError('suspended action summary is missing');
     }
     const sourceHash = coordinatorHash(
       // Domain-separated deterministic timeout evidence, not caller material.
@@ -318,8 +270,41 @@ export class StrictReceiptCoordinator {
       previous_hash: this.lastReceiptHash, sdk_version: this.sdkVersion,
       signer: this.signer, include_public_key: this.includePublicKey,
     });
-    this.commitResolution(receipt, receiptHash);
-    return cloneCoordinatorValue(receipt);
+    return cloneCoordinatorValue(this.preparedState.prepare({
+      fingerprint, receipt_hash: receipt.receipt_hash, kind: 'timeout', value: receipt,
+      commit: () => this.commitResolution(receipt, receiptHash, priorIndex),
+    }));
+  }
+
+  commitPrepared(token: string, receiptHash: string): StrictDecisionResult | StrictReceiptEnvelope {
+    this.ensureProcess();
+    return cloneCoordinatorValue(this.preparedState.commit(token, receiptHash));
+  }
+
+  abortPrepared(token: string, receiptHash: string, status: DefinitiveNoStore): void {
+    this.ensureProcess();
+    this.preparedState.abort(token, receiptHash, status);
+  }
+
+  freezePrepared(token: string, receiptHash: string, reason = 'transport_ambiguous'): void {
+    this.ensureProcess();
+    this.preparedState.freeze(token, receiptHash, reason);
+  }
+
+  reconcilePrepared(
+    input: PreparedReconciliation,
+  ): StrictDecisionResult | StrictReceiptEnvelope | undefined {
+    this.ensureProcess();
+    const result = this.preparedState.reconcile<StrictDecisionResult | StrictReceiptEnvelope>(input);
+    return result === undefined ? undefined : cloneCoordinatorValue(result);
+  }
+
+  inspectState(): StrictCoordinatorStateInspection {
+    this.ensureProcess();
+    return {
+      session_id: this.sessionId, sequence: this.sequence,
+      head_receipt_hash: this.lastReceiptHash, ...this.preparedState.inspect(),
+    };
   }
 
   private validateResolution(
@@ -458,10 +443,10 @@ export class StrictReceiptCoordinator {
     if (requestId !== undefined) this.approvalRequests.set(requestId, receipt.receipt_hash);
   }
 
-  private commitResolution(receipt: StrictReceiptEnvelope, suspendedHash: string): void {
-    const index = this.priorActions.findIndex((item) => item.receipt_hash === suspendedHash);
-    if (index < 0) throw new StrictReceiptCoordinatorError('suspended action summary is missing');
-    const classifications = this.priorActions[index].data_classifications;
+  private commitResolution(
+    receipt: StrictReceiptEnvelope, suspendedHash: string, index: number,
+  ): void {
+    const classifications = this.priorActions[index]!.data_classifications;
     this.sequence = receipt.body.sequence;
     this.lastReceiptHash = receipt.receipt_hash;
     this.lastTimestamp = receipt.body.timestamp_ms;
@@ -494,6 +479,7 @@ export class StrictReceiptCoordinator {
     this.resolved = new Set();
     this.decisions = new Map();
     this.approvalRequests = new Map();
+    this.preparedState.reset();
   }
 
 }

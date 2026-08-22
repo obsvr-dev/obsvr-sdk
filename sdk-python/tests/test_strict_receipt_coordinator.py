@@ -6,6 +6,10 @@ import pytest
 
 from obsvr.device_identity import DeviceSigner, load_device_signer
 from obsvr.strict_receipt_coordinator import StrictReceiptCoordinator
+from obsvr.strict_receipt_prepared_state import (
+    DEFINITIVE_NO_STORE,
+    PreparedReceiptState,
+)
 from obsvr.strict_receipt_verify import verify_strict_receipt_chain
 
 HASH_A = "a" * 64
@@ -347,3 +351,136 @@ def test_pid_and_after_fork_reset_start_new_genesis(tmp_path):
     subject._after_fork_child()
     callback_child = decide(subject, "callback", {"action_taken": "allowed"})
     assert callback_child["receipt"]["body"]["sequence"] == 1
+
+
+def test_prepare_is_idempotent_without_advancing_committed_state(tmp_path):
+    subject = coordinator(
+        tmp_path, lambda: 1000,
+        prepared_token_factory=lambda: "opaque-token",
+    )
+    input_value = {
+        "context": context(), "base_result": {"action_taken": "allowed"},
+        "policy_version": "policy-1", "rule_ids": ["rule-a"],
+        "action_id": "prepared",
+    }
+    first = subject.prepare_decision(**input_value)
+    assert subject.inspect_state()["sequence"] == 0
+    assert subject.inspect_state()["head_receipt_hash"] is None
+    assert subject.prepare_decision(**input_value) == first
+    with pytest.raises(ValueError, match="different receipt is already prepared"):
+        subject.prepare_decision(**{**input_value, "action_id": "other"})
+    with pytest.raises(ValueError, match="prepared token mismatch"):
+        subject.commit_prepared("wrong", first["receipt_hash"])
+    with pytest.raises(ValueError, match="prepared receipt hash mismatch"):
+        subject.commit_prepared(first["token"], HASH_A)
+    assert subject.commit_prepared(
+        first["token"], first["receipt_hash"]
+    ) == first["value"]
+    state = subject.inspect_state()
+    assert state["sequence"] == 1
+    assert state["head_receipt_hash"] == first["receipt_hash"]
+
+
+def test_no_store_capability_freeze_and_local_commit_failure():
+    state = PreparedReceiptState(lambda: "opaque-token")
+    commits = []
+    prepared = state.prepare(
+        fingerprint=HASH_A, receipt_hash=HASH_B, kind="decision", value="value",
+        commit=lambda: commits.append("committed"),
+    )
+    with pytest.raises(ValueError, match="definitive_no_store capability"):
+        state.abort(
+            prepared["token"], prepared["receipt_hash"],
+            type("FakeCapability", (), {"status": "definitive_no_store"})(),
+        )
+    state.freeze(prepared["token"], prepared["receipt_hash"], "delivery_unknown")
+    with pytest.raises(ValueError, match="session is frozen"):
+        state.retry(HASH_A, "decision")
+    assert state.reconcile({
+        "status": "stored", "token": prepared["token"],
+        "receipt_hash": prepared["receipt_hash"],
+    }) == "value"
+    assert commits == ["committed"]
+
+    aborted = state.prepare(
+        fingerprint=HASH_C, receipt_hash=HASH_D, kind="decision", value="unused",
+        commit=lambda: commits.append("unexpected"),
+    )
+    state.abort(aborted["token"], aborted["receipt_hash"], DEFINITIVE_NO_STORE)
+    assert state.inspect() == {"frozen": False}
+    assert commits == ["committed"]
+
+    failed = PreparedReceiptState(lambda: "failed-token")
+    def fail_commit():
+        raise RuntimeError("local commit failed")
+    pending = failed.prepare(
+        fingerprint=HASH_A, receipt_hash=HASH_B, kind="decision", value=None,
+        commit=fail_commit,
+    )
+    with pytest.raises(RuntimeError, match="local commit failed"):
+        failed.commit(pending["token"], pending["receipt_hash"])
+    assert failed.inspect()["freeze_reason"] == "accepted_but_local_commit_failed"
+    with pytest.raises(ValueError, match="session is frozen"):
+        failed.prepare(
+            fingerprint=HASH_C, receipt_hash=HASH_D, kind="decision", value=None,
+            commit=lambda: None,
+        )
+
+
+def test_prepare_resolution_and_timeout_do_not_advance_chains(tmp_path):
+    approval_times = iter([1000, 1100])
+    approval = coordinator(tmp_path, lambda: next(approval_times))
+    pending = decide(approval, "step", {
+        "action_taken": "blocked", "approval_required": True,
+        "approval_request_id": "approval-1", "approval_action_hash": HASH_A,
+        "approval_expires_at_ms": 1500,
+    })
+    prepared_resolution = approval.prepare_resolution(
+        suspended_receipt_hash=pending["receipt"]["receipt_hash"],
+        method="approval_granted", context=context(),
+        base_result={"action_taken": "allowed"}, policy_version="policy-1",
+        rule_ids=[], approval_evidence_value={
+            "token": "trusted", "expires_at_ms": 1500,
+        },
+    )
+    assert approval.inspect_state()["sequence"] == 1
+    assert approval.commit_prepared(
+        prepared_resolution["token"], prepared_resolution["receipt_hash"]
+    )["body"]["sequence"] == 2
+
+    timeout_times = iter([1000, 1500])
+    timeout = coordinator(tmp_path, lambda: next(timeout_times))
+    deferred = decide(timeout, "defer", {"action_taken": "hook_timeout"})
+    prepared_timeout = timeout.prepare_timeout(
+        suspended_receipt_hash=deferred["receipt"]["receipt_hash"],
+        policy_version="policy-1", rule_ids=[],
+    )
+    assert timeout.inspect_state()["sequence"] == 1
+    assert timeout.commit_prepared(
+        prepared_timeout["token"], prepared_timeout["receipt_hash"]
+    )["body"]["sequence"] == 2
+
+
+def test_pid_change_clears_prepared_and_frozen_state(tmp_path):
+    pid = [10]
+    subject = coordinator(
+        tmp_path, lambda: 1000, pid=lambda: pid[0],
+        session_factory=lambda: "session-child",
+    )
+    parent = subject.prepare_decision(
+        context=context(), base_result={"action_taken": "allowed"},
+        policy_version="policy-1", rule_ids=[], action_id="parent",
+    )
+    subject.freeze_prepared(
+        parent["token"], parent["receipt_hash"], "delivery_unknown"
+    )
+    pid[0] = 11
+    child = subject.prepare_decision(
+        context=context(), base_result={"action_taken": "allowed"},
+        policy_version="policy-1", rule_ids=[], action_id="child",
+    )
+    body = child["value"]["receipt"]["body"]
+    assert body["session_id"] == "session-child"
+    assert body["sequence"] == 1
+    assert body["previous_receipt_hash"] is None
+    assert subject.inspect_state()["frozen"] is False

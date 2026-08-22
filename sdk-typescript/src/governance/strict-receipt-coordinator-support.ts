@@ -13,6 +13,7 @@ import {
   STRICT_RECEIPT_PROFILE_VERSION,
   STRICT_RECEIPT_SCHEMA,
   signStrictReceipt,
+  strictReceiptKeyId,
   type StrictReceiptBody,
   type StrictReceiptEnvelope,
 } from './strict-receipt.js';
@@ -198,12 +199,90 @@ export function signCoordinatorResolution(params: {
   return signStrictReceipt(body, params.signer, params.include_public_key);
 }
 
+export function signCoordinatorDecision(params: {
+  action_id: string; context: ActionContextDocument;
+  base_result: IntentBaseResult; evaluation: IntentAlignmentResult;
+  policy_version: string; rule_ids: string[]; timestamp: number; clamped: boolean;
+  sequence: number; session_id: string; previous_hash: string | null;
+  sdk_version: string; signer: DeviceSigner; include_public_key: boolean;
+  defer_ttl_ms: number; approval_request_pending: (requestId: string) => boolean;
+}): StrictReceiptEnvelope {
+  const body: StrictReceiptBody = {
+    schema: STRICT_RECEIPT_SCHEMA,
+    profile_version: STRICT_RECEIPT_PROFILE_VERSION,
+    record_type: 'decision',
+    receipt_id: `${params.session_id}:${params.sequence}`,
+    session_id: params.session_id,
+    sequence: params.sequence,
+    timestamp_ms: params.timestamp,
+    clock_regression_clamped: params.clamped,
+    previous_receipt_hash: params.previous_hash,
+    sdk: { language: 'typescript', version: params.sdk_version },
+    initiator: {
+      agent_id: params.context.agent.agent_id,
+      key_id: strictReceiptKeyId(params.signer.rawPublicKey),
+    },
+    action: {
+      action_id: params.action_id, kind: params.context.action.kind,
+      name: params.context.action.name,
+      arguments_hash: params.context.action.arguments_hash,
+    },
+    context: {
+      schema: 'obsvr-action-context-v1', context_hash: params.evaluation.context_hash,
+      run_id: params.context.run_id,
+    },
+    evaluation: {
+      input_hash: params.evaluation.input_hash,
+      policy_hash: params.evaluation.policy_hash,
+      evaluator_hash: params.evaluation.evaluator_hash,
+      engine_version: params.evaluation.engine_version,
+      policy_version: params.policy_version,
+      outcome: params.evaluation.outcome,
+      reason_code: params.evaluation.reason_code,
+      rule_ids: params.rule_ids,
+    },
+    execution_authorized: params.evaluation.outcome === 'ALLOW'
+      || params.evaluation.outcome === 'MODIFY',
+  };
+  if (params.context.action.target !== undefined) {
+    body.action.target = params.context.action.target;
+  }
+  if (params.context.thread_id !== undefined) body.context.thread_id = params.context.thread_id;
+  if (params.evaluation.outcome === 'MODIFY') {
+    body.action.effective_arguments_hash = params.base_result.modified_arguments_hash;
+  }
+  if (params.evaluation.outcome === 'STEP_UP') {
+    const requestId = params.base_result.approval_request_id as string;
+    if (params.approval_request_pending(requestId)) {
+      throw new Error('approval_request_id is already pending');
+    }
+    body.suspension = {
+      suspension_id: requestId, type: 'approval', status: 'pending', required_fields: [],
+      expires_at_ms: params.base_result.approval_expires_at_ms as number,
+      approval_request_id: requestId,
+      approval_action_hash: params.base_result.approval_action_hash,
+    };
+    if (body.suspension.expires_at_ms <= params.timestamp) {
+      throw new Error('approval expiry must follow decision timestamp');
+    }
+  } else if (params.evaluation.outcome === 'DEFER') {
+    body.suspension = {
+      suspension_id: `defer:${params.session_id}:${params.sequence}`,
+      type: 'context', status: 'pending',
+      required_fields: params.evaluation.required_fields as string[],
+      expires_at_ms: addSafeIntegers(params.timestamp, params.defer_ttl_ms),
+    };
+  }
+  return signStrictReceipt(body, params.signer, params.include_public_key);
+}
+
 export function requestFingerprint(params: {
   context: Omit<ActionContextInput, 'prior_actions' | 'session_id'>;
   base_result: IntentBaseResult;
   policy_version: string;
   rule_ids: string[];
   session_id: string;
+  action_id: string;
 }): string {
   const context = buildActionContext({
     ...params.context,
@@ -212,6 +291,7 @@ export function requestFingerprint(params: {
   });
   return sha256Hex(canonicalJsonForHash({
     schema: 'obsvr-strict-decision-request-v1',
+    action_id: coordinatorText(params.action_id, 'action_id'),
     context,
     base_result: { ...params.base_result },
     policy_version: coordinatorText(params.policy_version, 'policy_version'),

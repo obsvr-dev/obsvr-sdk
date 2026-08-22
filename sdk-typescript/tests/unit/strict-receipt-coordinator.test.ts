@@ -3,6 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IntentBaseResult, IntentPolicyInput } from '../../src/policy/intent-alignment';
 import { StrictReceiptCoordinator } from '../../src/governance/strict-receipt-coordinator';
+import {
+  DEFINITIVE_NO_STORE,
+  PreparedReceiptState,
+} from '../../src/governance/strict-receipt-prepared-state';
 import { verifyStrictReceiptChain } from '../../src/governance/strict-receipt-verify';
 import { loadDeviceSigner, type DeviceSigner } from '../../src/proxy/device-identity';
 
@@ -328,5 +332,129 @@ describe('strict receipt coordinator', () => {
     expect(child.receipt.body).toMatchObject({
       session_id: 'session-child', sequence: 1, previous_receipt_hash: null,
     });
+  });
+
+  it('prepares idempotently without advancing committed state', () => {
+    const subject = coordinator(() => 1000, signer(), {
+      prepared_token_factory: () => 'opaque-token',
+    });
+    const input = {
+      context: context(), base_result: { action_taken: 'allowed' as const },
+      policy_version: 'policy-1', rule_ids: ['rule-a'], action_id: 'prepared',
+    };
+    const first = subject.prepareDecision(input);
+    expect(subject.inspectState()).toMatchObject({
+      sequence: 0, head_receipt_hash: null,
+      prepared: { token: 'opaque-token', receipt_hash: first.receipt_hash },
+    });
+    expect(subject.prepareDecision(input)).toEqual(first);
+    expect(() => subject.prepareDecision({ ...input, action_id: 'other' }))
+      .toThrow('different receipt is already prepared');
+    expect(() => subject.commitPrepared('wrong', first.receipt_hash))
+      .toThrow('prepared token mismatch');
+    expect(() => subject.commitPrepared(first.token, HASH_A))
+      .toThrow('prepared receipt hash mismatch');
+    const committed = subject.commitPrepared(first.token, first.receipt_hash);
+    expect(committed).toEqual(first.value);
+    expect(subject.inspectState()).toMatchObject({
+      sequence: 1, head_receipt_hash: first.receipt_hash, frozen: false,
+    });
+  });
+
+  it('requires the no-store capability and freezes ambiguous preparation', () => {
+    const state = new PreparedReceiptState(() => 'opaque-token');
+    let commits = 0;
+    const prepared = state.prepare({
+      fingerprint: HASH_A, receipt_hash: HASH_B, kind: 'decision', value: 'value',
+      commit: () => { commits += 1; },
+    });
+    expect(() => state.abort(
+      prepared.token, prepared.receipt_hash,
+      { status: 'definitive_no_store' } as typeof DEFINITIVE_NO_STORE,
+    )).toThrow('definitive_no_store capability');
+    state.freeze(prepared.token, prepared.receipt_hash, 'delivery_unknown');
+    expect(() => state.retry(HASH_A, 'decision')).toThrow('session is frozen');
+    expect(state.reconcile({
+      status: 'stored', token: prepared.token, receipt_hash: prepared.receipt_hash,
+    })).toBe('value');
+    expect(commits).toBe(1);
+
+    const aborted = state.prepare({
+      fingerprint: HASH_C, receipt_hash: HASH_D, kind: 'decision', value: 'unused',
+      commit: () => { commits += 1; },
+    });
+    state.abort(aborted.token, aborted.receipt_hash, DEFINITIVE_NO_STORE);
+    expect(state.inspect()).toEqual({ frozen: false });
+    expect(commits).toBe(1);
+  });
+
+  it('freezes when an accepted receipt cannot be committed locally', () => {
+    const state = new PreparedReceiptState(() => 'opaque-token');
+    const prepared = state.prepare({
+      fingerprint: HASH_A, receipt_hash: HASH_B, kind: 'decision', value: 'value',
+      commit: () => { throw new Error('local commit failed'); },
+    });
+    expect(() => state.commit(prepared.token, prepared.receipt_hash))
+      .toThrow('local commit failed');
+    expect(state.inspect()).toMatchObject({
+      frozen: true, freeze_reason: 'accepted_but_local_commit_failed',
+    });
+    expect(() => state.prepare({
+      fingerprint: HASH_C, receipt_hash: HASH_D, kind: 'decision', value: 'other',
+      commit: () => undefined,
+    })).toThrow('session is frozen');
+  });
+
+  it('prepares resolution and timeout without advancing their chains', () => {
+    const approvalTimes = [1000, 1100];
+    const approval = coordinator(() => approvalTimes.shift() as number);
+    const pending = decide(approval, 'step', {
+      action_taken: 'blocked', approval_required: true,
+      approval_request_id: 'approval-1', approval_action_hash: HASH_A,
+      approval_expires_at_ms: 1500,
+    });
+    const preparedResolution = approval.prepareResolution({
+      suspended_receipt_hash: pending.receipt.receipt_hash,
+      method: 'approval_granted', context: context(),
+      base_result: { action_taken: 'allowed' }, policy_version: 'policy-1',
+      rule_ids: [], approval_evidence: { token: 'trusted', expires_at_ms: 1500 },
+    });
+    expect(approval.inspectState().sequence).toBe(1);
+    expect((approval.commitPrepared(
+      preparedResolution.token, preparedResolution.receipt_hash,
+    ) as { body: { sequence: number } }).body.sequence).toBe(2);
+
+    const timeoutTimes = [1000, 1500];
+    const timeout = coordinator(() => timeoutTimes.shift() as number);
+    const deferred = decide(timeout, 'defer', { action_taken: 'hook_timeout' });
+    const preparedTimeout = timeout.prepareTimeout({
+      suspended_receipt_hash: deferred.receipt.receipt_hash,
+      policy_version: 'policy-1', rule_ids: [],
+    });
+    expect(timeout.inspectState().sequence).toBe(1);
+    expect((timeout.commitPrepared(
+      preparedTimeout.token, preparedTimeout.receipt_hash,
+    ) as { body: { sequence: number } }).body.sequence).toBe(2);
+  });
+
+  it('drops inherited prepared and frozen state after a PID change', () => {
+    let pid = 10;
+    const subject = coordinator(() => 1000, signer(), {
+      pid: () => pid, session_factory: () => 'session-child',
+    });
+    const parent = subject.prepareDecision({
+      context: context(), base_result: { action_taken: 'allowed' },
+      policy_version: 'policy-1', rule_ids: [], action_id: 'parent',
+    });
+    subject.freezePrepared(parent.token, parent.receipt_hash, 'delivery_unknown');
+    pid = 11;
+    const child = subject.prepareDecision({
+      context: context(), base_result: { action_taken: 'allowed' },
+      policy_version: 'policy-1', rule_ids: [], action_id: 'child',
+    });
+    expect(child.value.receipt.body).toMatchObject({
+      session_id: 'session-child', sequence: 1, previous_receipt_hash: null,
+    });
+    expect(subject.inspectState().frozen).toBe(false);
   });
 });
