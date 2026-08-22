@@ -211,7 +211,7 @@ def _finish(
     return result
 
 
-def admit_prepared_strict_receipt_v2_1(
+def _transport_prepared_strict_receipt_v2_1(
     coordinator: Any,
     prepared: Dict[str, Any],
     *,
@@ -229,7 +229,7 @@ def admit_prepared_strict_receipt_v2_1(
     sleep: Optional[Callable[[float], None]] = None,
     jitter: Optional[Callable[[], float]] = None,
 ) -> Dict[str, Any]:
-    """Admit the coordinator's current signed 2.1 decision, then reconcile state."""
+    """Transport only; the caller must reconcile prepared coordinator state."""
     identity = _identity(coordinator, prepared)
     url, loopback = _endpoint(ingest_url)
     key = _text(api_key, "api_key")
@@ -284,16 +284,12 @@ def admit_prepared_strict_receipt_v2_1(
             status = 0
         value = _parsed(raw, response_limit)
         if 300 <= status < 400:
-            return _finish(
-                coordinator,
-                prepared,
-                {
-                    **identity,
-                    "attempts": attempts,
-                    "disposition": "uncertain",
-                    "reason": "redirect",
-                },
-            )
+            return {
+                **identity,
+                "attempts": attempts,
+                "disposition": "uncertain",
+                "reason": "redirect",
+            }
         retryable = status == 0 or status in _RETRYABLE or status >= 500
         if not retryable:
             if 200 <= status < 300:
@@ -313,44 +309,45 @@ def admit_prepared_strict_receipt_v2_1(
                         "reason": "invalid_response",
                     }
                 )
-                return _finish(coordinator, prepared, result)
+                return result
             if status in _NO_STORE and _no_store(value, identity["receipt_hash"]):
-                return _finish(
-                    coordinator,
-                    prepared,
-                    {
-                        **identity,
-                        "attempts": attempts,
-                        "disposition": "definitive_no_store",
-                        "http_status": status,
-                    },
-                )
+                return {
+                    **identity,
+                    "attempts": attempts,
+                    "disposition": "definitive_no_store",
+                    "http_status": status,
+                }
             reason = (
                 "conflict"
                 if status == 409 and _conflict(value, identity["receipt_hash"])
                 else "invalid_response"
             )
-            return _finish(
-                coordinator,
-                prepared,
-                {
-                    **identity,
-                    "attempts": attempts,
-                    "disposition": "uncertain",
-                    "reason": reason,
-                },
-            )
+            return {
+                **identity,
+                "attempts": attempts,
+                "disposition": "uncertain",
+                "reason": reason,
+            }
         if attempts >= maximum or now() - started >= deadline:
             break
         delay = min(retry_max, retry_base * (2 ** (attempts - 1)))
         sleeper(min(deadline - (now() - started), int(delay * fraction())))
+    return {
+        **identity,
+        "attempts": attempts,
+        "disposition": "uncertain",
+        "reason": "retry_exhausted",
+    }
+
+
+def admit_prepared_strict_receipt_v2_1(
+    coordinator: Any,
+    prepared: Dict[str, Any],
+    **options: Any,
+) -> Dict[str, Any]:
+    """Admit the prepared decision and apply its local reconciliation."""
     return _finish(
         coordinator,
         prepared,
-        {
-            **identity,
-            "attempts": attempts,
-            "disposition": "uncertain",
-            "reason": "retry_exhausted",
-        },
+        _transport_prepared_strict_receipt_v2_1(coordinator, prepared, **options),
     )

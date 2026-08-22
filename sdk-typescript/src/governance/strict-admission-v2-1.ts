@@ -168,7 +168,8 @@ function finish(
   return result;
 }
 
-export async function admitPreparedStrictReceiptV21(
+/** @internal Transport only. The caller must reconcile the prepared coordinator state. */
+export async function transportPreparedStrictReceiptV21(
   coordinator: StrictAdmissionV21Coordinator, prepared: PreparedDecisionV21,
   options: StrictAdmissionV21Options,
 ): Promise<StrictAdmissionV21Result> {
@@ -207,30 +208,40 @@ export async function admitPreparedStrictReceiptV21(
     const response = await Promise.race([attempt, expired]); if (timer) clearTimeout(timer);
     if (response) {
       if (response.status >= 300 && response.status < 400) {
-        return finish(coordinator, prepared, { ...base, attempts, disposition: 'uncertain', reason: 'redirect' });
+        return { ...base, attempts, disposition: 'uncertain', reason: 'redirect' };
       }
       const retryable = RETRYABLE.has(response.status) || response.status >= 500;
       if (!retryable) {
         const value = parse(response.body, responseLimit);
         if (response.status >= 200 && response.status < 300) {
           const status = accepted(value, base.receipt_hash);
-          return finish(coordinator, prepared, status
+          return status
             ? { ...base, attempts, disposition: 'accepted', status }
-            : { ...base, attempts, disposition: 'uncertain', reason: 'invalid_response' });
+            : { ...base, attempts, disposition: 'uncertain', reason: 'invalid_response' };
         }
         if (NO_STORE.has(response.status) && noStore(value, base.receipt_hash)) {
-          return finish(coordinator, prepared, { ...base, attempts, disposition: 'definitive_no_store',
-            http_status: response.status as 400 | 401 | 403 | 413 });
+          return { ...base, attempts, disposition: 'definitive_no_store',
+            http_status: response.status as 400 | 401 | 403 | 413 };
         }
         if (response.status === 409 && conflict(value, base.receipt_hash)) {
-          return finish(coordinator, prepared, { ...base, attempts, disposition: 'uncertain', reason: 'conflict' });
+          return { ...base, attempts, disposition: 'uncertain', reason: 'conflict' };
         }
-        return finish(coordinator, prepared, { ...base, attempts, disposition: 'uncertain', reason: 'invalid_response' });
+        return { ...base, attempts, disposition: 'uncertain', reason: 'invalid_response' };
       }
     }
     if (attempts >= maximum || now() - started >= deadline) break;
     const delay = Math.min(retryMax, retryBase * (2 ** (attempts - 1)));
     await sleep(Math.min(deadline - (now() - started), Math.floor(delay * jitter())));
   }
-  return finish(coordinator, prepared, { ...base, attempts, disposition: 'uncertain', reason: 'retry_exhausted' });
+  return { ...base, attempts, disposition: 'uncertain', reason: 'retry_exhausted' };
+}
+
+export async function admitPreparedStrictReceiptV21(
+  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedDecisionV21,
+  options: StrictAdmissionV21Options,
+): Promise<StrictAdmissionV21Result> {
+  return finish(
+    coordinator, prepared,
+    await transportPreparedStrictReceiptV21(coordinator, prepared, options),
+  );
 }
