@@ -1,0 +1,129 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "intent_alignment",
+  "description": "Obsvr-authored compatibility fixture for pure intent alignment over obsvr-action-context-v1 and obsvr-intent-policy-v1. It is not an official AARM conformance vector and makes no certification or conformance claim. Harnesses: sdk-typescript/tests/unit/intent-alignment.test.ts and sdk-python/tests/test_intent_alignment.py.",
+  "base_context": {
+    "agent_id": "代理-Ω",
+    "active_intents": ["draft_café_合同", "draft_café_合同"],
+    "agent_role": "reviewer",
+    "privilege_scope": ["contracts:write", "contracts:read", "contracts:write"],
+    "current_action": {
+      "kind": "tool_call",
+      "name": "draft_合同",
+      "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target": "workspace/租户",
+      "data_classifications": ["PII", "Confidential", "PII"],
+      "requested_scopes": ["contracts:write", "contracts:read", "contracts:write"]
+    },
+    "run_id": "run-国际",
+    "session_id": "session-é",
+    "thread_id": "thread-東京",
+    "prior_actions": [
+      {
+        "sequence": 0,
+        "kind": "model_call",
+        "name": "classify",
+        "outcome": "ALLOW",
+        "receipt_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "data_classifications": ["PII", "Public", "PII"]
+      }
+    ]
+  },
+  "base_result": { "action_taken": "allowed" },
+  "base_policy": {
+    "schema": "obsvr-intent-policy-v1",
+    "profile_version": "1.0",
+    "intent_scopes": [
+      {
+        "intent_id": "draft_café_合同",
+        "allowed_actions": [
+          { "kind": "tool_call", "name": "draft_合同" },
+          { "kind": "model_call", "name": "review" },
+          { "kind": "tool_call", "name": "draft_合同" }
+        ],
+        "allowed_targets": ["workspace/租户", "workspace/租户"],
+        "allowed_requested_scopes": ["contracts:write", "contracts:read", "contracts:write"],
+        "allowed_data_classifications": ["PII", "Confidential", "Public", "PII"],
+        "deny_after_outcomes": ["STEP_UP", "DENY", "DENY"],
+        "max_prior_actions": 3
+      },
+      {
+        "intent_id": "archive",
+        "allowed_actions": [{ "kind": "tool_call", "name": "archive" }],
+        "allowed_targets": [],
+        "allowed_requested_scopes": [],
+        "allowed_data_classifications": []
+      }
+    ]
+  },
+  "policy_expect": {
+    "canonical": "{\"intent_scopes\":[{\"allowed_actions\":[{\"kind\":\"tool_call\",\"name\":\"archive\"}],\"allowed_data_classifications\":[],\"allowed_requested_scopes\":[],\"allowed_targets\":[],\"intent_id\":\"archive\"},{\"allowed_actions\":[{\"kind\":\"model_call\",\"name\":\"review\"},{\"kind\":\"tool_call\",\"name\":\"draft_合同\"}],\"allowed_data_classifications\":[\"Confidential\",\"PII\",\"Public\"],\"allowed_requested_scopes\":[\"contracts:read\",\"contracts:write\"],\"allowed_targets\":[\"workspace/租户\"],\"deny_after_outcomes\":[\"DENY\",\"STEP_UP\"],\"intent_id\":\"draft_café_合同\",\"max_prior_actions\":3}],\"profile_version\":\"1.0\",\"schema\":\"obsvr-intent-policy-v1\"}",
+    "hash": "342144d21947f5426c9e7da1fa8f1febc4d7bb47bded477da0b81234dbcb5edd"
+  },
+  "expected_defaults": {
+    "engine_version": "obsvr-intent/1",
+    "context_hash": "9dddfff90989d43c800fbf4d655ce95bc9e7a54e6e8502e48c774cea183e955b",
+    "policy_hash": "342144d21947f5426c9e7da1fa8f1febc4d7bb47bded477da0b81234dbcb5edd",
+    "evaluator_hash": "48ec4ca66dd9e6d49cddf9d4a1405307d48727c05b80aee63ab415e44fb62936"
+  },
+  "valid_cases": [
+    { "id": "allow_normalized_unicode", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [], "expect": { "outcome": "ALLOW", "reason_code": "intent_aligned", "prevents_original_action": false, "input_hash": "e296d36e22c2e24178146e8ba12647c86e7298737395987b87f5b2659ca09efd" } },
+    { "id": "allow_canonical_context_document", "sdk_support": { "ts": "required", "py": "required" }, "context_form": "document", "mutations": [], "expect": { "outcome": "ALLOW", "reason_code": "intent_aligned", "prevents_original_action": false, "input_hash": "e296d36e22c2e24178146e8ba12647c86e7298737395987b87f5b2659ca09efd" } },
+    { "id": "ordinary_block", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "blocked" }], "expect": { "outcome": "DENY", "reason_code": "base_blocked", "prevents_original_action": true, "input_hash": "8c6648b1b64ec4841fc5cd10d80c6720bce52caf880be7705a73916c0b3e9749" } },
+    { "id": "base_block_precedes_intent_ambiguity", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "blocked" }, { "target": "context", "path": ["active_intents"], "value": ["draft_café_合同", "other"] }], "expect": { "outcome": "DENY", "reason_code": "base_blocked", "prevents_original_action": true, "context_hash": "54c8defde1c70e52e595a3e3002ae5a20671f09265aea9c06875e3645826e786", "input_hash": "27235d44c202def7af2cc76a8bcd71816d5f13c6db893a6a9bec05de2c57af1d" } },
+    { "id": "hook_error", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "hook_error" }], "expect": { "outcome": "DEFER", "reason_code": "base_hook_error", "prevents_original_action": true, "input_hash": "52b61732b3f9883e8330ccb00d2bfbf6462ad4ced8299ae1f83cd0e70bcc7dbf" } },
+    { "id": "hook_timeout", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "hook_timeout" }], "expect": { "outcome": "DEFER", "reason_code": "base_hook_timeout", "prevents_original_action": true, "input_hash": "5db97c094b3d48d6ede28477f053591a05da4e273fc3257dd34a2ed9cf88c83e" } },
+    { "id": "not_evaluated", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "not_evaluated" }], "expect": { "outcome": "DEFER", "reason_code": "base_not_evaluated", "prevents_original_action": true, "input_hash": "b1bc863b7f9aa57f35508261b096f26dc44802d28cc22c5aba427715a3e1557e" } },
+    { "id": "multiple_active_intents", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["active_intents"], "value": ["other", "draft_café_合同", "other"] }], "expect": { "outcome": "DEFER", "reason_code": "multiple_active_intents", "prevents_original_action": true, "context_hash": "54c8defde1c70e52e595a3e3002ae5a20671f09265aea9c06875e3645826e786", "input_hash": "d3cf54c79ebd9f6cdd4d3415c153298acfa14f1edd1be65a1eb009f6fc0bcab8" } },
+    { "id": "intent_not_declared", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["active_intents"], "value": ["unknown"] }], "expect": { "outcome": "DEFER", "reason_code": "intent_not_declared", "prevents_original_action": true, "context_hash": "4e624f76b1f46ecba914298321aa7d31dd78a61f1a11e34b74fc65931f157de8", "input_hash": "92983ecd918e91e9fd75d7517b7b0f73008f765f213e7e8fda9561afcda4435b" } },
+    { "id": "action_not_allowed", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["current_action", "name"], "value": "delete" }], "expect": { "outcome": "DENY", "reason_code": "action_not_allowed", "prevents_original_action": true, "context_hash": "9141a6eaab5771e0c2d96eb21c3cfd7ac5375d9de90ad5309f9dee59c15e09c4", "input_hash": "a36bf3055d094af449ba9b4e40e5e1f4b3d3f255638c2118de1d30cd8319366f" } },
+    { "id": "target_not_allowed", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["current_action", "target"], "value": "external" }], "expect": { "outcome": "DENY", "reason_code": "target_not_allowed", "prevents_original_action": true, "context_hash": "5037df0592f0377fd8cf29970ce70242eb5fd6a3fe7a452d6e5087ad1ced9ba5", "input_hash": "4438dddfe5bffd19d1c58e5a8599dbe99d723f050ccd04793f45b9636fe1e4ad" } },
+    { "id": "target_missing", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["current_action", "target"], "delete": true }], "expect": { "outcome": "DEFER", "reason_code": "target_missing", "prevents_original_action": true, "context_hash": "dad4fc48a5abe4e3f9fd097958dce9316041a4e89db4b92153fd70dd97769f1a", "input_hash": "8849886286b745f072633bfb72fd23ad6f0a56234beef7941b43d496edebbb81" } },
+    { "id": "empty_allowed_targets_accepts_missing_target", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["active_intents"], "value": ["archive"] }, { "target": "context", "path": ["current_action", "kind"], "value": "tool_call" }, { "target": "context", "path": ["current_action", "name"], "value": "archive" }, { "target": "context", "path": ["current_action", "target"], "delete": true }, { "target": "context", "path": ["current_action", "requested_scopes"], "value": [] }, { "target": "context", "path": ["current_action", "data_classifications"], "value": [] }], "expect": { "outcome": "ALLOW", "reason_code": "intent_aligned", "prevents_original_action": false, "context_hash": "4800fb03b860df84bec4599d8d0c539a5be3d7c1a05e33ac35626640af65c1ae", "input_hash": "a4e66e5c406222d86091522d0caf69a26221a9fce4026883f9d733b9767e2ef5" } },
+    { "id": "requested_scope_not_allowed", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["current_action", "requested_scopes"], "value": ["admin"] }], "expect": { "outcome": "DENY", "reason_code": "requested_scope_not_allowed", "prevents_original_action": true, "context_hash": "b4620bb993071d0e8a83dc2d02290aedf85ffc895b7078a8bf2d250a5e0310cf", "input_hash": "6f165e61a45c8bb7b440e5a8a8fa7c5249915edd1550fe00db78b1468bf5c185" } },
+    { "id": "requested_scope_not_privileged", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["privilege_scope"], "value": ["contracts:read"] }], "expect": { "outcome": "DENY", "reason_code": "requested_scope_not_privileged", "prevents_original_action": true, "context_hash": "c19fc9c83ca2d45d803ed444d1906a7eb979882ae73466a39d0639f99ace0831", "input_hash": "c3a56d4a81a132870481575c148726d9bbfcc1c43e9635f129b66f61563c0ea4" } },
+    { "id": "data_classification_not_allowed", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["current_action", "data_classifications"], "value": ["Secret"] }], "expect": { "outcome": "DENY", "reason_code": "data_classification_not_allowed", "prevents_original_action": true, "context_hash": "b6abd11cdf1f34b037e4a87659142232e0da2c7a889c9d8a040e4b9ffffc0585", "input_hash": "7750a958b0185d7c2e2c281c05a8d4fe91a9ccc302155d8ca32609be2b7eb832" } },
+    { "id": "prior_outcome_denied", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "context", "path": ["prior_actions", 0, "outcome"], "value": "DENY" }], "expect": { "outcome": "DENY", "reason_code": "prior_outcome_denied", "prevents_original_action": true, "context_hash": "eec2d0d51a0fe3622319ec148e627dbdad725efa9a819f1ff0224252abaca4f8", "input_hash": "8777e7c54d9ae3d3e38e734a6e304fd877181ea85772fe2673c192a95a6a0e39" } },
+    { "id": "prior_action_limit_exceeded", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "policy", "path": ["intent_scopes", 0, "max_prior_actions"], "value": 0 }], "expect": { "outcome": "DENY", "reason_code": "prior_action_limit_exceeded", "prevents_original_action": true, "policy_hash": "9eea480c95df07add36463b1cc15dbb2b6ac90e59c4b46a6c66e269bbe0b607f", "input_hash": "dc326d6fb05b7bb88d9e0267e0b542d5349db70fa3947b55e0c0a0c3ccff75a7", "evaluator_hash": "6711617a107c98cd6608f59411799654c8fb11685bc7443103c2c2a9abb89f58" } },
+    { "id": "approval_required", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "blocked" }, { "target": "base_result", "path": ["approval_required"], "value": true }], "expect": { "outcome": "STEP_UP", "reason_code": "approval_required", "prevents_original_action": true, "input_hash": "15354e471cb001fbc1036d6c1fbb68f86e74b770589969bcddd9a005ed0e906d" } },
+    { "id": "approval_scope_conflict_denies", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "blocked" }, { "target": "base_result", "path": ["approval_required"], "value": true }, { "target": "context", "path": ["current_action", "target"], "value": "external" }], "expect": { "outcome": "DENY", "reason_code": "target_not_allowed", "prevents_original_action": true, "context_hash": "5037df0592f0377fd8cf29970ce70242eb5fd6a3fe7a452d6e5087ad1ced9ba5", "input_hash": "98b53e90cfc0b9f613d88bebee79ba64e23c49fce9b8100b48c3b58f67db50cf" } },
+    { "id": "arguments_modified", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "redacted" }, { "target": "base_result", "path": ["modified_arguments_hash"], "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }], "expect": { "outcome": "MODIFY", "reason_code": "arguments_modified", "prevents_original_action": true, "input_hash": "6f7d6530ada018c689728582defa30891eb420a68869b7f498abc768b3b7f5dd" } },
+    { "id": "modified_hash_missing", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "redacted" }], "expect": { "outcome": "DEFER", "reason_code": "modified_arguments_hash_unproven", "prevents_original_action": true, "input_hash": "b2e91a1cea625c5ada2167aeedbbdf246e8cda1adb78baf542edb5e9bcd9283a" } },
+    { "id": "modified_hash_unchanged", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "redacted" }, { "target": "base_result", "path": ["modified_arguments_hash"], "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }], "expect": { "outcome": "DEFER", "reason_code": "modified_arguments_hash_unproven", "prevents_original_action": true, "input_hash": "93d51e1e87b5ddcb645d6b992d282c1e3fe03ea10970bfd911ec1a5bde04fe94" } },
+    { "id": "modified_hash_malformed", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "redacted" }, { "target": "base_result", "path": ["modified_arguments_hash"], "value": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" }], "expect": { "outcome": "DEFER", "reason_code": "modified_arguments_hash_unproven", "prevents_original_action": true, "input_hash": "0451103c12d8a0dbcf9d31b11d6f35cc9698431636405c6d190952919ee52020" } },
+    { "id": "modification_scope_conflict_denies", "sdk_support": { "ts": "required", "py": "required" }, "mutations": [{ "target": "base_result", "path": ["action_taken"], "value": "redacted" }, { "target": "base_result", "path": ["modified_arguments_hash"], "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, { "target": "context", "path": ["current_action", "requested_scopes"], "value": ["admin"] }], "expect": { "outcome": "DENY", "reason_code": "requested_scope_not_allowed", "prevents_original_action": true, "context_hash": "b4620bb993071d0e8a83dc2d02290aedf85ffc895b7078a8bf2d250a5e0310cf", "input_hash": "e48d7fc8696ea3380b1941e850e6e6d58dc8ede2a35fc273855d35a7aaeeb537" } }
+  ],
+  "invalid_policy_cases": [
+    { "id": "wrong_schema", "mutation": { "path": ["schema"], "value": "other" } },
+    { "id": "wrong_profile", "mutation": { "path": ["profile_version"], "value": "2.0" } },
+    { "id": "unknown_root_field", "mutation": { "path": ["extra"], "value": true } },
+    { "id": "intent_scopes_not_array", "mutation": { "path": ["intent_scopes"], "value": {} } },
+    { "id": "duplicate_intent_id", "mutation": { "path": ["intent_scopes", 1, "intent_id"], "value": "draft_café_合同" } },
+    { "id": "unknown_scope_field", "mutation": { "path": ["intent_scopes", 0, "extra"], "value": true } },
+    { "id": "blank_intent_id", "mutation": { "path": ["intent_scopes", 0, "intent_id"], "value": " " } },
+    { "id": "actions_not_array", "mutation": { "path": ["intent_scopes", 0, "allowed_actions"], "value": {} } },
+    { "id": "blank_action_kind", "mutation": { "path": ["intent_scopes", 0, "allowed_actions", 0, "kind"], "value": "" } },
+    { "id": "unknown_action_field", "mutation": { "path": ["intent_scopes", 0, "allowed_actions", 0, "extra"], "value": true } },
+    { "id": "targets_not_array", "mutation": { "path": ["intent_scopes", 0, "allowed_targets"], "value": "workspace" } },
+    { "id": "blank_target", "mutation": { "path": ["intent_scopes", 0, "allowed_targets", 0], "value": "" } },
+    { "id": "requested_scopes_not_array", "mutation": { "path": ["intent_scopes", 0, "allowed_requested_scopes"], "value": {} } },
+    { "id": "blank_requested_scope", "mutation": { "path": ["intent_scopes", 0, "allowed_requested_scopes", 0], "value": " " } },
+    { "id": "data_classifications_not_array", "mutation": { "path": ["intent_scopes", 0, "allowed_data_classifications"], "value": "PII" } },
+    { "id": "blank_data_classification", "mutation": { "path": ["intent_scopes", 0, "allowed_data_classifications", 0], "value": "" } },
+    { "id": "deny_outcomes_not_array", "mutation": { "path": ["intent_scopes", 0, "deny_after_outcomes"], "value": "DENY" } },
+    { "id": "unsupported_deny_outcome", "mutation": { "path": ["intent_scopes", 0, "deny_after_outcomes", 0], "value": "ERROR" } },
+    { "id": "negative_max", "mutation": { "path": ["intent_scopes", 0, "max_prior_actions"], "value": -1 } },
+    { "id": "fractional_max", "mutation": { "path": ["intent_scopes", 0, "max_prior_actions"], "value": 1.5 } },
+    { "id": "boolean_max", "mutation": { "path": ["intent_scopes", 0, "max_prior_actions"], "value": true } },
+    { "id": "unsafe_max", "mutation": { "path": ["intent_scopes", 0, "max_prior_actions"], "value": 9007199254740992 } }
+  ],
+  "invalid_base_cases": [
+    { "id": "unknown_base_field", "mutation": { "path": ["extra"], "value": true } },
+    { "id": "unsupported_action_taken", "mutation": { "path": ["action_taken"], "value": "unknown" } },
+    { "id": "approval_not_boolean", "mutation": { "path": ["approval_required"], "value": "yes" } },
+    { "id": "approval_conflicts_with_allowed", "mutation": { "path": ["approval_required"], "value": true } },
+    { "id": "modified_hash_not_string", "mutation": { "path": ["action_taken"], "value": "redacted" }, "second_mutation": { "path": ["modified_arguments_hash"], "value": 7 } },
+    { "id": "modified_hash_conflicts_with_allowed", "mutation": { "path": ["modified_arguments_hash"], "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } }
+  ]
+}
