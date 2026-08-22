@@ -101,6 +101,8 @@ export interface DeviceSigner {
   publicKeyB64: string;
   /** Hex Ed25519 signature over the device preimage for this payload. */
   signPayload(signaturePayload: string): string;
+  /** Hex Ed25519 signature over caller-supplied raw bytes (no legacy domain). */
+  signBytes(message: Uint8Array): string;
 }
 
 function signerFromKeyObject(key: KeyObject): DeviceSigner {
@@ -120,6 +122,8 @@ function signerFromKeyObject(key: KeyObject): DeviceSigner {
       cryptoSign(null, devicePreimage(keyId, signaturePayload), key).toString(
         "hex",
       ),
+    signBytes: (message: Uint8Array) =>
+      cryptoSign(null, Buffer.from(message), key).toString("hex"),
   };
 }
 
