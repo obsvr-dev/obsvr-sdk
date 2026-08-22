@@ -16,6 +16,11 @@ beforeEach(() => {
   _resetSender();
 });
 
+afterEach(() => {
+  _resetSender();
+  _reset();
+});
+
 describe('evaluate()', () => {
   it('returns PERMITTED when no rules match', async () => {
     init({ ...BASE_CONFIG, policyRules: [] });

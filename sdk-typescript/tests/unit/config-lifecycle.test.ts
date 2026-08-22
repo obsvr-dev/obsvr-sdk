@@ -18,6 +18,7 @@
  */
 import { init, getConfig, updatePolicyRules, _reset } from '../../src/proxy/config';
 import { wrap } from '../../src/proxy/wrapper';
+import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import type { PolicyRule } from '../../src/proxy/types';
 
 const rule = (id: string, keyword: string): PolicyRule => ({
@@ -47,8 +48,10 @@ function fakeClient() {
 
 beforeEach(() => {
   _reset();
+  _resetSender();
 });
 afterEach(() => {
+  _resetSender();
   _reset();
 });
 
