@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 from typing import Any, Dict, List, Optional
 
@@ -424,6 +426,34 @@ def sign_strict_receipt(
     if body["initiator"]["key_id"] != key_id:
         raise StrictReceiptValidationError("signer does not match initiator.key_id")
     receipt_hash = strict_receipt_hash(body)
+    preimage = strict_receipt_signature_preimage(key_id, receipt_hash)
+    signature = signer.sign_bytes(preimage)
+    if (
+        not isinstance(signature, str)
+        or len(signature) != 128
+        or any(char not in _HEX for char in signature)
+    ):
+        raise StrictReceiptValidationError(
+            "signer returned an invalid Ed25519 signature"
+        )
+    public_key_b64 = base64.b64encode(signer.raw_public_key).decode("ascii")
+    if signer.public_key_b64 != public_key_b64:
+        raise StrictReceiptValidationError(
+            "signer public_key_b64 does not match raw_public_key"
+        )
+    from .policy_verify import _resolve_backend
+
+    backend = _resolve_backend()
+    try:
+        signature_bytes = binascii.unhexlify(signature)
+    except (binascii.Error, ValueError) as exc:
+        raise StrictReceiptValidationError(
+            "signer returned an invalid Ed25519 signature"
+        ) from exc
+    if backend is None or not backend(signer.raw_public_key, preimage, signature_bytes):
+        raise StrictReceiptValidationError(
+            "signer signature failed self-verification"
+        )
     envelope = {
         "schema": STRICT_RECEIPT_ENVELOPE_SCHEMA,
         "body": body,
@@ -431,11 +461,9 @@ def sign_strict_receipt(
         "signature": {
             "algorithm": "Ed25519",
             "key_id": key_id,
-            "value": signer.sign_bytes(
-                strict_receipt_signature_preimage(key_id, receipt_hash)
-            ),
+            "value": signature,
         },
     }
     if include_public_key:
-        envelope["public_key_b64"] = signer.public_key_b64
+        envelope["public_key_b64"] = public_key_b64
     return envelope

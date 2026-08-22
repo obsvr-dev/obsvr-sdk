@@ -153,6 +153,7 @@ export function verifyStrictReceiptChain(
   if (envelopes.length === 0) return { valid: false, errors: ['empty_chain'] };
   const errors: string[] = [];
   const byHash = new Map<string, StrictReceiptEnvelope>();
+  const resolved = new Set<string>();
   let session: string | undefined;
   let previous: StrictReceiptEnvelope | undefined;
   for (let index = 0; index < envelopes.length; index++) {
@@ -186,6 +187,11 @@ export function verifyStrictReceiptChain(
 
     const resolution = current.body.resolution;
     if (current.body.record_type === 'resolution' && resolution) {
+      if (resolved.has(resolution.resolves_receipt_hash)) {
+        errors.push(`duplicate_resolution:${id}`);
+      } else {
+        resolved.add(resolution.resolves_receipt_hash);
+      }
       const prior = byHash.get(resolution.resolves_receipt_hash);
       if (!prior) {
         errors.push(`resolution_reference_invalid:${id}`);

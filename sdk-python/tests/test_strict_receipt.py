@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from obsvr.device_identity import load_device_signer
+from obsvr.device_identity import DeviceSigner, load_device_signer
 from obsvr.strict_receipt import (
     StrictReceiptValidationError,
     build_strict_receipt_body,
@@ -163,6 +163,31 @@ def test_body_hash_signature_and_three_way_key_tampering(signer):
     assert malformed_pin["identity_binding_valid"] is False
 
 
+def test_strict_signing_rejects_malformed_wrong_key_and_public_mismatch(
+    signer, tmp_path
+):
+    other_path = tmp_path / "other-seed.key"
+    other_path.write_text("11" * 32, encoding="ascii")
+    other = load_device_signer(str(other_path))
+    body = _input_body(FIXTURE["vectors"][0])
+    malformed = DeviceSigner(lambda _message: b"bad", signer.raw_public_key)
+    wrong_key = DeviceSigner(
+        lambda message: bytes.fromhex(other.sign_bytes(message)),
+        signer.raw_public_key,
+    )
+    mismatched = DeviceSigner(
+        lambda message: bytes.fromhex(signer.sign_bytes(message)),
+        signer.raw_public_key,
+    )
+    mismatched.public_key_b64 = other.public_key_b64
+    with pytest.raises(StrictReceiptValidationError, match="invalid Ed25519"):
+        sign_strict_receipt(body, malformed, True)
+    with pytest.raises(StrictReceiptValidationError, match="self-verification"):
+        sign_strict_receipt(body, wrong_key, True)
+    with pytest.raises(StrictReceiptValidationError, match="does not match"):
+        sign_strict_receipt(body, mismatched, True)
+
+
 def _semantic_cases():
     def unknown(body):
         body["extra"] = True
@@ -304,3 +329,18 @@ def test_chain_links_time_session_and_resolution_continuity(signer):
             error.startswith(expected)
             for error in verify_strict_receipt_chain(chain)["errors"]
         )
+
+
+def test_duplicate_resolution_is_rejected(signer):
+    chain = _envelopes(signer)[:5]
+    body = copy.deepcopy(chain[4]["body"])
+    body["sequence"] = 6
+    body["receipt_id"] = f'{body["session_id"]}:6'
+    body["previous_receipt_hash"] = chain[4]["receipt_hash"]
+    body["timestamp_ms"] += 1
+    body["resolution"]["resolved_at_ms"] = body["timestamp_ms"]
+    chain.append(sign_strict_receipt(body, signer, True))
+    assert (
+        f'duplicate_resolution:{body["receipt_id"]}'
+        in verify_strict_receipt_chain(chain)["errors"]
+    )

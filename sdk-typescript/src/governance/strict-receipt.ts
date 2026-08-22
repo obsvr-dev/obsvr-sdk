@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, createPublicKey, verify as cryptoVerify } from 'node:crypto';
 import { canonicalJsonForHash } from '../policy/tool-pinning.js';
 import type { DeviceSigner } from '../proxy/device-identity.js';
 import { AARM_OUTCOMES, type AarmOutcome } from './aarm-outcome.js';
@@ -12,6 +12,8 @@ export const STRICT_RECEIPT_SIGNATURE_DOMAIN = 'obsvr-strict-receipt/signature/1
 const HEX64 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^sha256:[0-9a-f]{64}$/;
 const OUTCOMES = new Set<string>(AARM_OUTCOMES);
+const SIGNATURE_HEX = /^[0-9a-f]{128}$/;
+const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 
 export interface StrictReceiptBody {
   schema: typeof STRICT_RECEIPT_SCHEMA;
@@ -349,6 +351,23 @@ export function signStrictReceipt(
   const keyId = strictReceiptKeyId(signer.rawPublicKey);
   if (body.initiator.key_id !== keyId) throw new StrictReceiptValidationError('signer does not match initiator.key_id');
   const receiptHash = strictReceiptHash(body);
+  const preimage = strictReceiptSignaturePreimage(keyId, receiptHash);
+  const signature = signer.signBytes(preimage);
+  if (!SIGNATURE_HEX.test(signature)) {
+    throw new StrictReceiptValidationError('signer returned an invalid Ed25519 signature');
+  }
+  const publicKeyB64 = Buffer.from(signer.rawPublicKey).toString('base64');
+  if (signer.publicKeyB64 !== publicKeyB64) {
+    throw new StrictReceiptValidationError('signer publicKeyB64 does not match rawPublicKey');
+  }
+  const publicKey = createPublicKey({
+    key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(signer.rawPublicKey)]),
+    format: 'der',
+    type: 'spki',
+  });
+  if (!cryptoVerify(null, preimage, publicKey, Buffer.from(signature, 'hex'))) {
+    throw new StrictReceiptValidationError('signer signature failed self-verification');
+  }
   const envelope: StrictReceiptEnvelope = {
     schema: STRICT_RECEIPT_ENVELOPE_SCHEMA,
     body,
@@ -356,9 +375,9 @@ export function signStrictReceipt(
     signature: {
       algorithm: 'Ed25519',
       key_id: keyId,
-      value: signer.signBytes(strictReceiptSignaturePreimage(keyId, receiptHash)),
+      value: signature,
     },
   };
-  if (includePublicKey) envelope.public_key_b64 = signer.publicKeyB64;
+  if (includePublicKey) envelope.public_key_b64 = publicKeyB64;
   return envelope;
 }

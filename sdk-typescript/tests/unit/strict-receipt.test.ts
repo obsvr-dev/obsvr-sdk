@@ -13,7 +13,7 @@ import {
   type StrictReceiptEnvelope,
 } from '../../src/governance/strict-receipt';
 import { verifyStrictReceipt, verifyStrictReceiptChain } from '../../src/governance/strict-receipt-verify';
-import { loadDeviceSigner } from '../../src/proxy/device-identity';
+import { loadDeviceSigner, type DeviceSigner } from '../../src/proxy/device-identity';
 
 function findFixture(rel: string): string {
   let dir = process.cwd();
@@ -146,6 +146,25 @@ describe('strict offline verification axes', () => {
   });
 });
 
+describe('strict signing validates the signer capability', () => {
+  it('rejects malformed, wrong-key, and mismatched-public-key signer output', () => {
+    const body = inputBody(FIXTURE.vectors[0]);
+    const otherPath = join(seedDir, 'other-public-test-seed.key');
+    writeFileSync(otherPath, '11'.repeat(32));
+    const other = loadDeviceSigner(otherPath);
+    const malformed: DeviceSigner = { ...signer, signBytes: () => 'bad' };
+    const wrongKey: DeviceSigner = {
+      ...signer, signBytes: (message) => other.signBytes(message),
+    };
+    const mismatched: DeviceSigner = {
+      ...signer, publicKeyB64: other.publicKeyB64,
+    };
+    expect(() => signStrictReceipt(body, malformed, true)).toThrow('invalid Ed25519');
+    expect(() => signStrictReceipt(body, wrongKey, true)).toThrow('self-verification');
+    expect(() => signStrictReceipt(body, mismatched, true)).toThrow('does not match');
+  });
+});
+
 describe('strict receipt semantic refusals', () => {
   const cases: Array<[string, number, (body: StrictReceiptBody) => void]> = [
     ['unknown_body_key', 0, (body) => { (body as unknown as Record<string, unknown>).extra = true; }],
@@ -232,5 +251,19 @@ describe('strict receipt chain verification', () => {
       mutate(chain);
       expect(verifyStrictReceiptChain(chain).errors.some((error) => error.startsWith(expected))).toBe(true);
     }
+  });
+
+  it('rejects a second resolution for the same suspension', () => {
+    const chain = envelopes().slice(0, 5);
+    const body = clone(chain[4].body);
+    body.sequence = 6;
+    body.receipt_id = `${body.session_id}:6`;
+    body.previous_receipt_hash = chain[4].receipt_hash;
+    body.timestamp_ms += 1;
+    body.resolution!.resolved_at_ms = body.timestamp_ms;
+    chain.push(signStrictReceipt(body, signer, true));
+    expect(verifyStrictReceiptChain(chain).errors).toContain(
+      `duplicate_resolution:${body.receipt_id}`,
+    );
   });
 });

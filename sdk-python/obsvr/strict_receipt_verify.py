@@ -185,6 +185,7 @@ def verify_strict_receipt_chain(
         return {"valid": False, "errors": ["empty_chain"]}
     errors: List[str] = []
     by_hash: Dict[str, Dict[str, Any]] = {}
+    resolved: set[str] = set()
     session = None
     previous = None
     for index, candidate in enumerate(envelopes):
@@ -231,6 +232,10 @@ def verify_strict_receipt_chain(
 
         resolution = body.get("resolution")
         if body["record_type"] == "resolution" and resolution:
+            if resolution["resolves_receipt_hash"] in resolved:
+                errors.append(f"duplicate_resolution:{receipt_id}")
+            else:
+                resolved.add(resolution["resolves_receipt_hash"])
             prior = by_hash.get(resolution["resolves_receipt_hash"])
             if prior is None:
                 errors.append(f"resolution_reference_invalid:{receipt_id}")
