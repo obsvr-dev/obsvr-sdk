@@ -36,10 +36,15 @@ interface ValidCase {
   mutations: Mutation[];
   expect: Partial<IntentAlignmentResult> & Pick<IntentAlignmentResult, 'outcome' | 'reason_code'>;
 }
-interface InvalidCase {
+interface InvalidPolicyCase {
   id: string;
   mutation: Mutation;
+}
+interface InvalidBaseCase {
+  id: string;
+  mutation?: Mutation;
   second_mutation?: Mutation;
+  mutations?: Mutation[];
 }
 
 const FIXTURE = JSON.parse(
@@ -56,8 +61,8 @@ const FIXTURE = JSON.parse(
     'engine_version' | 'context_hash' | 'policy_hash' | 'evaluator_hash'
   >;
   valid_cases: ValidCase[];
-  invalid_policy_cases: InvalidCase[];
-  invalid_base_cases: InvalidCase[];
+  invalid_policy_cases: InvalidPolicyCase[];
+  invalid_base_cases: InvalidBaseCase[];
 };
 
 function clone<T>(value: T): T {
@@ -123,6 +128,16 @@ describe('Obsvr-authored intent alignment', () => {
       .toEqual(new Set(['ALLOW', 'DENY', 'MODIFY', 'STEP_UP', 'DEFER']));
   });
 
+  it('binds approval details into the evaluation input hash', () => {
+    const first = FIXTURE.valid_cases.find((case_) => case_.id === 'approval_required');
+    const second = FIXTURE.valid_cases.find(
+      (case_) => case_.id === 'approval_binding_changes_input_hash',
+    );
+    expect(first?.expect.input_hash).toBeDefined();
+    expect(second?.expect.input_hash).toBeDefined();
+    expect(first?.expect.input_hash).not.toBe(second?.expect.input_hash);
+  });
+
   for (const case_ of FIXTURE.invalid_policy_cases) {
     it(`rejects policy ${case_.id}`, () => {
       const policy = clone(FIXTURE.base_policy);
@@ -134,8 +149,9 @@ describe('Obsvr-authored intent alignment', () => {
   for (const case_ of FIXTURE.invalid_base_cases) {
     it(`rejects base result ${case_.id}`, () => {
       const base = clone(FIXTURE.base_result);
-      mutate(base, case_.mutation);
+      if (case_.mutation) mutate(base, case_.mutation);
       if (case_.second_mutation) mutate(base, case_.second_mutation);
+      for (const mutation of case_.mutations ?? []) mutate(base, mutation);
       expect(() => evaluateIntentAlignment({
         context: FIXTURE.base_context,
         policy: FIXTURE.base_policy,

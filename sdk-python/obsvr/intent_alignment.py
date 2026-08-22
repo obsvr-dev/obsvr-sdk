@@ -21,6 +21,9 @@ _ACTION_TAKEN = frozenset(
 _HASH_LENGTH = 64
 _HEX = frozenset("0123456789abcdef")
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
+_APPROVAL_FIELDS = frozenset(
+    {"approval_request_id", "approval_action_hash", "approval_expires_at_ms"}
+)
 
 
 class IntentAlignmentValidationError(ValueError):
@@ -228,7 +231,14 @@ def _normalized_base_result(value: Any) -> Dict[str, Any]:
     base = _record(value, "base result")
     _exact_keys(
         base,
-        {"action_taken", "approval_required", "modified_arguments_hash"},
+        {
+            "action_taken",
+            "approval_required",
+            "approval_request_id",
+            "approval_action_hash",
+            "approval_expires_at_ms",
+            "modified_arguments_hash",
+        },
         "base result",
     )
     action_taken = base.get("action_taken")
@@ -239,6 +249,31 @@ def _normalized_base_result(value: Any) -> Dict[str, Any]:
     if base.get("approval_required") is True and action_taken != "blocked":
         raise IntentAlignmentValidationError(
             "approval_required is valid only when blocked"
+        )
+    if _APPROVAL_FIELDS.intersection(base) and (
+        action_taken != "blocked" or base.get("approval_required") is not True
+    ):
+        raise IntentAlignmentValidationError(
+            "approval binding fields are valid only when blocked with approval_required"
+        )
+    if "approval_request_id" in base:
+        _nonblank(base["approval_request_id"], "approval_request_id")
+    if "approval_action_hash" in base and (
+        not isinstance(base["approval_action_hash"], str)
+        or len(base["approval_action_hash"]) != _HASH_LENGTH
+        or any(char not in _HEX for char in base["approval_action_hash"])
+    ):
+        raise IntentAlignmentValidationError(
+            "approval_action_hash must be 64 lowercase hex characters"
+        )
+    if "approval_expires_at_ms" in base and (
+        isinstance(base["approval_expires_at_ms"], bool)
+        or not isinstance(base["approval_expires_at_ms"], int)
+        or base["approval_expires_at_ms"] < 0
+        or base["approval_expires_at_ms"] > _MAX_SAFE_INTEGER
+    ):
+        raise IntentAlignmentValidationError(
+            "approval_expires_at_ms must be a nonnegative safe integer"
         )
     if "modified_arguments_hash" in base and not isinstance(
         base["modified_arguments_hash"], str
@@ -253,6 +288,9 @@ def _normalized_base_result(value: Any) -> Dict[str, Any]:
     result = {"action_taken": action_taken}
     if base.get("approval_required") is True:
         result["approval_required"] = True
+    for field in _APPROVAL_FIELDS:
+        if field in base:
+            result[field] = base[field]
     if isinstance(base.get("modified_arguments_hash"), str):
         result["modified_arguments_hash"] = base["modified_arguments_hash"]
     return result
@@ -263,13 +301,23 @@ def _subset(values: List[str], allowed: List[str]) -> bool:
     return all(value in allowed_set for value in values)
 
 
-def _result(outcome: str, reason_code: str, hashes: Dict[str, str]) -> Dict[str, Any]:
-    return {
+def _result(
+    outcome: str,
+    reason_code: str,
+    hashes: Dict[str, str],
+    required_fields: List[str] | None = None,
+) -> Dict[str, Any]:
+    output = {
         "outcome": outcome,
         "reason_code": reason_code,
         "prevents_original_action": outcome != "ALLOW",
         **hashes,
     }
+    if outcome == "DEFER":
+        if not required_fields:
+            raise IntentAlignmentValidationError("DEFER requires required_fields")
+        output["required_fields"] = sorted(set(required_fields), key=_scalar_key)
+    return output
 
 
 def evaluate_intent_alignment(
@@ -310,15 +358,15 @@ def evaluate_intent_alignment(
     if action_taken == "blocked" and base.get("approval_required") is not True:
         return _result("DENY", "base_blocked", hashes)
     if action_taken == "hook_error":
-        return _result("DEFER", "base_hook_error", hashes)
+        return _result("DEFER", "base_hook_error", hashes, ["policy_evaluation"])
     if action_taken == "hook_timeout":
-        return _result("DEFER", "base_hook_timeout", hashes)
+        return _result("DEFER", "base_hook_timeout", hashes, ["policy_evaluation"])
     if action_taken == "not_evaluated":
-        return _result("DEFER", "base_not_evaluated", hashes)
+        return _result("DEFER", "base_not_evaluated", hashes, ["policy_evaluation"])
 
     active_intents = normalized_context["agent"]["active_intents"]
     if len(active_intents) > 1:
-        return _result("DEFER", "multiple_active_intents", hashes)
+        return _result("DEFER", "multiple_active_intents", hashes, ["active_intents"])
     scope = next(
         (
             candidate
@@ -328,7 +376,7 @@ def evaluate_intent_alignment(
         None,
     )
     if scope is None:
-        return _result("DEFER", "intent_not_declared", hashes)
+        return _result("DEFER", "intent_not_declared", hashes, ["intent_policy"])
     action = normalized_context["action"]
     if not any(
         allowed["kind"] == action["kind"] and allowed["name"] == action["name"]
@@ -336,7 +384,7 @@ def evaluate_intent_alignment(
     ):
         return _result("DENY", "action_not_allowed", hashes)
     if "target" not in action and scope["allowed_targets"]:
-        return _result("DEFER", "target_missing", hashes)
+        return _result("DEFER", "target_missing", hashes, ["action.target"])
     if "target" in action and action["target"] not in scope["allowed_targets"]:
         return _result("DENY", "target_not_allowed", hashes)
     if not _subset(action["requested_scopes"], scope["allowed_requested_scopes"]):
@@ -362,6 +410,12 @@ def evaluate_intent_alignment(
     ):
         return _result("DENY", "prior_action_limit_exceeded", hashes)
     if action_taken == "blocked" and base.get("approval_required") is True:
+        missing = sorted(
+            _APPROVAL_FIELDS.difference(base),
+            key=_scalar_key,
+        )
+        if missing:
+            return _result("DEFER", "approval_binding_missing", hashes, missing)
         return _result("STEP_UP", "approval_required", hashes)
     if action_taken == "redacted":
         modified = base.get("modified_arguments_hash")
@@ -371,6 +425,11 @@ def evaluate_intent_alignment(
             or any(char not in _HEX for char in modified)
             or modified == action["arguments_hash"]
         ):
-            return _result("DEFER", "modified_arguments_hash_unproven", hashes)
+            return _result(
+                "DEFER",
+                "modified_arguments_hash_unproven",
+                hashes,
+                ["modified_arguments_hash"],
+            )
         return _result("MODIFY", "arguments_modified", hashes)
     return _result("ALLOW", "intent_aligned", hashes)

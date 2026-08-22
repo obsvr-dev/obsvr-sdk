@@ -16,6 +16,8 @@ export const INTENT_EVALUATION_INPUT_SCHEMA = 'obsvr-intent-evaluation-input-v1'
 
 const HASH_RE = /^[0-9a-f]{64}$/;
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+const APPROVAL_FIELDS = ['approval_request_id', 'approval_action_hash',
+  'approval_expires_at_ms'] as const;
 const OUTCOMES = new Set<string>(AARM_OUTCOMES);
 const ACTION_TAKEN = new Set<string>([
   'allowed',
@@ -48,10 +50,12 @@ export interface IntentPolicyInput {
 }
 
 export interface IntentPolicyDocument extends IntentPolicyInput {}
-
 export interface IntentBaseResult {
   action_taken: ActionTaken;
   approval_required?: boolean;
+  approval_request_id?: string;
+  approval_action_hash?: string;
+  approval_expires_at_ms?: number;
   modified_arguments_hash?: string;
 }
 
@@ -64,6 +68,7 @@ export interface IntentAlignmentResult {
   policy_hash: string;
   input_hash: string;
   evaluator_hash: string;
+  required_fields?: string[];
 }
 
 export class IntentAlignmentValidationError extends Error {
@@ -297,7 +302,10 @@ function normalizedBaseResult(value: IntentBaseResult): IntentBaseResult {
   const base = record(value, 'base result');
   exactKeys(
     base,
-    ['action_taken', 'approval_required', 'modified_arguments_hash'],
+    [
+      'action_taken', 'approval_required', 'approval_request_id',
+      'approval_action_hash', 'approval_expires_at_ms', 'modified_arguments_hash',
+    ],
     'base result',
   );
   if (typeof base.action_taken !== 'string' || !ACTION_TAKEN.has(base.action_taken)) {
@@ -311,6 +319,30 @@ function normalizedBaseResult(value: IntentBaseResult): IntentBaseResult {
   }
   if (base.approval_required === true && base.action_taken !== 'blocked') {
     throw new IntentAlignmentValidationError('approval_required is valid only when blocked');
+  }
+  if (APPROVAL_FIELDS.some((field) => Object.prototype.hasOwnProperty.call(base, field))
+    && (base.action_taken !== 'blocked' || base.approval_required !== true)) {
+    throw new IntentAlignmentValidationError(
+      'approval binding fields are valid only when blocked with approval_required',
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(base, 'approval_request_id')) {
+    nonblank(base.approval_request_id, 'approval_request_id');
+  }
+  if (Object.prototype.hasOwnProperty.call(base, 'approval_action_hash')
+    && (typeof base.approval_action_hash !== 'string'
+      || !HASH_RE.test(base.approval_action_hash))) {
+    throw new IntentAlignmentValidationError(
+      'approval_action_hash must be 64 lowercase hex characters',
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(base, 'approval_expires_at_ms')
+    && (typeof base.approval_expires_at_ms !== 'number'
+      || !Number.isSafeInteger(base.approval_expires_at_ms)
+      || base.approval_expires_at_ms < 0)) {
+    throw new IntentAlignmentValidationError(
+      'approval_expires_at_ms must be a nonnegative safe integer',
+    );
   }
   if (
     Object.prototype.hasOwnProperty.call(base, 'modified_arguments_hash')
@@ -328,6 +360,15 @@ function normalizedBaseResult(value: IntentBaseResult): IntentBaseResult {
   }
   const result: IntentBaseResult = { action_taken: base.action_taken as ActionTaken };
   if (base.approval_required === true) result.approval_required = true;
+  if (typeof base.approval_request_id === 'string') {
+    result.approval_request_id = base.approval_request_id;
+  }
+  if (typeof base.approval_action_hash === 'string') {
+    result.approval_action_hash = base.approval_action_hash;
+  }
+  if (typeof base.approval_expires_at_ms === 'number') {
+    result.approval_expires_at_ms = base.approval_expires_at_ms;
+  }
   if (typeof base.modified_arguments_hash === 'string') {
     result.modified_arguments_hash = base.modified_arguments_hash;
   }
@@ -343,13 +384,21 @@ function result(
   outcome: AarmOutcome,
   reasonCode: string,
   hashes: Omit<IntentAlignmentResult, 'outcome' | 'reason_code' | 'prevents_original_action'>,
+  requiredFields?: string[],
 ): IntentAlignmentResult {
-  return {
+  const output: IntentAlignmentResult = {
     outcome,
     reason_code: reasonCode,
     prevents_original_action: outcome !== 'ALLOW',
     ...hashes,
   };
+  if (outcome === 'DEFER') {
+    if (!requiredFields || requiredFields.length === 0) {
+      throw new IntentAlignmentValidationError('DEFER requires required_fields');
+    }
+    output.required_fields = [...requiredFields].sort(compareUnicodeScalars);
+  }
+  return output;
 }
 
 export function evaluateIntentAlignment(params: {
@@ -384,25 +433,25 @@ export function evaluateIntentAlignment(params: {
   if (base.action_taken === 'blocked' && base.approval_required !== true) {
     return result('DENY', 'base_blocked', hashes);
   }
-  if (base.action_taken === 'hook_error') return result('DEFER', 'base_hook_error', hashes);
-  if (base.action_taken === 'hook_timeout') return result('DEFER', 'base_hook_timeout', hashes);
+  if (base.action_taken === 'hook_error') return result('DEFER', 'base_hook_error', hashes, ['policy_evaluation']);
+  if (base.action_taken === 'hook_timeout') return result('DEFER', 'base_hook_timeout', hashes, ['policy_evaluation']);
   if (base.action_taken === 'not_evaluated') {
-    return result('DEFER', 'base_not_evaluated', hashes);
+    return result('DEFER', 'base_not_evaluated', hashes, ['policy_evaluation']);
   }
   if (context.agent.active_intents.length > 1) {
-    return result('DEFER', 'multiple_active_intents', hashes);
+    return result('DEFER', 'multiple_active_intents', hashes, ['active_intents']);
   }
   const scope = policy.intent_scopes.find(
     (candidate) => candidate.intent_id === context.agent.active_intents[0],
   );
-  if (scope === undefined) return result('DEFER', 'intent_not_declared', hashes);
+  if (scope === undefined) return result('DEFER', 'intent_not_declared', hashes, ['intent_policy']);
   if (!scope.allowed_actions.some(
     (action) => action.kind === context.action.kind && action.name === context.action.name,
   )) {
     return result('DENY', 'action_not_allowed', hashes);
   }
   if (context.action.target === undefined && scope.allowed_targets.length > 0) {
-    return result('DEFER', 'target_missing', hashes);
+    return result('DEFER', 'target_missing', hashes, ['action.target']);
   }
   if (context.action.target !== undefined && !scope.allowed_targets.includes(context.action.target)) {
     return result('DENY', 'target_not_allowed', hashes);
@@ -427,6 +476,12 @@ export function evaluateIntentAlignment(params: {
     return result('DENY', 'prior_action_limit_exceeded', hashes);
   }
   if (base.action_taken === 'blocked' && base.approval_required === true) {
+    const missing = APPROVAL_FIELDS.filter(
+      (field) => !Object.prototype.hasOwnProperty.call(base, field),
+    );
+    if (missing.length > 0) {
+      return result('DEFER', 'approval_binding_missing', hashes, missing);
+    }
     return result('STEP_UP', 'approval_required', hashes);
   }
   if (base.action_taken === 'redacted') {
@@ -436,7 +491,7 @@ export function evaluateIntentAlignment(params: {
       || !HASH_RE.test(modified)
       || modified === context.action.arguments_hash
     ) {
-      return result('DEFER', 'modified_arguments_hash_unproven', hashes);
+      return result('DEFER', 'modified_arguments_hash_unproven', hashes, ['modified_arguments_hash']);
     }
     return result('MODIFY', 'arguments_modified', hashes);
   }

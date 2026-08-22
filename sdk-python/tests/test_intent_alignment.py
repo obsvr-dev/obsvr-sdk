@@ -89,6 +89,13 @@ def test_all_five_outcomes_are_covered():
     }
 
 
+def test_approval_details_are_bound_into_evaluation_input_hash():
+    cases = {case["id"]: case for case in FIXTURE["valid_cases"]}
+    first = cases["approval_required"]["expect"]["input_hash"]
+    second = cases["approval_binding_changes_input_hash"]["expect"]["input_hash"]
+    assert first != second
+
+
 @pytest.mark.parametrize(
     "case", FIXTURE["invalid_policy_cases"], ids=lambda case: case["id"]
 )
@@ -104,9 +111,12 @@ def test_invalid_policy(case):
 )
 def test_invalid_base_result(case):
     base = copy.deepcopy(FIXTURE["base_result"])
-    _mutate(base, case["mutation"])
+    if case.get("mutation"):
+        _mutate(base, case["mutation"])
     if case.get("second_mutation"):
         _mutate(base, case["second_mutation"])
+    for mutation in case.get("mutations", []):
+        _mutate(base, mutation)
     with pytest.raises(IntentAlignmentValidationError):
         evaluate_intent_alignment(
             context=FIXTURE["base_context"],
