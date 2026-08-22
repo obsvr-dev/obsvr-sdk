@@ -4,14 +4,33 @@ from __future__ import annotations
 
 import json
 import math
+import queue
 import random
+import threading
 import time
-from typing import Any, Callable, Dict, Literal, Optional, TypedDict, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    TypedDict,
+    Union,
+    cast,
+)
 from urllib.error import HTTPError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import Request
 
-from .ssrf import SsrfError, assert_backend_url_static
+from .external_backend import _pinned_request
+from .ssrf import (
+    AllowedBackendTarget,
+    SsrfError,
+    assert_backend_url_static,
+    resolve_backend_url_allowed,
+)
 from .tool_pinning import _canonical_json_for_hash
 
 STRICT_RECEIPT_INGEST_SCHEMA = "obsvr-strict-receipt-ingest-v1"
@@ -24,6 +43,7 @@ _HEX = frozenset("0123456789abcdef")
 _MAX_TIMEOUT_MS = 60_000
 _MAX_RETRY_DEADLINE_MS = 300_000
 _MAX_ATTEMPTS = 20
+_MAX_REQUEST_BYTES = 1_048_576
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_RETRY_DELAY_MS = 60_000
 _LOCAL_INGEST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -61,12 +81,10 @@ class StrictAdmissionValidationError(ValueError):
     """Configuration or receipt input cannot form one bounded request."""
 
 
-class _RefuseRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
-        return None
-
-
-_urlopen = build_opener(_RefuseRedirect).open
+PinnedTransport = Callable[
+    [AllowedBackendTarget, Dict[str, str], bytes, float, int],
+    Tuple[int, Optional[bytes]],
+]
 
 
 def _positive_integer(value: Any, fallback: int, maximum: int, field: str) -> int:
@@ -141,6 +159,34 @@ def _receipt_hash(receipt: Any) -> str:
             "receipt must be a strict receipt envelope with a valid receipt_hash"
         )
     return value
+
+
+def _resolve_target_bounded(
+    url: str,
+    allow_loopback: bool,
+    resolver: Optional[Callable[[str], List[str]]],
+    timeout_s: float,
+) -> AllowedBackendTarget:
+    """Bound a potentially blocking system/custom resolver for one attempt."""
+    result: queue.Queue[Tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+    def resolve() -> None:
+        try:
+            result.put(
+                (True, resolve_backend_url_allowed(url, allow_loopback, resolver))
+            )
+        except Exception as exc:
+            result.put((False, exc))
+
+    worker = threading.Thread(target=resolve, daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive() or result.empty():
+        raise TimeoutError("strict admission DNS resolution timed out")
+    ok, value = result.get_nowait()
+    if not ok:
+        raise cast(Exception, value)
+    return cast(AllowedBackendTarget, value)
 
 
 def _status(response: Any) -> int:
@@ -243,7 +289,9 @@ def admit_strict_receipt(
     max_response_bytes: int = 65_536,
     retry_base_ms: int = 100,
     retry_max_ms: int = 2_000,
-    urlopen_fn: Optional[Callable[..., Any]] = None,
+    trusted_urlopen_fn: Optional[Callable[..., Any]] = None,
+    trusted_pinned_transport: Optional[PinnedTransport] = None,
+    resolver: Optional[Callable[[str], List[str]]] = None,
     clock_ms: Optional[Callable[[], float]] = None,
     sleep: Optional[Callable[[float], None]] = None,
     jitter: Optional[Callable[[], float]] = None,
@@ -266,7 +314,12 @@ def admit_strict_receipt(
     retry_max = _positive_integer(
         retry_max_ms, 2_000, _MAX_RETRY_DELAY_MS, "retry_max_ms"
     )
-    opener = urlopen_fn or _urlopen
+    if trusted_urlopen_fn is not None and not callable(trusted_urlopen_fn):
+        raise StrictAdmissionValidationError("trusted_urlopen_fn must be callable")
+    if trusted_pinned_transport is not None and not callable(trusted_pinned_transport):
+        raise StrictAdmissionValidationError(
+            "trusted_pinned_transport must be callable"
+        )
     now = clock_ms or (lambda: time.monotonic() * 1000.0)
     sleeper = sleep or (lambda delay_ms: time.sleep(delay_ms / 1000.0))
     random_fraction = jitter or random.random
@@ -278,35 +331,58 @@ def admit_strict_receipt(
         raise StrictAdmissionValidationError(
             "receipt cannot be serialized canonically"
         ) from None
+    if len(body) > _MAX_REQUEST_BYTES:
+        raise StrictAdmissionValidationError(
+            "receipt ingest request exceeds its supported size"
+        )
     started = now()
     attempts = 0
+    allow_loopback = (urlsplit(url).hostname or "").lower() in _LOCAL_INGEST_HOSTS
+    request_headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": key,
+        "Idempotency-Key": receipt_hash,
+    }
 
     while attempts < attempts_limit and now() - started < deadline:
         attempts += 1
         remaining = deadline - (now() - started)
-        req = Request(
-            url,
-            data=body,
-            headers={
-                "Content-Type": "application/json",
-                "X-API-Key": key,
-                "Idempotency-Key": receipt_hash,
-            },
-            method="POST",
-        )
         response = None
         status = 0
+        parsed = None
         try:
-            response = opener(req, timeout=max(0.001, min(timeout, remaining) / 1000.0))
-            status = _status(response)
+            timeout_s = max(0.001, min(timeout, remaining) / 1000.0)
+            if trusted_urlopen_fn is not None:
+                req = Request(url, data=body, headers=request_headers, method="POST")
+                response = trusted_urlopen_fn(req, timeout=timeout_s)
+                status = _status(response)
+                parsed = _parsed(_read_bounded(response, response_limit))
+            else:
+                attempt_started = time.monotonic()
+                target = _resolve_target_bounded(
+                    url, allow_loopback, resolver, timeout_s
+                )
+                transport_timeout = timeout_s - (time.monotonic() - attempt_started)
+                if transport_timeout <= 0:
+                    raise TimeoutError("strict admission timeout budget exhausted")
+                transport = trusted_pinned_transport or _pinned_request
+                status, raw = transport(
+                    target,
+                    request_headers,
+                    body,
+                    transport_timeout,
+                    response_limit,
+                )
+                response = True
+                parsed = _parsed(raw)
         except HTTPError as error:
             response = error
             status = error.code
+            parsed = _parsed(_read_bounded(response, response_limit))
         except Exception:
             response = None
 
         if response is not None:
-            parsed = _parsed(_read_bounded(response, response_limit))
             if 300 <= status < 400:
                 return {
                     "disposition": "uncertain",

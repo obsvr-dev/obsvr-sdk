@@ -42,7 +42,7 @@ function deterministic(fetchFn: typeof fetch, overrides: Record<string, unknown>
   return {
     ingest_url: 'https://ingest.example.test/base/',
     api_key: 'top-secret-test-key',
-    fetch: fetchFn,
+    trusted_fetch: fetchFn,
     clock_ms: () => now,
     sleep: async (delay: number) => { now += delay; },
     jitter: () => 0,
@@ -212,5 +212,15 @@ describe('strict receipt admission transport', () => {
       expect(error).toBeInstanceOf(StrictAdmissionValidationError);
       expect(String(error)).not.toContain('top-secret-test-key');
     }
+  });
+
+  it('rejects an oversized ingest request before transport', async () => {
+    const fetchFn = jest.fn() as unknown as typeof fetch;
+    const oversized = ({
+      ...receipt, padding: 'x'.repeat(1_048_576),
+    } as unknown) as StrictReceiptEnvelope;
+    await expect(admitStrictReceipt(oversized, deterministic(fetchFn)))
+      .rejects.toThrow('receipt ingest request exceeds its supported size');
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });

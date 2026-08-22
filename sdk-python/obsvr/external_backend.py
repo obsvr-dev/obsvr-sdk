@@ -25,6 +25,7 @@ import http.client
 import json
 import socket
 import ssl
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -180,10 +181,14 @@ def _connect_approved_socket(
     """Connect directly to one approved numeric address without another lookup."""
     if timeout_s <= 0:
         raise TimeoutError("external backend timeout budget exhausted")
+    deadline = time.monotonic() + timeout_s
     last_error: Optional[OSError] = None
     for approved in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("external backend timeout budget exhausted")
         sock = socket.socket(approved.family, socket.SOCK_STREAM)
-        sock.settimeout(timeout_s)
+        sock.settimeout(remaining)
         endpoint = (
             (approved.address, port)
             if approved.family == socket.AF_INET
@@ -263,6 +268,24 @@ def _urllib_transport(
     timeout_s: float,
 ) -> Tuple[int, Any]:
     """POST through a fresh connection pinned to the validated DNS snapshot."""
+    status, raw = _pinned_request(
+        target, headers, body.encode("utf-8"), timeout_s, 1_048_576
+    )
+    try:
+        return status, json.loads(raw) if raw is not None else None
+    except (ValueError, TypeError):
+        return status, None
+
+
+def _pinned_request(
+    target: AllowedBackendTarget,
+    headers: Dict[str, str],
+    body: bytes,
+    timeout_s: float,
+    max_response_bytes: int,
+) -> Tuple[int, Optional[bytes]]:
+    """Bounded POST over a fresh socket pinned to one approved DNS snapshot."""
+    started = time.monotonic()
     conn: http.client.HTTPConnection
     if target.parts.scheme == "https":
         conn = _PinnedHTTPSConnection(target, timeout_s)
@@ -278,26 +301,51 @@ def _urllib_transport(
         {
             "Host": _host_header(target),
             "Connection": "close",
-            "Content-Length": str(len(body.encode("utf-8"))),
+            "Content-Length": str(len(body)),
         }
     )
     path = target.parts.path or "/"
     if target.parts.query:
         path = f"{path}?{target.parts.query}"
     try:
-        conn.request("POST", path, body=body.encode("utf-8"), headers=request_headers)
+        conn.request("POST", path, body=body, headers=request_headers)
+        remaining = timeout_s - (time.monotonic() - started)
+        if remaining <= 0:
+            raise TimeoutError("external backend timeout budget exhausted")
+        active_socket = getattr(conn, "sock", None)
+        if active_socket is not None:
+            active_socket.settimeout(remaining)
         response = conn.getresponse()
         status = response.status
-        raw = response.read()
+        declared = (
+            response.getheader("Content-Length")
+            if hasattr(response, "getheader")
+            else None
+        )
+        if declared is not None:
+            try:
+                if int(declared) < 0 or int(declared) > max_response_bytes:
+                    return status, None
+            except (TypeError, ValueError):
+                return status, None
+        try:
+            remaining = timeout_s - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("external backend timeout budget exhausted")
+            active_socket = getattr(conn, "sock", None)
+            if active_socket is not None:
+                active_socket.settimeout(remaining)
+            raw = response.read(max_response_bytes + 1)
+        except TypeError:
+            raw = response.read()
+        if not isinstance(raw, bytes) or len(raw) > max_response_bytes:
+            return status, None
+        return status, raw
     except (socket.timeout, TimeoutError) as exc:
         raise TimeoutError(str(exc)) from exc
     finally:
         # Never reuse a socket across validation snapshots.
         conn.close()
-    try:
-        return status, json.loads(raw)
-    except (ValueError, TypeError):
-        return status, None
 
 
 def evaluate_external_backend(
@@ -343,7 +391,9 @@ def evaluate_external_backend(
     if parsed is None:
         return {"outcome": "error", "reasons": ["backend_response_not_json"]}
 
-    normalized = _normalize_opa(parsed) if cfg["type"] == "opa" else _normalize_cedar(parsed)
+    normalized = (
+        _normalize_opa(parsed) if cfg["type"] == "opa" else _normalize_cedar(parsed)
+    )
     if normalized is None:
         return {"outcome": "error", "reasons": ["backend_response_unrecognized"]}
     return {
@@ -365,7 +415,9 @@ def run_external_backend_step(
     when the local decision is not already a block. Returns
     {"decision", "blocked_by_backend", "record"}."""
     shadow = cfg.get("shadow") is True
-    ev = evaluate_external_backend(cfg, input_doc, transport=transport, resolver=resolver)
+    ev = evaluate_external_backend(
+        cfg, input_doc, transport=transport, resolver=resolver
+    )
     prov = backend_provenance(cfg)
     merge = merge_external_backend_decision(local_decision, ev["outcome"], shadow)
     record: Dict[str, Any] = {

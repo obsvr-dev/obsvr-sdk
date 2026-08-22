@@ -65,7 +65,7 @@ def deterministic(urlopen_fn, **overrides):
     options = {
         "ingest_url": "https://ingest.example.test/base/",
         "api_key": "top-secret-test-key",
-        "urlopen_fn": urlopen_fn,
+        "trusted_urlopen_fn": urlopen_fn,
         "clock_ms": lambda: state["now"],
         "sleep": sleep,
         "jitter": lambda: 0.0,
@@ -320,3 +320,18 @@ def test_validation_errors_do_not_expose_api_key():
             ),
         )
     assert "top-secret-test-key" not in str(caught.value)
+
+
+def test_oversized_ingest_request_is_rejected_before_transport():
+    calls = []
+    oversized = {**RECEIPT, "padding": "x" * 1_048_576}
+
+    def opener(*_args, **_kwargs):
+        calls.append(True)
+
+    with pytest.raises(
+        StrictAdmissionValidationError,
+        match="receipt ingest request exceeds its supported size",
+    ):
+        admit_strict_receipt(oversized, **deterministic(opener))
+    assert calls == []

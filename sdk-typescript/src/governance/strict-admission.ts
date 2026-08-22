@@ -1,5 +1,11 @@
 import { canonicalJsonForHash } from '../policy/tool-pinning.js';
-import { assertBackendUrlStatic } from '../utils/ssrf.js';
+import { postPinnedBytes, type PinnedHttpResponse } from '../utils/pinned-http.js';
+import {
+  assertBackendUrlStatic,
+  resolveBackendUrlAllowed,
+  type AllowedBackendTarget,
+  type Resolver,
+} from '../utils/ssrf.js';
 import type { StrictReceiptEnvelope } from './strict-receipt.js';
 
 export const STRICT_RECEIPT_INGEST_SCHEMA = 'obsvr-strict-receipt-ingest-v1' as const;
@@ -11,6 +17,7 @@ const RETRYABLE = new Set([408, 429]);
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_RETRY_DEADLINE_MS = 300_000;
 const MAX_ATTEMPTS = 20;
+const MAX_REQUEST_BYTES = 1_048_576;
 const MAX_RESPONSE_BYTES = 1_048_576;
 const MAX_RETRY_DELAY_MS = 60_000;
 const LOCAL_INGEST_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
@@ -24,11 +31,23 @@ export interface StrictAdmissionOptions {
   max_response_bytes?: number;
   retry_base_ms?: number;
   retry_max_ms?: number;
-  fetch?: typeof fetch;
+  /** Explicitly trusted test seam. Production never falls back to global fetch. */
+  trusted_fetch?: typeof fetch;
+  /** Explicitly trusted test seam that still receives an approved DNS snapshot. */
+  trusted_pinned_transport?: StrictAdmissionPinnedTransport;
+  resolver?: Resolver;
   clock_ms?: () => number;
   sleep?: (delay_ms: number) => Promise<void>;
   jitter?: () => number;
 }
+
+export type StrictAdmissionPinnedTransport = (
+  target: AllowedBackendTarget,
+  body: string,
+  headers: Readonly<Record<string, string>>,
+  signal: AbortSignal,
+  maxResponseBytes: number,
+) => Promise<PinnedHttpResponse>;
 
 export type StrictAdmissionResult =
   | {
@@ -214,8 +233,13 @@ export async function admitStrictReceipt(
   const retryMaxMs = positiveInteger(
     options.retry_max_ms, 2_000, MAX_RETRY_DELAY_MS, 'retry_max_ms',
   );
-  const fetchFn = options.fetch ?? globalThis.fetch;
-  if (typeof fetchFn !== 'function') throw new StrictAdmissionValidationError('fetch must be a function');
+  if (options.trusted_fetch !== undefined && typeof options.trusted_fetch !== 'function') {
+    throw new StrictAdmissionValidationError('trusted_fetch must be a function');
+  }
+  if (options.trusted_pinned_transport !== undefined
+    && typeof options.trusted_pinned_transport !== 'function') {
+    throw new StrictAdmissionValidationError('trusted_pinned_transport must be a function');
+  }
   const clock = options.clock_ms ?? (() => performance.now());
   const sleep = options.sleep ?? ((delay: number) => new Promise((resolve) => setTimeout(resolve, delay)));
   const jitter = options.jitter ?? Math.random;
@@ -225,32 +249,48 @@ export async function admitStrictReceipt(
   } catch {
     throw new StrictAdmissionValidationError('receipt cannot be serialized canonically');
   }
+  if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) {
+    throw new StrictAdmissionValidationError('receipt ingest request exceeds its supported size');
+  }
   const start = clock();
   let attempts = 0;
+  const allowLoopback = LOCAL_INGEST_HOSTS.has(
+    new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase(),
+  );
+  const headers = {
+    'Content-Type': 'application/json',
+    'X-API-Key': apiKey,
+    'Idempotency-Key': hash,
+  };
 
   while (attempts < maxAttempts && clock() - start < deadlineMs) {
     attempts += 1;
     const remaining = deadlineMs - (clock() - start);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const fetchAttempt = Promise.resolve().then(() => fetchFn(url, {
-        method: 'POST',
-        redirect: 'manual',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': apiKey,
-          'Idempotency-Key': hash,
-        },
-        body,
-        signal: controller.signal,
-      })).catch(() => undefined);
+    const requestAttempt = Promise.resolve().then(async (): Promise<PinnedHttpResponse> => {
+      if (options.trusted_fetch !== undefined) {
+        const response = await options.trusted_fetch(url, {
+          method: 'POST', redirect: 'manual', headers, body, signal: controller.signal,
+        });
+        return {
+          status: response.status,
+          body: await readBounded(response, maxResponseBytes),
+        };
+      }
+      const target = await resolveBackendUrlAllowed(
+        url, { allowPrivateNetwork: allowLoopback }, options.resolver,
+      );
+      const transport = options.trusted_pinned_transport ?? postPinnedBytes;
+      return transport(target, body, headers, controller.signal, maxResponseBytes);
+    }).catch(() => undefined);
     const timeoutAttempt = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => {
         controller.abort();
         resolve(undefined);
       }, Math.max(1, Math.min(timeoutMs, remaining)));
     });
-    const response = await Promise.race([fetchAttempt, timeoutAttempt]);
+    const response = await Promise.race([requestAttempt, timeoutAttempt]);
     if (timer !== undefined) clearTimeout(timer);
 
     if (response !== undefined) {
@@ -258,12 +298,10 @@ export async function admitStrictReceipt(
         return { disposition: 'uncertain', receipt_hash: hash, reason: 'redirect', attempts };
       }
       const retryable = RETRYABLE.has(response.status) || response.status >= 500;
-      if (retryable) {
-        try { await response.body?.cancel(); } catch { /* retry classification is unchanged */ }
-      } else {
+      if (!retryable) {
         let parsed: Record<string, unknown> | undefined;
         try {
-          parsed = parsedResult(await readBounded(response, maxResponseBytes));
+          parsed = parsedResult(response.body);
         } catch {
           return { disposition: 'uncertain', receipt_hash: hash, reason: 'invalid_response', attempts };
         }
