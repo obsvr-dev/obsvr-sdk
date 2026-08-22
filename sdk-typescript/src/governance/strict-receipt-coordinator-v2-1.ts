@@ -40,19 +40,19 @@ export type {
 export { createTrustedIntentDecisionProviderV21, StrictReceiptCoordinatorV21Error };
 
 export class StrictReceiptCoordinatorV21 {
-  private readonly options: StrictReceiptCoordinatorV21Options;
-  private readonly policy: IntentPolicyV2Document;
-  private readonly tenantId: string;
-  private readonly sessionId: string;
-  private readonly ownerPid: number;
-  private readonly pidSource: () => number;
-  private readonly preparedState: PreparedReceiptState;
-  private sequence = 0;
-  private headReceiptHash: string | null = null;
-  private lastTimestamp: number | null = null;
-  private priorActions: PriorActionV2Input[] = [];
-  private readonly committedActionIds = new Set<string>();
-  private readonly pendingApprovalIds = new Set<string>();
+  protected readonly options: StrictReceiptCoordinatorV21Options;
+  protected readonly policy: IntentPolicyV2Document;
+  protected readonly tenantId: string;
+  protected readonly sessionId: string;
+  protected readonly ownerPid: number;
+  protected readonly pidSource: () => number;
+  protected readonly preparedState: PreparedReceiptState;
+  protected sequence = 0;
+  protected headReceiptHash: string | null = null;
+  protected lastTimestamp: number | null = null;
+  protected priorActions: PriorActionV2Input[] = [];
+  protected readonly committedActionIds = new Set<string>();
+  protected readonly pendingApprovalIds = new Set<string>();
 
   constructor(options: StrictReceiptCoordinatorV21Options) {
     if (options.sdk_language !== 'typescript') {
@@ -167,7 +167,7 @@ export class StrictReceiptCoordinatorV21 {
     return observed;
   }
 
-  private commitDecision(
+  protected commitDecision(
     result: StrictDecisionV21Result,
     input: StrictDecisionActionV21Input,
   ): void {
@@ -189,7 +189,7 @@ export class StrictReceiptCoordinatorV21 {
     }
   }
 
-  private ensureProcess(): void {
+  protected ensureProcess(): void {
     if (v21Integer(this.pidSource(), 'pid') !== this.ownerPid) {
       throw new StrictReceiptCoordinatorV21Error(
         'strict profile 2.1 coordinator cannot cross a process boundary',
