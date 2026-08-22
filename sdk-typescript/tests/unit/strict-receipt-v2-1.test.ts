@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -34,6 +35,7 @@ function modifyBody(): StrictReceiptV21Body {
   result.action.effective_arguments_hash = patch.effective_arguments_hash;
   result.evaluation.requested_outcome = patch.requested_outcome;
   result.evaluation.outcome = patch.outcome; result.outcome = patch.outcome;
+  result.evaluation.decision_reason_codes = clone(patch.decision_reason_codes);
   result.execution_authorized = patch.execution_authorized; delete result.suspension;
   return result;
 }
@@ -52,7 +54,8 @@ describe('strict receipt profile 2.1 fixtures and trust', () => {
     const envelope = signed();
     expect(FIXTURE.claimable).toBe(false);
     expect(FIXTURE.description).toContain('not official AARM conformance vectors');
-    expect(canonicalizeStrictReceiptV21Body(body())).toBe(FIXTURE.vector.canonical);
+    expect(createHash('sha256').update(canonicalizeStrictReceiptV21Body(body())).digest('hex'))
+      .toBe(FIXTURE.vector.canonical_sha256);
     expect(strictReceiptV21Hash(body())).toBe(FIXTURE.vector.receipt_hash);
     expect(envelope.receipt_hash).toBe(FIXTURE.vector.receipt_hash);
     expect(envelope.signature.value).toBe(FIXTURE.vector.signature);
@@ -77,7 +80,8 @@ describe('strict receipt profile 2.1 fixtures and trust', () => {
 
   it('pins MODIFY effective execution bytes and refuses ambiguous action hashes', () => {
     const modified = signStrictReceiptV21(modifyBody(), signer());
-    expect(canonicalizeStrictReceiptV21Body(modified.body)).toBe(FIXTURE.modify_vector.canonical);
+    expect(createHash('sha256').update(canonicalizeStrictReceiptV21Body(modified.body)).digest('hex'))
+      .toBe(FIXTURE.modify_vector.canonical_sha256);
     expect(modified.receipt_hash).toBe(FIXTURE.modify_vector.receipt_hash);
     expect(modified.signature.value).toBe(FIXTURE.modify_vector.signature);
     const tampered = clone(modified); tampered.body.action.effective_arguments_hash = '6'.repeat(64);
@@ -90,12 +94,26 @@ describe('strict receipt profile 2.1 fixtures and trust', () => {
     expect(() => signStrictReceiptV21(nonModify, signer())).toThrow(/only for MODIFY/);
   });
 
+  it('requires canonical audit decision reasons without changing the pipeline reason', () => {
+    const value = body();
+    expect(value.evaluation.decision_reason_codes).toEqual(['approval_required', 'policy_matched']);
+    expect(value.reason_code).toBe('evaluation_complete');
+    expect(value.evaluation.reason_code).toBe(value.reason_code);
+    const missing = body(); delete (missing.evaluation as unknown as Record<string, unknown>).decision_reason_codes;
+    expect(() => signStrictReceiptV21(missing, signer())).toThrow(/decision_reason_codes/);
+    const empty = body(); empty.evaluation.decision_reason_codes = [];
+    expect(() => signStrictReceiptV21(empty, signer())).toThrow(/1 to 32 items/);
+    const unsorted = body(); unsorted.evaluation.decision_reason_codes = ['policy_matched', 'approval_required'];
+    expect(() => signStrictReceiptV21(unsorted, signer())).toThrow(/sorted and unique/);
+  });
+
   it.each([
     ['requester', (value: StrictReceiptV21Envelope) => { value.body.identity.requester.requester_ref_hash = '9'.repeat(64); }],
     ['delegation', (value: StrictReceiptV21Envelope) => { value.body.identity.delegation_chain[0]!.delegation_id_hash = '9'.repeat(64); }],
     ['policy', (value: StrictReceiptV21Envelope) => { value.body.evaluation.effective_policy.artifact_hash = '9'.repeat(64); }],
     ['detector', (value: StrictReceiptV21Envelope) => { value.body.evaluation.detectors[0]!.result_hash = '9'.repeat(64); }],
     ['manifest', (value: StrictReceiptV21Envelope) => { value.body.evaluation.evaluator_manifest_hash = '9'.repeat(64); }],
+    ['decision reason', (value: StrictReceiptV21Envelope) => { value.body.evaluation.decision_reason_codes[0] = 'tampered_reason'; }],
   ])('detects %s evidence tampering', (_label, mutate) => {
     const envelope = signed(); mutate(envelope);
     const result = verifyStrictReceiptV21(envelope, trust());

@@ -1,6 +1,7 @@
 """Paired fixture and adversarial tests for strict receipt profile 2.1."""
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -47,6 +48,9 @@ def _modify_body():
     result["action"]["effective_arguments_hash"] = patch["effective_arguments_hash"]
     result["evaluation"]["requested_outcome"] = patch["requested_outcome"]
     result["evaluation"]["outcome"] = patch["outcome"]
+    result["evaluation"]["decision_reason_codes"] = copy.deepcopy(
+        patch["decision_reason_codes"]
+    )
     result["outcome"] = patch["outcome"]
     result["execution_authorized"] = patch["execution_authorized"]
     result.pop("suspension")
@@ -78,9 +82,10 @@ def test_cross_language_canonical_hash_signature_and_status(signer):
     envelope = _signed(signer)
     assert FIXTURE["claimable"] is False
     assert "not official AARM conformance vectors" in FIXTURE["description"]
-    assert (
-        canonicalize_strict_receipt_v2_1_body(_body()) == FIXTURE["vector"]["canonical"]
-    )
+    canonical_digest = hashlib.sha256(
+        canonicalize_strict_receipt_v2_1_body(_body()).encode("utf-8")
+    ).hexdigest()
+    assert canonical_digest == FIXTURE["vector"]["canonical_sha256"]
     assert strict_receipt_v2_1_hash(_body()) == FIXTURE["vector"]["receipt_hash"]
     assert envelope["receipt_hash"] == FIXTURE["vector"]["receipt_hash"]
     assert envelope["signature"]["value"] == FIXTURE["vector"]["signature"]
@@ -118,10 +123,10 @@ def test_integrity_is_separate_from_registry_and_evaluator_trust(signer):
 
 def test_modify_effective_bytes_are_pinned_and_unambiguous(signer):
     modified = sign_strict_receipt_v2_1(_modify_body(), signer)
-    assert (
-        canonicalize_strict_receipt_v2_1_body(modified["body"])
-        == FIXTURE["modify_vector"]["canonical"]
-    )
+    canonical_digest = hashlib.sha256(
+        canonicalize_strict_receipt_v2_1_body(modified["body"]).encode("utf-8")
+    ).hexdigest()
+    assert canonical_digest == FIXTURE["modify_vector"]["canonical_sha256"]
     assert modified["receipt_hash"] == FIXTURE["modify_vector"]["receipt_hash"]
     assert modified["signature"]["value"] == FIXTURE["modify_vector"]["signature"]
     tampered = copy.deepcopy(modified)
@@ -143,6 +148,31 @@ def test_modify_effective_bytes_are_pinned_and_unambiguous(signer):
         sign_strict_receipt_v2_1(non_modify, signer)
 
 
+def test_audit_decision_reasons_are_canonical_and_pipeline_reason_is_unchanged(signer):
+    value = _body()
+    assert value["evaluation"]["decision_reason_codes"] == [
+        "approval_required",
+        "policy_matched",
+    ]
+    assert value["reason_code"] == "evaluation_complete"
+    assert value["evaluation"]["reason_code"] == value["reason_code"]
+    missing = _body()
+    missing["evaluation"].pop("decision_reason_codes")
+    with pytest.raises(ValueError, match="decision_reason_codes"):
+        sign_strict_receipt_v2_1(missing, signer)
+    empty = _body()
+    empty["evaluation"]["decision_reason_codes"] = []
+    with pytest.raises(ValueError, match="1 to 32 items"):
+        sign_strict_receipt_v2_1(empty, signer)
+    unsorted = _body()
+    unsorted["evaluation"]["decision_reason_codes"] = [
+        "policy_matched",
+        "approval_required",
+    ]
+    with pytest.raises(ValueError, match="sorted and unique"):
+        sign_strict_receipt_v2_1(unsorted, signer)
+
+
 @pytest.mark.parametrize(
     "path",
     (
@@ -151,6 +181,7 @@ def test_modify_effective_bytes_are_pinned_and_unambiguous(signer):
         ("evaluation", "effective_policy", "artifact_hash"),
         ("evaluation", "detectors", 0, "result_hash"),
         ("evaluation", "evaluator_manifest_hash"),
+        ("evaluation", "decision_reason_codes", 0),
     ),
 )
 def test_requester_delegation_policy_detector_and_manifest_tampering(path, signer):

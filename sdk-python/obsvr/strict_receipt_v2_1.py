@@ -137,6 +137,7 @@ def _evaluation(value: Any) -> Dict[str, Any]:
             "detector_set_hash",
             "requested_outcome",
             "outcome",
+            "decision_reason_codes",
             "reason_code",
         },
         "evaluation",
@@ -203,6 +204,12 @@ def _evaluation(value: Any) -> Dict[str, Any]:
         or evaluation["outcome"] not in _OUTCOMES
     ):
         _fail("invalid evaluation outcome")
+    reasons = evaluation["decision_reason_codes"]
+    if not isinstance(reasons, list) or not reasons or len(reasons) > 32:
+        _fail("evaluation.decision_reason_codes must contain 1 to 32 items")
+    _canonical_set(reasons, "evaluation.decision_reason_codes")
+    for index, reason in enumerate(reasons):
+        _safe_id(reason, f"evaluation.decision_reason_codes[{index}]")
     if evaluation["reason_code"] not in _EVALUATION_REASONS:
         _fail("invalid evaluation.reason_code")
     unhealthy = [

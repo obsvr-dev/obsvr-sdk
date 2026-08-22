@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 39c8eaff6653a6fdc0ae6374ea3e6fdc6a6b44fc674a4e1ac43e4cf078e04d02
+# corpus_sha256 = 89b4a46080057b0a76701fe83376d73f5c5c8fba4d93011468bbea04cf3cc100
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -54,6 +54,7 @@ b326ca8bb7fa352437a91cfe709efa19998744bff5996be59c87620bbe036d57  fixtures/regex
 d8bc262148c9714293e6ff61aa1f6431dd5a9ca52e816072701aa4095db86001  fixtures/signing_vectors.json
 6c7263bf58033ac78e2d9281fa7d93dd0b0fe6c70777966a94458270d484c3a5  fixtures/strict_receipts.json
 66db81a97dd34fc15c33ad46665145dafff5a59190b14766aad0d0e9301ceaa5  fixtures/strict_receipts_v2.json
+c183e63b472e91c72fa682c0fa76fa9e858639d6f3b4733f026072088cc23d4b  fixtures/strict_receipts_v2_1.json
 8e8dd03a54c7e497c1879d8169bd4c2bbf4334edf0d4c035c66ff29b3e809342  fixtures/tool_content_hash.json
 520b49e1a72e6537fc77c6288b5d9e5cd59770f012455c3c7620150f7a509145  fixtures/tool_descriptor_scan.json
 874755a3869020924f17bb72606c8f4f1af6d6d5d08484024698eecf18923a3b  fixtures/tool_pinning.json

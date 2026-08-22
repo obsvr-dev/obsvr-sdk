@@ -136,7 +136,7 @@ function validateEvaluation(value: unknown): StrictEvaluationEvidenceV21 {
   const evaluation = record(value, 'evaluation');
   if (evaluation.schema !== STRICT_EVALUATION_EVIDENCE_V21_SCHEMA) fail('invalid evaluation.schema');
   if (evaluation.profile_version !== STRICT_RECEIPT_V21_PROFILE_VERSION) fail('invalid evaluation.profile_version');
-  exact(evaluation, ['schema', 'profile_version', 'effective_policy', 'evaluator_manifest_hash', 'detectors', 'detector_set_hash', 'requested_outcome', 'outcome', 'reason_code'], 'evaluation');
+  exact(evaluation, ['schema', 'profile_version', 'effective_policy', 'evaluator_manifest_hash', 'detectors', 'detector_set_hash', 'requested_outcome', 'outcome', 'decision_reason_codes', 'reason_code'], 'evaluation');
   const policy = record(evaluation.effective_policy, 'evaluation.effective_policy');
   exact(policy, ['version', 'artifact_hash', 'matched_rule_ids'], 'evaluation.effective_policy');
   safeId(policy.version, 'evaluation.effective_policy.version'); hash(policy.artifact_hash, 'evaluation.effective_policy.artifact_hash');
@@ -164,6 +164,13 @@ function validateEvaluation(value: unknown): StrictEvaluationEvidenceV21 {
   });
   if (!['ALLOW', 'DENY', 'MODIFY', 'STEP_UP', 'DEFER'].includes(String(evaluation.requested_outcome))) fail('invalid evaluation.requested_outcome');
   if (!['ALLOW', 'DENY', 'MODIFY', 'STEP_UP', 'DEFER'].includes(String(evaluation.outcome))) fail('invalid evaluation.outcome');
+  if (!Array.isArray(evaluation.decision_reason_codes)
+    || evaluation.decision_reason_codes.length === 0
+    || evaluation.decision_reason_codes.length > 32) {
+    fail('evaluation.decision_reason_codes must contain 1 to 32 items');
+  }
+  const decisionReasons = canonicalSet(evaluation.decision_reason_codes, 'evaluation.decision_reason_codes');
+  decisionReasons.forEach((reason, index) => safeId(reason, `evaluation.decision_reason_codes[${index}]`));
   if (!['evaluation_complete', 'required_detector_uncertain', 'required_transform_unavailable'].includes(String(evaluation.reason_code))) fail('invalid evaluation.reason_code');
   const unhealthy = (evaluation.detectors as Array<Record<string, unknown>>)
     .filter((detector) => detector.required === true && detector.status !== 'ok');
