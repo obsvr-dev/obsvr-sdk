@@ -203,6 +203,26 @@ class TestRegistryGate:
         # its own. The layer that DOES decide is policy_rules, which is
         # declared. Same exemption reason as decision_record.py in TS.
         "approval_action.py",
+        # Strict-profile schemas, canonicalizers, receipt builders/verifiers,
+        # admission transport, coordination, and runtime orchestration. These
+        # are not detector layers: invalid inputs fail before admission, and
+        # uncertain admission freezes execution rather than consulting the
+        # configurable detector fail mode.
+        "aarm_outcome.py",
+        "action_context.py",
+        "action_context_v2.py",
+        "intent_alignment.py",
+        "intent_alignment_v2.py",
+        "strict_admission.py",
+        "strict_canonical.py",
+        "strict_receipt.py",
+        "strict_receipt_coordinator.py",
+        "strict_receipt_coordinator_support.py",
+        "strict_receipt_prepared_state.py",
+        "strict_receipt_runtime.py",
+        "strict_receipt_v2.py",
+        "strict_receipt_v2_verify.py",
+        "strict_receipt_verify.py",
         "audit_gap.py",
         "auto.py",
         # Records why an optional integration failed to bind. Decides nothing:
