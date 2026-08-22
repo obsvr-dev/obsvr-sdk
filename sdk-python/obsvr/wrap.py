@@ -1695,14 +1695,60 @@ class _PreCall:
         self.user_input = user_input
 
 
-def _govern_before_call(
+class _PreCallPlan:
+    """A provider-free governance result consumed by the legacy wrapper."""
+
+    __slots__ = (
+        "disposition",
+        "pre",
+        "event",
+        "error",
+        "compliance",
+        "classifications",
+        "args",
+        "kwargs",
+    )
+
+    def __init__(
+        self,
+        disposition,
+        *,
+        pre=None,
+        event=None,
+        error=None,
+        compliance=None,
+        classifications=(),
+        args=(),
+        kwargs=None,
+    ):
+        self.disposition = disposition
+        self.pre = pre
+        self.event = event
+        self.error = error
+        self.compliance = compliance
+        self.classifications = tuple(sorted(set(classifications)))
+        self.args = args
+        self.kwargs = kwargs if kwargs is not None else {}
+
+
+def _plan_classifications(compliance):
+    return tuple(
+        sorted(
+            set(compliance.get("detected_types") or ())
+            | set(compliance.get("redacted_types") or ())
+            | set(compliance.get("blocked_types") or ())
+        )
+    )
+
+
+def _build_direct_call_pre_call_plan(
     target: Any,
     provider: str,
     operation: str,
     options: Dict[str, Any],
     args: tuple,
     kwargs: dict,
-) -> "_PreCall":
+) -> "_PreCallPlan":
     """Everything that must happen BEFORE the provider is contacted.
 
     Extracted so the request-shaped entry points share one implementation
@@ -1711,9 +1757,9 @@ def _govern_before_call(
     all — a second copy of this logic is how they would come to disagree again,
     which is the failure this SDK keeps finding in other people's code.
 
-    Raises ``ObsvrPolicyError`` on a block or on a redaction that could not be
-    applied; in both cases the provider is never called. Returns the governed
-    arguments otherwise.
+    A block or a redaction that could not be applied is returned as a blocked
+    plan; the provider is never called. The compatibility consumer below emits
+    the existing audit event and raises the stored policy error.
     """
     config = get_config()
 
@@ -1789,8 +1835,15 @@ def _govern_before_call(
             ),
             metadata=metadata or None,
         )
-        _emit_audit(config, event, compliance)
-        raise blocked_call_error(compliance)
+        return _PreCallPlan(
+            "blocked",
+            event=event,
+            error=blocked_call_error(compliance),
+            compliance=compliance,
+            classifications=_plan_classifications(compliance),
+            args=args,
+            kwargs=kwargs,
+        )
 
     if policy["decision"] == "redact":
         # Enforcement application: a redaction that cannot be carried out blocks
@@ -1822,18 +1875,50 @@ def _govern_before_call(
                 ),
                 metadata=metadata or None,
             )
-            _emit_audit(config, event, compliance)
-            raise blocked_call_error(compliance)
+            return _PreCallPlan(
+                "blocked",
+                event=event,
+                error=blocked_call_error(compliance),
+                compliance=compliance,
+                classifications=_plan_classifications(compliance),
+                args=args,
+                kwargs=kwargs,
+            )
         args = _redacted_args
 
-    return _PreCall(
-        compliance=compliance,
-        stored_prompt=stored_prompt,
-        metadata=metadata,
+    return _PreCallPlan(
+        "ready",
+        pre=_PreCall(
+            compliance=compliance,
+            stored_prompt=stored_prompt,
+            metadata=metadata,
+            args=args,
+            kwargs=kwargs,
+            model=model,
+            user_input=_last_user_message(kwargs),
+        ),
+        classifications=_plan_classifications(compliance),
         args=args,
         kwargs=kwargs,
-        model=model,
-        user_input=_last_user_message(kwargs),
+    )
+
+
+def _consume_pre_call_plan(plan: "_PreCallPlan", config: Any) -> "_PreCall":
+    if plan.disposition == "ready" and plan.pre is not None:
+        return plan.pre
+    if plan.disposition != "blocked" or plan.event is None or plan.error is None:
+        raise RuntimeError("obsvr: invalid pre-call governance plan")
+    _emit_audit(config, plan.event, plan.compliance)
+    raise plan.error
+
+
+def _govern_before_call(target, provider, operation, options, args, kwargs):
+    """Compatibility consumer preserving the legacy blocking exception."""
+    return _consume_pre_call_plan(
+        _build_direct_call_pre_call_plan(
+            target, provider, operation, options, args, kwargs
+        ),
+        get_config(),
     )
 
 

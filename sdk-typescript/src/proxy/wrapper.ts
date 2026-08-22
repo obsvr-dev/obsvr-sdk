@@ -389,7 +389,7 @@ function atPath(ctx: PathContext, path: string[]): PathContext {
   return child;
 }
 
-type PathContext = {
+export type PathContext = {
   path: string[];
   options: WrapOptions;
   config: ResolvedConfig;
@@ -1405,11 +1405,11 @@ function wrapStreamingIterator(
 /**
  * What the pre-call half hands to the post-call half.
  *
- * Only five values cross the boundary, which is why this split is a refactor
- * rather than a redesign: everything else the governance section computes is
- * consumed inside it.
+ * Only the values needed to invoke and audit cross the boundary, so this split
+ * is a refactor rather than a redesign: everything else the governance section
+ * computes is consumed inside it.
  */
-interface PreCallOutcome {
+export interface PreCallOutcome {
   /** Args with obsvr's own audit fields removed, and PII redacted in place. */
   cleaned_args: unknown[];
   /** The audit fields that were filtered OUT of the caller's arguments. */
@@ -1429,7 +1429,22 @@ interface PreCallOutcome {
    * INPUT is what makes divergence impossible; sharing the rule would not.
    */
   taintIdentity: Record<string, unknown>;
+  /** Detector classifications established by the governance pipeline. */
+  detectedClassifications: string[];
 }
+
+export type GovernancePreCallPlan =
+  | ({ disposition: "ready" } & PreCallOutcome)
+  | {
+      disposition: "blocked";
+      cleaned_args: unknown[];
+      audit_fields: AuditFields;
+      compliance: ComplianceCtx;
+      modelHint: string | undefined;
+      detectedClassifications: string[];
+      blockedEvent: AuditEvent;
+      error: Error;
+    };
 
 /**
  * The pre-call half: everything from filtering the caller's arguments through
@@ -1442,10 +1457,10 @@ interface PreCallOutcome {
  * pipelines that must agree are two pipelines that will eventually disagree,
  * and this one decides whether a request is allowed to leave the process.
  *
- * BLOCKS BY THROWING. There is no early return in here and no "blocked" flag to
- * check: a refusal propagates out, so a caller that forgets to inspect a result
- * cannot accidentally proceed. (There is ONE throw at this function's own
- * nesting level, not two — an earlier commit message said two.)
+ * A policy refusal is returned as a blocked plan. The compatibility consumer
+ * below emits the existing forensic event and throws the exact stored error;
+ * separating those steps lets another trusted boundary inspect the complete
+ * governed invocation without contacting the provider.
  *
  * TWO ENTRY POINTS, DIFFERENT TIMING. This is called from
  * createAuditedMethod, which awaits it and then calls the provider, and from
@@ -1455,13 +1470,13 @@ interface PreCallOutcome {
  * lands on both paths — including the one where the caller is already holding
  * an object by the time this resolves.
  */
-async function governCall(
+export async function _buildDirectCallPreCallPlan(
   args: unknown[],
   target: object,
   ctx: PathContext,
   provider: "openai" | "anthropic" | "google" | "unknown",
   methodPath: string,
-): Promise<PreCallOutcome> {
+): Promise<GovernancePreCallPlan> {
   const { config } = ctx;
     // Always filter audit fields from args (even if not auditing)
     // This ensures audit fields never reach the LLM provider
@@ -2649,24 +2664,68 @@ async function governCall(
       // a class that is still open.
       applyStoredContentNet(blockedEvent, config, decisionText());
 
-      sendAuditAsync(config, blockedEvent);
-      debugLog(
-        config,
-        "info",
-        `Request blocked (${actionReason}): ${blockedEvent.request_id}`,
-      );
-      throw createPolicyError({
-        action_taken: actionTaken,
-        action_reason: actionReason,
-        action_source: actionSource,
-        policy_version: policyVersion,
-        policy_reason: policyReason,
-        rule_id: ruleId,
-        reason_code: resolvedReasonCode,
-      });
+      return {
+        disposition: "blocked",
+        cleaned_args,
+        audit_fields,
+        compliance,
+        modelHint,
+        detectedClassifications: [
+          ...new Set([...detectedTypesFound, ...redactedTypes, ...blockedTypes]),
+        ].sort(),
+        blockedEvent,
+        error: createPolicyError({
+          action_taken: actionTaken,
+          action_reason: actionReason,
+          action_source: actionSource,
+          policy_version: policyVersion,
+          policy_reason: policyReason,
+          rule_id: ruleId,
+          reason_code: resolvedReasonCode,
+        }),
+      };
     }
 
-  return { cleaned_args, audit_fields, auditThisCall, compliance, modelHint, taintIdentity };
+  return {
+    disposition: "ready",
+    cleaned_args,
+    audit_fields,
+    auditThisCall,
+    compliance,
+    modelHint,
+    taintIdentity,
+    detectedClassifications: [
+      ...new Set([...detectedTypesFound, ...redactedTypes, ...blockedTypes]),
+    ].sort(),
+  };
+}
+
+function consumePreCallPlan(
+  plan: GovernancePreCallPlan,
+  config: ResolvedConfig,
+): PreCallOutcome {
+  if (plan.disposition === "ready") return plan;
+  sendAuditAsync(config, plan.blockedEvent);
+  debugLog(
+    config,
+    "info",
+    `Request blocked (${plan.compliance.actionReason}): ${plan.blockedEvent.request_id}`,
+  );
+  throw plan.error;
+}
+
+async function governCall(
+  args: unknown[],
+  target: object,
+  ctx: PathContext,
+  provider: "openai" | "anthropic" | "google" | "unknown",
+  methodPath: string,
+): Promise<PreCallOutcome> {
+  const config = ctx.config;
+  return consumePreCallPlan(
+    await _buildDirectCallPreCallPlan(args, target, ctx, provider, methodPath),
+    config,
+  );
 }
 
 function createAuditedMethod(
