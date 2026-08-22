@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import threading
 from typing import Any, Callable, Dict, Optional
 
@@ -12,25 +11,18 @@ from .strict_admission_v2 import (
     admit_strict_receipt_v2,
 )
 from .strict_receipt_prepared_state import DEFINITIVE_NO_STORE
-from .tool_pinning import _canonical_json_for_hash
+from .strict_receipt_runtime_v2_bindings import (
+    BoundArguments as _BoundArguments,
+    TrustedAdmission as _TrustedAdmission,
+    runtime_operation_fingerprint,
+)
+from .strict_receipt_runtime_v2_recovery_support import (
+    persist_recovery,
+    validate_recovery_store,
+)
 
 _ENVELOPE_SCHEMA = "obsvr-strict-receipt-envelope-v2"
 _RECEIPT_SCHEMA = "obsvr-strict-receipt-v2"
-
-
-class _BoundArguments:
-    def __init__(self, value: Any) -> None:
-        self._value = copy.deepcopy(value)
-        canonical = _canonical_json_for_hash(self._value).encode("utf-8")
-        self.arguments_hash = hashlib.sha256(canonical).hexdigest()
-
-    def snapshot(self) -> Any:
-        return copy.deepcopy(self._value)
-
-
-class _TrustedAdmission:
-    def __init__(self, admit: Callable[[Dict[str, Any], Any], Dict[str, Any]]) -> None:
-        self.admit = admit
 
 
 def bind_strict_v2_json_arguments(value: Any) -> Any:
@@ -58,6 +50,7 @@ class StrictReceiptRuntimeV2:
         coordinator: Any,
         admission_config: Dict[str, Any],
         trusted_admission: Optional[Any] = None,
+        recovery_store: Optional[Any] = None,
     ) -> None:
         if trusted_admission is not None and not isinstance(
             trusted_admission, _TrustedAdmission
@@ -68,6 +61,13 @@ class StrictReceiptRuntimeV2:
         self._coordinator = coordinator
         self._trusted_admission = trusted_admission
         self._admission_config = admission_config
+        self._recovery_store = recovery_store
+        if recovery_store is not None and not validate_recovery_store(
+            coordinator, recovery_store
+        ):
+            raise StrictReceiptRuntimeV2Error(
+                "recovery store requires a recoverable coordinator"
+            )
         state = coordinator.inspect_state()
         self._tenant_id = self._text(state.get("tenant_id"), "tenant_id")
         self._session_id = self._text(state.get("session_id"), "session_id")
@@ -155,6 +155,22 @@ class StrictReceiptRuntimeV2:
                     prepared, base, snapshot["reason"], action_id, fingerprint
                 )
             try:
+                self._persist_recovery()
+            except Exception as error:
+                self._coordinator.abort_prepared(
+                    prepared["token"], prepared["receipt_hash"], DEFINITIVE_NO_STORE
+                )
+                return self._finish(
+                    action_id,
+                    fingerprint,
+                    {
+                        **base,
+                        "status": "nonexecuted",
+                        "reason": "recovery_persist_failed",
+                        "error": error,
+                    },
+                )
+            try:
                 admission = (
                     self._trusted_admission.admit(
                         copy.deepcopy(receipt), self._admission_config
@@ -205,6 +221,20 @@ class StrictReceiptRuntimeV2:
                     prepared["receipt_hash"],
                     DEFINITIVE_NO_STORE,
                 )
+                try:
+                    self._persist_recovery()
+                except Exception as error:
+                    return self._finish(
+                        action_id,
+                        fingerprint,
+                        {
+                            **base,
+                            "status": "nonexecuted",
+                            "reason": "recovery_persist_failed",
+                            "admission": admission,
+                            "error": error,
+                        },
+                    )
                 return self._finish(
                     action_id,
                     fingerprint,
@@ -243,6 +273,20 @@ class StrictReceiptRuntimeV2:
                         **base,
                         "status": "admitted",
                         "reason": "local_commit_failed",
+                        "admission": admission,
+                        "error": error,
+                    },
+                )
+            try:
+                self._persist_recovery()
+            except Exception as error:
+                return self._finish(
+                    action_id,
+                    fingerprint,
+                    {
+                        **base,
+                        "status": "admitted",
+                        "reason": "recovery_persist_failed",
                         "admission": admission,
                         "error": error,
                     },
@@ -392,6 +436,9 @@ class StrictReceiptRuntimeV2:
             {**base, "status": "nonexecuted", "reason": reason},
         )
 
+    def _persist_recovery(self) -> None:
+        persist_recovery(self._coordinator, self._recovery_store)
+
     def _finish(
         self,
         action_id: Optional[str],
@@ -411,29 +458,9 @@ class StrictReceiptRuntimeV2:
     def _fingerprint(
         self, kind: str, input_value: Dict[str, Any], action: Dict[str, Any]
     ) -> str:
-        original = action.get("original_arguments")
-        effective = action.get("effective_arguments")
-        document = {
-            "schema": "obsvr-strict-runtime-operation-v2",
-            "kind": kind,
-            "tenant_id": self._tenant_id,
-            "session_id": self._session_id,
-            "runtime_action_id": action.get("runtime_action_id"),
-            "input": input_value,
-            "original_arguments_hash": (
-                original.arguments_hash
-                if isinstance(original, _BoundArguments)
-                else None
-            ),
-            "effective_arguments_hash": (
-                effective.arguments_hash
-                if isinstance(effective, _BoundArguments)
-                else None
-            ),
-        }
-        return hashlib.sha256(
-            _canonical_json_for_hash(document).encode("utf-8")
-        ).hexdigest()
+        return runtime_operation_fingerprint(
+            kind, input_value, action, self._tenant_id, self._session_id
+        )
 
     @staticmethod
     def _action_id(action: Dict[str, Any]) -> str:

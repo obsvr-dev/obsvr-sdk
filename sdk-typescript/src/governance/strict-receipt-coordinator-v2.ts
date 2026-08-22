@@ -29,7 +29,7 @@ export type {
 } from './strict-receipt-coordinator-v2-types.js';
 
 const FINAL = new Set<AarmOutcome>(['ALLOW', 'DENY', 'MODIFY']);
-interface PendingV2 {
+export interface PendingV2 {
   receipt: StrictReceiptV2Envelope;
   context: ActionContextV2Document;
   baseResult: IntentV2BaseResult;
@@ -40,25 +40,25 @@ export class StrictReceiptCoordinatorV2Error extends Error {
 }
 
 export class StrictReceiptCoordinatorV2 {
-  private readonly signer: DeviceSigner;
+  protected readonly signer: DeviceSigner;
   private readonly policy: IntentPolicyV2Document;
-  private readonly sdkVersion: string;
-  private readonly tenantId: string;
-  private readonly sessionId: string;
+  protected readonly sdkVersion: string;
+  protected readonly tenantId: string;
+  protected readonly sessionId: string;
   private readonly clock: () => number;
   private readonly deferTtlMs: number;
   private readonly approvalVerifier: StrictApprovalVerifier;
   private readonly includePublicKey: boolean;
   private readonly pidSource: () => number;
-  private readonly ownerPid: number;
-  private sequence = 0;
-  private lastReceiptHash: string | null = null;
-  private lastTimestamp: number | null = null;
-  private priorActions: PriorActionV2Input[] = [];
-  private readonly suspended = new Map<string, PendingV2>();
-  private readonly resolved = new Set<string>();
-  private readonly actionIds = new Set<string>();
-  private readonly approvalRequests = new Map<string, string>();
+  protected readonly ownerPid: number;
+  protected sequence = 0;
+  protected lastReceiptHash: string | null = null;
+  protected lastTimestamp: number | null = null;
+  protected priorActions: PriorActionV2Input[] = [];
+  protected readonly suspended = new Map<string, PendingV2>();
+  protected readonly resolved = new Set<string>();
+  protected readonly actionIds = new Set<string>();
+  protected readonly approvalRequests = new Map<string, string>();
   private readonly preparedState: PreparedReceiptState;
 
   constructor(options: StrictReceiptCoordinatorV2Options) {
@@ -249,7 +249,7 @@ export class StrictReceiptCoordinatorV2 {
     const observed = v2Integer(this.clock(), 'clock'); const timestamp = Math.max(observed, this.lastTimestamp ?? 0);
     return { timestamp, clamped: observed < timestamp };
   }
-  private commitDecision(result: StrictDecisionV2Result, context: ActionContextV2Document, base: IntentV2BaseResult): void {
+  protected commitDecision(result: StrictDecisionV2Result, context: ActionContextV2Document, base: IntentV2BaseResult): void {
     const receipt = result.receipt; this.advance(receipt); this.actionIds.add(receipt.body.action.action_id);
     this.priorActions.push({ sequence: receipt.body.sequence, kind: receipt.body.action.kind,
       name: receipt.body.action.name, outcome: receipt.body.evaluation.outcome,
@@ -259,7 +259,7 @@ export class StrictReceiptCoordinatorV2 {
     const requestId = receipt.body.suspension?.approval_request_id;
     if (requestId !== undefined) this.approvalRequests.set(requestId, receipt.receipt_hash);
   }
-  private commitResolution(receipt: StrictReceiptV2Envelope, hash: string, index: number): void {
+  protected commitResolution(receipt: StrictReceiptV2Envelope, hash: string, index: number): void {
     const classifications = this.priorActions[index]!.data_classifications; this.advance(receipt);
     this.priorActions[index] = { sequence: receipt.body.sequence, kind: receipt.body.action.kind,
       name: receipt.body.action.name, outcome: receipt.body.evaluation.outcome,
@@ -270,7 +270,7 @@ export class StrictReceiptCoordinatorV2 {
     this.sequence = receipt.body.sequence; this.lastReceiptHash = receipt.receipt_hash;
     this.lastTimestamp = receipt.body.timestamp_ms;
   }
-  private ensureProcess(): void {
+  protected ensureProcess(): void {
     if (v2Integer(this.pidSource(), 'pid') !== this.ownerPid) {
       throw new StrictReceiptCoordinatorV2Error('strict v2 coordinator cannot cross a process boundary');
     }

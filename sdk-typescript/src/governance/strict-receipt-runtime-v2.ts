@@ -19,6 +19,10 @@ export interface StrictV2RuntimeAction<A, R> {
 export interface TrustedStrictV2Admission {
   admit: (receipt: StrictReceiptV2Envelope, config: StrictAdmissionV2Options) => Promise<StrictAdmissionV2Result>;
 }
+export interface StrictV2RecoveryStore {
+  /** Implementations must atomically replace the previous checkpoint. */
+  save: (checkpoint: unknown) => Promise<void> | void;
+}
 
 function deepFreeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') {
@@ -50,12 +54,13 @@ interface CoordinatorV2 {
   abortPrepared(token: string, hash: string, capability: typeof DEFINITIVE_NO_STORE): void;
   freezePrepared(token: string, hash: string, reason?: string): void;
   inspectState(): { tenant_id: string; session_id: string };
+  exportRecoveryCheckpoint?: () => unknown;
 }
 type Prepared = PreparedDecisionV2 | PreparedResolutionV2;
 interface ResultBase { receipt: StrictReceiptV2Envelope; receipt_hash: string }
 export type StrictRuntimeV2Result<T> =
-  | (ResultBase & { status: 'admitted'; reason: 'local_commit_failed'; admission: StrictAdmissionV2Result; error: unknown })
-  | (ResultBase & { status: 'nonexecuted'; reason: 'not_authorized' | 'definitive_no_store' | 'admission_uncertain' | 'receipt_hash_mismatch' | 'admission_schema_mismatch' | 'tenant_mismatch' | 'session_mismatch' | 'receipt_schema_mismatch' | 'action_id_mismatch' | 'original_arguments_unavailable' | 'effective_arguments_unavailable'; admission?: StrictAdmissionV2Result; error?: unknown })
+  | (ResultBase & { status: 'admitted'; reason: 'local_commit_failed' | 'recovery_persist_failed'; admission: StrictAdmissionV2Result; error: unknown })
+  | (ResultBase & { status: 'nonexecuted'; reason: 'not_authorized' | 'definitive_no_store' | 'admission_uncertain' | 'receipt_hash_mismatch' | 'admission_schema_mismatch' | 'tenant_mismatch' | 'session_mismatch' | 'receipt_schema_mismatch' | 'action_id_mismatch' | 'original_arguments_unavailable' | 'effective_arguments_unavailable' | 'recovery_persist_failed'; admission?: StrictAdmissionV2Result; error?: unknown })
   | (ResultBase & { status: 'executed'; value: T })
   | (ResultBase & { status: 'invocation_failed'; error: unknown });
 
@@ -71,13 +76,18 @@ export class StrictReceiptRuntimeV2 {
 
   constructor(private readonly coordinator: CoordinatorV2,
     private readonly admissionConfig: StrictAdmissionV2Options,
-    private readonly trustedAdmission?: TrustedStrictV2Admission) {
+    private readonly trustedAdmission?: TrustedStrictV2Admission,
+    private readonly recoveryStore?: StrictV2RecoveryStore) {
     if (trustedAdmission !== undefined && !trustedAdmissions.has(trustedAdmission)) {
       throw new StrictReceiptRuntimeV2Error('trusted admission must be created explicitly');
     }
     const state = coordinator.inspectState();
     this.tenantId = this.text(state.tenant_id, 'tenant_id');
     this.sessionId = this.text(state.session_id, 'session_id');
+    if (recoveryStore && (typeof recoveryStore.save !== 'function'
+      || typeof coordinator.exportRecoveryCheckpoint !== 'function')) {
+      throw new StrictReceiptRuntimeV2Error('recovery store requires a recoverable coordinator');
+    }
   }
 
   runDecision<A, R>(input: { decision: StrictDecisionV2Input; action: StrictV2RuntimeAction<A, R> }): Promise<StrictRuntimeV2Result<R>> {
@@ -123,6 +133,10 @@ export class StrictReceiptRuntimeV2 {
       const snapshot = receipt.body.execution_authorized
         ? this.executionArguments(action, receipt) : { ok: true as const, value: undefined as A };
       if (!snapshot.ok) return this.abortLocal(prepared, base, snapshot.reason, actionId, fingerprint);
+      try { await this.persistRecovery(); } catch (error) {
+        this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
+        return this.finish(actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'recovery_persist_failed', error });
+      }
       let admission: StrictAdmissionV2Result;
       try {
         admission = this.trustedAdmission
@@ -139,6 +153,9 @@ export class StrictReceiptRuntimeV2 {
       }
       if (admission.disposition === 'definitive_no_store') {
         this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
+        try { await this.persistRecovery(); } catch (error) {
+          return this.finish(actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'recovery_persist_failed', admission, error });
+        }
         return this.finish(actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'definitive_no_store', admission });
       }
       if (admission.disposition === 'uncertain') {
@@ -148,6 +165,9 @@ export class StrictReceiptRuntimeV2 {
       let committed: StrictDecisionV2Result | StrictReceiptV2Envelope;
       try { committed = this.coordinator.commitPrepared(prepared.token, admission.receipt_hash); } catch (error) {
         return this.finish(actionId, fingerprint, { ...base, status: 'admitted', reason: 'local_commit_failed', admission, error });
+      }
+      try { await this.persistRecovery(); } catch (error) {
+        return this.finish(actionId, fingerprint, { ...base, status: 'admitted', reason: 'recovery_persist_failed', admission, error });
       }
       const committedReceipt = this.committedReceipt(committed);
       const committedBase = { receipt: this.copy(committedReceipt), receipt_hash: committedReceipt.receipt_hash };
@@ -207,6 +227,9 @@ export class StrictReceiptRuntimeV2 {
     reason: Extract<StrictRuntimeV2Result<T>, { status: 'nonexecuted' }>['reason'], actionId?: string, fingerprint?: string): StrictRuntimeV2Result<T> {
     this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
     return this.finish(actionId, fingerprint, { ...base, status: 'nonexecuted', reason });
+  }
+  private async persistRecovery(): Promise<void> {
+    if (this.recoveryStore) await this.recoveryStore.save(this.coordinator.exportRecoveryCheckpoint!());
   }
   private finish<T>(actionId: string | undefined, fingerprint: string | undefined, result: StrictRuntimeV2Result<T>): StrictRuntimeV2Result<T> {
     if (actionId && fingerprint) this.store(actionId, fingerprint, result);
