@@ -11,6 +11,7 @@
 import { enqueueAuditEvent, flushQueue, getSenderStats, _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import { init, getConfig, _reset, startPolicyPolling, stopPolicyPolling } from '../../src/proxy/config';
 import type { AuditEvent, ResolvedConfig } from '../../src/proxy/types';
+import { jest } from '@jest/globals';
 
 const realFetch = globalThis.fetch;
 
@@ -242,5 +243,52 @@ describe('delivery counters: 409 duplicate_event is idempotent success', () => {
     const stats = getSenderStats();
     expect(stats.sent).toBe(0);
     expect(stats.dropped_permanent).toBe(2); // original plus the non-recursively-failed marker
+  });
+});
+
+describe('sender lifecycle reset', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    _resetSender();
+    _reset();
+  });
+
+  it('does not let an in-flight prior lifecycle retry or warn after reset', async () => {
+    let release!: () => void;
+    const firstResponse = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      if (attempts === 1) await firstResponse;
+      return { status: 500, ok: false, json: async () => ({ error: 'unavailable' }) };
+    }) as unknown as typeof fetch;
+    const random = jest.spyOn(Math, 'random').mockReturnValue(-1);
+    const warning = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    init({ api_key: 'test-key', ingest_url: 'https://ingest.example.com' });
+    enqueueAuditEvent(getConfig(), auditEvent('old-lifecycle'));
+    expect(attempts).toBe(1);
+
+    _resetSender();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(attempts).toBe(1);
+    expect(getSenderStats()).toMatchObject({
+      enqueued: 0,
+      sent: 0,
+      retries: 0,
+      dropped_retry_exhausted: 0,
+    });
+    expect(warning).not.toHaveBeenCalled();
+    warning.mockRestore();
+    random.mockRestore();
   });
 });

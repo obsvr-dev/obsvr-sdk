@@ -179,6 +179,9 @@ const backoffState: BackoffState = {
  */
 const pendingQueue: QueueItem[] = [];
 
+/** Invalidates asynchronous queue work when test-only sender state is reset. */
+let senderGeneration = 0;
+
 /**
  * Currently processing flag
  */
@@ -284,15 +287,16 @@ function resetBackoff(): void {
  */
 async function sendEvent(
   config: ResolvedConfig,
-  event: AuditEvent
+  event: AuditEvent,
+  generation: number,
 ): Promise<{ verdict: SendVerdict; rejected: number }> {
   const url = `${config.ingest_url}${INGEST_PATH}`;
 
   let verdict: SendVerdict;
   let rejected = 0;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), config.timeout);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.timeout);
     if (typeof timeoutId === "object" && timeoutId.unref) timeoutId.unref();
 
     const response = await fetch(url, {
@@ -308,7 +312,6 @@ async function sendEvent(
       redirect: "manual",
     });
 
-    clearTimeout(timeoutId);
     verdict = classifyStatus(response.status, INGEST_PATH);
     if (response.status === 409 && (await isDuplicateResponse(response))) {
       verdict = "ok";
@@ -331,11 +334,15 @@ async function sendEvent(
       );
     }
     verdict = "retryable";
+  } finally {
+    clearTimeout(timeoutId);
   }
   // The server answered on both "ok" and "rejected". The transport is healthy
   // whichever way it ruled, so the backoff window is cleared for both.
-  if (verdict === "ok" || verdict === "rejected") resetBackoff();
-  else if (verdict === "retryable") applyBackoff();
+  if (generation === senderGeneration) {
+    if (verdict === "ok" || verdict === "rejected") resetBackoff();
+    else if (verdict === "retryable") applyBackoff();
+  }
   return { verdict, rejected };
 }
 
@@ -408,15 +415,16 @@ async function countRejects(
  */
 async function sendEventBatch(
   config: ResolvedConfig,
-  events: AuditEvent[]
+  events: AuditEvent[],
+  generation: number,
 ): Promise<{ verdict: SendVerdict; rejected: number }> {
   const url = `${config.ingest_url}${INGEST_BATCH_PATH}`;
 
   let verdict: SendVerdict;
   let rejected = 0;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), config.timeout);
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.timeout);
     if (typeof timeoutId === "object" && timeoutId.unref) timeoutId.unref();
 
     const response = await fetch(url, {
@@ -432,7 +440,6 @@ async function sendEventBatch(
       redirect: "manual",
     });
 
-    clearTimeout(timeoutId);
     verdict = classifyStatus(response.status, INGEST_BATCH_PATH);
 
     if (verdict === "ok") {
@@ -462,9 +469,13 @@ async function sendEventBatch(
       );
     }
     verdict = "retryable";
+  } finally {
+    clearTimeout(timeoutId);
   }
-  if (verdict === "ok" || verdict === "rejected") resetBackoff();
-  else if (verdict === "retryable") applyBackoff();
+  if (generation === senderGeneration) {
+    if (verdict === "ok" || verdict === "rejected") resetBackoff();
+    else if (verdict === "retryable") applyBackoff();
+  }
   return { verdict, rejected };
 }
 
@@ -509,9 +520,11 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
   }
 
   isProcessing = true;
+  const generation = senderGeneration;
 
   try {
     while (pendingQueue.length > 0) {
+      if (generation !== senderGeneration) return;
       if (isInBackoff()) {
         // Wait until backoff period ends
         const waitTime = backoffState.until - Date.now();
@@ -520,6 +533,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           const t = setTimeout(resolve, waitTime);
           if (typeof t === "object" && t.unref) t.unref();
         });
+        if (generation !== senderGeneration) return;
       }
 
       // Batch bounded by BOTH item count and serialized bytes (E13/E34):
@@ -544,8 +558,13 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
 
       const { verdict, rejected } =
         items.length === 1
-          ? await sendEvent(config, items[0].event)
-          : await sendEventBatch(config, items.map((i) => i.event));
+          ? await sendEvent(config, items[0].event, generation)
+          : await sendEventBatch(config, items.map((i) => i.event), generation);
+
+      // `_resetSender()` starts a new lifecycle. Results from an earlier one
+      // must not requeue stale events, mutate fresh counters, or emit loss
+      // warnings after the test/application lifecycle that owned them ended.
+      if (generation !== senderGeneration) return;
 
       if (verdict === "ok") {
         // Events the server refused individually were delivered but not
@@ -610,7 +629,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
       }
     }
   } finally {
-    isProcessing = false;
+    if (generation === senderGeneration) isProcessing = false;
   }
 }
 
@@ -1078,6 +1097,9 @@ export async function flushQueue(
 let handlersRegistered = false;
 /** Guards against the beforeExit -> flush -> beforeExit loop. */
 let exitFlushStarted = false;
+let beforeExitHandler: (() => void) | null = null;
+let sigtermHandler: (() => void) | null = null;
+let sigintHandler: (() => void) | null = null;
 
 /**
  * Setup exit handlers so queued audit events survive process shutdown.
@@ -1108,7 +1130,7 @@ export function setupExitHandlers(config: ResolvedConfig): void {
   if (handlersRegistered) return;
 
   if (typeof process !== "undefined" && process.on) {
-    process.on("beforeExit", () => {
+    beforeExitHandler = () => {
       if (exitFlushStarted || pendingQueue.length === 0) return;
       exitFlushStarted = true;
       flushQueue(config, 2000)
@@ -1116,7 +1138,7 @@ export function setupExitHandlers(config: ResolvedConfig): void {
         .finally(() => {
           exitFlushStarted = false;
         });
-    });
+    };
 
     const signalHandler = (signal: "SIGTERM" | "SIGINT") => {
       if (exitFlushStarted) return;
@@ -1142,8 +1164,11 @@ export function setupExitHandlers(config: ResolvedConfig): void {
         });
       }
     };
-    process.on("SIGTERM", () => signalHandler("SIGTERM"));
-    process.on("SIGINT", () => signalHandler("SIGINT"));
+    sigtermHandler = () => signalHandler("SIGTERM");
+    sigintHandler = () => signalHandler("SIGINT");
+    process.on("beforeExit", beforeExitHandler);
+    process.on("SIGTERM", sigtermHandler);
+    process.on("SIGINT", sigintHandler);
 
     handlersRegistered = true;
     debugLog(config, "info", "Exit handlers registered");
@@ -1155,6 +1180,15 @@ export function setupExitHandlers(config: ResolvedConfig): void {
  * @internal
  */
 export function _resetSender(): void {
+  senderGeneration++;
+  if (typeof process !== "undefined" && process.removeListener) {
+    if (beforeExitHandler) process.removeListener("beforeExit", beforeExitHandler);
+    if (sigtermHandler) process.removeListener("SIGTERM", sigtermHandler);
+    if (sigintHandler) process.removeListener("SIGINT", sigintHandler);
+  }
+  beforeExitHandler = null;
+  sigtermHandler = null;
+  sigintHandler = null;
   pendingQueue.length = 0;
   backoffState.until = 0;
   backoffState.multiplier = 1;
