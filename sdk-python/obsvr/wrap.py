@@ -63,7 +63,7 @@ import inspect
 import logging
 import time
 import weakref
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from .config import ResolvedConfig, get_config, is_initialized
 from .events import build_audit_event, blocked_call_error, classify_error
@@ -82,6 +82,14 @@ from .sender import send_audit_async, should_emit
 from .metering import record_token_usage_for_rules as _record_token_usage_for_rules
 from .metering import stamp_cost as _stamp_cost
 from .token_usage import read_token_usage
+from .provider_attribution import resolve_destination
+from .strict_provider_boundary_v2_1 import (
+    ObsvrStrictProviderBoundaryV21Error,
+    assert_strict_provider_boundary_v2_1,
+    execute_strict_provider_call_v2_1,
+    strict_provider_target_v2_1,
+    strict_provider_surface_unsupported_v2_1,
+)
 
 
 def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] = None) -> None:
@@ -157,6 +165,17 @@ AUDITABLE_METHODS = {
     "chat.completions.with_raw_response.parse",  # OpenAI raw structured output
     "responses.with_raw_response.create",  # OpenAI Responses raw response
     "responses.with_raw_response.parse",  # OpenAI Responses raw structured output
+}
+
+_STRICT_V2_1_DIRECT_METHODS = {
+    "chat.completions.create",
+    "chat.completions.parse",
+    "responses.create",
+    "responses.parse",
+    "messages.create",
+    "messages.parse",
+    "generate_content",
+    "models.generate_content",
 }
 
 #: Named iterator methods on the maintained Google client. They enter the
@@ -1935,7 +1954,10 @@ def _governed_call(
     config = get_config()
     operation = method_path
 
-    pre = _govern_before_call(target, provider, operation, options, args, kwargs)
+    plan = _build_direct_call_pre_call_plan(
+        target, provider, operation, options, args, kwargs
+    )
+    pre = _consume_pre_call_plan(plan, config)
     compliance = pre.compliance
     stored_prompt = pre.stored_prompt
     metadata = pre.metadata
@@ -1943,10 +1965,53 @@ def _governed_call(
     kwargs = pre.kwargs
     model = pre.model
 
+    strict_capability = options.get("strict_receipt_v2_1")
+    if strict_capability is not None and (
+        kwargs.get("stream") or method_path in _DIRECT_STREAM_METHODS
+    ):
+        strict_provider_surface_unsupported_v2_1()
+
     start = time.monotonic()
     try:
-        result = original(*args, **kwargs)
+        if strict_capability is not None:
+            root_client = options.get("_obsvr_strict_root_client")
+            recorded_provider, _attribution = resolve_destination(root_client, provider)
+            strict_target = strict_provider_target_v2_1(root_client)
+            invoked = {"args": args, "kwargs": kwargs}
+
+            def _invoke_strict(invocation):
+                nonlocal args, kwargs
+                if strict_provider_target_v2_1(root_client) != strict_target:
+                    raise ObsvrStrictProviderBoundaryV21Error(
+                        "context_unavailable"
+                    )
+                args = tuple(invocation["args"])
+                kwargs = dict(invocation["kwargs"])
+                value = original(*args, **kwargs)
+                if inspect.isawaitable(value):
+                    close = getattr(value, "close", None)
+                    if callable(close):
+                        close()
+                    strict_provider_surface_unsupported_v2_1()
+                return value
+
+            result = execute_strict_provider_call_v2_1(
+                strict_capability,
+                call={
+                    "provider": recorded_provider,
+                    "operation": method_path,
+                    "model": model,
+                    "target": strict_target,
+                    "data_classifications": list(plan.classifications),
+                },
+                invocation=invoked,
+                invoke=_invoke_strict,
+            )
+        else:
+            result = original(*args, **kwargs)
     except Exception as err:
+        if isinstance(err, ObsvrStrictProviderBoundaryV21Error):
+            raise
         latency_ms = (time.monotonic() - start) * 1000
         event = build_audit_event(
             config,
@@ -2082,6 +2147,25 @@ async def _governed_call_async(
 
 # ── Recursive attribute proxy ────────────────────────────────────────────────
 
+class _ObsvrProxyState(NamedTuple):
+    target: Any
+    path: List[str]
+    provider: str
+    options: Dict[str, Any]
+
+
+_OBSVR_PROXY_STATES: "weakref.WeakKeyDictionary[Any, _ObsvrProxyState]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _obsvr_proxy_state(proxy: Any) -> _ObsvrProxyState:
+    try:
+        return _OBSVR_PROXY_STATES[proxy]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError("obsvr: invalid governed proxy state") from error
+
+
 class _ObsvrProxy:
     """Attribute proxy mirroring the TS recursive Proxy.
 
@@ -2089,25 +2173,40 @@ class _ObsvrProxy:
     everything else passes through by reference.
     """
 
-    __slots__ = ("_obsvr_target", "_obsvr_path", "_obsvr_provider", "_obsvr_options")
+    __slots__ = ("__weakref__",)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name.startswith("_obsvr_"):
+            raise AttributeError("obsvr proxy internals are not public")
+        return object.__getattribute__(self, name)
 
     def __init__(self, target: Any, path: List[str], provider: str, options: Dict[str, Any]):
-        object.__setattr__(self, "_obsvr_target", target)
-        object.__setattr__(self, "_obsvr_path", path)
-        object.__setattr__(self, "_obsvr_provider", provider)
-        object.__setattr__(self, "_obsvr_options", options)
+        _OBSVR_PROXY_STATES[self] = _ObsvrProxyState(target, path, provider, options)
 
     def __getattr__(self, name: str) -> Any:
-        target = object.__getattribute__(self, "_obsvr_target")
-        path = object.__getattribute__(self, "_obsvr_path")
-        provider = object.__getattribute__(self, "_obsvr_provider")
-        options = object.__getattribute__(self, "_obsvr_options")
+        state = _obsvr_proxy_state(self)
+        target = state.target
+        path = state.path
+        provider = state.provider
+        options = state.options
 
         value = getattr(target, name)
         method_path = ".".join(path + [name])
+        strict_capability = options.get("strict_receipt_v2_1")
+
+        if (
+            strict_capability is not None
+            and callable(value)
+            and method_path not in _STRICT_V2_1_DIRECT_METHODS
+        ):
+            return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
 
         if method_path in AUDITABLE_METHODS and callable(value):
             if _is_async_callable(value):
+                if strict_capability is not None:
+                    async def strict_async_unsupported(*_args: Any, **_kwargs: Any) -> Any:
+                        strict_provider_surface_unsupported_v2_1()
+                    return strict_async_unsupported
                 async def async_intercepted(*args: Any, **kwargs: Any) -> Any:
                     return await _governed_call_async(
                         value, target, provider, method_path, options, args, kwargs
@@ -2121,6 +2220,8 @@ class _ObsvrProxy:
             return intercepted
 
         if method_path in STREAM_HELPER_METHODS and callable(value):
+            if strict_capability is not None:
+                return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
             # Not split by iscoroutinefunction: the helper itself is synchronous
             # on both the sync and async clients — it is the MANAGER it returns
             # that differs, and _GovernedStreamManager speaks both protocols.
@@ -2131,6 +2232,8 @@ class _ObsvrProxy:
             return intercepted_stream
 
         if method_path in DEFERRED_RESPONSE_METHODS and callable(value):
+            if strict_capability is not None:
+                return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
             # These methods are synchronous even on async clients: they return
             # an AsyncResponseContextManager whose request starts at __aenter__.
             def intercepted_response(*args: Any, **kwargs: Any) -> Any:
@@ -2140,12 +2243,16 @@ class _ObsvrProxy:
             return intercepted_response
 
         if method_path in GOVERNED_FACTORY_METHODS and callable(value):
+            if strict_capability is not None:
+                return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
             def intercepted_factory(*args: Any, **kwargs: Any) -> Any:
                 result = value(*args, **kwargs)
                 return _ObsvrProxy(result, [], provider, options)
             return intercepted_factory
 
         if method_path in TOOL_RUNNER_METHODS and callable(value):
+            if strict_capability is not None:
+                return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
             def intercepted_tool_runner(*args: Any, **kwargs: Any) -> Any:
                 return _governed_tool_runner(
                     value, target, provider, method_path, options, args, kwargs,
@@ -2153,17 +2260,24 @@ class _ObsvrProxy:
                 )
             return intercepted_tool_runner
 
-        # Keep walking only down chains that can reach an auditable method
-        if name in _TRAVERSABLE and value is not None and not callable(value):
+        # Strict mode must not return an unknown resource object raw: a method
+        # below it could otherwise bypass the deny-by-default execution gate.
+        primitive = isinstance(
+            value, (str, bytes, bytearray, int, float, complex, bool, type(None))
+        )
+        if (
+            (strict_capability is not None and not primitive and not callable(value))
+            or (name in _TRAVERSABLE and value is not None and not callable(value))
+        ):
             return _ObsvrProxy(value, path + [name], provider, options)
 
         return value
 
     def __setattr__(self, name: str, value: Any) -> None:
-        setattr(object.__getattribute__(self, "_obsvr_target"), name, value)
+        setattr(_obsvr_proxy_state(self).target, name, value)
 
     def __repr__(self) -> str:
-        return f"<obsvr-wrapped {object.__getattribute__(self, '_obsvr_target')!r}>"
+        return f"<obsvr-wrapped {_obsvr_proxy_state(self).target!r}>"
 
 
 def _is_async_callable(value: Any) -> bool:
@@ -2297,8 +2411,14 @@ def wrap(client: Any, **options: Any) -> Any:
     if not is_initialized():
         raise RuntimeError("obsvr: call init() before wrap()")
 
+    strict_capability = options.get("strict_receipt_v2_1")
+    if strict_capability is not None:
+        assert_strict_provider_boundary_v2_1(strict_capability)
+
     config: ResolvedConfig = get_config()
     if config.disabled:
+        if strict_capability is not None:
+            strict_provider_surface_unsupported_v2_1()
         return client
 
     # A copy that yielded to another SDK instance in this process passes the
@@ -2308,6 +2428,8 @@ def wrap(client: Any, **options: Any) -> Any:
     from .instance_guard import is_governing_instance
 
     if not is_governing_instance(_MODULE_INSTANCE_ID):
+        if strict_capability is not None:
+            strict_provider_surface_unsupported_v2_1()
         return client
 
     # ALREADY GOVERNED. register.py patches the openai and anthropic client
@@ -2333,9 +2455,10 @@ def wrap(client: Any, **options: Any) -> Any:
     if isinstance(client, _ObsvrProxy):
         if not options:
             return client
-        prior_options = object.__getattribute__(client, "_obsvr_options") or {}
-        prior_path = list(object.__getattribute__(client, "_obsvr_path") or [])
-        client = object.__getattribute__(client, "_obsvr_target")
+        state = _obsvr_proxy_state(client)
+        prior_options = state.options or {}
+        prior_path = list(state.path or [])
+        client = state.target
 
     # The client's SHAPE, which selects the extractors downstream.
     provider = _detect_provider(client)
@@ -2361,6 +2484,7 @@ def wrap(client: Any, **options: Any) -> Any:
 
     recorded_provider, attribution = resolve_destination(client, provider)
     options = {**prior_options, **dict(options or {})}
+    options["_obsvr_strict_root_client"] = client
     # Re-resolved from the client rather than carried over, so the reserved
     # destination keys can never be set by a caller passing them as options.
     options[RECORDED_PROVIDER_OPTION_KEY] = recorded_provider

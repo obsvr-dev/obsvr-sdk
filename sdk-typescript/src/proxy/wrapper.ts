@@ -148,6 +148,13 @@ import {
   resolveDestination,
   type CanonicalProvider,
 } from "./provider-attribution.js";
+import {
+  assertStrictProviderBoundaryV21,
+  executeStrictProviderCallV21,
+  ObsvrStrictProviderBoundaryV21Error,
+  strictProviderTargetV21,
+  strictProviderSurfaceUnsupportedV21,
+} from "../governance/strict-provider-boundary-v2-1.js";
 
 /**
  * Compliance context captured at the pre-LLM boundary.
@@ -265,6 +272,18 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["beta.responses.create", "openai-responses"], // OpenAI Responses beta
   ["beta.chat.completions.create", "openai-chat"], // OpenAI chat beta
   ["beta.chat.completions.parse", "openai-chat"], // OpenAI chat beta
+]);
+
+/** Narrow ordinary-call surface admitted by the first strict 2.1 boundary. */
+const STRICT_V21_DIRECT_METHODS = new Set([
+  "chat.completions.create",
+  "chat.completions.parse",
+  "messages.create",
+  "messages.parse",
+  "generateContent",
+  "models.generateContent",
+  "responses.create",
+  "responses.parse",
 ]);
 
 /**
@@ -392,6 +411,7 @@ function atPath(ctx: PathContext, path: string[]): PathContext {
 export type PathContext = {
   path: string[];
   options: WrapOptions;
+  rootClient: object;
   config: ResolvedConfig;
   /**
    * The client's API SHAPE, from duck-typing. Selects the prompt/response
@@ -2738,12 +2758,20 @@ function createAuditedMethod(
   const methodPath = ctx.path.join(".");
 
   return async function auditedMethod(...args: unknown[]): Promise<unknown> {
-    const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint } =
+    const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint,
+      detectedClassifications } =
       await governCall(args, target, ctx, provider, methodPath);
 
 
     // Check for streaming - compliance boundary has already run above.
     const firstArg = cleaned_args[0];
+    if (ctx.options.strict_receipt_v2_1 && (
+      methodPath === "models.generateContentStream"
+      || (typeof firstArg === "object" && firstArg !== null
+        && (firstArg as Record<string, unknown>).stream === true)
+    )) {
+      strictProviderSurfaceUnsupportedV21();
+    }
     if (
       typeof firstArg === "object" &&
       firstArg !== null &&
@@ -2846,11 +2874,47 @@ function createAuditedMethod(
     // Time the LLM call
     const startTime = performance.now();
     let response: unknown;
+    let invokedArgs = cleaned_args;
 
     try {
       // Call the original method with cleaned args
-      response = await originalMethod.apply(target, cleaned_args);
+      if (ctx.options.strict_receipt_v2_1) {
+        const destination = resolveDestination(
+          ctx.rootClient, ctx.declaredProvider ?? provider,
+        );
+        const strictTarget = strictProviderTargetV21(ctx.rootClient);
+        const model = String(
+          (cleaned_args[0] as { model?: unknown } | undefined)?.model
+            ?? modelHint
+            ?? "unknown",
+        );
+        response = await executeStrictProviderCallV21(
+          ctx.options.strict_receipt_v2_1,
+          {
+            provider: destination.provider,
+            operation: methodPath,
+            model,
+            target: strictTarget,
+            data_classifications: detectedClassifications,
+          },
+          cleaned_args,
+          (strictInvocation) => {
+            if (strictProviderTargetV21(ctx.rootClient) !== strictTarget) {
+              throw new ObsvrStrictProviderBoundaryV21Error("context_unavailable");
+            }
+            invokedArgs = strictInvocation;
+            return Promise.resolve(originalMethod.apply(target, strictInvocation))
+              .then((value) => {
+                if (isAsyncIterable(value)) strictProviderSurfaceUnsupportedV21();
+                return value;
+              });
+          },
+        );
+      } else {
+        response = await originalMethod.apply(target, cleaned_args);
+      }
     } catch (error) {
+      if (error instanceof ObsvrStrictProviderBoundaryV21Error) throw error;
       // Calculate latency even on error
       const latencyMs = Math.round(performance.now() - startTime);
 
@@ -2861,7 +2925,7 @@ function createAuditedMethod(
           (error as any)?.status ?? (error as any)?.statusCode ?? undefined;
         const auditEvent = buildAuditEvent(
           ctx,
-          cleaned_args[0],
+          invokedArgs[0],
           null, // No response on error
           audit_fields,
           latencyMs,
@@ -2900,7 +2964,7 @@ function createAuditedMethod(
       if (config.streaming_mode === "wrap" && auditThisCall) {
         return wrapStreamingIterator(
           response,
-          cleaned_args[0],
+          invokedArgs[0],
           audit_fields,
           ctx,
           provider,
@@ -2921,7 +2985,7 @@ function createAuditedMethod(
     if (auditThisCall) try {
       const auditEvent = buildAuditEvent(
         ctx,
-        cleaned_args[0],
+        invokedArgs[0],
         response,
         audit_fields,
         latencyMs,
@@ -3436,6 +3500,12 @@ function createRecursiveProxy<T extends object>(
 
       // If it's a function
       if (typeof value === "function") {
+        if (ctx.options.strict_receipt_v2_1
+          && !STRICT_V21_DIRECT_METHODS.has(newPath.join("."))) {
+          return function strictUnsupportedSurface(): never {
+            return strictProviderSurfaceUnsupportedV21();
+          };
+        }
         // Provider tool runners: same synchronous-return mechanism as the
         // stream helpers, but the run is emitted as a sequence of events
         // rather than one.
@@ -3549,9 +3619,13 @@ export function wrapWithProviderHint<T extends object>(
   declaredProvider?: CanonicalProvider,
 ): T {
   const config = getConfig();
+  if (options.strict_receipt_v2_1) {
+    assertStrictProviderBoundaryV21(options.strict_receipt_v2_1);
+  }
 
   // If disabled, return original client
   if (config.disabled) {
+    if (options.strict_receipt_v2_1) strictProviderSurfaceUnsupportedV21();
     // L-1: Use console.warn so misconfiguration is visible without debug mode
     console.warn("[obsvr] Audit disabled, returning unwrapped client. No events will be captured.");
     return client;
@@ -3592,6 +3666,9 @@ export function wrapWithProviderHint<T extends object>(
         resolvedProvider,
       ) as T;
     }
+    if (options.strict_receipt_v2_1 && !rebind) {
+      strictProviderSurfaceUnsupportedV21();
+    }
     debugLog(config, "warn", "Client already wrapped, returning existing");
     return client;
   }
@@ -3630,6 +3707,7 @@ function governClient<T extends object>(
   const ctx: PathContext = {
     path: [],
     options,
+    rootClient: client,
     /**
      * Read through to the live config rather than holding the object that was
      * current at wrap time.

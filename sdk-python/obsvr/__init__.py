@@ -72,6 +72,26 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .wrap import wrap  # noqa: F401
+from .strict_provider_boundary_v2_1 import (  # noqa: F401
+    ObsvrStrictProviderBoundaryV21Error,
+    StrictProviderBoundaryV21Capability,
+    create_strict_provider_boundary_v2_1,
+)
+from .strict_receipt_runtime_v2_1 import (  # noqa: F401
+    StrictReceiptRuntimeV21,
+    bind_strict_v2_1_json_arguments,
+)
+from .strict_receipt_coordinator_v2_1 import (  # noqa: F401
+    StrictReceiptCoordinatorV21,
+    create_trusted_intent_decision_provider_v2_1,
+)
+from .strict_evaluation_evidence_v2_1 import (  # noqa: F401
+    create_trusted_evaluation_evidence_provider_v2_1,
+)
+from .strict_identity_evidence_v2_1 import (  # noqa: F401
+    create_strict_identity_evidence_v2_1_authority,
+)
+from .device_identity import load_device_signer  # noqa: F401
 # Why an optional integration failed to bind, not merely that it did: an
 # absent package, a renamed upstream symbol and a broken transitive dependency
 # are three different problems that used to produce one identical silent flag.
@@ -82,6 +102,16 @@ from ._version import __version__  # noqa: F401  # single source: obsvr/_version
 __all__ = [
     "init",
     "wrap",
+    "create_strict_provider_boundary_v2_1",
+    "ObsvrStrictProviderBoundaryV21Error",
+    "StrictProviderBoundaryV21Capability",
+    "StrictReceiptRuntimeV21",
+    "StrictReceiptCoordinatorV21",
+    "create_trusted_intent_decision_provider_v2_1",
+    "create_trusted_evaluation_evidence_provider_v2_1",
+    "create_strict_identity_evidence_v2_1_authority",
+    "bind_strict_v2_1_json_arguments",
+    "load_device_signer",
     "govern_tool",
     "govern_tools",
     "integration_bindings",

@@ -12,6 +12,7 @@ function context(): PathContext {
   return {
     path: ["chat", "completions", "create"],
     options: {},
+    rootClient: {},
     config: getConfig(),
     provider: "openai",
     recordedProvider: "openai",

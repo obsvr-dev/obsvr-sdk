@@ -239,6 +239,7 @@ class TestRegistryGate:
         "strict_receipt_runtime_v2_1.py",
         "strict_receipt_runtime_v2_bindings.py",
         "strict_receipt_runtime_v2_recovery_support.py",
+        "strict_provider_boundary_v2_1.py",
         "strict_receipt_v2.py",
         "strict_receipt_v2_1.py",
         "strict_receipt_v2_1_verify.py",
