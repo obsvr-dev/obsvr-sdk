@@ -43,6 +43,11 @@ class _TrustedProvider:
         self.capture = capture
 
 
+class _TrustedReasonCodes:
+    def __init__(self, codes) -> None:
+        self.codes = tuple(codes)
+
+
 def _exact(value: Any, keys, field: str) -> Dict[str, Any]:
     if not isinstance(value, dict) or set(value) != set(keys):
         raise StrictEvaluationEvidenceV21Error(f"{field} has unknown or missing keys")
@@ -174,11 +179,28 @@ def create_trusted_evaluation_evidence_provider_v2_1(capture):
     return provider
 
 
-def build_strict_evaluation_evidence_v2_1(provider, requested_outcome: str):
+def create_trusted_decision_reason_codes_v2_1(codes):
+    if not isinstance(codes, (list, tuple)) or len(codes) > 32:
+        raise StrictEvaluationEvidenceV21Error("decision_reason_codes must be bounded")
+    normalized = sorted(
+        set(_identifier(code, "decision_reason_codes") for code in codes)
+    )
+    if not normalized:
+        raise StrictEvaluationEvidenceV21Error("decision_reason_codes must be nonempty")
+    return _TrustedReasonCodes(normalized)
+
+
+def build_strict_evaluation_evidence_v2_1(
+    provider, requested_outcome: str, trusted_reasons
+):
     if not isinstance(provider, _TrustedProvider) or provider not in _PROVIDERS:
         raise StrictEvaluationEvidenceV21Error("trusted evidence provider is required")
     if requested_outcome not in _OUTCOMES:
         raise StrictEvaluationEvidenceV21Error("unsupported requested outcome")
+    if not isinstance(trusted_reasons, _TrustedReasonCodes):
+        raise StrictEvaluationEvidenceV21Error(
+            "trusted decision_reason_codes are required"
+        )
     try:
         captured = provider.capture()
     except Exception:
@@ -240,6 +262,7 @@ def build_strict_evaluation_evidence_v2_1(provider, requested_outcome: str):
         "detector_set_hash": detector_set_hash,
         "requested_outcome": requested_outcome,
         "outcome": outcome,
+        "decision_reason_codes": list(trusted_reasons.codes),
         "reason_code": reason_code,
     }
     return {

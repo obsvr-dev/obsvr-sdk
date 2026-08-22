@@ -1,5 +1,6 @@
 import {
-  buildStrictEvaluationEvidenceV21, createTrustedEvaluationEvidenceProviderV21,
+  buildStrictEvaluationEvidenceV21, createTrustedDecisionReasonCodesV21,
+  createTrustedEvaluationEvidenceProviderV21,
   STRICT_EVALUATOR_MANIFEST_HASH_V2_1,
   type TrustedEvaluationSnapshotV21,
 } from '../../src/governance/strict-evaluation-evidence-v2-1';
@@ -18,20 +19,23 @@ function snapshot(): TrustedEvaluationSnapshotV21 {
     { detector_id: 'pii', status: 'ok', result_hash: E },
   ] };
 }
-const build = (value: TrustedEvaluationSnapshotV21, outcome: 'ALLOW' | 'MODIFY' = 'ALLOW') =>
-  buildStrictEvaluationEvidenceV21(createTrustedEvaluationEvidenceProviderV21(() => value), outcome);
+const build = (value: TrustedEvaluationSnapshotV21,
+  outcome: 'ALLOW' | 'DENY' | 'MODIFY' = 'ALLOW', reasons = ['rule_matched', 'intent_allowed', 'intent_allowed']) =>
+  buildStrictEvaluationEvidenceV21(createTrustedEvaluationEvidenceProviderV21(() => value), outcome,
+    createTrustedDecisionReasonCodesV21(reasons));
 
 describe('strict evaluation evidence profile 2.1', () => {
   test('pins exact normalized policy, detector evidence, and cross-language hashes', () => {
     const result = build(snapshot());
     expect(STRICT_EVALUATOR_MANIFEST_HASH_V2_1)
       .toBe('5e70e3fb6281921e614504b9dbcb41c8ca077698c525cd40b42d7bdb952689f7');
-    expect(result.evidence_hash).toBe('ac433f5ae1d44147070d99b3f0ec3dda5aa113c5637e2248b750e9d3755f66f4');
+    expect(result.evidence_hash).toBe('132b31ccfb41051be90ae1411d800776420b61bce8a52a369f9f619a43618ca9');
     expect(result.evidence).toMatchObject({ profile_version: '2.1',
       effective_policy: { version: 'policy-7', artifact_hash: A, matched_rule_ids: ['rule-a', 'rule-z'] },
       evaluator_manifest_hash: STRICT_EVALUATOR_MANIFEST_HASH_V2_1,
       detector_set_hash: '74af29dbdae32a036e61000187726dc546520f795aebece4aedc0de22716be0c',
-      requested_outcome: 'ALLOW', outcome: 'ALLOW', reason_code: 'evaluation_complete' });
+      requested_outcome: 'ALLOW', outcome: 'ALLOW',
+      decision_reason_codes: ['intent_allowed', 'rule_matched'], reason_code: 'evaluation_complete' });
     expect(result.evidence.detectors.map((item) => item.detector_id))
       .toEqual(['pii', 'redactor', 'telemetry']);
   });
@@ -52,6 +56,7 @@ describe('strict evaluation evidence profile 2.1', () => {
     evaluation.detector_results = evaluation.detector_results.map((item) => item.detector_id === 'pii'
       ? { detector_id: 'pii', status: 'unavailable', failure_code: 'detector_timeout' } : item);
     expect(build(evaluation).evidence).toMatchObject({ outcome: 'DEFER',
+      decision_reason_codes: ['intent_allowed', 'rule_matched'],
       reason_code: 'required_detector_uncertain' });
     const missing = snapshot();
     missing.detector_results = missing.detector_results.filter((item) => item.detector_id !== 'pii');
@@ -64,15 +69,27 @@ describe('strict evaluation evidence profile 2.1', () => {
       item.detector_id === 'redactor'
         ? { detector_id: 'redactor', status: 'degraded', failure_code: 'transform_failed' } : item);
     expect(build(transform, 'MODIFY').evidence).toMatchObject({ outcome: 'DENY',
+      decision_reason_codes: ['intent_allowed', 'rule_matched'],
       reason_code: 'required_transform_unavailable' });
+    expect(build(snapshot(), 'DENY', ['explicit_policy_deny']).evidence).toMatchObject({
+      requested_outcome: 'DENY', outcome: 'DENY',
+      decision_reason_codes: ['explicit_policy_deny'], reason_code: 'evaluation_complete' });
   });
 
   test('rejects forged capability, duplicate/unknown data, raw failures, and caps', () => {
-    expect(() => buildStrictEvaluationEvidenceV21({ capture: snapshot } as never, 'ALLOW'))
+    const reasons = createTrustedDecisionReasonCodesV21(['intent_allowed']);
+    expect(() => buildStrictEvaluationEvidenceV21({ capture: snapshot } as never, 'ALLOW', reasons))
       .toThrow('trusted evidence provider');
     expect(() => buildStrictEvaluationEvidenceV21(
-      createTrustedEvaluationEvidenceProviderV21(() => { throw new Error('secret'); }), 'ALLOW'))
+      createTrustedEvaluationEvidenceProviderV21(() => { throw new Error('secret'); }), 'ALLOW', reasons))
       .toThrow('trusted evidence capture failed');
+    expect(() => createTrustedDecisionReasonCodesV21([])).toThrow('nonempty');
+    expect(() => createTrustedDecisionReasonCodesV21(['raw message@unsafe'])).toThrow('ASCII identifier');
+    expect(() => createTrustedDecisionReasonCodesV21(
+      Array.from({ length: 33 }, (_, index) => `reason_${index}`))).toThrow('bounded array');
+    expect(() => buildStrictEvaluationEvidenceV21(
+      createTrustedEvaluationEvidenceProviderV21(snapshot), 'ALLOW', { trusted: 'decision_reason_codes_v2_1' }))
+      .toThrow('trusted decision_reason_codes');
     const duplicate = snapshot(); duplicate.detector_results.push({ ...duplicate.detector_results[0]! });
     expect(() => build(duplicate)).toThrow('duplicate detector result');
     const duplicateRequirement = snapshot();

@@ -10,6 +10,7 @@ const HASH = /^[0-9a-f]{64}$/;
 const OUTCOMES = new Set<AarmOutcome>(['ALLOW', 'DENY', 'MODIFY', 'STEP_UP', 'DEFER']);
 const MAX_DETECTORS = 64; const MAX_RULES = 128;
 const trustedProviders = new WeakSet<object>();
+const trustedReasonCodes = new WeakMap<object, readonly string[]>();
 const EVALUATOR_MANIFEST = { schema: 'obsvr-strict-evaluator-manifest-v2-1',
   profile_version: '2.1', engine: 'obsvr-strict-evaluation', semantics_version: '1' } as const;
 export const STRICT_EVALUATOR_MANIFEST_HASH_V2_1 = sha(canonicalJsonForHash(EVALUATOR_MANIFEST));
@@ -33,6 +34,7 @@ export interface TrustedEvaluationSnapshotV21 {
 export interface TrustedEvaluationEvidenceProviderV21 {
   capture: () => TrustedEvaluationSnapshotV21;
 }
+export interface TrustedDecisionReasonCodesV21 { readonly trusted: 'decision_reason_codes_v2_1' }
 export interface NormalizedDetectorEvidenceV21 extends DetectorRequirementV21 {
   status: DetectorResultV21['status']; result_hash?: string; failure_code?: string;
 }
@@ -41,6 +43,7 @@ export interface StrictEvaluationEvidenceV21 {
   effective_policy: EffectivePolicyEvidenceV21; evaluator_manifest_hash: string;
   detectors: NormalizedDetectorEvidenceV21[]; detector_set_hash: string;
   requested_outcome: AarmOutcome; outcome: AarmOutcome;
+  decision_reason_codes: string[];
   reason_code: 'evaluation_complete' | 'required_detector_uncertain' | 'required_transform_unavailable';
 }
 
@@ -125,11 +128,23 @@ export function createTrustedEvaluationEvidenceProviderV21(
   if (typeof capture !== 'function') return fail('trusted provider must be callable');
   const provider = Object.freeze({ capture }); trustedProviders.add(provider); return provider;
 }
+/** Explicit evaluator boundary; normalized codes are snapshotted and cannot be caller-mutated. */
+export function createTrustedDecisionReasonCodesV21(
+  codes: readonly string[],
+): TrustedDecisionReasonCodesV21 {
+  const normalized = sortedUnique(codes, 'decision_reason_codes', 32);
+  if (!normalized.length) return fail('decision_reason_codes must be nonempty');
+  const capability = Object.freeze({ trusted: 'decision_reason_codes_v2_1' as const });
+  trustedReasonCodes.set(capability, Object.freeze(normalized)); return capability;
+}
 export function buildStrictEvaluationEvidenceV21(
   provider: TrustedEvaluationEvidenceProviderV21, requestedOutcome: AarmOutcome,
+  trustedReasons: TrustedDecisionReasonCodesV21,
 ): { evidence: StrictEvaluationEvidenceV21; evidence_hash: string } {
   if (!trustedProviders.has(provider as object)) return fail('trusted evidence provider is required');
   if (!OUTCOMES.has(requestedOutcome)) return fail('unsupported requested outcome');
+  const decision_reason_codes = trustedReasonCodes.get(trustedReasons as object);
+  if (!decision_reason_codes) return fail('trusted decision_reason_codes are required');
   let captured: TrustedEvaluationSnapshotV21;
   try { captured = provider.capture(); } catch { return fail('trusted evidence capture failed'); }
   const snapshot = exact(captured, ['effective_policy', 'detector_requirements', 'detector_results'], 'snapshot');
@@ -154,7 +169,8 @@ export function buildStrictEvaluationEvidenceV21(
   const evidence: StrictEvaluationEvidenceV21 = { schema: STRICT_EVALUATION_EVIDENCE_V2_1_SCHEMA,
     profile_version: '2.1', effective_policy: normalizedPolicy,
     evaluator_manifest_hash: STRICT_EVALUATOR_MANIFEST_HASH_V2_1,
-    detectors, detector_set_hash, requested_outcome: requestedOutcome, outcome, reason_code };
+    detectors, detector_set_hash, requested_outcome: requestedOutcome, outcome,
+    decision_reason_codes: [...decision_reason_codes], reason_code };
   return { evidence, evidence_hash: domainHash(
     'obsvr-strict-evaluation-evidence/2.1', canonicalJsonForHash(evidence),
   ) };

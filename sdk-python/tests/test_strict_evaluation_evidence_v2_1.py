@@ -5,6 +5,7 @@ import pytest
 from obsvr.strict_evaluation_evidence_v2_1 import (
     STRICT_EVALUATOR_MANIFEST_HASH_V2_1,
     build_strict_evaluation_evidence_v2_1,
+    create_trusted_decision_reason_codes_v2_1,
     create_trusted_evaluation_evidence_provider_v2_1,
 )
 
@@ -50,9 +51,12 @@ def snapshot():
     }
 
 
-def build(value, outcome="ALLOW"):
+def build(value, outcome="ALLOW", reasons=None):
     provider = create_trusted_evaluation_evidence_provider_v2_1(lambda: value)
-    return build_strict_evaluation_evidence_v2_1(provider, outcome)
+    trusted = create_trusted_decision_reason_codes_v2_1(
+        reasons or ["rule_matched", "intent_allowed", "intent_allowed"]
+    )
+    return build_strict_evaluation_evidence_v2_1(provider, outcome, trusted)
 
 
 def test_exact_normalization_and_cross_language_hashes():
@@ -61,7 +65,7 @@ def test_exact_normalization_and_cross_language_hashes():
         "5e70e3fb6281921e614504b9dbcb41c8ca077698c525cd40b42d7bdb952689f7"
     )
     assert result["evidence_hash"] == (
-        "ac433f5ae1d44147070d99b3f0ec3dda5aa113c5637e2248b750e9d3755f66f4"
+        "132b31ccfb41051be90ae1411d800776420b61bce8a52a369f9f619a43618ca9"
     )
     evidence = result["evidence"]
     assert evidence["effective_policy"] == {
@@ -78,6 +82,7 @@ def test_exact_normalization_and_cross_language_hashes():
         "telemetry",
     ]
     assert evidence["outcome"] == "ALLOW"
+    assert evidence["decision_reason_codes"] == ["intent_allowed", "rule_matched"]
 
 
 def test_evaluator_manifest_is_invariant_across_policy_changes():
@@ -108,7 +113,9 @@ def test_required_detector_outages_fail_closed():
         "status": "unavailable",
         "failure_code": "detector_timeout",
     }
-    assert build(evaluation)["evidence"]["outcome"] == "DEFER"
+    uncertain = build(evaluation)["evidence"]
+    assert uncertain["outcome"] == "DEFER"
+    assert uncertain["decision_reason_codes"] == ["intent_allowed", "rule_matched"]
     missing = snapshot()
     missing["detector_results"] = [
         item for item in missing["detector_results"] if item["detector_id"] != "pii"
@@ -130,19 +137,39 @@ def test_required_detector_outages_fail_closed():
         "DENY",
         "required_transform_unavailable",
     )
+    explicit = build(snapshot(), "DENY", ["explicit_policy_deny"])["evidence"]
+    assert (explicit["outcome"], explicit["decision_reason_codes"]) == (
+        "DENY",
+        ["explicit_policy_deny"],
+    )
 
 
 def test_capability_exact_keys_duplicates_errors_and_caps():
     class Forged:
         capture = staticmethod(snapshot)
 
+    reasons = create_trusted_decision_reason_codes_v2_1(["intent_allowed"])
     with pytest.raises(ValueError, match="trusted evidence provider"):
-        build_strict_evaluation_evidence_v2_1(Forged(), "ALLOW")
+        build_strict_evaluation_evidence_v2_1(Forged(), "ALLOW", reasons)
     provider = create_trusted_evaluation_evidence_provider_v2_1(
         lambda: (_ for _ in ()).throw(RuntimeError("secret"))
     )
     with pytest.raises(ValueError, match="trusted evidence capture failed"):
-        build_strict_evaluation_evidence_v2_1(provider, "ALLOW")
+        build_strict_evaluation_evidence_v2_1(provider, "ALLOW", reasons)
+    with pytest.raises(ValueError, match="nonempty"):
+        create_trusted_decision_reason_codes_v2_1([])
+    with pytest.raises(ValueError, match="ASCII identifier"):
+        create_trusted_decision_reason_codes_v2_1(["raw message@unsafe"])
+    with pytest.raises(ValueError, match="bounded"):
+        create_trusted_decision_reason_codes_v2_1(
+            [f"reason_{index}" for index in range(33)]
+        )
+    with pytest.raises(ValueError, match="trusted decision_reason_codes"):
+        build_strict_evaluation_evidence_v2_1(
+            create_trusted_evaluation_evidence_provider_v2_1(snapshot),
+            "ALLOW",
+            ["intent_allowed"],
+        )
     duplicate = snapshot()
     duplicate["detector_results"].append(
         copy.deepcopy(duplicate["detector_results"][0])
