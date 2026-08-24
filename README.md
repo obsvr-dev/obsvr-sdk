@@ -447,8 +447,7 @@ TypeScript and Python implement one fixture-pinned contract in [`conformance/fix
 - [`reason_codes.json`](conformance/fixtures/reason_codes.json) and [`action_taken.json`](conformance/fixtures/action_taken.json) form closed decision registries. Both suites fail if a runtime emits a value outside them.
 - [`normalization.json`](conformance/fixtures/normalization.json) pins the Unicode fold across Node and Python.
 - [`tool_pinning.json`](conformance/fixtures/tool_pinning.json) and [`tool_content_hash.json`](conformance/fixtures/tool_content_hash.json) keep descriptor-rug-pull detection distinct from per-call tool evidence.
-- [`aarm_outcomes.json`](conformance/fixtures/aarm_outcomes.json), [`action_context.json`](conformance/fixtures/action_context.json), and [`action_context_v2.json`](conformance/fixtures/action_context_v2.json) pin the compatibility outcomes and structured action context.
-- [`intent_alignment.json`](conformance/fixtures/intent_alignment.json), [`intent_alignment_v2.json`](conformance/fixtures/intent_alignment_v2.json), and the [`strict_receipts`](conformance/fixtures/strict_receipts.json) fixture family pin intent evaluation and receipt formats through profile 2.1.
+- The same corpus exercises the obsvr-authored compatibility outcomes, structured action context, intent evaluation, and strict receipt formats through profile 2.1. Those compatibility fixtures remain explicitly non-claimable and are not official AARM conformance evidence.
 
 The corpus is hash-pinned by `conformance/MANIFEST.sha256`; each SDK records the corpus hash its suite targets. CI fails when fixtures change without regenerated pins, the two pins disagree, or a fixture has no in-repository consumer. A behavior difference is release-blocking unless it is explicitly represented in the machine-readable divergence catalog and its validated narrative.
 
