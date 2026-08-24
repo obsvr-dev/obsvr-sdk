@@ -15,6 +15,12 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+### Added
+
+- Added obsvr-authored AARM compatibility profile 1.0 for `ALLOW`, `DENY`, `MODIFY`, `STEP_UP`, and `DEFER`, plus cross-language action-context, intent-alignment, identity, evaluation-evidence, and strict-receipt fixtures. The fixtures do not claim official AARM conformance or certification. ([`427f52a`](https://github.com/obsvr-dev/obsvr-sdk/commit/427f52a))
+- Added strict receipt profile 2.1 for opt-in, unary direct-provider execution. Supported calls bind exact cleaned arguments and the provider target, require positive receipt admission and durable local commit before invocation, and fail closed on unsupported or ambiguous pre-invocation states. ([`789e15d`](https://github.com/obsvr-dev/obsvr-sdk/commit/789e15d), [`4c9d787`](https://github.com/obsvr-dev/obsvr-sdk/commit/4c9d787))
+- Added recovery and reconciliation for strict receipt state, hardened provider/admission endpoints, and explicit `invocation_uncertain` handling so a call that may have started is never automatically replayed. ([`427f52a`](https://github.com/obsvr-dev/obsvr-sdk/commit/427f52a))
+
 ## [0.11.2] - 2026-08-09
 
 ### Fixed
