@@ -370,6 +370,30 @@ Gap semantics are pinned by [`audit_gap.json`](conformance/fixtures/audit_gap.js
 
 The full preimage, threat model, SSRF posture, failure semantics, and integration-by-integration enforcement boundaries are in [`SECURITY.md`](SECURITY.md).
 
+## AARM compatibility and strict execution receipts
+
+The SDKs include an **obsvr-authored AARM compatibility profile 1.0** for expressing a governed action as one of five outcomes: `ALLOW`, `DENY`, `MODIFY`, `STEP_UP`, or `DEFER`. The profile maps those outcomes to obsvr's existing decision vocabulary without changing the wire format. These fixtures are compatibility work, not official AARM conformance vectors, certification, or an AARM endorsement.
+
+Strict receipt profile 2.1 adds an opt-in boundary for supported unary direct-provider calls:
+
+```mermaid
+flowchart LR
+    call["cleaned provider call"] --> decide["intent + policy decision"]
+    decide --> receipt["device-signed receipt"]
+    receipt --> admit["positive ingest admission"]
+    admit --> commit["local receipt commit"]
+    commit --> started["invocation-started checkpoint"]
+    started --> provider["provider call"]
+```
+
+- The exact JSON invocation, normalized provider endpoint, active intent, requested `model:invoke` scope, identity evidence, policy evidence, and a unique action id are bound into the decision receipt.
+- The provider is contacted only after the receipt is admitted, committed locally, and durably checkpointed as `invocation_started`. A missing or ambiguous admission never falls back to an ungoverned call.
+- `DENY`, `STEP_UP`, and `DEFER` do not execute. The direct-provider boundary also fails closed on `MODIFY`, because it does not accept an unverified argument transformation; only `ALLOW` crosses this boundary.
+- Once `invocation_started` is durable, an interrupted or ambiguous call is reported as `invocation_uncertain` and is not automatically retried.
+- This profile is deliberately narrow: supported unary methods only. Python async-client paths, streams, helper managers, runners, and unsupported methods fail with `unsupported_surface`.
+
+Strict mode is not enabled by ordinary `wrap()` calls. Supply a profile 2.1 capability explicitly with `strict_receipt_v2_1` after configuring a device signer, intent policy, identity and evaluation evidence, admission, and a durable atomic checkpoint store. See the [Python](sdk-python/README.md#strict-profile-21-provider-boundary) and [TypeScript](sdk-typescript/README.md#strict-profile-21-provider-boundary) setup notes, the [security boundary](SECURITY.md#strict-profile-21-execution-boundary), and the [method matrix](COMPATIBILITY.md#strict-profile-21-direct-provider-boundary).
+
 ## What's in this repo, what isn't, and why
 
 This Apache-2.0 repository contains the complete client implementation. The sealing service is separate because its keys and storage must live outside the runtime being audited.
@@ -423,6 +447,8 @@ TypeScript and Python implement one fixture-pinned contract in [`conformance/fix
 - [`reason_codes.json`](conformance/fixtures/reason_codes.json) and [`action_taken.json`](conformance/fixtures/action_taken.json) form closed decision registries. Both suites fail if a runtime emits a value outside them.
 - [`normalization.json`](conformance/fixtures/normalization.json) pins the Unicode fold across Node and Python.
 - [`tool_pinning.json`](conformance/fixtures/tool_pinning.json) and [`tool_content_hash.json`](conformance/fixtures/tool_content_hash.json) keep descriptor-rug-pull detection distinct from per-call tool evidence.
+- [`aarm_outcomes.json`](conformance/fixtures/aarm_outcomes.json), [`action_context.json`](conformance/fixtures/action_context.json), and [`action_context_v2.json`](conformance/fixtures/action_context_v2.json) pin the compatibility outcomes and structured action context.
+- [`intent_alignment.json`](conformance/fixtures/intent_alignment.json), [`intent_alignment_v2.json`](conformance/fixtures/intent_alignment_v2.json), and the [`strict_receipts`](conformance/fixtures/strict_receipts.json) fixture family pin intent evaluation and receipt formats through profile 2.1.
 
 The corpus is hash-pinned by `conformance/MANIFEST.sha256`; each SDK records the corpus hash its suite targets. CI fails when fixtures change without regenerated pins, the two pins disagree, or a fixture has no in-repository consumer. A behavior difference is release-blocking unless it is explicitly represented in the machine-readable divergence catalog and its validated narrative.
 
