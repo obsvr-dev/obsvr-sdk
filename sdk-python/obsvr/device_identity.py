@@ -111,6 +111,10 @@ class DeviceSigner:
         """Hex Ed25519 signature over the device preimage for this payload."""
         return self._sign(device_preimage(self.key_id, signature_payload)).hex()
 
+    def sign_bytes(self, message: bytes) -> str:
+        """Hex Ed25519 signature over caller-supplied raw bytes."""
+        return self._sign(message).hex()
+
 
 def _signer_from_seed(seed: bytes) -> DeviceSigner:
     """Build a signer from a raw 32-byte seed via whichever backend imports."""

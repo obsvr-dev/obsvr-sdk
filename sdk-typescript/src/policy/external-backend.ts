@@ -30,9 +30,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import * as http from 'node:http';
-import * as https from 'node:https';
-import { isIP, type LookupFunction } from 'node:net';
+import { createPinnedLookup, postPinnedBytes } from '../utils/pinned-http.js';
 import {
   resolveBackendUrlAllowed,
   type AllowedBackendTarget,
@@ -261,31 +259,7 @@ interface BackendHttpResponse {
   type?: string;
 }
 
-/**
- * DNS lookup function backed only by the addresses the SSRF guard approved.
- * It never consults DNS. Returning the full snapshot for `all: true` preserves
- * Node's address-family selection without opening a second resolution window.
- */
-export function createPinnedBackendLookup(target: AllowedBackendTarget): LookupFunction {
-  return (_hostname, options, callback): void => {
-    const requestedFamily = options.family === 4 || options.family === 6 ? options.family : 0;
-    const candidates = requestedFamily === 0
-      ? target.addresses
-      : target.addresses.filter((entry) => entry.family === requestedFamily);
-    if (candidates.length === 0) {
-      const err = Object.assign(new Error('No approved backend address for requested family'), {
-        code: 'EAI_ADDRFAMILY',
-      }) as NodeJS.ErrnoException;
-      callback(err, '', requestedFamily || undefined);
-      return;
-    }
-    if (options.all) {
-      callback(null, candidates.map(({ address, family }) => ({ address, family })));
-      return;
-    }
-    callback(null, candidates[0].address, candidates[0].family);
-  };
-}
+export const createPinnedBackendLookup = createPinnedLookup;
 
 /**
  * POST through Node's native HTTP stack with a pinned lookup. Passing the
@@ -299,56 +273,12 @@ async function postPinnedJson(
   headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<BackendHttpResponse> {
-  const hostname = target.url.hostname.replace(/^\[|\]$/g, '');
-  const transport = target.url.protocol === 'https:' ? https : http;
-  const requestHeaders = {
-    ...headers,
-    host: target.url.host,
-    'content-length': String(Buffer.byteLength(body)),
+  const response = await postPinnedBytes(target, body, headers, signal, 1_048_576);
+  return {
+    ok: response.status >= 200 && response.status < 300,
+    status: response.status,
+    json: async () => JSON.parse(Buffer.from(response.body ?? []).toString('utf8')),
   };
-
-  return new Promise<BackendHttpResponse>((resolve, reject) => {
-    const req = transport.request(
-      target.url,
-      {
-        method: 'POST',
-        headers: requestHeaders,
-        lookup: createPinnedBackendLookup(target),
-        // A pooled socket is keyed by hostname/port, not by this approved
-        // address snapshot. A one-shot agent prevents an older connection
-        // (for example one opened while private-network access was enabled)
-        // from bypassing the current request's pin.
-        agent: false,
-        signal,
-        // Explicit SNI keeps TLS authentication bound to the configured host,
-        // not to the numeric address selected by the pinned lookup.
-        ...(target.url.protocol === 'https:' && isIP(hostname) === 0
-          ? { servername: hostname }
-          : {}),
-      },
-      (response) => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer | string) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-        response.on('error', reject);
-        response.on('end', () => {
-          const responseBody = Buffer.concat(chunks).toString('utf8');
-          const status = response.statusCode ?? 0;
-          resolve({
-            ok: status >= 200 && status < 300,
-            status,
-            json: async () => JSON.parse(responseBody),
-          });
-        });
-      },
-    );
-    req.on('error', reject);
-    // Sending the evaluation payload is this explicitly configured backend's
-    // purpose. Its URL and complete DNS snapshot were validated and pinned
-    // before this transport was constructed; redirects are disabled above.
-    req.end(body);
-  });
 }
 
 /**

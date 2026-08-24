@@ -1,0 +1,112 @@
+{
+  "schema": "obsvr-strict-receipt-fixtures-v2-1",
+  "description": "Obsvr-authored strict receipt profile 2.1 interoperability fixtures. These are not official AARM conformance vectors.",
+  "claimable": false,
+  "profile_version": "2.1",
+  "public_test_key": {
+    "notice": "Public RFC 8032 test seed; non-secret and fixture-only.",
+    "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_b64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+  },
+  "evaluator_manifest_hash": "5e70e3fb6281921e614504b9dbcb41c8ca077698c525cd40b42d7bdb952689f7",
+  "vector": {
+    "id": "delegated_step_up",
+    "body": {
+      "schema": "obsvr-strict-receipt-v2-1",
+      "profile_version": "2.1",
+      "record_type": "decision",
+      "receipt_id": "session-21:1",
+      "tenant_id": "tenant-21",
+      "session_id": "session-21",
+      "sequence": 1,
+      "timestamp_ms": 1700002000000,
+      "previous_receipt_hash": null,
+      "action": {
+        "action_id": "action-21",
+        "kind": "tool",
+        "name": "send_contract",
+        "arguments_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "target_hash": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "context_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+      "identity": {
+        "schema": "obsvr-strict-identity-evidence-v2-1",
+        "profile_version": "2.1",
+        "relationship": "delegated",
+        "receipt_time_ms": 1700002000000,
+        "requester": {
+          "requester_ref_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "principal_type": "human",
+          "role_ids": ["legal-admin"],
+          "privilege_scopes": ["contract.approve", "contract.send"]
+        },
+        "initiator": {
+          "agent_ref_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+          "role_ids": ["contract-agent"],
+          "privilege_scopes": ["contract.send"]
+        },
+        "delegation_chain": [{
+          "hop": 0,
+          "delegation_id_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "delegator_ref_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "delegatee_ref_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "granted_scopes": ["contract.send"],
+          "issued_at_ms": 1700001999000,
+          "expires_at_ms": 1700002060000
+        }]
+      },
+      "evaluation": {
+        "schema": "obsvr-strict-evaluation-evidence-v2-1",
+        "profile_version": "2.1",
+        "effective_policy": {
+          "version": "policy-21",
+          "artifact_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "matched_rule_ids": ["approval-rule"]
+        },
+        "evaluator_manifest_hash": "5e70e3fb6281921e614504b9dbcb41c8ca077698c525cd40b42d7bdb952689f7",
+        "detectors": [{
+          "detector_id": "pii",
+          "detector_manifest_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "required": true,
+          "purpose": "evaluation",
+          "status": "ok",
+          "result_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }],
+        "detector_set_hash": "84a52f216e4602b83b34f6dbe8306817c782be2380fe056997cf2e5bb4fd910a",
+        "requested_outcome": "STEP_UP",
+        "outcome": "STEP_UP",
+        "decision_reason_codes": ["approval_required", "policy_matched"],
+        "reason_code": "evaluation_complete"
+      },
+      "outcome": "STEP_UP",
+      "reason_code": "evaluation_complete",
+      "execution_authorized": false,
+      "suspension": {
+        "suspension_id": "approval-21",
+        "type": "approval",
+        "expires_at_ms": 1700002060000
+      }
+    },
+    "canonical_sha256": "7b77cf5be1eeae5228c5040f274e6c85e91cbc2504858269be8c2e02dc403723",
+    "receipt_hash": "becbebb393b0b22b8a684270cda573e7cd73f9e88696471efb26057a8121713e",
+    "signature": "f52a59a43f226da57686bf3c1009e5ab55a5894d2448f783104d8bfd17a05eea9f01bb9e154cf99e68f8e6e035dfacfded38f6e7dc04f246967e8dbf9dc74e06"
+  },
+  "modify_vector": {
+    "id": "delegated_modify",
+    "body_patch": {
+      "receipt_id": "session-21-modify:1",
+      "session_id": "session-21-modify",
+      "action_id": "action-21-modify",
+      "effective_arguments_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+      "requested_outcome": "MODIFY",
+      "outcome": "MODIFY",
+      "decision_reason_codes": ["policy_matched", "redaction_applied"],
+      "execution_authorized": true
+    },
+    "canonical_sha256": "9b27dd0362edff8316ab8a29a12ec0791ab1e79602c182e777e22f57662fc866",
+    "receipt_hash": "27cb2845422ba9c12f337bfe26acc2f89c70072b7c9f4bf12834ed4121396637",
+    "signature": "d67e3b30380217f3378ff319ffadf3149340750bb4987f73ef53d103277146024925efeb88d6101b69e7e003fad241d96bff02de9e1081c20a52405b4cc0be05"
+  }
+}

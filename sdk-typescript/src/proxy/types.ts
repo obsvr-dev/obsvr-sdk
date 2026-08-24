@@ -10,6 +10,7 @@ import type { PolicyHook, PostCallHook } from '../policy/hook.js';
 import type { PolicyRule } from '../policy/rules.js';
 import type { ExternalPolicyBackendConfig, ExternalBackendRecord } from '../policy/external-backend.js';
 import type { CostPolicyConfig } from '../governance/cost.js';
+import type { StrictProviderBoundaryV21Capability } from '../governance/strict-provider-boundary-v2-1.js';
 
 // Re-export PolicyHook so callers only need one import
 export type { PolicyHook, PolicyDecision, PostCallHook } from '../policy/hook.js';
@@ -630,6 +631,13 @@ export interface LLMAuditInitConfig {
  * Options for wrapping a specific client
  */
 export interface WrapOptions {
+  /**
+   * Factory-created strict profile-2.1 execution capability. When present,
+   * ordinary non-streaming provider calls require signed receipt admission
+   * and durable checkpoints before the provider can be contacted.
+   */
+  strict_receipt_v2_1?: StrictProviderBoundaryV21Capability;
+
   /**
    * Customer ID to associate with this client's events
    */

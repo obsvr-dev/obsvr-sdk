@@ -130,6 +130,35 @@ export { checkQuota, incrementQuota, resetQuota, getQuotaStatus } from "./govern
 export { resolveCallCost, priceTokens } from "./governance/cost.js";
 export type { CostPolicyConfig, CostRate, ResolvedCost } from "./governance/cost.js";
 export { createGovernanceServer } from "./governance/server.js";
+export {
+  createStrictProviderBoundaryV21,
+  ObsvrStrictProviderBoundaryV21Error,
+} from "./governance/strict-provider-boundary-v2-1.js";
+export type {
+  StrictProviderBoundaryV21Capability,
+  StrictProviderBoundaryV21Options,
+  StrictProviderCallV21,
+  StrictProviderContextV21,
+} from "./governance/strict-provider-boundary-v2-1.js";
+export {
+  StrictReceiptRuntimeV21,
+  bindStrictV21JsonArguments,
+} from "./governance/strict-receipt-runtime-v2-1.js";
+export type {
+  StrictV21CheckpointStore,
+  StrictRuntimeExecutionJournalV21,
+} from "./governance/strict-receipt-runtime-v2-1.js";
+export {
+  StrictReceiptCoordinatorV21,
+  createTrustedIntentDecisionProviderV21,
+} from "./governance/strict-receipt-coordinator-v2-1.js";
+export {
+  createTrustedEvaluationEvidenceProviderV21,
+} from "./governance/strict-evaluation-evidence-v2-1.js";
+export {
+  createStrictIdentityEvidenceV21Authority,
+} from "./governance/strict-identity-evidence-v2-1.js";
+export { loadDeviceSigner } from "./proxy/device-identity.js";
 
 // Re-export MCP client governance (also available as `@obsvr/sdk/mcp`)
 export { patchMCP, obsvrGovernMCP } from "./integrations/mcp.js";

@@ -1,0 +1,472 @@
+{
+  "schema": "obsvr-strict-receipt-fixtures-v1",
+  "description": "Obsvr-authored strict-receipt interoperability fixtures pinned to profile 1.0. These are not official AARM conformance vectors.",
+  "claimable": false,
+  "profile_version": "1.0",
+  "public_test_key": {
+    "notice": "Public RFC 8032 test seed; non-secret and fixture-only.",
+    "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_b64": "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+  },
+  "vectors": [
+    {
+      "id": "genesis_allow_unicode",
+      "input_rule_ids": [
+        "rule-β",
+        "rule-a",
+        "rule-β"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "decision",
+        "receipt_id": "sess-严格:1",
+        "session_id": "sess-严格",
+        "sequence": 1,
+        "timestamp_ms": 1700000000000,
+        "clock_regression_clamped": false,
+        "previous_receipt_hash": null,
+        "sdk": {
+          "language": "typescript",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-1",
+          "kind": "tool",
+          "name": "draft_合同",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "ALLOW",
+          "reason_code": "reason_allow",
+          "rule_ids": [
+            "rule-a",
+            "rule-β"
+          ]
+        },
+        "execution_authorized": true
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-1\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"tool\",\"name\":\"draft_合同\"},\"clock_regression_clamped\":false,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"ALLOW\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_allow\",\"rule_ids\":[\"rule-a\",\"rule-β\"]},\"execution_authorized\":true,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":null,\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:1\",\"record_type\":\"decision\",\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"typescript\",\"version\":\"0.11.2\"},\"sequence\":1,\"session_id\":\"sess-严格\",\"timestamp_ms\":1700000000000}",
+      "receipt_hash": "c8969cfa7a15e3c7efafe59f012d3819b38e0cd1079507946cd9aa40923769c9",
+      "signature": "407dbda63cb4c80297c0162e9eadf1665370f345d160e87e9e0952c689bd8b1bcb061615a6f2553e1f3bb48a51e3e99f654df8127c2e165f1820d0c6805fc401"
+    },
+    {
+      "id": "second_deny_clock_clamped",
+      "input_rule_ids": [
+        "rule-2"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "decision",
+        "receipt_id": "sess-严格:2",
+        "session_id": "sess-严格",
+        "sequence": 2,
+        "timestamp_ms": 1700000000100,
+        "clock_regression_clamped": true,
+        "previous_receipt_hash": "c8969cfa7a15e3c7efafe59f012d3819b38e0cd1079507946cd9aa40923769c9",
+        "sdk": {
+          "language": "python",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-2",
+          "kind": "tool",
+          "name": "action_2",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ",
+          "thread_id": "thread-线程"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "DENY",
+          "reason_code": "reason_deny",
+          "rule_ids": [
+            "rule-2"
+          ]
+        },
+        "execution_authorized": false
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-2\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"tool\",\"name\":\"action_2\"},\"clock_regression_clamped\":true,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\",\"thread_id\":\"thread-线程\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"DENY\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_deny\",\"rule_ids\":[\"rule-2\"]},\"execution_authorized\":false,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":\"c8969cfa7a15e3c7efafe59f012d3819b38e0cd1079507946cd9aa40923769c9\",\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:2\",\"record_type\":\"decision\",\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"python\",\"version\":\"0.11.2\"},\"sequence\":2,\"session_id\":\"sess-严格\",\"timestamp_ms\":1700000000100}",
+      "receipt_hash": "b7a1ebfbaa28bcb2b130bd8e6af6966d4030ac56755474ef26d569c517690e65",
+      "signature": "84194435a02bbf0c569fa666fa6dbc551a2616873fc96e94080aec7023a6ce732f03e02ae2aad7d97a989bbab61090ffea713c95e3e546bd7899ba8884978109"
+    },
+    {
+      "id": "modify",
+      "input_rule_ids": [
+        "rule-3"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "decision",
+        "receipt_id": "sess-严格:3",
+        "session_id": "sess-严格",
+        "sequence": 3,
+        "timestamp_ms": 1700000000200,
+        "clock_regression_clamped": false,
+        "previous_receipt_hash": "b7a1ebfbaa28bcb2b130bd8e6af6966d4030ac56755474ef26d569c517690e65",
+        "sdk": {
+          "language": "typescript",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-3",
+          "kind": "tool",
+          "name": "action_3",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "effective_arguments_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ",
+          "thread_id": "thread-线程"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "MODIFY",
+          "reason_code": "reason_modify",
+          "rule_ids": [
+            "rule-3"
+          ]
+        },
+        "execution_authorized": true
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-3\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"effective_arguments_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"kind\":\"tool\",\"name\":\"action_3\"},\"clock_regression_clamped\":false,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\",\"thread_id\":\"thread-线程\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"MODIFY\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_modify\",\"rule_ids\":[\"rule-3\"]},\"execution_authorized\":true,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":\"b7a1ebfbaa28bcb2b130bd8e6af6966d4030ac56755474ef26d569c517690e65\",\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:3\",\"record_type\":\"decision\",\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"typescript\",\"version\":\"0.11.2\"},\"sequence\":3,\"session_id\":\"sess-严格\",\"timestamp_ms\":1700000000200}",
+      "receipt_hash": "6d1dc2d7f1aa30cdf47f60c25a28009534912a136ee293b2d78bcca477c4928b",
+      "signature": "84ed625b6e48a4437e903ce55f7dc4a0ca0cf39a04ff6de2c05703e1bfefc4e8f6f7be313490897ce5e305413b28a58687b510450e1437153ef547afb0327603"
+    },
+    {
+      "id": "step_up",
+      "input_rule_ids": [
+        "rule-4"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "decision",
+        "receipt_id": "sess-严格:4",
+        "session_id": "sess-严格",
+        "sequence": 4,
+        "timestamp_ms": 1700000000300,
+        "clock_regression_clamped": false,
+        "previous_receipt_hash": "6d1dc2d7f1aa30cdf47f60c25a28009534912a136ee293b2d78bcca477c4928b",
+        "sdk": {
+          "language": "python",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-4",
+          "kind": "tool",
+          "name": "action_4",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ",
+          "thread_id": "thread-线程"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "STEP_UP",
+          "reason_code": "reason_step_up",
+          "rule_ids": [
+            "rule-4"
+          ]
+        },
+        "execution_authorized": false,
+        "suspension": {
+          "suspension_id": "susp-approval-1",
+          "type": "approval",
+          "status": "pending",
+          "required_fields": [],
+          "expires_at_ms": 1700000060300,
+          "approval_request_id": "request-审批",
+          "approval_action_hash": "5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-4\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"tool\",\"name\":\"action_4\"},\"clock_regression_clamped\":false,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\",\"thread_id\":\"thread-线程\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"STEP_UP\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_step_up\",\"rule_ids\":[\"rule-4\"]},\"execution_authorized\":false,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":\"6d1dc2d7f1aa30cdf47f60c25a28009534912a136ee293b2d78bcca477c4928b\",\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:4\",\"record_type\":\"decision\",\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"python\",\"version\":\"0.11.2\"},\"sequence\":4,\"session_id\":\"sess-严格\",\"suspension\":{\"approval_action_hash\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"approval_request_id\":\"request-审批\",\"expires_at_ms\":1700000060300,\"required_fields\":[],\"status\":\"pending\",\"suspension_id\":\"susp-approval-1\",\"type\":\"approval\"},\"timestamp_ms\":1700000000300}",
+      "receipt_hash": "a9857eb29d2db52120b6ddb4b1ea80d17645bd64c87b786e320d2b01df6efe26",
+      "signature": "f1cc3b9bb9e900e25cbaac9303cda0abf0cb57d881de6c292fc8de42476bd26ddc2a08a5bd09023017708c603fd3d65630838686b400d4c3037eacfc39c9f607"
+    },
+    {
+      "id": "approval_resolution_allow",
+      "input_rule_ids": [
+        "rule-5"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "resolution",
+        "receipt_id": "sess-严格:5",
+        "session_id": "sess-严格",
+        "sequence": 5,
+        "timestamp_ms": 1700000000400,
+        "clock_regression_clamped": false,
+        "previous_receipt_hash": "a9857eb29d2db52120b6ddb4b1ea80d17645bd64c87b786e320d2b01df6efe26",
+        "sdk": {
+          "language": "typescript",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-4",
+          "kind": "tool",
+          "name": "action_4",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ",
+          "thread_id": "thread-线程"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "ALLOW",
+          "reason_code": "reason_allow",
+          "rule_ids": [
+            "rule-5"
+          ]
+        },
+        "execution_authorized": true,
+        "resolution": {
+          "resolves_receipt_hash": "a9857eb29d2db52120b6ddb4b1ea80d17645bd64c87b786e320d2b01df6efe26",
+          "suspension_id": "susp-approval-1",
+          "method": "approval_granted",
+          "resolver_principal_id": "reviewer-一",
+          "resolution_source_hash": "6666666666666666666666666666666666666666666666666666666666666666",
+          "resolved_at_ms": 1700000000390
+        }
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-4\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"tool\",\"name\":\"action_4\"},\"clock_regression_clamped\":false,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\",\"thread_id\":\"thread-线程\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"ALLOW\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_allow\",\"rule_ids\":[\"rule-5\"]},\"execution_authorized\":true,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":\"a9857eb29d2db52120b6ddb4b1ea80d17645bd64c87b786e320d2b01df6efe26\",\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:5\",\"record_type\":\"resolution\",\"resolution\":{\"method\":\"approval_granted\",\"resolution_source_hash\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"resolved_at_ms\":1700000000390,\"resolver_principal_id\":\"reviewer-一\",\"resolves_receipt_hash\":\"a9857eb29d2db52120b6ddb4b1ea80d17645bd64c87b786e320d2b01df6efe26\",\"suspension_id\":\"susp-approval-1\"},\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"typescript\",\"version\":\"0.11.2\"},\"sequence\":5,\"session_id\":\"sess-严格\",\"timestamp_ms\":1700000000400}",
+      "receipt_hash": "fc626f2c3ec2b88401fd0cb0c99dcdd076c0dce0b559962e60f63021dee35c77",
+      "signature": "d97659c9bc99cbf3a7249f8fa0cbe15b4b58d84a497b867b5d80e4d2ae198d4b6f03ab6a6b79b06c05f9c501c3e7776421c68acb9353c7f66522c508421c9804"
+    },
+    {
+      "id": "defer_context",
+      "input_rule_ids": [
+        "rule-6"
+      ],
+      "input_required_fields": [
+        "tool_result",
+        "missing_上下文",
+        "tool_result"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "decision",
+        "receipt_id": "sess-严格:6",
+        "session_id": "sess-严格",
+        "sequence": 6,
+        "timestamp_ms": 1700000000500,
+        "clock_regression_clamped": false,
+        "previous_receipt_hash": "fc626f2c3ec2b88401fd0cb0c99dcdd076c0dce0b559962e60f63021dee35c77",
+        "sdk": {
+          "language": "python",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-6",
+          "kind": "tool",
+          "name": "action_6",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ",
+          "thread_id": "thread-线程"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "DEFER",
+          "reason_code": "reason_defer",
+          "rule_ids": [
+            "rule-6"
+          ]
+        },
+        "execution_authorized": false,
+        "suspension": {
+          "suspension_id": "susp-context-1",
+          "type": "context",
+          "status": "pending",
+          "required_fields": [
+            "missing_上下文",
+            "tool_result"
+          ],
+          "expires_at_ms": 1700000060500
+        }
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-6\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"tool\",\"name\":\"action_6\"},\"clock_regression_clamped\":false,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\",\"thread_id\":\"thread-线程\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"DEFER\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_defer\",\"rule_ids\":[\"rule-6\"]},\"execution_authorized\":false,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":\"fc626f2c3ec2b88401fd0cb0c99dcdd076c0dce0b559962e60f63021dee35c77\",\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:6\",\"record_type\":\"decision\",\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"python\",\"version\":\"0.11.2\"},\"sequence\":6,\"session_id\":\"sess-严格\",\"suspension\":{\"expires_at_ms\":1700000060500,\"required_fields\":[\"missing_上下文\",\"tool_result\"],\"status\":\"pending\",\"suspension_id\":\"susp-context-1\",\"type\":\"context\"},\"timestamp_ms\":1700000000500}",
+      "receipt_hash": "ef9aec187ab5134ad07daddfabbacdde94a3ca5d1b1c17bfcb26ed02adf5c02e",
+      "signature": "c1c87a0d162aaff0e90427afff74dee5e2790d294412c1735014d282123920c881f8f97c8747c2326dbd6b3c8c7f0290e10837821fad9c438eb3a8bf63776a00"
+    },
+    {
+      "id": "context_resolution_allow",
+      "input_rule_ids": [
+        "rule-7"
+      ],
+      "body": {
+        "schema": "obsvr-strict-receipt-v1",
+        "profile_version": "1.0",
+        "record_type": "resolution",
+        "receipt_id": "sess-严格:7",
+        "session_id": "sess-严格",
+        "sequence": 7,
+        "timestamp_ms": 1700000000600,
+        "clock_regression_clamped": false,
+        "previous_receipt_hash": "ef9aec187ab5134ad07daddfabbacdde94a3ca5d1b1c17bfcb26ed02adf5c02e",
+        "sdk": {
+          "language": "typescript",
+          "version": "0.11.2"
+        },
+        "initiator": {
+          "agent_id": "代理-Ω",
+          "key_id": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+        },
+        "action": {
+          "action_id": "action-6",
+          "kind": "tool",
+          "name": "action_6",
+          "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "context": {
+          "schema": "obsvr-action-context-v1",
+          "context_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+          "run_id": "run-δ",
+          "thread_id": "thread-线程"
+        },
+        "evaluation": {
+          "input_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "policy_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+          "evaluator_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+          "engine_version": "obsvr-intent/1",
+          "policy_version": "policy-7",
+          "outcome": "ALLOW",
+          "reason_code": "reason_allow",
+          "rule_ids": [
+            "rule-7"
+          ]
+        },
+        "execution_authorized": true,
+        "resolution": {
+          "resolves_receipt_hash": "ef9aec187ab5134ad07daddfabbacdde94a3ca5d1b1c17bfcb26ed02adf5c02e",
+          "suspension_id": "susp-context-1",
+          "method": "context_supplied",
+          "resolver_principal_id": "agent-context",
+          "resolution_source_hash": "7777777777777777777777777777777777777777777777777777777777777777",
+          "resolved_at_ms": 1700000000590
+        }
+      },
+      "canonical": "{\"action\":{\"action_id\":\"action-6\",\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"kind\":\"tool\",\"name\":\"action_6\"},\"clock_regression_clamped\":false,\"context\":{\"context_hash\":\"9999999999999999999999999999999999999999999999999999999999999999\",\"run_id\":\"run-δ\",\"schema\":\"obsvr-action-context-v1\",\"thread_id\":\"thread-线程\"},\"evaluation\":{\"engine_version\":\"obsvr-intent/1\",\"evaluator_hash\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"input_hash\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"outcome\":\"ALLOW\",\"policy_hash\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"policy_version\":\"policy-7\",\"reason_code\":\"reason_allow\",\"rule_ids\":[\"rule-7\"]},\"execution_authorized\":true,\"initiator\":{\"agent_id\":\"代理-Ω\",\"key_id\":\"sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9\"},\"previous_receipt_hash\":\"ef9aec187ab5134ad07daddfabbacdde94a3ca5d1b1c17bfcb26ed02adf5c02e\",\"profile_version\":\"1.0\",\"receipt_id\":\"sess-严格:7\",\"record_type\":\"resolution\",\"resolution\":{\"method\":\"context_supplied\",\"resolution_source_hash\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"resolved_at_ms\":1700000000590,\"resolver_principal_id\":\"agent-context\",\"resolves_receipt_hash\":\"ef9aec187ab5134ad07daddfabbacdde94a3ca5d1b1c17bfcb26ed02adf5c02e\",\"suspension_id\":\"susp-context-1\"},\"schema\":\"obsvr-strict-receipt-v1\",\"sdk\":{\"language\":\"typescript\",\"version\":\"0.11.2\"},\"sequence\":7,\"session_id\":\"sess-严格\",\"timestamp_ms\":1700000000600}",
+      "receipt_hash": "d4458b2f508fc6fb93936d0a3c65329ab12f6ca83e32364dc2a887d0d2e911ab",
+      "signature": "8fa57e619db15ee4e8274cb5749a9b0e905cb2c2dc30bccc64cd7786d5581a24c9d4dcd124f5fa575b6336a0d3fe25e87cf9c62952f9bafa13bd8b85645d0301"
+    }
+  ],
+  "negative_case_ids": [
+    "unknown_body_key",
+    "clock_flag_missing",
+    "clock_flag_wrong_type",
+    "invalid_sequence",
+    "invalid_timestamp",
+    "receipt_id_mismatch",
+    "genesis_previous_hash",
+    "modify_missing_effective_hash",
+    "non_modify_effective_hash",
+    "authorization_mismatch",
+    "step_up_missing_suspension",
+    "step_up_required_fields",
+    "approval_hash_missing",
+    "approval_hash_malformed",
+    "suspension_expired_before_receipt",
+    "defer_empty_required_fields",
+    "defer_approval_fields",
+    "resolution_nonfinal",
+    "resolution_missing",
+    "resolution_method_outcome",
+    "resolution_timestamp_after_receipt",
+    "signature_key_mismatch",
+    "tampered_body",
+    "tampered_hash",
+    "tampered_signature",
+    "key_mismatch",
+    "malformed_pin",
+    "empty_chain",
+    "malformed_chain_entry",
+    "reordered_chain",
+    "previous_hash_mismatch",
+    "timestamp_regression",
+    "session_mismatch",
+    "receipt_tamper_in_chain",
+    "resolution_reference_invalid",
+    "resolution_prior_not_suspended",
+    "resolution_suspension_mismatch",
+    "resolution_method_mismatch",
+    "resolution_time_invalid",
+    "resolution_after_expiry",
+    "resolution_action_mismatch",
+    "resolution_initiator_mismatch"
+  ]
+}

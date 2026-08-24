@@ -1,0 +1,92 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "aarm_outcomes",
+  "profile_version": "1.0",
+  "description": "Obsvr-authored compatibility fixtures for mapping the existing action_taken wire vocabulary onto the five outcomes used by compatibility profile 1.0. These are not official AARM conformance vectors and do not assert certification or conformance. The existing action_taken field remains unchanged; unsupported or ambiguous states are rejected rather than assigned a policy meaning they do not carry. Harnesses: sdk-typescript/tests/unit/aarm-outcome.test.ts and sdk-python/tests/test_aarm_outcome.py.",
+  "outcomes": [
+    "ALLOW",
+    "DENY",
+    "MODIFY",
+    "STEP_UP",
+    "DEFER"
+  ],
+  "mapping_cases": [
+    {
+      "id": "allowed_maps_to_allow",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "allowed" },
+      "expect": "ALLOW"
+    },
+    {
+      "id": "ordinary_block_maps_to_deny",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "blocked" },
+      "expect": "DENY"
+    },
+    {
+      "id": "redaction_maps_to_modify",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "redacted" },
+      "expect": "MODIFY"
+    },
+    {
+      "id": "approval_block_maps_to_step_up",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "blocked", "approval_required": true },
+      "expect": "STEP_UP"
+    },
+    {
+      "id": "explicit_deferral_maps_to_defer",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "blocked", "deferred": true },
+      "expect": "DEFER"
+    }
+  ],
+  "rejection_cases": [
+    {
+      "id": "hook_error_has_no_policy_outcome",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "hook_error" }
+    },
+    {
+      "id": "hook_timeout_has_no_policy_outcome",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "hook_timeout" }
+    },
+    {
+      "id": "not_evaluated_has_no_policy_outcome",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "not_evaluated" }
+    },
+    {
+      "id": "approval_requires_a_block",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "allowed", "approval_required": true }
+    },
+    {
+      "id": "redaction_cannot_require_approval",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "redacted", "approval_required": true }
+    },
+    {
+      "id": "deferral_requires_a_block",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "allowed", "deferred": true }
+    },
+    {
+      "id": "redaction_cannot_be_deferred",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": { "action_taken": "redacted", "deferred": true }
+    },
+    {
+      "id": "approval_and_deferral_conflict",
+      "sdk_support": { "ts": "required", "py": "required" },
+      "input": {
+        "action_taken": "blocked",
+        "approval_required": true,
+        "deferred": true
+      }
+    }
+  ]
+}

@@ -94,3 +94,22 @@ describe.each(SIGNALS)('%s', (signal) => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 });
+
+it('reset removes only SDK-owned listeners across repeated registrations', () => {
+  const hostHandler = jest.fn();
+  const beforeExitBaseline = process.listenerCount('beforeExit');
+  process.on('SIGTERM', hostHandler);
+
+  for (let index = 0; index < 12; index++) {
+    setupExitHandlers(config);
+    expect(process.listenerCount('SIGTERM')).toBe(2);
+    expect(process.listenerCount('beforeExit')).toBe(beforeExitBaseline + 1);
+    _resetSender();
+    expect(process.listeners('SIGTERM')).toEqual([hostHandler]);
+    expect(process.listenerCount('beforeExit')).toBe(beforeExitBaseline);
+  }
+
+  setupExitHandlers(config);
+  expect(process.listenerCount('SIGTERM')).toBe(2);
+  expect(process.listenerCount('beforeExit')).toBe(beforeExitBaseline + 1);
+});

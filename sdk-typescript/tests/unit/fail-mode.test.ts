@@ -199,6 +199,12 @@ describe('failure-disposition registry: the gate', () => {
     'policy-log.ts', // policy-change audit emission
     'rego-export.ts', // one-way policy export, never an evaluator
     'tool-content-hash.ts', // evidence producer, decides nothing
+    // Pure strict-profile context/policy canonicalizers. They do not run in a
+    // provider call path or resolve detector failures. Invalid input throws
+    // before receipt preparation/admission, so no configurable fail-open or
+    // fail-closed disposition exists here.
+    'intent-alignment.ts',
+    'intent-alignment-v2.ts',
     'failure-dispositions.ts', // this registry
     'detector-guard.ts', // the resolution point itself, not a layer that can fail
     // Builds the STORED copy of content the decision scan never reached

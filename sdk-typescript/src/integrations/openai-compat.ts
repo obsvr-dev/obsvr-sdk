@@ -10,8 +10,10 @@
 
 import { wrapWithProviderHint } from "../proxy/wrapper.js";
 import type { IntegrationOptions, IntegrationProvider } from "./core.js";
+import type { StrictProviderBoundaryV21Capability } from "../governance/strict-provider-boundary-v2-1.js";
 
 export interface OpenAICompatConfig extends IntegrationOptions {
+  strict_receipt_v2_1?: StrictProviderBoundaryV21Capability;
   /** Destination fallback used only when the endpoint cannot be read. */
   provider: IntegrationProvider;
   source: string;
@@ -25,6 +27,7 @@ export function wrapOpenAICompatible<T extends object>(
   return wrapWithProviderHint(
     client,
     {
+      strict_receipt_v2_1: opts.strict_receipt_v2_1,
       source: opts.source,
       region: opts.region,
       service_name: opts.service_name,

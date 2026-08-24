@@ -148,6 +148,13 @@ import {
   resolveDestination,
   type CanonicalProvider,
 } from "./provider-attribution.js";
+import {
+  assertStrictProviderBoundaryV21,
+  executeStrictProviderCallV21,
+  ObsvrStrictProviderBoundaryV21Error,
+  strictProviderTargetV21,
+  strictProviderSurfaceUnsupportedV21,
+} from "../governance/strict-provider-boundary-v2-1.js";
 
 /**
  * Compliance context captured at the pre-LLM boundary.
@@ -265,6 +272,18 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["beta.responses.create", "openai-responses"], // OpenAI Responses beta
   ["beta.chat.completions.create", "openai-chat"], // OpenAI chat beta
   ["beta.chat.completions.parse", "openai-chat"], // OpenAI chat beta
+]);
+
+/** Narrow ordinary-call surface admitted by the first strict 2.1 boundary. */
+const STRICT_V21_DIRECT_METHODS = new Set([
+  "chat.completions.create",
+  "chat.completions.parse",
+  "messages.create",
+  "messages.parse",
+  "generateContent",
+  "models.generateContent",
+  "responses.create",
+  "responses.parse",
 ]);
 
 /**
@@ -389,9 +408,10 @@ function atPath(ctx: PathContext, path: string[]): PathContext {
   return child;
 }
 
-type PathContext = {
+export type PathContext = {
   path: string[];
   options: WrapOptions;
+  rootClient: object;
   config: ResolvedConfig;
   /**
    * The client's API SHAPE, from duck-typing. Selects the prompt/response
@@ -1405,11 +1425,11 @@ function wrapStreamingIterator(
 /**
  * What the pre-call half hands to the post-call half.
  *
- * Only five values cross the boundary, which is why this split is a refactor
- * rather than a redesign: everything else the governance section computes is
- * consumed inside it.
+ * Only the values needed to invoke and audit cross the boundary, so this split
+ * is a refactor rather than a redesign: everything else the governance section
+ * computes is consumed inside it.
  */
-interface PreCallOutcome {
+export interface PreCallOutcome {
   /** Args with obsvr's own audit fields removed, and PII redacted in place. */
   cleaned_args: unknown[];
   /** The audit fields that were filtered OUT of the caller's arguments. */
@@ -1429,7 +1449,22 @@ interface PreCallOutcome {
    * INPUT is what makes divergence impossible; sharing the rule would not.
    */
   taintIdentity: Record<string, unknown>;
+  /** Detector classifications established by the governance pipeline. */
+  detectedClassifications: string[];
 }
+
+export type GovernancePreCallPlan =
+  | ({ disposition: "ready" } & PreCallOutcome)
+  | {
+      disposition: "blocked";
+      cleaned_args: unknown[];
+      audit_fields: AuditFields;
+      compliance: ComplianceCtx;
+      modelHint: string | undefined;
+      detectedClassifications: string[];
+      blockedEvent: AuditEvent;
+      error: Error;
+    };
 
 /**
  * The pre-call half: everything from filtering the caller's arguments through
@@ -1442,10 +1477,10 @@ interface PreCallOutcome {
  * pipelines that must agree are two pipelines that will eventually disagree,
  * and this one decides whether a request is allowed to leave the process.
  *
- * BLOCKS BY THROWING. There is no early return in here and no "blocked" flag to
- * check: a refusal propagates out, so a caller that forgets to inspect a result
- * cannot accidentally proceed. (There is ONE throw at this function's own
- * nesting level, not two — an earlier commit message said two.)
+ * A policy refusal is returned as a blocked plan. The compatibility consumer
+ * below emits the existing forensic event and throws the exact stored error;
+ * separating those steps lets another trusted boundary inspect the complete
+ * governed invocation without contacting the provider.
  *
  * TWO ENTRY POINTS, DIFFERENT TIMING. This is called from
  * createAuditedMethod, which awaits it and then calls the provider, and from
@@ -1455,13 +1490,13 @@ interface PreCallOutcome {
  * lands on both paths — including the one where the caller is already holding
  * an object by the time this resolves.
  */
-async function governCall(
+export async function _buildDirectCallPreCallPlan(
   args: unknown[],
   target: object,
   ctx: PathContext,
   provider: "openai" | "anthropic" | "google" | "unknown",
   methodPath: string,
-): Promise<PreCallOutcome> {
+): Promise<GovernancePreCallPlan> {
   const { config } = ctx;
     // Always filter audit fields from args (even if not auditing)
     // This ensures audit fields never reach the LLM provider
@@ -2649,24 +2684,68 @@ async function governCall(
       // a class that is still open.
       applyStoredContentNet(blockedEvent, config, decisionText());
 
-      sendAuditAsync(config, blockedEvent);
-      debugLog(
-        config,
-        "info",
-        `Request blocked (${actionReason}): ${blockedEvent.request_id}`,
-      );
-      throw createPolicyError({
-        action_taken: actionTaken,
-        action_reason: actionReason,
-        action_source: actionSource,
-        policy_version: policyVersion,
-        policy_reason: policyReason,
-        rule_id: ruleId,
-        reason_code: resolvedReasonCode,
-      });
+      return {
+        disposition: "blocked",
+        cleaned_args,
+        audit_fields,
+        compliance,
+        modelHint,
+        detectedClassifications: [
+          ...new Set([...detectedTypesFound, ...redactedTypes, ...blockedTypes]),
+        ].sort(),
+        blockedEvent,
+        error: createPolicyError({
+          action_taken: actionTaken,
+          action_reason: actionReason,
+          action_source: actionSource,
+          policy_version: policyVersion,
+          policy_reason: policyReason,
+          rule_id: ruleId,
+          reason_code: resolvedReasonCode,
+        }),
+      };
     }
 
-  return { cleaned_args, audit_fields, auditThisCall, compliance, modelHint, taintIdentity };
+  return {
+    disposition: "ready",
+    cleaned_args,
+    audit_fields,
+    auditThisCall,
+    compliance,
+    modelHint,
+    taintIdentity,
+    detectedClassifications: [
+      ...new Set([...detectedTypesFound, ...redactedTypes, ...blockedTypes]),
+    ].sort(),
+  };
+}
+
+function consumePreCallPlan(
+  plan: GovernancePreCallPlan,
+  config: ResolvedConfig,
+): PreCallOutcome {
+  if (plan.disposition === "ready") return plan;
+  sendAuditAsync(config, plan.blockedEvent);
+  debugLog(
+    config,
+    "info",
+    `Request blocked (${plan.compliance.actionReason}): ${plan.blockedEvent.request_id}`,
+  );
+  throw plan.error;
+}
+
+async function governCall(
+  args: unknown[],
+  target: object,
+  ctx: PathContext,
+  provider: "openai" | "anthropic" | "google" | "unknown",
+  methodPath: string,
+): Promise<PreCallOutcome> {
+  const config = ctx.config;
+  return consumePreCallPlan(
+    await _buildDirectCallPreCallPlan(args, target, ctx, provider, methodPath),
+    config,
+  );
 }
 
 function createAuditedMethod(
@@ -2679,12 +2758,20 @@ function createAuditedMethod(
   const methodPath = ctx.path.join(".");
 
   return async function auditedMethod(...args: unknown[]): Promise<unknown> {
-    const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint } =
+    const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint,
+      detectedClassifications } =
       await governCall(args, target, ctx, provider, methodPath);
 
 
     // Check for streaming - compliance boundary has already run above.
     const firstArg = cleaned_args[0];
+    if (ctx.options.strict_receipt_v2_1 && (
+      methodPath === "models.generateContentStream"
+      || (typeof firstArg === "object" && firstArg !== null
+        && (firstArg as Record<string, unknown>).stream === true)
+    )) {
+      strictProviderSurfaceUnsupportedV21();
+    }
     if (
       typeof firstArg === "object" &&
       firstArg !== null &&
@@ -2787,11 +2874,47 @@ function createAuditedMethod(
     // Time the LLM call
     const startTime = performance.now();
     let response: unknown;
+    let invokedArgs = cleaned_args;
 
     try {
       // Call the original method with cleaned args
-      response = await originalMethod.apply(target, cleaned_args);
+      if (ctx.options.strict_receipt_v2_1) {
+        const destination = resolveDestination(
+          ctx.rootClient, ctx.declaredProvider ?? provider,
+        );
+        const strictTarget = strictProviderTargetV21(ctx.rootClient);
+        const model = String(
+          (cleaned_args[0] as { model?: unknown } | undefined)?.model
+            ?? modelHint
+            ?? "unknown",
+        );
+        response = await executeStrictProviderCallV21(
+          ctx.options.strict_receipt_v2_1,
+          {
+            provider: destination.provider,
+            operation: methodPath,
+            model,
+            target: strictTarget,
+            data_classifications: detectedClassifications,
+          },
+          cleaned_args,
+          (strictInvocation) => {
+            if (strictProviderTargetV21(ctx.rootClient) !== strictTarget) {
+              throw new ObsvrStrictProviderBoundaryV21Error("context_unavailable");
+            }
+            invokedArgs = strictInvocation;
+            return Promise.resolve(originalMethod.apply(target, strictInvocation))
+              .then((value) => {
+                if (isAsyncIterable(value)) strictProviderSurfaceUnsupportedV21();
+                return value;
+              });
+          },
+        );
+      } else {
+        response = await originalMethod.apply(target, cleaned_args);
+      }
     } catch (error) {
+      if (error instanceof ObsvrStrictProviderBoundaryV21Error) throw error;
       // Calculate latency even on error
       const latencyMs = Math.round(performance.now() - startTime);
 
@@ -2802,7 +2925,7 @@ function createAuditedMethod(
           (error as any)?.status ?? (error as any)?.statusCode ?? undefined;
         const auditEvent = buildAuditEvent(
           ctx,
-          cleaned_args[0],
+          invokedArgs[0],
           null, // No response on error
           audit_fields,
           latencyMs,
@@ -2841,7 +2964,7 @@ function createAuditedMethod(
       if (config.streaming_mode === "wrap" && auditThisCall) {
         return wrapStreamingIterator(
           response,
-          cleaned_args[0],
+          invokedArgs[0],
           audit_fields,
           ctx,
           provider,
@@ -2862,7 +2985,7 @@ function createAuditedMethod(
     if (auditThisCall) try {
       const auditEvent = buildAuditEvent(
         ctx,
-        cleaned_args[0],
+        invokedArgs[0],
         response,
         audit_fields,
         latencyMs,
@@ -3377,6 +3500,12 @@ function createRecursiveProxy<T extends object>(
 
       // If it's a function
       if (typeof value === "function") {
+        if (ctx.options.strict_receipt_v2_1
+          && !STRICT_V21_DIRECT_METHODS.has(newPath.join("."))) {
+          return function strictUnsupportedSurface(): never {
+            return strictProviderSurfaceUnsupportedV21();
+          };
+        }
         // Provider tool runners: same synchronous-return mechanism as the
         // stream helpers, but the run is emitted as a sequence of events
         // rather than one.
@@ -3490,9 +3619,13 @@ export function wrapWithProviderHint<T extends object>(
   declaredProvider?: CanonicalProvider,
 ): T {
   const config = getConfig();
+  if (options.strict_receipt_v2_1) {
+    assertStrictProviderBoundaryV21(options.strict_receipt_v2_1);
+  }
 
   // If disabled, return original client
   if (config.disabled) {
+    if (options.strict_receipt_v2_1) strictProviderSurfaceUnsupportedV21();
     // L-1: Use console.warn so misconfiguration is visible without debug mode
     console.warn("[obsvr] Audit disabled, returning unwrapped client. No events will be captured.");
     return client;
@@ -3533,6 +3666,9 @@ export function wrapWithProviderHint<T extends object>(
         resolvedProvider,
       ) as T;
     }
+    if (options.strict_receipt_v2_1 && !rebind) {
+      strictProviderSurfaceUnsupportedV21();
+    }
     debugLog(config, "warn", "Client already wrapped, returning existing");
     return client;
   }
@@ -3571,6 +3707,7 @@ function governClient<T extends object>(
   const ctx: PathContext = {
     path: [],
     options,
+    rootClient: client,
     /**
      * Read through to the live config rather than holding the object that was
      * current at wrap time.

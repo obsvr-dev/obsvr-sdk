@@ -12,22 +12,26 @@ not, which made it a cross-language divergence as well as a defect.
 """
 
 import obsvr
-from obsvr.wrap import _ObsvrProxy
+from obsvr.wrap import _ObsvrProxy, _obsvr_proxy_state
 
 
 class FakeAnthropic:
     class _Messages:
         def create(self, **kw):
-            return {"id": "msg_1", "content": [{"type": "text", "text": "ok"}],
-                    "usage": {"input_tokens": 1, "output_tokens": 1}}
+            return {
+                "id": "msg_1",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
 
     def __init__(self):
         self.messages = self._Messages()
 
 
 def _init():
-    obsvr.init(api_key="k", ingest_url="http://localhost:9",
-               policy_refresh_interval_s=0)
+    obsvr.init(
+        api_key="k", ingest_url="http://localhost:9", policy_refresh_interval_s=0
+    )
 
 
 def test_wrapping_a_wrapped_client_returns_the_same_object():
@@ -56,7 +60,7 @@ def test_a_second_wrap_carrying_options_honours_them():
     _init()
     governed = obsvr.wrap(FakeAnthropic())
     attributed = obsvr.wrap(governed, user_id="alice")
-    assert object.__getattribute__(attributed, "_obsvr_options")["user_id"] == "alice"
+    assert _obsvr_proxy_state(attributed).options["user_id"] == "alice"
 
 
 def test_a_second_wrap_carrying_options_still_does_not_nest():
@@ -64,7 +68,7 @@ def test_a_second_wrap_carrying_options_still_does_not_nest():
     _init()
     governed = obsvr.wrap(FakeAnthropic())
     attributed = obsvr.wrap(governed, user_id="alice")
-    inner = object.__getattribute__(attributed, "_obsvr_target")
+    inner = _obsvr_proxy_state(attributed).target
     assert not isinstance(inner, _ObsvrProxy), "a proxy was nested inside a proxy"
     assert isinstance(inner, FakeAnthropic)
 
@@ -74,7 +78,7 @@ def test_options_merge_over_the_ones_the_client_already_carried():
     _init()
     governed = obsvr.wrap(FakeAnthropic(), user_id="alice", source="first")
     attributed = obsvr.wrap(governed, user_id="bob")
-    options = object.__getattribute__(attributed, "_obsvr_options")
+    options = _obsvr_proxy_state(attributed).options
     assert options["user_id"] == "bob"
     assert options["source"] == "first", "an option this call did not pass must survive"
 
@@ -86,17 +90,12 @@ def test_the_destination_keys_are_re_resolved_not_caller_supplied():
 
     _init()
     governed = obsvr.wrap(FakeAnthropic())
-    resolved = object.__getattribute__(governed, "_obsvr_options")[
-        RECORDED_PROVIDER_OPTION_KEY
-    ]
+    resolved = _obsvr_proxy_state(governed).options[RECORDED_PROVIDER_OPTION_KEY]
     attributed = obsvr.wrap(
         governed, user_id="alice", **{RECORDED_PROVIDER_OPTION_KEY: "spoofed"}
     )
     assert (
-        object.__getattribute__(attributed, "_obsvr_options")[
-            RECORDED_PROVIDER_OPTION_KEY
-        ]
-        == resolved
+        _obsvr_proxy_state(attributed).options[RECORDED_PROVIDER_OPTION_KEY] == resolved
     )
 
 
@@ -112,6 +111,6 @@ def test_a_second_wrap_does_not_nest_a_proxy_inside_a_proxy():
     _init()
     once = obsvr.wrap(FakeAnthropic())
     twice = obsvr.wrap(once)
-    inner = object.__getattribute__(twice, "_obsvr_target")
+    inner = _obsvr_proxy_state(twice).target
     assert not isinstance(inner, _ObsvrProxy), "a proxy was nested inside a proxy"
     assert isinstance(inner, FakeAnthropic)

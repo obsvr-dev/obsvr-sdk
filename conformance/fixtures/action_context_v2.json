@@ -1,0 +1,79 @@
+{
+  "claimable": false,
+  "schema_version": 2,
+  "name": "action_context_v2",
+  "description": "Obsvr-authored compatibility fixture for the bounded obsvr-action-context-v2 document. It is not an official AARM conformance vector and makes no certification or conformance claim.",
+  "target_hash_vectors": [
+    {
+      "target": "workspace/租户🚀",
+      "target_hash": "b511e79e0a30532209c1b93c3ae4e138d30709460a2769329e8485bb578a6c0f"
+    },
+    {
+      "target": "🚀",
+      "target_hash": "c9719da53ab0aacaa2ffe95e75de27698a7b2c0bfce861c142c6efaba1db2ac6"
+    }
+  ],
+  "valid_case": {
+    "input": {
+      "agent_id": "代理-Ω",
+      "active_intents": ["Review 🚀", "Extract", "Review 🚀"],
+      "agent_role": "reviewer",
+      "privilege_scope": ["🔒:audit", "contracts:read"],
+      "current_action": {
+        "kind": "tool_call",
+        "name": "réviser_合同",
+        "arguments_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "target": "workspace/租户🚀",
+        "data_classifications": ["PII", "合同", "PII"],
+        "requested_scopes": ["contracts:write", "contracts:read"]
+      },
+      "run_id": "run-国际",
+      "session_id": "session-é",
+      "thread_id": "thread-東京",
+      "prior_actions": [
+        {
+          "sequence": 0,
+          "kind": "model_call",
+          "name": "classify",
+          "outcome": "ALLOW",
+          "receipt_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "data_classifications": ["Public", "PII"]
+        }
+      ]
+    },
+    "expect": {
+      "document": {
+        "schema": "obsvr-action-context-v2",
+        "agent": {
+          "agent_id": "代理-Ω",
+          "active_intents": ["Extract", "Review 🚀"],
+          "role": "reviewer",
+          "privilege_scope": ["contracts:read", "🔒:audit"]
+        },
+        "action": {
+          "kind": "tool_call",
+          "name": "réviser_合同",
+          "arguments_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "data_classifications": ["PII", "合同"],
+          "requested_scopes": ["contracts:read", "contracts:write"],
+          "target_hash": "b511e79e0a30532209c1b93c3ae4e138d30709460a2769329e8485bb578a6c0f"
+        },
+        "run_id": "run-国际",
+        "prior_actions": [
+          {
+            "sequence": 0,
+            "kind": "model_call",
+            "name": "classify",
+            "outcome": "ALLOW",
+            "receipt_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "data_classifications": ["PII", "Public"]
+          }
+        ],
+        "session_id": "session-é",
+        "thread_id": "thread-東京"
+      },
+      "canonical": "{\"action\":{\"arguments_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"data_classifications\":[\"PII\",\"合同\"],\"kind\":\"tool_call\",\"name\":\"réviser_合同\",\"requested_scopes\":[\"contracts:read\",\"contracts:write\"],\"target_hash\":\"b511e79e0a30532209c1b93c3ae4e138d30709460a2769329e8485bb578a6c0f\"},\"agent\":{\"active_intents\":[\"Extract\",\"Review 🚀\"],\"agent_id\":\"代理-Ω\",\"privilege_scope\":[\"contracts:read\",\"🔒:audit\"],\"role\":\"reviewer\"},\"prior_actions\":[{\"data_classifications\":[\"PII\",\"Public\"],\"kind\":\"model_call\",\"name\":\"classify\",\"outcome\":\"ALLOW\",\"receipt_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"sequence\":0}],\"run_id\":\"run-国际\",\"schema\":\"obsvr-action-context-v2\",\"session_id\":\"session-é\",\"thread_id\":\"thread-東京\"}",
+      "hash": "9be9cc8f5b945815919671483b06bfd5fc14f838acac25336f507b14b2707fd9"
+    }
+  }
+}

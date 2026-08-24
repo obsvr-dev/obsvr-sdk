@@ -1,0 +1,82 @@
+{
+  "claimable": false,
+  "schema_version": 2,
+  "name": "intent_alignment_v2",
+  "description": "Obsvr-authored compatibility fixture for obsvr-intent-policy-v2 over obsvr-action-context-v2. It is not an official AARM conformance vector and makes no certification or conformance claim.",
+  "base_context": {
+    "agent_id": "代理-Ω",
+    "active_intents": ["draft_合同"],
+    "agent_role": "reviewer",
+    "privilege_scope": ["contracts:write", "contracts:read"],
+    "current_action": {
+      "kind": "tool_call",
+      "name": "draft_合同",
+      "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target": "workspace/租户🚀",
+      "data_classifications": ["PII", "Confidential"],
+      "requested_scopes": ["contracts:write", "contracts:read"]
+    },
+    "run_id": "run-国际",
+    "prior_actions": []
+  },
+  "base_policy": {
+    "schema": "obsvr-intent-policy-v2",
+    "profile_version": "2.0",
+    "intent_scopes": [
+      {
+        "intent_id": "draft_合同",
+        "allowed_actions": [{"kind": "tool_call", "name": "draft_合同"}],
+        "allowed_targets": ["workspace/租户🚀"],
+        "allowed_requested_scopes": ["contracts:write", "contracts:read"],
+        "allowed_data_classifications": ["PII", "Confidential"]
+      }
+    ]
+  },
+  "policy_expect": {
+    "document": {
+      "schema": "obsvr-intent-policy-v2",
+      "profile_version": "2.0",
+      "intent_scopes": [
+        {
+          "intent_id": "draft_合同",
+          "allowed_actions": [{"kind": "tool_call", "name": "draft_合同"}],
+          "allowed_target_hashes": ["b511e79e0a30532209c1b93c3ae4e138d30709460a2769329e8485bb578a6c0f"],
+          "allowed_requested_scopes": ["contracts:read", "contracts:write"],
+          "allowed_data_classifications": ["Confidential", "PII"]
+        }
+      ]
+    },
+    "canonical": "{\"intent_scopes\":[{\"allowed_actions\":[{\"kind\":\"tool_call\",\"name\":\"draft_合同\"}],\"allowed_data_classifications\":[\"Confidential\",\"PII\"],\"allowed_requested_scopes\":[\"contracts:read\",\"contracts:write\"],\"allowed_target_hashes\":[\"b511e79e0a30532209c1b93c3ae4e138d30709460a2769329e8485bb578a6c0f\"],\"intent_id\":\"draft_合同\"}],\"profile_version\":\"2.0\",\"schema\":\"obsvr-intent-policy-v2\"}",
+    "hash": "0c22e2c5e2e7712c03377c9512ef92de5c9df633964896ca978972970c69d1b5"
+  },
+  "cases": [
+    {
+      "id": "aligned",
+      "target": "workspace/租户🚀",
+      "expect": {
+        "outcome": "ALLOW",
+        "reason_code": "intent_aligned",
+        "prevents_original_action": false,
+        "engine_version": "obsvr-intent/2",
+        "context_hash": "0a422cb783c1127fba14d7e0d0ed3ee3cb99ae659256b087b10665391aae5528",
+        "policy_hash": "0c22e2c5e2e7712c03377c9512ef92de5c9df633964896ca978972970c69d1b5",
+        "input_hash": "9958471be812ab53e73f06e1081365783d825f49dab912017fb9ee7ec75d6bc5",
+        "evaluator_hash": "85bdb3c5a5b265a24ef69b1ddcbca4bc535b10f96d7fe18188b936dc1352af2b"
+      }
+    },
+    {
+      "id": "target_not_allowed",
+      "target": "external",
+      "expect": {
+        "outcome": "DENY",
+        "reason_code": "target_not_allowed",
+        "prevents_original_action": true,
+        "engine_version": "obsvr-intent/2",
+        "context_hash": "b7a61ac60ad4c1af818918d59634facc854fbd38051982efa83a9772ef0eb420",
+        "policy_hash": "0c22e2c5e2e7712c03377c9512ef92de5c9df633964896ca978972970c69d1b5",
+        "input_hash": "6e50bc7cf380224300e5a7d7c30092369a071e869c3f54d85b2ae5e74087e016",
+        "evaluator_hash": "85bdb3c5a5b265a24ef69b1ddcbca4bc535b10f96d7fe18188b936dc1352af2b"
+      }
+    }
+  ]
+}
