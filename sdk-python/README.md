@@ -115,6 +115,33 @@ the gap and the paths it looks for. Once per client, not per call. Pass
 deployment that wants an ungoverned client to fail at startup rather than at audit
 time.
 
+## Strict profile 2.1 provider boundary
+
+Ordinary `wrap()` runs the policy pipeline before documented methods. For a supported direct-provider call that must also have a device-signed decision receipt admitted and committed **before execution**, construct a `StrictReceiptRuntimeV21` and pass an explicit capability:
+
+```python
+from obsvr import create_strict_provider_boundary_v2_1
+
+# Configure this runtime with a StrictReceiptCoordinatorV21, admission options,
+# a device signer, trusted identity/evaluation providers, and an atomic durable store.
+strict = create_strict_provider_boundary_v2_1(
+    runtime=runtime,
+    context=lambda call: {
+        "active_intents": ["serve"],
+        "requested_scopes": ["model:invoke"],
+        "run_id": "run-123",
+    },
+)
+
+client = obsvr.wrap(OpenAI(), strict_receipt_v2_1=strict)
+```
+
+The strict sequence is `prepared -> remote_accepted -> committed -> invocation_started -> terminal`. No provider call occurs without positive admission and the preceding durable checkpoints. After `invocation_started`, an ambiguous result is `invocation_uncertain` and must not be retried automatically.
+
+This mode supports only synchronous unary `chat.completions.create` / `.parse`, `responses.create` / `.parse`, `messages.create` / `.parse`, legacy `generate_content`, and maintained `models.generate_content`. Async calls, streams, helper managers, runners, and other callables fail closed with `unsupported_surface`. Only an `ALLOW` outcome executes; `DENY`, `MODIFY`, `STEP_UP`, and `DEFER` do not contact the provider.
+
+The full construction used by the executable tests is in [`test_strict_provider_boundary_v2_1.py`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-python/tests/test_strict_provider_boundary_v2_1.py). Read the repository [security boundary](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md#strict-profile-21-execution-boundary) and [compatibility matrix](https://github.com/obsvr-dev/obsvr-sdk/blob/main/COMPATIBILITY.md#strict-profile-21-direct-provider-boundary) before enabling it.
+
 ## MCP Governance
 
 Wrap the MCP client session; governance then covers all three phases —

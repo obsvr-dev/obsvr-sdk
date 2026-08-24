@@ -73,3 +73,13 @@ import specifier in `src/` and asserts each one resolves. It has caught real
 defects — including an MCP specifier that was wrong in both branches, so the
 integration was not degraded to a fallback, it was off. Keep it in the suite and
 keep it strict.
+
+## Strict profile 2.1 evidence
+
+The strict receipt tests drive the real TypeScript implementation rather than a restated policy gate:
+
+- `tests/unit/strict-provider-boundary-v2-1.test.ts` proves exact cleaned-argument binding, unique action ids, target re-reading, admission/commit/checkpoint ordering, provider-error preservation, and fail-closed unsupported surfaces. It also drives the installed maintained Gemini client with provider transport mocked.
+- `tests/unit/strict-receipt-runtime-v2-1.test.ts` and `tests/unit/strict-receipt-recovery-v2-1.test.ts` cover durable phase ordering, ambiguous admission, checkpoint failure, freeze/reconcile behavior, and the no-automatic-retry boundary after invocation starts.
+- The strict-receipt, action-context, intent-alignment, identity, and evaluation-evidence unit tests consume the same fixture corpus as Python and verify byte-sensitive receipt behavior across languages.
+
+The TypeScript strict-provider suite does not make a live-network provider claim. Point-in-time live evidence and its limits are recorded separately in `COMPATIBILITY.md`.

@@ -117,6 +117,35 @@ The hook's reach is narrower than *every* client anywhere in the process, and th
 
 The CommonJS row is structural and cannot be closed by the ESM loader hook; subpath coverage remains an open gap. Widening the specifier table is a change to the interception path across the whole declared version range of each provider package, not a documentation-only change.
 
+## Strict profile 2.1 provider boundary
+
+Ordinary `wrap()` runs the policy pipeline before documented methods. For a supported direct-provider call that must also have a device-signed decision receipt admitted and committed **before execution**, construct a `StrictReceiptRuntimeV21` and pass an explicit capability:
+
+```typescript
+import { createStrictProviderBoundaryV21, obsvr } from '@obsvr/sdk';
+
+// Configure this runtime with a StrictReceiptCoordinatorV21, admission options,
+// a device signer, trusted identity/evaluation providers, and an atomic durable store.
+const strict = createStrictProviderBoundaryV21({
+  runtime,
+  context: () => ({
+    active_intents: ['serve'],
+    requested_scopes: ['model:invoke'],
+    run_id: 'run-123',
+  }),
+});
+
+const client = obsvr.wrap(new OpenAI({ apiKey: process.env.OPENAI_API_KEY }), {
+  strict_receipt_v2_1: strict,
+});
+```
+
+The strict sequence is `prepared -> remote_accepted -> committed -> invocation_started -> terminal`. No provider call occurs without positive admission and the preceding durable checkpoints. After `invocation_started`, an ambiguous result is `invocation_uncertain` and must not be retried automatically.
+
+This mode supports only unary `chat.completions.create` / `.parse`, `responses.create` / `.parse`, `messages.create` / `.parse`, legacy `generateContent`, and maintained `models.generateContent`; these retain their normal Promise-returning API. Streams, helper managers, runners, and other callables fail closed with `unsupported_surface`. Only an `ALLOW` outcome executes; `DENY`, `MODIFY`, `STEP_UP`, and `DEFER` do not contact the provider.
+
+The full construction used by the executable tests is in [`strict-provider-boundary-v2-1.test.ts`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-typescript/tests/unit/strict-provider-boundary-v2-1.test.ts). Read the repository [security boundary](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md#strict-profile-21-execution-boundary) and [compatibility matrix](https://github.com/obsvr-dev/obsvr-sdk/blob/main/COMPATIBILITY.md#strict-profile-21-direct-provider-boundary) before enabling it.
+
 ## Policy Enforcement
 
 Policies run **before** the call leaves your process. Deterministic code only; no LLM in the decision path.

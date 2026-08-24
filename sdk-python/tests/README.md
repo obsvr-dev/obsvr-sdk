@@ -52,3 +52,13 @@ So a green run here is not evidence that an integration still works against a
 current install. That evidence comes from live probes against real frameworks
 and real providers, and the surfaces which have never had it are named in
 `COMPATIBILITY.md`.
+
+## Strict profile 2.1 evidence
+
+The strict receipt tests drive the real Python implementation rather than a restated policy gate:
+
+- `test_strict_provider_boundary_v2_1.py` proves exact cleaned-argument binding, unique action ids, target re-reading, admission/commit/checkpoint ordering, provider-error preservation, and fail-closed unsupported surfaces with provider-shaped fakes. It also drives the installed maintained Gemini package without network access.
+- `test_strict_receipt_runtime_v2_1.py` and `test_strict_receipt_recovery_v2_1.py` cover durable phase ordering, ambiguous admission, checkpoint failure, freeze/reconcile behavior, and the no-automatic-retry boundary after invocation starts.
+- `test_strict_receipt_v2_1.py`, action-context, intent-alignment, identity, and evaluation-evidence tests consume the shared cross-language fixtures and verify the signed receipt itself.
+
+Controlled live OpenAI, Anthropic, and maintained Gemini calls are release-validation probes outside CI. They are recorded as point-in-time evidence in `COMPATIBILITY.md`; they do not turn every method or upstream version into live-tested coverage.
