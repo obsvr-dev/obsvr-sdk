@@ -15,6 +15,8 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+## [0.12.0] - 2026-08-24
+
 ### Added
 
 - Added obsvr-authored AARM compatibility profile 1.0 for `ALLOW`, `DENY`, `MODIFY`, `STEP_UP`, and `DEFER`, plus cross-language action-context, intent-alignment, identity, evaluation-evidence, and strict-receipt fixtures. The fixtures do not claim official AARM conformance or certification. ([`427f52a`](https://github.com/obsvr-dev/obsvr-sdk/commit/427f52a))

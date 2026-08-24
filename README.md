@@ -7,8 +7,8 @@
 Obsvr runs inside your application to enforce deterministic policy before supported AI calls execute, then signs the resulting decision record so it can be independently verified later.
 
 ![Status](https://img.shields.io/badge/status-beta-6d4aff)
-[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.11.2)
-[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.11.2/)
+[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.12.0)
+[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.12.0/)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-typescript%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
@@ -27,8 +27,8 @@ Obsvr runs inside your application to enforce deterministic policy before suppor
 
 | Package | Runtime | Version | Source |
 | --- | --- | ---: | --- |
-| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.11.2) | TypeScript / Node.js ≥ 22 | 0.11.2 | [`sdk-typescript/`](sdk-typescript/) |
-| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.11.2/) | Python ≥ 3.10 | 0.11.2 | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.12.0) | TypeScript / Node.js ≥ 22 | 0.12.0 | [`sdk-typescript/`](sdk-typescript/) |
+| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.12.0/) | Python ≥ 3.10 | 0.12.0 | [`sdk-python/`](sdk-python/) |
 
 ## Contents
 
