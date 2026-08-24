@@ -42,9 +42,9 @@ jobs:
         run: python -m pytest tests/ -q
         working-directory: sdk-python
 
-      # refuse to publish a self-contradictory version (package.json vs
-      # constants.ts vs _version.py vs server.json vs the tag). Node is
-      # preinstalled on ubuntu-latest runners.
+      # Refuse to publish a self-contradictory version (package.json,
+      # constants.ts, _version.py, the Action pin and README, and the tag).
+      # Node is preinstalled on ubuntu-latest runners.
       - name: Verify version consistency
         run: node scripts/check-version-consistency.mjs
         env:

@@ -80,8 +80,8 @@ jobs:
         env:
           NODE_ENV: test
 
-      # refuse to publish a self-contradictory version (package.json vs
-      # constants.ts vs _version.py vs server.json vs the tag).
+      # Refuse to publish a self-contradictory version (package.json,
+      # constants.ts, _version.py, the Action pin and README, and the tag).
       - name: Verify version consistency
         run: node scripts/check-version-consistency.mjs
         env:
