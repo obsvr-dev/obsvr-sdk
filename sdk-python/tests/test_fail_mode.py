@@ -204,7 +204,7 @@ class TestRegistryGate:
         # declared. Same exemption reason as decision_record.py in TS.
         "approval_action.py",
         # Strict-profile schemas, canonicalizers, evidence assemblers, receipt
-        # builders/verifiers, admission transport, coordination, recovery, and
+        # builders/verifiers, strict transports, coordination, recovery, and
         # runtime orchestration. These are not detector layers: unavailable
         # required-detector evidence is encoded as a stricter outcome, invalid
         # inputs fail before admission, and uncertain admission freezes
@@ -224,6 +224,7 @@ class TestRegistryGate:
         "strict_identity_evidence_v2_1.py",
         "strict_policy_continuity_v2_1.py",
         "strict_execution_outcome_v2_1.py",
+        "strict_execution_outcome_transport_v2_1.py",
         "strict_receipt.py",
         "strict_receipt_coordinator.py",
         "strict_receipt_coordinator_support.py",
