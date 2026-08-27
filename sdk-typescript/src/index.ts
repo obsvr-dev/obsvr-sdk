@@ -174,6 +174,16 @@ export type {
   StrictRuntimeRecoveryV21Result,
 } from "./governance/strict-runtime-recovery-v2-1.js";
 export {
+  STRICT_POLICY_CONTINUITY_V21_SCHEMA,
+  StrictPolicyContinuityV21Error,
+  reconstructStrictPolicyContinuityV21,
+} from "./governance/strict-policy-continuity-v2-1.js";
+export type {
+  StrictPolicyContinuityV21,
+  StrictPolicySnapshotV21,
+  StrictPolicyTransitionV21,
+} from "./governance/strict-policy-continuity-v2-1.js";
+export {
   STRICT_EXECUTION_OUTCOME_V21_SCHEMA,
   STRICT_EXECUTION_OUTCOME_V21_ENVELOPE_SCHEMA,
   StrictExecutionOutcomeV21ValidationError,

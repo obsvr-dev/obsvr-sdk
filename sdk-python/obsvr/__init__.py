@@ -91,6 +91,11 @@ from .strict_runtime_recovery_v2_1 import (  # noqa: F401
     StrictRuntimeRecoveryV21Error,
     reconcile_strict_runtime_execution_v2_1,
 )
+from .strict_policy_continuity_v2_1 import (  # noqa: F401
+    STRICT_POLICY_CONTINUITY_V2_1_SCHEMA,
+    StrictPolicyContinuityV21Error,
+    reconstruct_strict_policy_continuity_v2_1,
+)
 from .strict_execution_outcome_v2_1 import (  # noqa: F401
     StrictExecutionOutcomeV21ValidationError,
     build_strict_execution_outcome_v2_1_body,
@@ -133,6 +138,9 @@ __all__ = [
     "StrictReceiptRuntimeV21",
     "StrictRuntimeRecoveryV21Error",
     "reconcile_strict_runtime_execution_v2_1",
+    "STRICT_POLICY_CONTINUITY_V2_1_SCHEMA",
+    "StrictPolicyContinuityV21Error",
+    "reconstruct_strict_policy_continuity_v2_1",
     "StrictExecutionOutcomeV21ValidationError",
     "build_strict_execution_outcome_v2_1_body",
     "canonicalize_strict_execution_outcome_v2_1_body",

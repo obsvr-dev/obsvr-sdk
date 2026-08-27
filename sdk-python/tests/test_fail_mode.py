@@ -221,6 +221,7 @@ class TestRegistryGate:
         "strict_canonical.py",
         "strict_evaluation_evidence_v2_1.py",
         "strict_identity_evidence_v2_1.py",
+        "strict_policy_continuity_v2_1.py",
         "strict_execution_outcome_v2_1.py",
         "strict_receipt.py",
         "strict_receipt_coordinator.py",
