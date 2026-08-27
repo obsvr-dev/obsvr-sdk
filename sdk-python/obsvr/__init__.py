@@ -72,6 +72,12 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .wrap import wrap  # noqa: F401
+from .strict_action_boundary_v2_1 import (  # noqa: F401
+    ObsvrStrictActionBoundaryV21Error,
+    StrictActionBoundaryV21Capability,
+    create_strict_action_boundary_v2_1,
+    execute_strict_action_v2_1,
+)
 from .strict_provider_boundary_v2_1 import (  # noqa: F401
     ObsvrStrictProviderBoundaryV21Error,
     StrictProviderBoundaryV21Capability,
@@ -113,6 +119,10 @@ from ._version import __version__  # noqa: F401  # single source: obsvr/_version
 __all__ = [
     "init",
     "wrap",
+    "create_strict_action_boundary_v2_1",
+    "execute_strict_action_v2_1",
+    "ObsvrStrictActionBoundaryV21Error",
+    "StrictActionBoundaryV21Capability",
     "create_strict_provider_boundary_v2_1",
     "ObsvrStrictProviderBoundaryV21Error",
     "StrictProviderBoundaryV21Capability",

@@ -217,6 +217,7 @@ class TestRegistryGate:
         "strict_admission.py",
         "strict_admission_v2.py",
         "strict_admission_v2_1.py",
+        "strict_action_boundary_v2_1.py",
         "strict_canonical.py",
         "strict_evaluation_evidence_v2_1.py",
         "strict_identity_evidence_v2_1.py",

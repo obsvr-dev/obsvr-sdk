@@ -131,6 +131,18 @@ export { resolveCallCost, priceTokens } from "./governance/cost.js";
 export type { CostPolicyConfig, CostRate, ResolvedCost } from "./governance/cost.js";
 export { createGovernanceServer } from "./governance/server.js";
 export {
+  createStrictActionBoundaryV21,
+  executeStrictActionV21,
+  ObsvrStrictActionBoundaryV21Error,
+} from "./governance/strict-action-boundary-v2-1.js";
+export type {
+  StrictActionBoundaryV21Capability,
+  StrictActionBoundaryV21Options,
+  StrictActionContextV21,
+  StrictActionExecutionV21,
+  StrictActionV21,
+} from "./governance/strict-action-boundary-v2-1.js";
+export {
   createStrictProviderBoundaryV21,
   ObsvrStrictProviderBoundaryV21Error,
 } from "./governance/strict-provider-boundary-v2-1.js";
