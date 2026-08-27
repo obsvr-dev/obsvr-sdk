@@ -134,12 +134,13 @@ function validateJournal(
   const journal = structuredClone(root) as unknown as StrictRuntimeExecutionJournalV21;
   const receipt = journal.receipt;
   const verification = verifyStrictReceiptV21(receipt, trust);
-  if (!verification.integrity_valid || receipt.body.record_type !== 'decision'
+  if (!verification.integrity_valid
+    || (receipt.body.record_type !== 'decision' && receipt.body.record_type !== 'resolution')
     || receipt.body.profile_version !== '2.1' || receipt.receipt_hash !== journal.receipt_hash
     || receipt.body.tenant_id !== journal.tenant_id
     || receipt.body.session_id !== journal.session_id
     || receipt.body.action.action_id !== journal.runtime_action_id) {
-    fail('runtime journal does not contain its intact bound decision receipt');
+    fail('runtime journal does not contain its intact bound execution receipt');
   }
   const current = journal.committed_sequence === receipt.body.sequence
     && journal.committed_head_receipt_hash === receipt.receipt_hash;

@@ -165,7 +165,7 @@ def _validate_journal(
     )
     if (
         not verification["integrity_valid"]
-        or receipt["body"].get("record_type") != "decision"
+        or receipt["body"].get("record_type") not in ("decision", "resolution")
         or receipt["body"].get("profile_version") != "2.1"
         or receipt.get("receipt_hash") != journal["receipt_hash"]
         or receipt["body"].get("tenant_id") != journal["tenant_id"]
@@ -173,7 +173,7 @@ def _validate_journal(
         or receipt["body"]["action"].get("action_id")
         != journal["runtime_action_id"]
     ):
-        _fail("runtime journal does not contain its intact bound decision receipt")
+        _fail("runtime journal does not contain its intact bound execution receipt")
     current = (
         journal["committed_sequence"] == receipt["body"]["sequence"]
         and journal["committed_head_receipt_hash"] == receipt["receipt_hash"]

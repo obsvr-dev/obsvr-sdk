@@ -7,6 +7,10 @@ import pytest
 from obsvr.device_identity import load_device_signer
 from obsvr.strict_execution_outcome_v2_1 import sign_strict_execution_outcome_v2_1
 from obsvr.strict_receipt_v2_1 import sign_strict_receipt_v2_1
+from obsvr.strict_receipt_runtime_v2_1_outcomes import (
+    create_strict_runtime_execution_start_v2_1,
+    create_strict_runtime_success_outcome_v2_1,
+)
 from obsvr.strict_runtime_recovery_v2_1 import (
     StrictRuntimeRecoveryV21Error,
     finalize_interrupted_strict_runtime_execution_v2_1,
@@ -95,6 +99,56 @@ def _journal(tmp_path, phase="invocation_started"):
     return signer, receipt, body, journal
 
 
+def _resolution_journal(tmp_path):
+    signer, decision, body, journal = _journal(tmp_path)
+    resolution_body = copy.deepcopy(decision["body"])
+    resolution_body["record_type"] = "resolution"
+    resolution_body["receipt_id"] = (
+        f"{resolution_body['session_id']}:resolution"
+    )
+    resolution_body["sequence"] += 1
+    resolution_body["timestamp_ms"] += 1
+    resolution_body["previous_receipt_hash"] = decision["receipt_hash"]
+    resolution_body.pop("suspension", None)
+    resolution_body["resolution"] = {
+        "resolves_receipt_hash": decision["receipt_hash"],
+        "suspension_id": "approval-public",
+        "method": "approval_granted",
+        "resolver_ref_hash": "c" * 64,
+        "resolved_at_ms": resolution_body["timestamp_ms"],
+        "approval_evidence_hash": "d" * 64,
+    }
+    resolution = sign_strict_receipt_v2_1(resolution_body, signer)
+    start = create_strict_runtime_execution_start_v2_1(
+        resolution,
+        body["operation_fingerprint"],
+        resolution_body["timestamp_ms"] + 1,
+    )
+    outcome_body = create_strict_runtime_success_outcome_v2_1(
+        resolution,
+        start,
+        resolution_body["timestamp_ms"] + 2,
+        {"schema": "obsvr-test-result-v1", "status": "ok"},
+    )
+    journal.update(
+        {
+            "tenant_id": resolution["body"]["tenant_id"],
+            "session_id": resolution["body"]["session_id"],
+            "runtime_action_id": resolution["body"]["action"]["action_id"],
+            "receipt_hash": resolution["receipt_hash"],
+            "committed_sequence": resolution["body"]["sequence"],
+            "committed_head_receipt_hash": resolution["receipt_hash"],
+            "receipt": resolution,
+            "execution_start": {
+                key: value for key, value in start.items()
+                if key != "execution_start_hash"
+            },
+            "execution_start_hash": start["execution_start_hash"],
+        }
+    )
+    return signer, resolution, outcome_body, journal
+
+
 def test_started_action_without_terminal_outcome_is_never_retry_safe(tmp_path):
     _signer_value, _receipt_value, _body, journal = _journal(tmp_path)
     result = reconcile_strict_runtime_execution_v2_1(journal, **_trust())
@@ -122,6 +176,20 @@ def test_only_bound_signed_outcome_resolves_durable_start(tmp_path):
     )
     assert again["status"] == "resolved"
     assert again["terminal_status"] == "executed"
+
+
+def test_approval_resolution_can_authorize_recovered_terminal_evidence(tmp_path):
+    signer, resolution, body, journal = _resolution_journal(tmp_path)
+    outcome = sign_strict_execution_outcome_v2_1(body, signer, resolution)
+    resolved = reconcile_strict_runtime_execution_v2_1(
+        journal, outcome, **_trust()
+    )
+    assert resolved["status"] == "resolved"
+    assert resolved["terminal_status"] == "executed"
+    assert resolved["decision_trusted"] is True
+    assert resolved["outcome_integrity_valid"] is True
+    assert resolved["outcome_trusted"] is True
+    assert resolved["journal"]["receipt"]["body"]["record_type"] == "resolution"
 
 
 def test_pre_invocation_state_requires_receipt_reconciliation(tmp_path):

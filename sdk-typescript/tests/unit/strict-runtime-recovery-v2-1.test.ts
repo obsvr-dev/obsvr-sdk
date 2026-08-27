@@ -7,6 +7,10 @@ import {
   type StrictExecutionOutcomeV21Body,
 } from '../../src/governance/strict-execution-outcome-v2-1.js';
 import {
+  createStrictRuntimeExecutionStartV21,
+  createStrictRuntimeSuccessOutcomeV21,
+} from '../../src/governance/strict-receipt-runtime-v2-1-outcomes.js';
+import {
   finalizeInterruptedStrictRuntimeExecutionV21,
   reconcileStrictRuntimeExecutionV21,
   StrictRuntimeRecoveryV21Error,
@@ -86,6 +90,51 @@ function journal(phase: 'committed' | 'invocation_started' = 'invocation_started
   };
 }
 
+function resolutionJournal() {
+  const subject = journal();
+  const body = clone(subject.decision.body);
+  body.record_type = 'resolution';
+  body.receipt_id = `${body.session_id}:resolution`;
+  body.sequence += 1;
+  body.timestamp_ms += 1;
+  body.previous_receipt_hash = subject.decision.receipt_hash;
+  delete body.suspension;
+  body.resolution = {
+    resolves_receipt_hash: subject.decision.receipt_hash,
+    suspension_id: 'approval-public', method: 'approval_granted',
+    resolver_ref_hash: 'c'.repeat(64), resolved_at_ms: body.timestamp_ms,
+    approval_evidence_hash: 'd'.repeat(64),
+  };
+  const resolution = signStrictReceiptV21(body, subject.device);
+  const start = createStrictRuntimeExecutionStartV21(
+    resolution, subject.body.operation_fingerprint, body.timestamp_ms + 1,
+  );
+  const outcomeBody = createStrictRuntimeSuccessOutcomeV21(
+    resolution, start, body.timestamp_ms + 2,
+    { schema: 'obsvr-test-result-v1', status: 'ok' },
+  );
+  return {
+    ...subject, resolution, outcomeBody,
+    value: {
+      ...subject.value,
+      tenant_id: resolution.body.tenant_id,
+      session_id: resolution.body.session_id,
+      runtime_action_id: resolution.body.action.action_id,
+      receipt_hash: resolution.receipt_hash,
+      committed_sequence: resolution.body.sequence,
+      committed_head_receipt_hash: resolution.receipt_hash,
+      receipt: resolution,
+      execution_start: {
+        tenant_id: start.tenant_id, session_id: start.session_id,
+        action_id: start.action_id, decision_receipt_hash: start.decision_receipt_hash,
+        operation_fingerprint: start.operation_fingerprint,
+        attempt: start.attempt, started_at_ms: start.started_at_ms,
+      },
+      execution_start_hash: start.execution_start_hash,
+    },
+  };
+}
+
 describe('strict runtime recovery v2.1', () => {
   test('never treats a started action without a terminal outcome as retry-safe', () => {
     const subject = journal();
@@ -106,6 +155,19 @@ describe('strict runtime recovery v2.1', () => {
     });
     expect(reconcileStrictRuntimeExecutionV21(resolved.journal, undefined, trust()))
       .toMatchObject({ status: 'resolved', terminal_status: 'executed' });
+  });
+
+  test('recovers terminal evidence authorized by an approval resolution', () => {
+    const subject = resolutionJournal();
+    const outcome = signStrictExecutionOutcomeV21(
+      subject.outcomeBody, subject.device, subject.resolution,
+    );
+    expect(reconcileStrictRuntimeExecutionV21(subject.value, outcome, trust()))
+      .toMatchObject({
+        status: 'resolved', terminal_status: 'executed',
+        decision_trusted: true, outcome_integrity_valid: true, outcome_trusted: true,
+        journal: { receipt: { body: { record_type: 'resolution' } } },
+      });
   });
 
   test('keeps pre-invocation state non-retryable until receipt reconciliation', () => {
