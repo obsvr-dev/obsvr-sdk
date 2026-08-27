@@ -61,6 +61,13 @@ const REQUIRED_PUBLIC_NAMES = [
   "ReasonCode",
   "explain",
   "defineConfig",
+  "createStrictActionBoundaryV21",
+  "createStrictProviderBoundaryV21",
+  "StrictReceiptRuntimeV21",
+  "signStrictExecutionOutcomeV21",
+  "createStrictEvidenceBundleV21",
+  "verifyStrictEvidenceBundleV21",
+  "withStrictOtelCorrelationV21",
 ];
 const REQUIRED_SUBPATHS = ["@obsvr/sdk/register", "@obsvr/sdk/mcp", "@obsvr/sdk/proxy"];
 

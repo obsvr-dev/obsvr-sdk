@@ -63,6 +63,13 @@ REQUIRED_PUBLIC_NAMES = [
     "ObsvrPolicyError",
     "ReasonCode",
     "__version__",
+    "create_strict_action_boundary_v2_1",
+    "create_strict_provider_boundary_v2_1",
+    "StrictReceiptRuntimeV21",
+    "sign_strict_execution_outcome_v2_1",
+    "create_strict_evidence_bundle_v2_1",
+    "verify_strict_evidence_bundle_v2_1",
+    "with_strict_otel_correlation_v2_1",
 ]
 
 _failures = []
