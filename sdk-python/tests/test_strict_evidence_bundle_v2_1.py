@@ -127,3 +127,96 @@ def test_tampering_and_wrong_head_signer_are_rejected(tmp_path):
         create_strict_evidence_bundle_v2_1(
             [receipt], [outcome], wrong, **_trust()
         )
+
+
+def test_hostile_component_and_envelope_mutations_are_rejected(tmp_path):
+    signer, receipt, outcome = _evidence(tmp_path)
+    bundle = create_strict_evidence_bundle_v2_1(
+        [receipt], [outcome], signer, **_trust()
+    )
+
+    receipt_tamper = copy.deepcopy(bundle)
+    receipt_tamper["body"]["receipts"][0]["body"]["action"]["name"] = (
+        "substituted_action"
+    )
+    verified = verify_strict_evidence_bundle_v2_1(receipt_tamper, **_trust())
+    assert not verified["trusted"] and not verified["complete"]
+    assert "bundle_components_untrusted" in verified["errors"]
+
+    outcome_tamper = copy.deepcopy(bundle)
+    value = outcome_tamper["body"]["execution_outcomes"][0]["signature"]["value"]
+    outcome_tamper["body"]["execution_outcomes"][0]["signature"]["value"] = (
+        ("1" if value[0] == "0" else "0") + value[1:]
+    )
+    verified = verify_strict_evidence_bundle_v2_1(outcome_tamper, **_trust())
+    assert not verified["trusted"]
+    assert "bundle_components_untrusted" in verified["errors"]
+
+    extra_envelope_key = copy.deepcopy(bundle)
+    extra_envelope_key["unexpected"] = True
+    verified = verify_strict_evidence_bundle_v2_1(extra_envelope_key, **_trust())
+    assert not verified["schema_valid"] and not verified["trusted"]
+
+    extra_body_key = copy.deepcopy(bundle)
+    extra_body_key["body"]["unexpected"] = True
+    verified = verify_strict_evidence_bundle_v2_1(extra_body_key, **_trust())
+    assert not verified["semantic_valid"] and not verified["trusted"]
+
+    malformed_key = copy.deepcopy(bundle)
+    malformed_key["public_key_b64"] = "not-a-public-key"
+    verified = verify_strict_evidence_bundle_v2_1(malformed_key, **_trust())
+    assert not verified["schema_valid"]
+    assert not verified["signature_valid"]
+    assert not verified["signer_binding_valid"]
+    assert not verified["trusted"]
+
+    malformed_signature = copy.deepcopy(bundle)
+    malformed_signature["signature"]["value"] = "00"
+    verified = verify_strict_evidence_bundle_v2_1(
+        malformed_signature, **_trust()
+    )
+    assert not verified["schema_valid"]
+    assert not verified["signature_valid"]
+    assert not verified["trusted"]
+
+
+def test_duplicate_foreign_partial_and_untrusted_evidence_is_refused(tmp_path):
+    signer, receipt, outcome = _evidence(tmp_path)
+    with pytest.raises(ValueError, match="duplicate execution outcomes"):
+        create_strict_evidence_bundle_v2_1(
+            [receipt], [outcome, copy.deepcopy(outcome)], signer, **_trust()
+        )
+
+    foreign = copy.deepcopy(outcome)
+    foreign["body"]["decision_receipt_hash"] = "f" * 64
+    with pytest.raises(ValueError, match="outside the bundle"):
+        create_strict_evidence_bundle_v2_1(
+            [receipt], [foreign], signer, **_trust()
+        )
+
+    partial_body = _decision_body()
+    partial_body["sequence"] = 2
+    partial_body["previous_receipt_hash"] = receipt["receipt_hash"]
+    partial = sign_strict_receipt_v2_1(partial_body, signer)
+    with pytest.raises(ValueError, match="receipt chain is not trusted"):
+        create_strict_evidence_bundle_v2_1(
+            [partial], [], signer, **_trust()
+        )
+
+    bundle = create_strict_evidence_bundle_v2_1(
+        [receipt], [outcome], signer, **_trust()
+    )
+    verified = verify_strict_evidence_bundle_v2_1(
+        bundle,
+        trusted_agent_keys=[],
+        allowed_evaluator_manifest_hashes=_trust()[
+            "allowed_evaluator_manifest_hashes"
+        ],
+    )
+    assert not verified["trusted"] and not verified["complete"]
+    verified = verify_strict_evidence_bundle_v2_1(
+        bundle,
+        trusted_agent_keys=_trust()["trusted_agent_keys"],
+        allowed_evaluator_manifest_hashes=[],
+    )
+    assert not verified["trusted"] and not verified["complete"]

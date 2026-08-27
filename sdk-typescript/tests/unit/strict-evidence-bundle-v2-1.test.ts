@@ -107,4 +107,93 @@ describe('strict evidence bundle profile 2.1', () => {
       signer: signer('4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb'),
     })).toThrow(/must match the head receipt signer/);
   });
+
+  it('rejects hostile component and envelope mutations', () => {
+    const { device, receipt, outcome } = evidence();
+    const bundle = createStrictEvidenceBundleV21({
+      receipts: [receipt], execution_outcomes: [outcome], trust: trust(), signer: device,
+    });
+
+    const receiptTamper = clone(bundle);
+    receiptTamper.body.receipts[0].body.action.name = 'substituted_action';
+    expect(verifyStrictEvidenceBundleV21(receiptTamper, trust())).toMatchObject({
+      trusted: false,
+      complete: false,
+      errors: expect.arrayContaining(['bundle_components_untrusted']),
+    });
+
+    const outcomeTamper = clone(bundle);
+    const originalSignature = outcomeTamper.body.execution_outcomes[0].signature.value;
+    outcomeTamper.body.execution_outcomes[0].signature.value =
+      `${originalSignature[0] === '0' ? '1' : '0'}${originalSignature.slice(1)}`;
+    expect(verifyStrictEvidenceBundleV21(outcomeTamper, trust())).toMatchObject({
+      trusted: false,
+      errors: expect.arrayContaining(['bundle_components_untrusted']),
+    });
+
+    const extraEnvelopeKey = clone(bundle) as unknown as Record<string, unknown>;
+    extraEnvelopeKey.unexpected = true;
+    expect(verifyStrictEvidenceBundleV21(extraEnvelopeKey, trust())).toMatchObject({
+      schema_valid: false,
+      trusted: false,
+    });
+
+    const extraBodyKey = clone(bundle);
+    (extraBodyKey.body as unknown as Record<string, unknown>).unexpected = true;
+    expect(verifyStrictEvidenceBundleV21(extraBodyKey, trust())).toMatchObject({
+      semantic_valid: false,
+      trusted: false,
+    });
+
+    const malformedKey = clone(bundle);
+    malformedKey.public_key_b64 = 'not-a-public-key';
+    expect(verifyStrictEvidenceBundleV21(malformedKey, trust())).toMatchObject({
+      schema_valid: false,
+      signature_valid: false,
+      signer_binding_valid: false,
+      trusted: false,
+    });
+
+    const malformedSignature = clone(bundle);
+    malformedSignature.signature.value = '00';
+    expect(verifyStrictEvidenceBundleV21(malformedSignature, trust())).toMatchObject({
+      schema_valid: false,
+      signature_valid: false,
+      trusted: false,
+    });
+  });
+
+  it('refuses duplicate, foreign, partial, and externally untrusted evidence', () => {
+    const { device, receipt, outcome } = evidence();
+    expect(() => createStrictEvidenceBundleV21({
+      receipts: [receipt], execution_outcomes: [outcome, clone(outcome)],
+      trust: trust(), signer: device,
+    })).toThrow(/duplicate execution outcomes/);
+
+    const foreign = clone(outcome);
+    foreign.body.decision_receipt_hash = 'f'.repeat(64);
+    expect(() => createStrictEvidenceBundleV21({
+      receipts: [receipt], execution_outcomes: [foreign], trust: trust(), signer: device,
+    })).toThrow(/outside the bundle/);
+
+    const partialBody = decisionBody();
+    partialBody.sequence = 2;
+    partialBody.previous_receipt_hash = receipt.receipt_hash;
+    const partial = signStrictReceiptV21(partialBody, device);
+    expect(() => createStrictEvidenceBundleV21({
+      receipts: [partial], execution_outcomes: [], trust: trust(), signer: device,
+    })).toThrow(/receipt chain is not trusted/);
+
+    const bundle = createStrictEvidenceBundleV21({
+      receipts: [receipt], execution_outcomes: [outcome], trust: trust(), signer: device,
+    });
+    expect(verifyStrictEvidenceBundleV21(bundle, {
+      trusted_agent_keys: [],
+      allowed_evaluator_manifest_hashes: trust().allowed_evaluator_manifest_hashes,
+    })).toMatchObject({ trusted: false, complete: false });
+    expect(verifyStrictEvidenceBundleV21(bundle, {
+      trusted_agent_keys: trust().trusted_agent_keys,
+      allowed_evaluator_manifest_hashes: [],
+    })).toMatchObject({ trusted: false, complete: false });
+  });
 });
