@@ -18,6 +18,8 @@ Changes land here and are renamed at the next release cut.
 ### Added
 
 - Strict profile 2.1 now binds each successfully finalized action to a device-signed terminal execution outcome, persists durable execution journals, and leaves post-start finalization failures unresolved as `invocation_uncertain` rather than authorizing automatic replay.
+- Applications can explicitly submit signed terminal outcomes or recovered terminal journals to hosted strict ingest. Exact duplicates are idempotent, and only a matching rejection with `stored: false` is treated as definitive non-storage.
+- Interrupted `invocation_started` journals can be explicitly finalized as signed `uncertain/process_interrupted` outcomes without guessing whether the remote action succeeded.
 - The strict runtime can govern provider-neutral side effects and resume signed approval resolutions with at-most-once execution of the original action.
 - Portable signed evidence bundles verify receipt continuity, terminal-outcome coverage, policy continuity, and the head signer in both SDKs.
 - Durable strict checkpoints can add content-free receipt and terminal references to an existing OpenTelemetry span without making telemetry part of the execution boundary.
