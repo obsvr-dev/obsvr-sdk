@@ -320,7 +320,12 @@ def build_strict_receipt_v2_1_body(input_value: Any) -> Dict[str, Any]:
         _fail("execution_authorized is inconsistent with outcome")
     if "suspension" in root:
         suspension = _record(root["suspension"], "suspension")
-        _exact(suspension, {"suspension_id", "type", "expires_at_ms"}, "suspension")
+        _exact(
+            suspension,
+            {"suspension_id", "type", "expires_at_ms"},
+            "suspension",
+            {"approval_action_hash"},
+        )
         _text(suspension["suspension_id"], "suspension.suspension_id")
         if suspension["type"] not in ("approval", "context"):
             _fail("invalid suspension.type")
@@ -329,6 +334,13 @@ def build_strict_receipt_v2_1_body(input_value: Any) -> Dict[str, Any]:
             <= timestamp
         ):
             _fail("suspension expiry must follow receipt timestamp")
+        if "approval_action_hash" in suspension:
+            if suspension["type"] != "approval":
+                _fail("approval_action_hash requires an approval suspension")
+            _hash(
+                suspension["approval_action_hash"],
+                "suspension.approval_action_hash",
+            )
     if "resolution" in root:
         resolution = _record(root["resolution"], "resolution")
         _exact(
@@ -341,6 +353,7 @@ def build_strict_receipt_v2_1_body(input_value: Any) -> Dict[str, Any]:
                 "resolved_at_ms",
             },
             "resolution",
+            {"approval_evidence_hash"},
         )
         _hash(resolution["resolves_receipt_hash"], "resolution.resolves_receipt_hash")
         _text(resolution["suspension_id"], "resolution.suspension_id")
@@ -353,6 +366,13 @@ def build_strict_receipt_v2_1_body(input_value: Any) -> Dict[str, Any]:
         ):
             _fail("invalid resolution.method")
         _hash(resolution["resolver_ref_hash"], "resolution.resolver_ref_hash")
+        if "approval_evidence_hash" in resolution:
+            if resolution["method"] not in ("approval_granted", "approval_denied"):
+                _fail("approval_evidence_hash requires an approval resolution")
+            _hash(
+                resolution["approval_evidence_hash"],
+                "resolution.approval_evidence_hash",
+            )
         if (
             _integer(resolution["resolved_at_ms"], "resolution.resolved_at_ms")
             != timestamp

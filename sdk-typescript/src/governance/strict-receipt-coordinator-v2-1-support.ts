@@ -251,6 +251,9 @@ export function signDecisionV21(params: {
       suspension_id: v21Text(params.base_result.approval_request_id, 'approval_request_id'),
       type: 'approval',
       expires_at_ms: v21Integer(params.base_result.approval_expires_at_ms, 'approval_expires_at_ms'),
+      approval_action_hash: v21Hash(
+        params.base_result.approval_action_hash, 'approval_action_hash',
+      ),
     };
   } else if (params.evaluation.outcome === 'DEFER') {
     body.suspension = {

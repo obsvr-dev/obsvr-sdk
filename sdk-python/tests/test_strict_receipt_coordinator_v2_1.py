@@ -114,6 +114,7 @@ def coordinator(
     identity_snapshot=None,
     tenant_id="tenant-1",
     pid=lambda: 7,
+    approval_verifier=None,
 ):
     signer = device_signer or make_signer(tmp_path)
     base_result = base or {"action_taken": "allowed"}
@@ -140,6 +141,7 @@ def coordinator(
                 lambda: copy.deepcopy(evidence)
             )
         ),
+        approval_verifier=approval_verifier,
         pid=pid,
         prepared_token_factory=lambda: "prepared-token",
     )
@@ -281,6 +283,7 @@ def test_modify_approval_and_context_suspension(tmp_path):
         "suspension_id": "approval-1",
         "type": "approval",
         "expires_at_ms": 1_500,
+        "approval_action_hash": A,
     }
 
     deferred = coordinator(tmp_path).prepare_decision(
@@ -316,6 +319,153 @@ def test_two_phase_state_retry_and_approval_reuse(tmp_path):
         subject.prepare_decision(action("one"))
     with pytest.raises(ValueError, match="already pending"):
         subject.prepare_decision(action("two"))
+
+
+def test_resolves_trusted_approval_once_and_binds_original_action(tmp_path):
+    times = iter((1_000, 1_100))
+
+    def verify(evidence, expected):
+        if evidence != {"token": "trusted"}:
+            raise ValueError("untrusted approval")
+        return {
+            "request_id": expected["request_id"],
+            "action_hash": expected["action_hash"],
+            "principal_id": "reviewer-1",
+            "decision": expected["decision"],
+            "source_hash": D,
+            "expires_at_ms": 1_400,
+        }
+
+    subject = coordinator(
+        tmp_path,
+        clock=lambda: next(times),
+        approval_verifier=verify,
+        base={
+            "action_taken": "blocked",
+            "approval_required": True,
+            "approval_request_id": "approval-1",
+            "approval_action_hash": A,
+            "approval_expires_at_ms": 1_500,
+        },
+    )
+    pending = subject.prepare_decision(action("approval-action"))
+    subject.commit_prepared(pending["token"], pending["receipt_hash"])
+    prepared = subject.prepare_approval_resolution(
+        {
+            "suspended_receipt_hash": pending["receipt_hash"],
+            "method": "approval_granted",
+            "approval_evidence": {"token": "trusted"},
+        }
+    )
+    assert subject.prepare_approval_resolution(
+        {
+            "suspended_receipt_hash": pending["receipt_hash"],
+            "method": "approval_granted",
+            "approval_evidence": {"token": "trusted"},
+        }
+    ) == prepared
+    body = prepared["value"]["body"]
+    assert body["record_type"] == "resolution"
+    assert body["sequence"] == 2
+    assert body["previous_receipt_hash"] == pending["receipt_hash"]
+    assert body["outcome"] == "ALLOW"
+    assert body["execution_authorized"] is True
+    assert body["action"]["action_id"] == "approval-action"
+    assert body["resolution"] == {
+        "resolves_receipt_hash": pending["receipt_hash"],
+        "suspension_id": "approval-1",
+        "method": "approval_granted",
+        "resolver_ref_hash": body["resolution"]["resolver_ref_hash"],
+        "resolved_at_ms": 1_100,
+        "approval_evidence_hash": D,
+    }
+    subject.commit_prepared(prepared["token"], prepared["receipt_hash"])
+    with pytest.raises(ValueError, match="already resolved"):
+        subject.prepare_approval_resolution(
+            {
+                "suspended_receipt_hash": pending["receipt_hash"],
+                "method": "approval_granted",
+                "approval_evidence": {"token": "trusted"},
+            }
+        )
+
+
+def test_rejects_expired_mismatched_and_delegated_approval_authority(tmp_path):
+    base = {
+        "action_taken": "blocked",
+        "approval_required": True,
+        "approval_request_id": "approval-1",
+        "approval_action_hash": A,
+        "approval_expires_at_ms": 1_500,
+    }
+
+    def verifier(action_hash=A, expires_at=1_500):
+        return lambda _evidence, expected: {
+            "request_id": expected["request_id"],
+            "action_hash": action_hash,
+            "principal_id": "reviewer-1",
+            "decision": expected["decision"],
+            "source_hash": D,
+            "expires_at_ms": expires_at,
+        }
+
+    expired_times = iter((1_000, 1_500))
+    expired = coordinator(
+        tmp_path, clock=lambda: next(expired_times), base=base,
+        approval_verifier=verifier(),
+    )
+    pending = expired.prepare_decision(action())
+    expired.commit_prepared(pending["token"], pending["receipt_hash"])
+    with pytest.raises(ValueError, match="expiry"):
+        expired.prepare_approval_resolution(
+            {"suspended_receipt_hash": pending["receipt_hash"],
+             "method": "approval_granted", "approval_evidence": {}}
+        )
+
+    mismatch_times = iter((1_000, 1_100))
+    mismatch = coordinator(
+        tmp_path, clock=lambda: next(mismatch_times), base=base,
+        approval_verifier=verifier(C, 1_400),
+    )
+    wrong = mismatch.prepare_decision(action())
+    mismatch.commit_prepared(wrong["token"], wrong["receipt_hash"])
+    with pytest.raises(ValueError, match="expected binding"):
+        mismatch.prepare_approval_resolution(
+            {"suspended_receipt_hash": wrong["receipt_hash"],
+             "method": "approval_granted", "approval_evidence": {}}
+        )
+
+    delegated_times = iter((1_000, 1_100))
+
+    def delegated_identity(timestamp, device_signer):
+        value = identity(timestamp, device_signer)
+        value["relationship"] = "delegated"
+        value["requester"] = {
+            "requester_ref_hash": C, "principal_type": "human",
+            "role_ids": ["owner"], "privilege_scopes": ["write"],
+        }
+        value["delegation_chain"] = [{
+            "hop": 0, "delegation_id_hash": D,
+            "delegator_ref_hash": C, "delegatee_ref_hash": B,
+            "granted_scopes": ["write"], "issued_at_ms": 900,
+            "expires_at_ms": 1_050,
+        }]
+        return value
+
+    delegated = coordinator(
+        tmp_path, clock=lambda: next(delegated_times), base=base,
+        approval_verifier=verifier(A, 1_400),
+        identity_snapshot=delegated_identity,
+    )
+    delegated_pending = delegated.prepare_decision(action())
+    delegated.commit_prepared(
+        delegated_pending["token"], delegated_pending["receipt_hash"]
+    )
+    with pytest.raises(ValueError, match="delegated authority"):
+        delegated.prepare_approval_resolution(
+            {"suspended_receipt_hash": delegated_pending["receipt_hash"],
+             "method": "approval_granted", "approval_evidence": {}}
+        )
 
 
 def test_sequence_linking_and_freeze(tmp_path):

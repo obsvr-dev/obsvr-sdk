@@ -17,12 +17,20 @@ import {
   v21Text,
 } from './strict-receipt-coordinator-v2-1-support.js';
 import type {
+  PreparedApprovalResolutionV21,
   PreparedDecisionV21,
+  StrictApprovalResolutionV21Input,
   StrictCoordinatorV21StateInspection,
   StrictDecisionActionV21Input,
   StrictDecisionV21Result,
   StrictReceiptCoordinatorV21Options,
 } from './strict-receipt-coordinator-v2-1-types.js';
+import {
+  approvalResolutionFingerprintV21,
+  normalizeApprovalResolutionV21,
+  signApprovalResolutionV21,
+  type PendingApprovalV21,
+} from './strict-receipt-coordinator-v2-1-approval.js';
 import {
   strictReceiptV21KeyId,
   type StrictReceiptV21Envelope,
@@ -39,6 +47,8 @@ import {
 
 export type {
   PreparedDecisionV21,
+  PreparedApprovalResolutionV21,
+  StrictApprovalResolutionV21Input,
   StrictCoordinatorV21StateInspection,
   StrictDecisionActionV21Input,
   StrictDecisionV21Result,
@@ -61,6 +71,8 @@ export class StrictReceiptCoordinatorV21 {
   protected priorActions: PriorActionV2Input[] = [];
   protected readonly committedActionIds = new Set<string>();
   protected readonly pendingApprovalIds = new Set<string>();
+  protected readonly suspendedApprovals = new Map<string, PendingApprovalV21>();
+  protected readonly resolvedApprovals = new Set<string>();
 
   constructor(options: StrictReceiptCoordinatorV21Options) {
     if (options.sdk_language !== 'typescript') {
@@ -141,9 +153,54 @@ export class StrictReceiptCoordinatorV21 {
     }));
   }
 
-  commitPrepared(token: string, receiptHash: string): StrictDecisionV21Result {
+  prepareApprovalResolution(
+    rawInput: StrictApprovalResolutionV21Input,
+  ): PreparedApprovalResolutionV21 {
     this.ensureProcess();
-    return v21Clone(this.preparedState.commit<StrictDecisionV21Result>(token, receiptHash));
+    const input = normalizeApprovalResolutionV21(rawInput);
+    const fingerprint = approvalResolutionFingerprintV21(
+      input, this.tenantId, this.sessionId,
+    );
+    const retry = this.preparedState.retry<StrictReceiptV21Envelope>(
+      fingerprint, 'resolution',
+    );
+    if (retry) return v21Clone(retry);
+    const pending = this.pendingApproval(input.suspended_receipt_hash);
+    const timestamp = this.allocateTimestamp();
+    const receipt = signApprovalResolutionV21({
+      input,
+      pending,
+      options: this.options,
+      policy: this.policy,
+      tenant_id: this.tenantId,
+      session_id: this.sessionId,
+      sequence: this.sequence + 1,
+      timestamp,
+      previous_hash: this.headReceiptHash,
+    });
+    const index = this.priorActions.findIndex(
+      (item) => item.receipt_hash === input.suspended_receipt_hash,
+    );
+    if (index < 0) throw new StrictReceiptCoordinatorV21Error('suspended action summary is missing');
+    return v21Clone(this.preparedState.prepare({
+      fingerprint,
+      receipt_hash: receipt.receipt_hash,
+      kind: 'resolution',
+      value: receipt,
+      commit: () => this.commitApprovalResolution(
+        receipt, input.suspended_receipt_hash, index,
+      ),
+    }));
+  }
+
+  commitPrepared(
+    token: string,
+    receiptHash: string,
+  ): StrictDecisionV21Result | StrictReceiptV21Envelope {
+    this.ensureProcess();
+    return v21Clone(this.preparedState.commit<
+      StrictDecisionV21Result | StrictReceiptV21Envelope
+    >(token, receiptHash));
   }
 
   abortPrepared(token: string, receiptHash: string, capability: DefinitiveNoStore): void {
@@ -211,7 +268,44 @@ export class StrictReceiptCoordinatorV21 {
     });
     if (receipt.body.suspension?.type === 'approval') {
       this.pendingApprovalIds.add(receipt.body.suspension.suspension_id);
+      this.suspendedApprovals.set(receipt.receipt_hash, {
+        receipt: v21Clone(receipt),
+        context: v21Clone(result.action_context),
+      });
     }
+  }
+
+  protected commitApprovalResolution(
+    receipt: StrictReceiptV21Envelope,
+    suspendedReceiptHash: string,
+    priorActionIndex: number,
+  ): void {
+    const classifications = this.priorActions[priorActionIndex]?.data_classifications;
+    if (!classifications) {
+      throw new StrictReceiptCoordinatorV21Error('suspended action summary is missing');
+    }
+    this.sequence = receipt.body.sequence;
+    this.headReceiptHash = receipt.receipt_hash;
+    this.lastTimestamp = receipt.body.timestamp_ms;
+    this.priorActions[priorActionIndex] = {
+      sequence: receipt.body.sequence,
+      kind: receipt.body.action.kind,
+      name: receipt.body.action.name,
+      outcome: receipt.body.outcome,
+      receipt_hash: receipt.receipt_hash,
+      data_classifications: [...classifications],
+    };
+    this.priorActions.sort((left, right) => left.sequence - right.sequence);
+    this.resolvedApprovals.add(suspendedReceiptHash);
+  }
+
+  protected pendingApproval(receiptHash: string): PendingApprovalV21 {
+    const pending = this.suspendedApprovals.get(receiptHash);
+    if (!pending) throw new StrictReceiptCoordinatorV21Error('suspended approval is not known');
+    if (this.resolvedApprovals.has(receiptHash)) {
+      throw new StrictReceiptCoordinatorV21Error('approval is already resolved');
+    }
+    return pending;
   }
 
   protected ensureProcess(): void {

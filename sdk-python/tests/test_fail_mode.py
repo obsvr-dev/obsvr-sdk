@@ -228,6 +228,7 @@ class TestRegistryGate:
         "strict_receipt_coordinator_support.py",
         "strict_receipt_coordinator_v2.py",
         "strict_receipt_coordinator_v2_1.py",
+        "strict_receipt_coordinator_v2_1_approval.py",
         "strict_receipt_coordinator_v2_1_recovery.py",
         "strict_receipt_coordinator_v2_1_support.py",
         "strict_receipt_coordinator_v2_recovery.py",
