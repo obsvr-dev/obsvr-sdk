@@ -138,7 +138,26 @@ client = obsvr.wrap(OpenAI(), strict_receipt_v2_1=strict)
 
 The strict sequence is `prepared -> remote_accepted -> committed -> invocation_started -> terminal`. No provider call occurs without positive admission and the preceding durable checkpoints. After `invocation_started`, an ambiguous result is `invocation_uncertain` and must not be retried automatically.
 
+A successfully finalized invocation records a device-signed terminal outcome bound to the admitted decision, operation fingerprint, attempt, start time, and a result digest or bounded failure code. If terminal signing or persistence fails after execution starts, the durable journal remains unresolved; no terminal outcome is claimed. `reconcile_strict_runtime_execution_v2_1()` verifies a saved journal and an optional terminal outcome without ever declaring the action retry-safe. After restart, `finalize_interrupted_strict_runtime_execution_v2_1()` can sign and durably save only `uncertain/process_interrupted`; it does not infer what happened remotely.
+
+Outcome delivery is explicit, not automatic. The terminal outcome remains in the durable checkpoint until the application submits the outcome or terminal journal, and delivery can resume after restart:
+
+```python
+delivery = submit_strict_runtime_terminal_journal_v2_1(
+    terminal_journal,
+    ingest_url=os.environ["OBSVR_INGEST_URL"],
+    api_key=os.environ["OBSVR_API_KEY"],
+    **receipt_trust,
+)
+```
+
+`submit_strict_execution_outcome_v2_1()` and `submit_strict_runtime_terminal_journal_v2_1()` verify and send the exact outcome through a bounded DNS-pinned transport. Only an exact matching `400`, `401`, `403`, or `413` response with `stored: false` proves non-storage; conflicts and ambiguous transport results remain uncertain. Upload status is separate from the execution result. `create_strict_evidence_bundle_v2_1()` and `verify_strict_evidence_bundle_v2_1()` create and verify a portable signed chain with outcome coverage and reconstructed policy continuity; this SDK bundle does not include hosted acceptance attestations or daily anchoring.
+
 This mode supports only synchronous unary `chat.completions.create` / `.parse`, `responses.create` / `.parse`, `messages.create` / `.parse`, legacy `generate_content`, and maintained `models.generate_content`. Async calls, streams, helper managers, runners, and other callables fail closed with `unsupported_surface`. Only an `ALLOW` outcome executes; `DENY`, `MODIFY`, `STEP_UP`, and `DEFER` do not contact the provider.
+
+For a side effect that is not a model call, use `create_strict_action_boundary_v2_1()` with an explicit action, target, data classifications, requested scopes, and invocation function. Suspended `STEP_UP` decisions can be resumed through the runtime's signed approval-resolution path; a valid `ALLOW`, or `MODIFY` with bound effective arguments, executes the original action at most once.
+
+To correlate durable strict evidence with an existing OpenTelemetry trace, wrap the checkpoint store with `with_strict_otel_correlation_v2_1()`. It adds content-free `obsvr.strict.*` references only to the active recording span and only after `save()` succeeds. Telemetry errors are ignored and telemetry never authorizes an action. The cross-language keys are pinned by [`strict_otel_attributes_v2_1.json`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/conformance/fixtures/strict_otel_attributes_v2_1.json).
 
 The full construction used by the executable tests is in [`test_strict_provider_boundary_v2_1.py`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-python/tests/test_strict_provider_boundary_v2_1.py). Read the repository [security boundary](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md#strict-profile-21-execution-boundary) and [compatibility matrix](https://github.com/obsvr-dev/obsvr-sdk/blob/main/COMPATIBILITY.md#strict-profile-21-direct-provider-boundary) before enabling it.
 

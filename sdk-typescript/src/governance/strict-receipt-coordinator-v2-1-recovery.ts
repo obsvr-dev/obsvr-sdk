@@ -5,7 +5,8 @@ import {
   normalizeDecisionActionV21, v21Clone,
 } from './strict-receipt-coordinator-v2-1-support.js';
 import type {
-  PreparedDecisionV21, StrictCoordinatorV21StateInspection,
+  PreparedApprovalResolutionV21, PreparedDecisionV21, StrictApprovalResolutionV21Input,
+  StrictCoordinatorV21StateInspection,
   StrictDecisionActionV21Input, StrictDecisionV21Result,
   StrictReceiptCoordinatorV21Options,
 } from './strict-receipt-coordinator-v2-1-types.js';
@@ -48,7 +49,20 @@ export class RecoverableStrictReceiptCoordinatorV21 extends StrictReceiptCoordin
     return prepared;
   }
 
-  override commitPrepared(token: string, hash: string): StrictDecisionV21Result {
+  override prepareApprovalResolution(
+    input: StrictApprovalResolutionV21Input,
+  ): PreparedApprovalResolutionV21 {
+    this.assertRecoveryReady();
+    const prepared = super.prepareApprovalResolution(input);
+    this.recoveryPrepared = { kind: 'resolution',
+      suspended_receipt_hash: prepared.value.body.resolution!.resolves_receipt_hash,
+      result: v21Clone(prepared.value) };
+    return prepared;
+  }
+
+  override commitPrepared(
+    token: string, hash: string,
+  ): StrictDecisionV21Result | StrictReceiptV21Envelope {
     const result = super.commitPrepared(token, hash); this.recoveryPrepared = undefined; return result;
   }
 
@@ -74,6 +88,11 @@ export class RecoverableStrictReceiptCoordinatorV21 extends StrictReceiptCoordin
         last_timestamp_ms: this.lastTimestamp, prior_actions: v21Clone(this.priorActions),
         action_ids: [...this.committedActionIds].sort(),
         pending_approval_ids: [...this.pendingApprovalIds].sort(),
+        suspended_approvals: [...this.suspendedApprovals.values()]
+          .map((item) => v21Clone(item)).sort((left, right) => (
+            left.receipt.receipt_hash.localeCompare(right.receipt.receipt_hash)
+          )),
+        resolved_approval_hashes: [...this.resolvedApprovals].sort(),
       },
       ...(this.recoveryPrepared ? { prepared: v21Clone(this.recoveryPrepared) } : {}),
     };
@@ -83,10 +102,18 @@ export class RecoverableStrictReceiptCoordinatorV21 extends StrictReceiptCoordin
   reconcileRecoveredAccepted(proof: StrictReconciliationV21Result): StrictReceiptV21Envelope {
     this.ensureProcess(); const pending = this.recoveryPrepared;
     if (!pending) throw new Error('no recovered decision is pending');
-    assertAcceptedStrictReconciliationV21(proof, pending.result.receipt);
-    this.commitDecision(pending.result, pending.input);
+    const receipt = pending.kind === 'decision' ? pending.result.receipt : pending.result;
+    assertAcceptedStrictReconciliationV21(proof, receipt);
+    if (pending.kind === 'decision') this.commitDecision(pending.result, pending.input);
+    else {
+      const index = this.priorActions.findIndex(
+        (item) => item.receipt_hash === pending.suspended_receipt_hash,
+      );
+      if (index < 0) throw new Error('recovered approval action summary is missing');
+      this.commitApprovalResolution(receipt, pending.suspended_receipt_hash, index);
+    }
     this.recoveryPrepared = undefined;
-    return v21Clone(pending.result.receipt);
+    return v21Clone(receipt);
   }
 
   private restore(document: StrictRecoveryV21Document, expectedOriginPid: number): void {
@@ -100,6 +127,12 @@ export class RecoverableStrictReceiptCoordinatorV21 extends StrictReceiptCoordin
     this.lastTimestamp = state.last_timestamp_ms; this.priorActions = v21Clone(state.prior_actions);
     this.committedActionIds.clear(); state.action_ids.forEach((id) => this.committedActionIds.add(id));
     this.pendingApprovalIds.clear(); state.pending_approval_ids.forEach((id) => this.pendingApprovalIds.add(id));
+    this.suspendedApprovals.clear(); state.suspended_approvals.forEach((pending) => {
+      this.suspendedApprovals.set(pending.receipt.receipt_hash, v21Clone(pending));
+    });
+    this.resolvedApprovals.clear(); state.resolved_approval_hashes.forEach((hash) => {
+      this.resolvedApprovals.add(hash);
+    });
     this.recoveryPrepared = document.prepared ? v21Clone(document.prepared) : undefined;
   }
 

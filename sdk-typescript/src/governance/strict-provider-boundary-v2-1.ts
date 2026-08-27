@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { actionTargetHash } from './action-context-v2.js';
 import {
   bindStrictV21JsonArguments,
@@ -9,6 +9,7 @@ import {
 } from './strict-receipt-runtime-v2-1.js';
 import { readBaseUrl } from '../proxy/provider-attribution.js';
 import { assertBackendUrlStatic } from '../utils/ssrf.js';
+import { canonicalJsonForHash } from '../policy/tool-pinning.js';
 
 export interface StrictProviderCallV21 {
   provider: string;
@@ -89,6 +90,46 @@ const TRUSTED_PROVIDER_HOSTS = new Set([
   'generativelanguage.googleapis.com',
   'api.groq.com',
 ]);
+const AMBIGUOUS_TRANSPORT_CODES = new Set([
+  'ECONNABORTED', 'ECONNRESET', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET',
+]);
+
+function providerResponseValue(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  const candidate = value as { toJSON?: () => unknown };
+  if (typeof candidate.toJSON === 'function') return candidate.toJSON();
+  return JSON.parse(JSON.stringify(value)) as unknown;
+}
+
+function providerResultProjection(call: StrictProviderCallV21, value: unknown): unknown {
+  const canonical = canonicalJsonForHash(providerResponseValue(value));
+  return {
+    schema: 'obsvr-strict-provider-result-v2-1',
+    provider: call.provider,
+    operation: call.operation,
+    response_hash: createHash('sha256').update(canonical).digest('hex'),
+  };
+}
+
+function classifyProviderError(error: unknown): {
+  status: 'failed' | 'uncertain'; error_code: string;
+} {
+  let current = error as { code?: unknown; name?: unknown; status?: unknown; cause?: unknown } | undefined;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    if (typeof current.code === 'string' && AMBIGUOUS_TRANSPORT_CODES.has(current.code)) {
+      return { status: 'uncertain', error_code: 'provider_transport_ambiguous' };
+    }
+    if (current.name === 'AbortError') {
+      return { status: 'uncertain', error_code: 'provider_transport_ambiguous' };
+    }
+    if (typeof current.status === 'number') {
+      return { status: 'failed', error_code: 'provider_rejected' };
+    }
+    current = current.cause as typeof current;
+  }
+  return { status: 'failed', error_code: 'provider_call_failed' };
+}
 
 function normalizedHostname(value: string): string {
   return value.replace(/^\[|\]$/g, '').toLowerCase();
@@ -192,6 +233,8 @@ export async function executeStrictProviderCallV21<R>(
         runtime_action_id: actionId,
         original_arguments: original,
         invoke,
+        result_projection: (value) => providerResultProjection(trustedCall, value),
+        classify_error: classifyProviderError,
       },
     });
   } catch {

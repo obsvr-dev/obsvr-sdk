@@ -22,7 +22,13 @@ from .strict_receipt_coordinator_v2_1_support import (
     v21_integer,
     v21_text,
 )
+from .strict_receipt_coordinator_v2_1_approval import (
+    approval_resolution_fingerprint_v2_1,
+    normalize_approval_resolution_v2_1,
+    sign_approval_resolution_v2_1,
+)
 from .strict_receipt_prepared_state import PreparedReceiptState
+from .strict_execution_outcome_v2_1 import sign_strict_execution_outcome_v2_1
 from .strict_receipt_v2_1 import strict_receipt_v2_1_key_id
 
 
@@ -43,6 +49,7 @@ class StrictReceiptCoordinatorV21:
         identity_snapshot: Callable[[int], Dict[str, Any]],
         intent_decision_provider: Any,
         evaluation_evidence_provider: Any,
+        approval_verifier: Optional[Callable[[Any, Dict[str, Any]], Dict[str, Any]]] = None,
         pid: Callable[[], int] = os.getpid,
         prepared_token_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
     ) -> None:
@@ -69,6 +76,7 @@ class StrictReceiptCoordinatorV21:
         self._identity_snapshot = identity_snapshot
         self._intent_decision_provider = intent_decision_provider
         self._evaluation_evidence_provider = evaluation_evidence_provider
+        self._approval_verifier = approval_verifier
         self._pid_source = pid
         self._owner_pid = v21_integer(pid(), "pid")
         strict_receipt_v2_1_key_id(signer.raw_public_key)
@@ -79,6 +87,8 @@ class StrictReceiptCoordinatorV21:
         self._prior_actions: List[Dict[str, Any]] = []
         self._committed_action_ids: set[str] = set()
         self._pending_approval_ids: set[str] = set()
+        self._suspended_approvals: Dict[str, Dict[str, Any]] = {}
+        self._resolved_approvals: set[str] = set()
         self._lock = threading.RLock()
 
     def prepare_decision(self, input_value: Dict[str, Any]) -> Dict[str, Any]:
@@ -169,6 +179,56 @@ class StrictReceiptCoordinatorV21:
             )
             return copy.deepcopy(prepared)
 
+    def prepare_approval_resolution(self, input_value: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            self._ensure_process()
+            normalized = normalize_approval_resolution_v2_1(input_value)
+            fingerprint = approval_resolution_fingerprint_v2_1(
+                normalized, self._tenant_id, self._session_id
+            )
+            retry = self._prepared_state.retry(fingerprint, "resolution")
+            if retry is not None:
+                return copy.deepcopy(retry)
+            pending = self._pending_approval(normalized["suspended_receipt_hash"])
+            timestamp = self._allocate_timestamp()
+            receipt = sign_approval_resolution_v2_1(
+                input_value=normalized,
+                pending=pending,
+                options={
+                    "signer": self._signer,
+                    "approval_verifier": self._approval_verifier,
+                    "evaluation_evidence_provider": self._evaluation_evidence_provider,
+                },
+                policy=self._policy,
+                tenant_id=self._tenant_id,
+                session_id=self._session_id,
+                sequence=self._sequence + 1,
+                timestamp=timestamp,
+                previous_hash=self._head_receipt_hash,
+            )
+            index = next(
+                (
+                    index
+                    for index, item in enumerate(self._prior_actions)
+                    if item["receipt_hash"] == normalized["suspended_receipt_hash"]
+                ),
+                -1,
+            )
+            if index < 0:
+                raise StrictReceiptCoordinatorV21Error(
+                    "suspended action summary is missing"
+                )
+            prepared = self._prepared_state.prepare(
+                fingerprint=fingerprint,
+                receipt_hash=receipt["receipt_hash"],
+                kind="resolution",
+                value=receipt,
+                commit=lambda: self._commit_approval_resolution(
+                    receipt, normalized["suspended_receipt_hash"], index
+                ),
+            )
+            return copy.deepcopy(prepared)
+
     def commit_prepared(self, token: str, receipt_hash: str) -> Dict[str, Any]:
         with self._lock:
             self._ensure_process()
@@ -200,6 +260,21 @@ class StrictReceiptCoordinatorV21:
                 **self._prepared_state.inspect(),
             }
 
+    def observe_execution_time(self) -> int:
+        with self._lock:
+            self._ensure_process()
+            observed = v21_integer(self._clock(), "clock")
+            if self._last_timestamp is not None and observed < self._last_timestamp:
+                raise StrictReceiptCoordinatorV21Error("clock regressed")
+            return observed
+
+    def sign_execution_outcome(
+        self, body: Dict[str, Any], decision: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        with self._lock:
+            self._ensure_process()
+            return sign_strict_execution_outcome_v2_1(body, self._signer, decision)
+
     def _allocate_timestamp(self) -> int:
         observed = v21_integer(self._clock(), "clock")
         if self._last_timestamp is not None and observed < self._last_timestamp:
@@ -230,6 +305,37 @@ class StrictReceiptCoordinatorV21:
         suspension = body.get("suspension")
         if suspension is not None and suspension["type"] == "approval":
             self._pending_approval_ids.add(suspension["suspension_id"])
+            self._suspended_approvals[receipt["receipt_hash"]] = {
+                "receipt": copy.deepcopy(receipt),
+                "context": copy.deepcopy(result["action_context"]),
+            }
+
+    def _commit_approval_resolution(
+        self, receipt: Dict[str, Any], suspended_receipt_hash: str, index: int
+    ) -> None:
+        classifications = self._prior_actions[index]["data_classifications"]
+        body = receipt["body"]
+        self._sequence = body["sequence"]
+        self._head_receipt_hash = receipt["receipt_hash"]
+        self._last_timestamp = body["timestamp_ms"]
+        self._prior_actions[index] = {
+            "sequence": body["sequence"],
+            "kind": body["action"]["kind"],
+            "name": body["action"]["name"],
+            "outcome": body["outcome"],
+            "receipt_hash": receipt["receipt_hash"],
+            "data_classifications": list(classifications),
+        }
+        self._prior_actions.sort(key=lambda item: item["sequence"])
+        self._resolved_approvals.add(suspended_receipt_hash)
+
+    def _pending_approval(self, receipt_hash: str) -> Dict[str, Any]:
+        pending = self._suspended_approvals.get(receipt_hash)
+        if pending is None:
+            raise StrictReceiptCoordinatorV21Error("suspended approval is not known")
+        if receipt_hash in self._resolved_approvals:
+            raise StrictReceiptCoordinatorV21Error("approval is already resolved")
+        return pending
 
     def _ensure_process(self) -> None:
         if v21_integer(self._pid_source(), "pid") != self._owner_pid:

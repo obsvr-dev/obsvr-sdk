@@ -71,7 +71,17 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 # SDKs must not diverge on the entry point for the same primitive.
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
+from .otel_mirror import (  # noqa: F401
+    correlate_strict_runtime_checkpoint_v2_1_to_otel,
+    with_strict_otel_correlation_v2_1,
+)
 from .wrap import wrap  # noqa: F401
+from .strict_action_boundary_v2_1 import (  # noqa: F401
+    ObsvrStrictActionBoundaryV21Error,
+    StrictActionBoundaryV21Capability,
+    create_strict_action_boundary_v2_1,
+    execute_strict_action_v2_1,
+)
 from .strict_provider_boundary_v2_1 import (  # noqa: F401
     ObsvrStrictProviderBoundaryV21Error,
     StrictProviderBoundaryV21Capability,
@@ -80,6 +90,46 @@ from .strict_provider_boundary_v2_1 import (  # noqa: F401
 from .strict_receipt_runtime_v2_1 import (  # noqa: F401
     StrictReceiptRuntimeV21,
     bind_strict_v2_1_json_arguments,
+)
+from .strict_runtime_recovery_v2_1 import (  # noqa: F401
+    StrictRuntimeRecoveryV21Error,
+    finalize_interrupted_strict_runtime_execution_v2_1,
+    reconcile_strict_runtime_execution_v2_1,
+)
+from .strict_policy_continuity_v2_1 import (  # noqa: F401
+    STRICT_POLICY_CONTINUITY_V2_1_SCHEMA,
+    StrictPolicyContinuityV21Error,
+    reconstruct_strict_policy_continuity_v2_1,
+)
+from .strict_evidence_bundle_v2_1 import (  # noqa: F401
+    STRICT_EVIDENCE_BUNDLE_V2_1_ENVELOPE_SCHEMA,
+    STRICT_EVIDENCE_BUNDLE_V2_1_SCHEMA,
+    StrictEvidenceBundleV21Error,
+    build_strict_evidence_bundle_v2_1_body,
+    create_strict_evidence_bundle_v2_1,
+    strict_evidence_bundle_v2_1_hash,
+    strict_evidence_bundle_v2_1_signature_preimage,
+    verify_strict_evidence_bundle_v2_1,
+)
+from .strict_execution_outcome_v2_1 import (  # noqa: F401
+    StrictExecutionOutcomeV21ValidationError,
+    build_strict_execution_outcome_v2_1_body,
+    canonicalize_strict_execution_outcome_v2_1_body,
+    sign_strict_execution_outcome_v2_1,
+    strict_execution_outcome_v2_1_hash,
+    strict_execution_outcome_v2_1_signature_preimage,
+    strict_execution_result_v2_1_hash,
+    strict_execution_start_v2_1_hash,
+    verify_strict_execution_outcome_v2_1,
+)
+from .strict_execution_outcome_transport_v2_1 import (  # noqa: F401
+    STRICT_EXECUTION_OUTCOME_V2_1_ADMISSION_SCHEMA,
+    STRICT_EXECUTION_OUTCOME_V2_1_ENDPOINT,
+    STRICT_EXECUTION_OUTCOME_V2_1_INGEST_SCHEMA,
+    STRICT_EXECUTION_OUTCOME_V2_1_MAX_REQUEST_BYTES,
+    StrictExecutionOutcomeV21TransportError,
+    submit_strict_execution_outcome_v2_1,
+    submit_strict_runtime_terminal_journal_v2_1,
 )
 from .strict_receipt_coordinator_v2_1 import (  # noqa: F401
     StrictReceiptCoordinatorV21,
@@ -102,10 +152,44 @@ from ._version import __version__  # noqa: F401  # single source: obsvr/_version
 __all__ = [
     "init",
     "wrap",
+    "create_strict_action_boundary_v2_1",
+    "execute_strict_action_v2_1",
+    "ObsvrStrictActionBoundaryV21Error",
+    "StrictActionBoundaryV21Capability",
     "create_strict_provider_boundary_v2_1",
     "ObsvrStrictProviderBoundaryV21Error",
     "StrictProviderBoundaryV21Capability",
     "StrictReceiptRuntimeV21",
+    "StrictRuntimeRecoveryV21Error",
+    "finalize_interrupted_strict_runtime_execution_v2_1",
+    "reconcile_strict_runtime_execution_v2_1",
+    "STRICT_POLICY_CONTINUITY_V2_1_SCHEMA",
+    "StrictPolicyContinuityV21Error",
+    "reconstruct_strict_policy_continuity_v2_1",
+    "STRICT_EVIDENCE_BUNDLE_V2_1_SCHEMA",
+    "STRICT_EVIDENCE_BUNDLE_V2_1_ENVELOPE_SCHEMA",
+    "StrictEvidenceBundleV21Error",
+    "build_strict_evidence_bundle_v2_1_body",
+    "create_strict_evidence_bundle_v2_1",
+    "strict_evidence_bundle_v2_1_hash",
+    "strict_evidence_bundle_v2_1_signature_preimage",
+    "verify_strict_evidence_bundle_v2_1",
+    "StrictExecutionOutcomeV21ValidationError",
+    "build_strict_execution_outcome_v2_1_body",
+    "canonicalize_strict_execution_outcome_v2_1_body",
+    "sign_strict_execution_outcome_v2_1",
+    "strict_execution_outcome_v2_1_hash",
+    "strict_execution_outcome_v2_1_signature_preimage",
+    "strict_execution_result_v2_1_hash",
+    "strict_execution_start_v2_1_hash",
+    "verify_strict_execution_outcome_v2_1",
+    "STRICT_EXECUTION_OUTCOME_V2_1_INGEST_SCHEMA",
+    "STRICT_EXECUTION_OUTCOME_V2_1_ADMISSION_SCHEMA",
+    "STRICT_EXECUTION_OUTCOME_V2_1_ENDPOINT",
+    "STRICT_EXECUTION_OUTCOME_V2_1_MAX_REQUEST_BYTES",
+    "StrictExecutionOutcomeV21TransportError",
+    "submit_strict_execution_outcome_v2_1",
+    "submit_strict_runtime_terminal_journal_v2_1",
     "StrictReceiptCoordinatorV21",
     "create_trusted_intent_decision_provider_v2_1",
     "create_trusted_evaluation_evidence_provider_v2_1",
@@ -152,6 +236,8 @@ __all__ = [
     "ObsvrUnknownPolicyError",
     "ChainVerificationResult",
     "SPAN_ATTR",
+    "correlate_strict_runtime_checkpoint_v2_1_to_otel",
+    "with_strict_otel_correlation_v2_1",
     "ResolvedConfig",
     "ReasonCode",
     "REASON_CODES",

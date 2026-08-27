@@ -17,6 +17,7 @@ import {
   createTrustedIntentDecisionProviderV21,
   type StrictDecisionActionV21Input,
 } from '../../src/governance/strict-receipt-coordinator-v2-1';
+import type { StrictApprovalVerifier } from '../../src/governance/strict-receipt-coordinator-support';
 import { DEFINITIVE_NO_STORE } from '../../src/governance/strict-receipt-prepared-state';
 import { strictReceiptV21KeyId } from '../../src/governance/strict-receipt-v2-1';
 import {
@@ -76,6 +77,7 @@ function coordinator(params: {
   identitySnapshot?: (timestamp: number, signer: DeviceSigner) => StrictIdentityEvidenceV21Input;
   tenantId?: string;
   pid?: () => number;
+  approvalVerifier?: StrictApprovalVerifier;
 } = {}): StrictReceiptCoordinatorV21 {
   const deviceSigner = params.deviceSigner ?? signer();
   const base = params.base ?? { action_taken: 'allowed' };
@@ -88,6 +90,7 @@ function coordinator(params: {
     evaluation_evidence_provider: createTrustedEvaluationEvidenceProviderV21(
       () => structuredClone(params.snapshot ?? evaluationSnapshot()),
     ),
+    approval_verifier: params.approvalVerifier,
     pid: params.pid ?? (() => 7), prepared_token_factory: () => 'prepared-token',
   });
 }
@@ -149,10 +152,101 @@ describe('strict receipt profile 2.1 coordinator', () => {
       approval_request_id: 'approval-1', approval_action_hash: A,
       approval_expires_at_ms: 1_500 } }).prepareDecision(action()).value.receipt.body;
     expect(approval).toMatchObject({ outcome: 'STEP_UP', execution_authorized: false,
-      suspension: { suspension_id: 'approval-1', type: 'approval', expires_at_ms: 1_500 } });
+      suspension: { suspension_id: 'approval-1', type: 'approval', expires_at_ms: 1_500,
+        approval_action_hash: A } });
     const context = coordinator().prepareDecision(action('defer', ['deploy', 'other'])).value.receipt.body;
     expect(context).toMatchObject({ outcome: 'DEFER', execution_authorized: false,
       suspension: { type: 'context', expires_at_ms: 1_500 } });
+  });
+
+  test('resolves a trusted approval once and binds it to the original action', () => {
+    const times = [1_000, 1_100];
+    const approvalVerifier: StrictApprovalVerifier = (evidence, expected) => {
+      if ((evidence as { token?: string }).token !== 'trusted') throw new Error('untrusted approval');
+      return { request_id: expected.request_id, action_hash: expected.action_hash,
+        principal_id: 'reviewer-1', decision: expected.decision,
+        source_hash: D, expires_at_ms: 1_400 };
+    };
+    const subject = coordinator({ clock: () => times.shift()!, approvalVerifier,
+      base: { action_taken: 'blocked', approval_required: true,
+        approval_request_id: 'approval-1', approval_action_hash: A,
+        approval_expires_at_ms: 1_500 } });
+    const pending = subject.prepareDecision(action('approval-action'));
+    const decision = subject.commitPrepared(pending.token, pending.receipt_hash);
+    expect('receipt' in decision ? decision.receipt.body.outcome : '').toBe('STEP_UP');
+    const prepared = subject.prepareApprovalResolution({
+      suspended_receipt_hash: pending.receipt_hash,
+      method: 'approval_granted', approval_evidence: { token: 'trusted' },
+    });
+    expect(subject.prepareApprovalResolution({
+      suspended_receipt_hash: pending.receipt_hash,
+      method: 'approval_granted', approval_evidence: { token: 'trusted' },
+    })).toEqual(prepared);
+    expect(prepared.value.body).toMatchObject({ record_type: 'resolution', sequence: 2,
+      previous_receipt_hash: pending.receipt_hash, outcome: 'ALLOW',
+      execution_authorized: true, action: { action_id: 'approval-action' },
+      resolution: { resolves_receipt_hash: pending.receipt_hash,
+        suspension_id: 'approval-1', method: 'approval_granted',
+        approval_evidence_hash: D } });
+    subject.commitPrepared(prepared.token, prepared.receipt_hash);
+    expect(() => subject.prepareApprovalResolution({
+      suspended_receipt_hash: pending.receipt_hash,
+      method: 'approval_granted', approval_evidence: { token: 'trusted' },
+    })).toThrow('already resolved');
+  });
+
+  test('rejects expired, mismatched, and delegated approval authority', () => {
+    const base = { action_taken: 'blocked', approval_required: true,
+      approval_request_id: 'approval-1', approval_action_hash: A,
+      approval_expires_at_ms: 1_500 } as const;
+    const expired = coordinator({ clock: (() => {
+      const times = [1_000, 1_500]; return () => times.shift()!;
+    })(), base, approvalVerifier: (_evidence, expected) => ({
+      request_id: expected.request_id, action_hash: expected.action_hash,
+      principal_id: 'reviewer-1', decision: expected.decision,
+      source_hash: D, expires_at_ms: 1_500,
+    }) });
+    const pending = expired.prepareDecision(action());
+    expired.commitPrepared(pending.token, pending.receipt_hash);
+    expect(() => expired.prepareApprovalResolution({
+      suspended_receipt_hash: pending.receipt_hash,
+      method: 'approval_granted', approval_evidence: {},
+    })).toThrow('expiry');
+
+    const mismatched = coordinator({ clock: (() => {
+      const times = [1_000, 1_100]; return () => times.shift()!;
+    })(), base, approvalVerifier: (_evidence, expected) => ({
+      request_id: expected.request_id, action_hash: C,
+      principal_id: 'reviewer-1', decision: expected.decision,
+      source_hash: D, expires_at_ms: 1_400,
+    }) });
+    const wrong = mismatched.prepareDecision(action());
+    mismatched.commitPrepared(wrong.token, wrong.receipt_hash);
+    expect(() => mismatched.prepareApprovalResolution({
+      suspended_receipt_hash: wrong.receipt_hash,
+      method: 'approval_granted', approval_evidence: {},
+    })).toThrow('expected binding');
+
+    const delegated = coordinator({ clock: (() => {
+      const times = [1_000, 1_100]; return () => times.shift()!;
+    })(), base, approvalVerifier: (_evidence, expected) => ({
+      request_id: expected.request_id, action_hash: expected.action_hash,
+      principal_id: 'reviewer-1', decision: expected.decision,
+      source_hash: D, expires_at_ms: 1_400,
+    }), identitySnapshot: (timestamp, deviceSigner) => ({
+      ...identity(timestamp, deviceSigner), relationship: 'delegated',
+      requester: { requester_ref_hash: C, principal_type: 'human',
+        role_ids: ['owner'], privilege_scopes: ['write'] },
+      delegation_chain: [{ hop: 0, delegation_id_hash: D,
+        delegator_ref_hash: C, delegatee_ref_hash: B, granted_scopes: ['write'],
+        issued_at_ms: 900, expires_at_ms: 1_050 }],
+    }) });
+    const delegatedPending = delegated.prepareDecision(action());
+    delegated.commitPrepared(delegatedPending.token, delegatedPending.receipt_hash);
+    expect(() => delegated.prepareApprovalResolution({
+      suspended_receipt_hash: delegatedPending.receipt_hash,
+      method: 'approval_granted', approval_evidence: {},
+    })).toThrow('delegated authority');
   });
 
   test('advances only after commit, preserves exact retries, and rejects approval reuse', () => {

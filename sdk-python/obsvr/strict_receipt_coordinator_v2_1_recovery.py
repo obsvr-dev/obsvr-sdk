@@ -48,6 +48,21 @@ class RecoverableStrictReceiptCoordinatorV21(StrictReceiptCoordinatorV21):
             }
             return prepared
 
+    def prepare_approval_resolution(
+        self, input_value: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        with self._lock:
+            self._assert_recovery_ready()
+            prepared = super().prepare_approval_resolution(input_value)
+            self._recovery_prepared = {
+                "kind": "resolution",
+                "suspended_receipt_hash": prepared["value"]["body"]["resolution"][
+                    "resolves_receipt_hash"
+                ],
+                "result": copy.deepcopy(prepared["value"]),
+            }
+            return prepared
+
     def commit_prepared(self, token: str, receipt_hash: str) -> Dict[str, Any]:
         result = super().commit_prepared(token, receipt_hash)
         self._recovery_prepared = None
@@ -81,6 +96,11 @@ class RecoverableStrictReceiptCoordinatorV21(StrictReceiptCoordinatorV21):
                     "prior_actions": copy.deepcopy(self._prior_actions),
                     "action_ids": sorted(self._committed_action_ids),
                     "pending_approval_ids": sorted(self._pending_approval_ids),
+                    "suspended_approvals": [
+                        copy.deepcopy(self._suspended_approvals[key])
+                        for key in sorted(self._suspended_approvals)
+                    ],
+                    "resolved_approval_hashes": sorted(self._resolved_approvals),
                 },
             }
             if self._recovery_prepared is not None:
@@ -93,9 +113,27 @@ class RecoverableStrictReceiptCoordinatorV21(StrictReceiptCoordinatorV21):
             pending = self._recovery_prepared
             if pending is None:
                 raise ValueError("no recovered decision is pending")
-            receipt = pending["result"]["receipt"]
+            receipt = (
+                pending["result"]["receipt"]
+                if pending["kind"] == "decision"
+                else pending["result"]
+            )
             assert_accepted_strict_reconciliation_v2_1(proof, receipt)
-            self._commit_decision(pending["result"], pending["input"])
+            if pending["kind"] == "decision":
+                self._commit_decision(pending["result"], pending["input"])
+            else:
+                target_hash = pending["suspended_receipt_hash"]
+                index = next(
+                    (
+                        index
+                        for index, item in enumerate(self._prior_actions)
+                        if item["receipt_hash"] == target_hash
+                    ),
+                    -1,
+                )
+                if index < 0:
+                    raise ValueError("recovered approval action summary is missing")
+                self._commit_approval_resolution(receipt, target_hash, index)
             self._recovery_prepared = None
             return copy.deepcopy(receipt)
 
@@ -122,6 +160,11 @@ class RecoverableStrictReceiptCoordinatorV21(StrictReceiptCoordinatorV21):
         self._prior_actions = copy.deepcopy(state["prior_actions"])
         self._committed_action_ids = set(state["action_ids"])
         self._pending_approval_ids = set(state["pending_approval_ids"])
+        self._suspended_approvals = {
+            item["receipt"]["receipt_hash"]: copy.deepcopy(item)
+            for item in state["suspended_approvals"]
+        }
+        self._resolved_approvals = set(state["resolved_approval_hashes"])
         self._recovery_prepared = copy.deepcopy(document.get("prepared"))
 
     def _assert_recovery_ready(self) -> None:

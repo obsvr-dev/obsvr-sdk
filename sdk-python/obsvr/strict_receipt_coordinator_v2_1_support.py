@@ -319,6 +319,9 @@ def sign_decision_v2_1(
             "expires_at_ms": v21_integer(
                 base_result.get("approval_expires_at_ms"), "approval_expires_at_ms"
             ),
+            "approval_action_hash": v21_hash(
+                base_result.get("approval_action_hash"), "approval_action_hash"
+            ),
         }
     elif evaluation["outcome"] == "DEFER":
         suspension_hash = _canonical_hash(

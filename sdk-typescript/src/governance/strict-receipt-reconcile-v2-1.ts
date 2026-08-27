@@ -47,7 +47,7 @@ function observation(receipt: StrictReceiptV21Envelope, attempts: number,
 }
 function validateReceipt(receipt: StrictReceiptV21Envelope): void {
   const verified = verifyStrictReceiptV21(receipt, { trusted_agent_keys: [], allowed_evaluator_manifest_hashes: [] });
-  if (!verified.integrity_valid || receipt.body.record_type !== 'decision'
+  if (!verified.integrity_valid || !['decision', 'resolution'].includes(receipt.body.record_type)
     || receipt.body.profile_version !== '2.1') throw new Error('receipt must be an intact profile-2.1 decision');
 }
 

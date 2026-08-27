@@ -51,6 +51,7 @@ export interface StrictReceiptV21Body {
     suspension_id: string;
     type: 'approval' | 'context';
     expires_at_ms: number;
+    approval_action_hash?: string;
   };
   resolution?: {
     resolves_receipt_hash: string;
@@ -58,6 +59,7 @@ export interface StrictReceiptV21Body {
     method: 'approval_granted' | 'approval_denied' | 'context_supplied' | 'expired' | 'cancelled';
     resolver_ref_hash: string;
     resolved_at_ms: number;
+    approval_evidence_hash?: string;
   };
 }
 
@@ -221,16 +223,26 @@ export function buildStrictReceiptV21Body(input: StrictReceiptV21Body): StrictRe
   const shouldAuthorize = root.outcome === 'ALLOW' || root.outcome === 'MODIFY';
   if (root.execution_authorized !== shouldAuthorize) fail('execution_authorized is inconsistent with outcome');
   if ('suspension' in root) {
-    const suspension = record(root.suspension, 'suspension'); exact(suspension, ['suspension_id', 'type', 'expires_at_ms'], 'suspension');
+    const suspension = record(root.suspension, 'suspension');
+    exactOptional(suspension, ['suspension_id', 'type', 'expires_at_ms'], ['approval_action_hash'], 'suspension');
     text(suspension.suspension_id, 'suspension.suspension_id');
     if (suspension.type !== 'approval' && suspension.type !== 'context') fail('invalid suspension.type');
     if (integer(suspension.expires_at_ms, 'suspension.expires_at_ms') <= Number(root.timestamp_ms)) fail('suspension expiry must follow receipt timestamp');
+    if ('approval_action_hash' in suspension) {
+      if (suspension.type !== 'approval') fail('approval_action_hash requires an approval suspension');
+      hash(suspension.approval_action_hash, 'suspension.approval_action_hash');
+    }
   }
   if ('resolution' in root) {
-    const resolution = record(root.resolution, 'resolution'); exact(resolution, ['resolves_receipt_hash', 'suspension_id', 'method', 'resolver_ref_hash', 'resolved_at_ms'], 'resolution');
+    const resolution = record(root.resolution, 'resolution');
+    exactOptional(resolution, ['resolves_receipt_hash', 'suspension_id', 'method', 'resolver_ref_hash', 'resolved_at_ms'], ['approval_evidence_hash'], 'resolution');
     hash(resolution.resolves_receipt_hash, 'resolution.resolves_receipt_hash'); text(resolution.suspension_id, 'resolution.suspension_id');
     if (!['approval_granted', 'approval_denied', 'context_supplied', 'expired', 'cancelled'].includes(String(resolution.method))) fail('invalid resolution.method');
     hash(resolution.resolver_ref_hash, 'resolution.resolver_ref_hash');
+    if ('approval_evidence_hash' in resolution) {
+      if (!['approval_granted', 'approval_denied'].includes(String(resolution.method))) fail('approval_evidence_hash requires an approval resolution');
+      hash(resolution.approval_evidence_hash, 'resolution.approval_evidence_hash');
+    }
     if (integer(resolution.resolved_at_ms, 'resolution.resolved_at_ms') !== root.timestamp_ms) fail('resolution time must equal receipt timestamp');
   }
   if (root.record_type === 'decision' && 'resolution' in root) fail('decision cannot contain resolution');

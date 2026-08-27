@@ -131,6 +131,18 @@ export { resolveCallCost, priceTokens } from "./governance/cost.js";
 export type { CostPolicyConfig, CostRate, ResolvedCost } from "./governance/cost.js";
 export { createGovernanceServer } from "./governance/server.js";
 export {
+  createStrictActionBoundaryV21,
+  executeStrictActionV21,
+  ObsvrStrictActionBoundaryV21Error,
+} from "./governance/strict-action-boundary-v2-1.js";
+export type {
+  StrictActionBoundaryV21Capability,
+  StrictActionBoundaryV21Options,
+  StrictActionContextV21,
+  StrictActionExecutionV21,
+  StrictActionV21,
+} from "./governance/strict-action-boundary-v2-1.js";
+export {
   createStrictProviderBoundaryV21,
   ObsvrStrictProviderBoundaryV21Error,
 } from "./governance/strict-provider-boundary-v2-1.js";
@@ -146,8 +158,89 @@ export {
 } from "./governance/strict-receipt-runtime-v2-1.js";
 export type {
   StrictV21CheckpointStore,
+  StrictV21ApprovalRuntimeAction,
+  StrictV21BoundArguments,
+  StrictV21RuntimeAction,
   StrictRuntimeExecutionJournalV21,
+  StrictRuntimeV21Result,
 } from "./governance/strict-receipt-runtime-v2-1.js";
+export type {
+  StrictRuntimeFailureClassificationV21,
+} from "./governance/strict-receipt-runtime-v2-1-outcomes.js";
+export {
+  correlateStrictRuntimeCheckpointV21ToOtel,
+  withStrictOtelCorrelationV21,
+} from "./proxy/otel-mirror.js";
+export {
+  finalizeInterruptedStrictRuntimeExecutionV21,
+  reconcileStrictRuntimeExecutionV21,
+  StrictRuntimeRecoveryV21Error,
+} from "./governance/strict-runtime-recovery-v2-1.js";
+export type {
+  StrictInterruptedExecutionCheckpointStoreV21,
+  StrictInterruptedExecutionFinalizerV21Options,
+  StrictRuntimeRecoveryV21Result,
+} from "./governance/strict-runtime-recovery-v2-1.js";
+export {
+  STRICT_POLICY_CONTINUITY_V21_SCHEMA,
+  StrictPolicyContinuityV21Error,
+  reconstructStrictPolicyContinuityV21,
+} from "./governance/strict-policy-continuity-v2-1.js";
+export type {
+  StrictPolicyContinuityV21,
+  StrictPolicySnapshotV21,
+  StrictPolicyTransitionV21,
+} from "./governance/strict-policy-continuity-v2-1.js";
+export {
+  STRICT_EVIDENCE_BUNDLE_V21_SCHEMA,
+  STRICT_EVIDENCE_BUNDLE_V21_ENVELOPE_SCHEMA,
+  StrictEvidenceBundleV21Error,
+  buildStrictEvidenceBundleV21Body,
+  createStrictEvidenceBundleV21,
+  strictEvidenceBundleV21Hash,
+  verifyStrictEvidenceBundleV21,
+} from "./governance/strict-evidence-bundle-v2-1.js";
+export type {
+  StrictEvidenceBundleV21Body,
+  StrictEvidenceBundleV21Envelope,
+  StrictEvidenceBundleV21Verification,
+  StrictEvidenceCoverageV21,
+} from "./governance/strict-evidence-bundle-v2-1.js";
+export {
+  STRICT_EXECUTION_OUTCOME_V21_SCHEMA,
+  STRICT_EXECUTION_OUTCOME_V21_ENVELOPE_SCHEMA,
+  StrictExecutionOutcomeV21ValidationError,
+  buildStrictExecutionOutcomeV21Body,
+  canonicalizeStrictExecutionOutcomeV21Body,
+  signStrictExecutionOutcomeV21,
+  strictExecutionOutcomeV21Hash,
+  strictExecutionOutcomeV21SignaturePreimage,
+  strictExecutionResultV21Hash,
+  strictExecutionStartV21Hash,
+  verifyStrictExecutionOutcomeV21,
+} from "./governance/strict-execution-outcome-v2-1.js";
+export type {
+  StrictExecutionOutcomeV21Body,
+  StrictExecutionOutcomeV21Envelope,
+  StrictExecutionOutcomeV21Status,
+  StrictExecutionOutcomeV21Verification,
+  StrictExecutionStartV21,
+} from "./governance/strict-execution-outcome-v2-1.js";
+export {
+  STRICT_EXECUTION_OUTCOME_V21_ADMISSION_SCHEMA,
+  STRICT_EXECUTION_OUTCOME_V21_ENDPOINT,
+  STRICT_EXECUTION_OUTCOME_V21_INGEST_SCHEMA,
+  STRICT_EXECUTION_OUTCOME_V21_MAX_REQUEST_BYTES,
+  StrictExecutionOutcomeV21TransportError,
+  assertStrictExecutionOutcomeV21RequestBytes,
+  submitStrictExecutionOutcomeV21,
+  submitStrictRuntimeTerminalJournalV21,
+} from "./governance/strict-execution-outcome-transport-v2-1.js";
+export type {
+  StrictExecutionOutcomeV21PinnedTransport,
+  StrictExecutionOutcomeV21TransportOptions,
+  StrictExecutionOutcomeV21TransportResult,
+} from "./governance/strict-execution-outcome-transport-v2-1.js";
 export {
   StrictReceiptCoordinatorV21,
   createTrustedIntentDecisionProviderV21,

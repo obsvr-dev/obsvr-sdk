@@ -204,7 +204,7 @@ class TestRegistryGate:
         # declared. Same exemption reason as decision_record.py in TS.
         "approval_action.py",
         # Strict-profile schemas, canonicalizers, evidence assemblers, receipt
-        # builders/verifiers, admission transport, coordination, recovery, and
+        # builders/verifiers, strict transports, coordination, recovery, and
         # runtime orchestration. These are not detector layers: unavailable
         # required-detector evidence is encoded as a stricter outcome, invalid
         # inputs fail before admission, and uncertain admission freezes
@@ -217,14 +217,20 @@ class TestRegistryGate:
         "strict_admission.py",
         "strict_admission_v2.py",
         "strict_admission_v2_1.py",
+        "strict_action_boundary_v2_1.py",
         "strict_canonical.py",
         "strict_evaluation_evidence_v2_1.py",
+        "strict_evidence_bundle_v2_1.py",
         "strict_identity_evidence_v2_1.py",
+        "strict_policy_continuity_v2_1.py",
+        "strict_execution_outcome_v2_1.py",
+        "strict_execution_outcome_transport_v2_1.py",
         "strict_receipt.py",
         "strict_receipt_coordinator.py",
         "strict_receipt_coordinator_support.py",
         "strict_receipt_coordinator_v2.py",
         "strict_receipt_coordinator_v2_1.py",
+        "strict_receipt_coordinator_v2_1_approval.py",
         "strict_receipt_coordinator_v2_1_recovery.py",
         "strict_receipt_coordinator_v2_1_support.py",
         "strict_receipt_coordinator_v2_recovery.py",
@@ -237,6 +243,10 @@ class TestRegistryGate:
         "strict_receipt_runtime.py",
         "strict_receipt_runtime_v2.py",
         "strict_receipt_runtime_v2_1.py",
+        "strict_receipt_runtime_v2_1_execution.py",
+        "strict_receipt_runtime_v2_1_outcomes.py",
+        "strict_receipt_runtime_v2_1_support.py",
+        "strict_runtime_recovery_v2_1.py",
         "strict_receipt_runtime_v2_bindings.py",
         "strict_receipt_runtime_v2_recovery_support.py",
         "strict_provider_boundary_v2_1.py",

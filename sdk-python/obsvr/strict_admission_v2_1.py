@@ -75,23 +75,27 @@ def _endpoint(value: Any) -> Tuple[str, bool]:
 def _identity(coordinator: Any, prepared: Any) -> Dict[str, Any]:
     if not isinstance(prepared, dict):
         raise StrictAdmissionV21ValidationError(
-            "receipt is not the coordinator current prepared decision"
+            "receipt is not the coordinator current prepared receipt"
         )
     state = coordinator.inspect_state()
     current = state.get("prepared") if isinstance(state, dict) else None
     if (
         state.get("frozen") is not False
         or not isinstance(current, dict)
-        or current.get("kind") != "decision"
-        or prepared.get("kind") != "decision"
+        or prepared.get("kind") not in ("decision", "resolution")
+        or current.get("kind") != prepared.get("kind")
         or prepared.get("token") != current.get("token")
         or prepared.get("receipt_hash") != current.get("receipt_hash")
     ):
         raise StrictAdmissionV21ValidationError(
-            "receipt is not the coordinator current prepared decision"
+            "receipt is not the coordinator current prepared receipt"
         )
     value = prepared.get("value")
-    receipt = value.get("receipt") if isinstance(value, dict) else None
+    receipt = (
+        value.get("receipt")
+        if prepared.get("kind") == "decision" and isinstance(value, dict)
+        else value
+    )
     body = receipt.get("body") if isinstance(receipt, dict) else None
     verified = verify_strict_receipt_v2_1(
         receipt,
@@ -102,7 +106,7 @@ def _identity(coordinator: Any, prepared: Any) -> Dict[str, Any]:
     if (
         not verified["integrity_valid"]
         or not isinstance(body, dict)
-        or body.get("record_type") != "decision"
+        or body.get("record_type") != prepared.get("kind")
         or body.get("profile_version") != "2.1"
         or not isinstance(receipt_hash, str)
         or len(receipt_hash) != 64
@@ -112,7 +116,7 @@ def _identity(coordinator: Any, prepared: Any) -> Dict[str, Any]:
         or body.get("session_id") != state.get("session_id")
     ):
         raise StrictAdmissionV21ValidationError(
-            "prepared receipt must be an intact strict profile-2.1 decision"
+            "prepared receipt must be an intact strict profile-2.1 record"
         )
     return {
         "schema": STRICT_RECEIPT_V2_1_ADMISSION_SCHEMA,
@@ -245,7 +249,11 @@ def _transport_prepared_strict_receipt_v2_1(
         raise StrictAdmissionV21ValidationError(
             "trusted_pinned_transport must be callable"
         )
-    receipt = copy.deepcopy(prepared["value"]["receipt"])
+    receipt = copy.deepcopy(
+        prepared["value"]["receipt"]
+        if prepared["kind"] == "decision"
+        else prepared["value"]
+    )
     body = _canonical_json_for_hash(
         {
             "schema": STRICT_RECEIPT_V2_1_INGEST_SCHEMA,
@@ -345,7 +353,7 @@ def admit_prepared_strict_receipt_v2_1(
     prepared: Dict[str, Any],
     **options: Any,
 ) -> Dict[str, Any]:
-    """Admit the prepared decision and apply its local reconciliation."""
+    """Admit the prepared strict receipt and apply its local reconciliation."""
     return _finish(
         coordinator,
         prepared,

@@ -15,11 +15,16 @@ import {
   StrictReceiptCoordinatorV21, createTrustedIntentDecisionProviderV21,
   type StrictDecisionActionV21Input,
 } from '../../src/governance/strict-receipt-coordinator-v2-1.js';
+import type { StrictApprovalVerifier } from '../../src/governance/strict-receipt-coordinator-support.js';
 import {
   bindStrictV21JsonArguments, StrictReceiptRuntimeV21,
   type StrictRuntimeExecutionJournalV21,
 } from '../../src/governance/strict-receipt-runtime-v2-1.js';
 import { strictReceiptV21KeyId } from '../../src/governance/strict-receipt-v2-1.js';
+import {
+  strictExecutionResultV21Hash,
+  verifyStrictExecutionOutcomeV21,
+} from '../../src/governance/strict-execution-outcome-v2-1.js';
 import { intentPolicyV2Hash, type IntentV2BaseResult } from '../../src/policy/intent-alignment-v2.js';
 import { loadDeviceSigner } from '../../src/proxy/device-identity.js';
 
@@ -41,7 +46,10 @@ function decision(actionId: string, argumentsHash: string, active = ['deploy']):
     data_classifications: ['confidential'], requested_scopes: ['write'],
   }, run_id: 'run-1', thread_id: 'thread-1' };
 }
-function coordinator(base: IntentV2BaseResult = { action_taken: 'allowed' }) {
+function coordinator(
+  base: IntentV2BaseResult = { action_taken: 'allowed' },
+  approvalVerifier?: StrictApprovalVerifier,
+) {
   const device = signer();
   return new StrictReceiptCoordinatorV21({
     signer: device, policy: POLICY, tenant_id: 'tenant-1', session_id: 'session-1',
@@ -57,7 +65,8 @@ function coordinator(base: IntentV2BaseResult = { action_taken: 'allowed' }) {
     evaluation_evidence_provider: createTrustedEvaluationEvidenceProviderV21(() => ({
       effective_policy: { version: 'policy-1', artifact_hash: intentPolicyV2Hash(POLICY),
         matched_rule_ids: ['deploy'] }, detector_requirements: [], detector_results: [],
-    })), pid: () => 7, prepared_token_factory: () => 'prepared-token',
+    })), approval_verifier: approvalVerifier,
+    pid: () => 7, prepared_token_factory: () => 'prepared-token',
   });
 }
 function accepted(hash: string, status = 'accepted') {
@@ -66,9 +75,10 @@ function accepted(hash: string, status = 'accepted') {
 }
 function setup(base: IntentV2BaseResult = { action_taken: 'allowed' },
   response: (hash: string) => { status: number; body: Uint8Array } = (hash) => ({ status: 200, body: accepted(hash) }),
-  failCommit = false) {
+  failCommit = false, approvalVerifier?: StrictApprovalVerifier) {
   const events: string[] = []; const checkpoints: StrictRuntimeExecutionJournalV21[] = [];
-  const subject = coordinator(base); const originalCommit = subject.commitPrepared.bind(subject);
+  const subject = coordinator(base, approvalVerifier);
+  const originalCommit = subject.commitPrepared.bind(subject);
   subject.commitPrepared = (token, hash) => {
     events.push('commit');
     if (failCommit) throw new Error('commit failed');
@@ -90,10 +100,13 @@ describe('strict profile 2.1 runtime', () => {
     const { runtime, events, checkpoints } = setup();
     const result = await runtime.runDecision({ decision: decision('action-1', bound.arguments_hash),
       action: { runtime_action_id: 'action-1', original_arguments: bound,
-        invoke: (value) => { events.push('invoke'); return value.message; } } });
+        invoke: (value) => { events.push('invoke'); return value.message; },
+        result_projection: (value) => ({ message: value }) } });
     expect(result).toMatchObject({ status: 'executed', value: 'hello' });
     expect(events).toEqual(['persist:prepared', 'admit', 'persist:remote_accepted', 'commit',
       'persist:committed', 'persist:invocation_started', 'invoke', 'persist:terminal']);
+    expect(checkpoints.every((checkpoint) => checkpoint.receipt.receipt_hash
+      === result.receipt_hash)).toBe(true);
     expect(checkpoints[0]).toMatchObject({ schema: 'obsvr-strict-runtime-execution-journal-v2-1',
       profile_version: '2.1', phase: 'prepared', tenant_id: 'tenant-1', session_id: 'session-1',
       runtime_action_id: 'action-1', prepared_token: 'prepared-token' });
@@ -103,6 +116,35 @@ describe('strict profile 2.1 runtime', () => {
     expect(checkpoints[0]).not.toHaveProperty('error');
     expect(createHash('sha256').update(canonicalJsonForHash(checkpoints[0])).digest('hex'))
       .toBe(CHECKPOINT_SHA256);
+    const started = checkpoints.find((item) => item.phase === 'invocation_started') as any;
+    const terminal = checkpoints.at(-1) as any;
+    expect(started).toMatchObject({ execution_start_hash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(terminal.execution_outcome.body).toMatchObject({
+      decision_receipt_hash: result.receipt_hash,
+      execution_start_hash: started.execution_start_hash,
+      status: 'succeeded',
+      result_hash: strictExecutionResultV21Hash({ message: 'hello' }),
+    });
+    const receipt = result.receipt;
+    expect(verifyStrictExecutionOutcomeV21(terminal.execution_outcome, receipt, {
+      trusted_agent_keys: [{ tenant_id: receipt.body.tenant_id,
+        agent_ref_hash: receipt.body.identity.initiator.agent_ref_hash,
+        key_id: receipt.signature.key_id, public_key_b64: receipt.public_key_b64,
+        status: 'active' }],
+      allowed_evaluator_manifest_hashes: [receipt.body.evaluation.evaluator_manifest_hash],
+    }).trusted).toBe(true);
+  });
+
+  test('unclassified invocation errors are signed as uncertain', async () => {
+    const bound = bindStrictV21JsonArguments({ message: 'hello' });
+    const { runtime, checkpoints } = setup();
+    const result = await runtime.runDecision({ decision: decision('error', bound.arguments_hash),
+      action: { runtime_action_id: 'error', original_arguments: bound,
+        invoke: () => { throw new Error('connection disappeared'); } } });
+    expect(result).toMatchObject({ status: 'invocation_uncertain',
+      execution_outcome: { body: { status: 'uncertain', error_code: 'action_error_unclassified' } } });
+    expect(checkpoints.at(-1)).toMatchObject({ phase: 'terminal',
+      terminal_status: 'invocation_uncertain', execution_outcome: result.execution_outcome });
   });
 
   test('MODIFY invokes only the bound effective arguments', async () => {
@@ -133,6 +175,83 @@ describe('strict profile 2.1 runtime', () => {
     expect(result).toMatchObject({ status: 'nonexecuted', reason: 'not_authorized' });
     expect(events).toEqual(['persist:prepared', 'admit', 'persist:remote_accepted', 'commit',
       'persist:committed', 'persist:terminal']);
+    expect(invokes).toBe(0);
+  });
+
+  test('admits one approval resolution and executes the exact suspended action', async () => {
+    const bound = bindStrictV21JsonArguments({ message: 'approved' });
+    const verifier: StrictApprovalVerifier = (evidence, expected) => {
+      if ((evidence as { token?: string }).token !== 'trusted-secret') {
+        throw new Error('untrusted approval');
+      }
+      return { request_id: expected.request_id, action_hash: expected.action_hash,
+        principal_id: 'reviewer-1', decision: expected.decision,
+        source_hash: C, expires_at_ms: 1_400 };
+    };
+    const { runtime, events, checkpoints } = setup({
+      action_taken: 'blocked', approval_required: true,
+      approval_request_id: 'approval-1', approval_action_hash: bound.arguments_hash,
+      approval_expires_at_ms: 1_500,
+    }, undefined, false, verifier);
+    const suspended = await runtime.runDecision({
+      decision: decision('approved-action', bound.arguments_hash),
+      action: { runtime_action_id: 'approved-action', original_arguments: bound,
+        invoke: () => { throw new Error('suspended action must not run'); } },
+    });
+    expect(suspended).toMatchObject({ status: 'nonexecuted', reason: 'not_authorized' });
+    let invokes = 0;
+    const resolution = { suspended_receipt_hash: suspended.receipt_hash,
+      method: 'approval_granted' as const,
+      approval_evidence: { token: 'trusted-secret' } };
+    const action = { original_arguments: bound,
+      invoke: (value: { message: string }) => { invokes += 1; return value.message; } };
+    const result = await runtime.runApproval({ resolution, action });
+    expect(result).toMatchObject({ status: 'executed', value: 'approved',
+      receipt: { body: { record_type: 'resolution', execution_authorized: true,
+        resolution: { resolves_receipt_hash: suspended.receipt_hash,
+          approval_evidence_hash: C } } },
+      execution_outcome: { body: { decision_receipt_hash: result.receipt_hash,
+        status: 'succeeded' } } });
+    expect(invokes).toBe(1);
+    const resolutionCheckpoints = checkpoints.filter(
+      (item) => item.receipt.body.record_type === 'resolution',
+    );
+    expect(resolutionCheckpoints.map((item) => item.phase)).toEqual([
+      'prepared', 'remote_accepted', 'committed', 'invocation_started', 'terminal',
+    ]);
+    expect(JSON.stringify(resolutionCheckpoints)).not.toContain('trusted-secret');
+    expect(await runtime.runApproval({ resolution, action })).toBe(result);
+    expect(invokes).toBe(1);
+    expect(() => runtime.runApproval({ resolution: {
+      ...resolution, approval_evidence: { token: 'different' },
+    }, action })).toThrow('reused with different approval input');
+    expect(events.filter((event) => event === 'invoke')).toHaveLength(0);
+  });
+
+  test('admits an approval denial without invoking the suspended action', async () => {
+    const bound = bindStrictV21JsonArguments({ message: 'denied' });
+    const verifier: StrictApprovalVerifier = (_evidence, expected) => ({
+      request_id: expected.request_id, action_hash: expected.action_hash,
+      principal_id: 'reviewer-1', decision: expected.decision,
+      source_hash: C, expires_at_ms: 1_400,
+    });
+    const { runtime } = setup({ action_taken: 'blocked', approval_required: true,
+      approval_request_id: 'approval-2', approval_action_hash: bound.arguments_hash,
+      approval_expires_at_ms: 1_500 }, undefined, false, verifier);
+    const suspended = await runtime.runDecision({
+      decision: decision('denied-action', bound.arguments_hash),
+      action: { runtime_action_id: 'denied-action', original_arguments: bound,
+        invoke: () => { throw new Error('suspended action must not run'); } },
+    });
+    let invokes = 0;
+    const denied = await runtime.runApproval({
+      resolution: { suspended_receipt_hash: suspended.receipt_hash,
+        method: 'approval_denied', approval_evidence: { token: 'denied' } },
+      action: { original_arguments: bound, invoke: () => { invokes += 1; } },
+    });
+    expect(denied).toMatchObject({ status: 'nonexecuted', reason: 'not_authorized',
+      receipt: { body: { record_type: 'resolution', outcome: 'DENY',
+        execution_authorized: false } } });
     expect(invokes).toBe(0);
   });
 
