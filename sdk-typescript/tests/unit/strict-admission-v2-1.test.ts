@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -11,8 +12,12 @@ import {
   STRICT_RECEIPT_V21_MAX_REQUEST_BYTES,
   type StrictAdmissionV21Coordinator,
 } from '../../src/governance/strict-admission-v2-1.js';
-import type { PreparedDecisionV21 } from '../../src/governance/strict-receipt-coordinator-v2-1-types.js';
+import type {
+  PreparedApprovalResolutionV21, PreparedDecisionV21,
+} from '../../src/governance/strict-receipt-coordinator-v2-1-types.js';
 import { DEFINITIVE_NO_STORE } from '../../src/governance/strict-receipt-prepared-state.js';
+import { signStrictReceiptV21 } from '../../src/governance/strict-receipt-v2-1.js';
+import { loadDeviceSigner } from '../../src/proxy/device-identity.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const FIXTURE = JSON.parse(readFileSync(
@@ -39,11 +44,28 @@ function prepared(overrides: Record<string, unknown> = {}): PreparedDecisionV21 
     ...overrides,
   } as unknown as PreparedDecisionV21;
 }
+function preparedResolution(): PreparedApprovalResolutionV21 {
+  const path = join(mkdtempSync(join(tmpdir(), 'obsvr-v21-admission-')), 'seed.key');
+  writeFileSync(path, FIXTURE.public_test_key.seed_hex, 'ascii');
+  const body = structuredClone(FIXTURE.vector.body);
+  body.record_type = 'resolution'; body.receipt_id = `${body.session_id}:2`;
+  body.sequence = 2; body.timestamp_ms += 1; body.previous_receipt_hash = HASH;
+  body.evaluation.requested_outcome = 'ALLOW'; body.evaluation.outcome = 'ALLOW';
+  body.outcome = 'ALLOW'; body.execution_authorized = true; delete body.suspension;
+  body.resolution = { resolves_receipt_hash: HASH, suspension_id: 'approval-21',
+    method: 'approval_granted', resolver_ref_hash: 'a'.repeat(64),
+    resolved_at_ms: body.timestamp_ms, approval_evidence_hash: 'b'.repeat(64) };
+  const signed = signStrictReceiptV21(body, loadDeviceSigner(path));
+  return { token: 'resolution-token', receipt_hash: signed.receipt_hash,
+    kind: 'resolution', value: signed };
+}
 
 class Coordinator implements StrictAdmissionV21Coordinator {
   readonly tenant = receipt.body.tenant_id as string;
   readonly session = receipt.body.session_id as string;
-  current = { token: 'token-21', receipt_hash: HASH, kind: 'decision' as const };
+  current: { token: string; receipt_hash: string; kind: 'decision' | 'resolution' } | undefined = {
+    token: 'token-21', receipt_hash: HASH, kind: 'decision',
+  };
   frozen = false; commits = 0; aborts = 0; freezes: string[] = [];
   commitFailure = false;
 
@@ -64,13 +86,15 @@ class Coordinator implements StrictAdmissionV21Coordinator {
     this.match(token, hash); this.frozen = true; this.freezes.push(reason);
   }
   private match(token: string, hash: string): void {
-    expect(token).toBe(this.current.token); expect(hash).toBe(this.current.receipt_hash);
+    expect(token).toBe(this.current?.token); expect(hash).toBe(this.current?.receipt_hash);
   }
 }
 
-function accepted(status: 'accepted' | 'already_accepted' = 'accepted') {
+function accepted(
+  status: 'accepted' | 'already_accepted' = 'accepted', receiptHash = HASH,
+) {
   return bytes({ schema: STRICT_RECEIPT_V21_ADMISSION_SCHEMA, ok: true, status,
-    receipt_hash: HASH, accepted_at_ms: 10 });
+    receipt_hash: receiptHash, accepted_at_ms: 10 });
 }
 function options(transport: NonNullable<Parameters<typeof admitPreparedStrictReceiptV21>[2]['trusted_pinned_transport']>) {
   return { ingest_url: 'https://example.com/base/', api_key: 'key', max_attempts: 1,
@@ -111,6 +135,21 @@ describe('strict profile 2.1 prepared decision admission', () => {
       async () => ({ status: 200, body: accepted('already_accepted') }),
     ));
     expect(result).toMatchObject({ disposition: 'accepted', status: 'already_accepted' });
+    expect(coordinator.commits).toBe(1);
+  });
+
+  test('admits and commits an intact prepared resolution', async () => {
+    const coordinator = new Coordinator(); const resolution = preparedResolution(); let captured: any;
+    coordinator.current = { token: resolution.token, receipt_hash: resolution.receipt_hash,
+      kind: 'resolution' };
+    const result = await admitPreparedStrictReceiptV21(coordinator, resolution, options(
+      async (_target, body) => {
+        captured = JSON.parse(body); return { status: 200,
+          body: accepted('accepted', resolution.receipt_hash) };
+      },
+    ));
+    expect(captured.receipt).toEqual(resolution.value);
+    expect(result).toMatchObject({ disposition: 'accepted', receipt_hash: resolution.receipt_hash });
     expect(coordinator.commits).toBe(1);
   });
 
@@ -181,12 +220,12 @@ describe('strict profile 2.1 prepared decision admission', () => {
       .every((item) => item.frozen)).toBe(true);
   });
 
-  test('rejects non-decision or state-drifted prepared values before transport', async () => {
+  test('rejects record-kind or state-drifted prepared values before transport', async () => {
     const coordinator = new Coordinator(); let calls = 0;
-    coordinator.current = { ...coordinator.current, kind: 'resolution' as never };
+    coordinator.current = { token: 'token-21', receipt_hash: HASH, kind: 'resolution' };
     await expect(admitPreparedStrictReceiptV21(coordinator, prepared({ kind: 'resolution' }), options(
       async () => { calls += 1; return { status: 200, body: accepted() }; },
-    ))).rejects.toThrow('current prepared decision');
+    ))).rejects.toThrow('intact strict profile-2.1 record');
     expect(calls).toBe(0); expect(coordinator.commits).toBe(0);
   });
 

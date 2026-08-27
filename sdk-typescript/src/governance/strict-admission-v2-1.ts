@@ -4,7 +4,9 @@ import {
   assertBackendUrlStatic, resolveBackendUrlAllowed,
   type AllowedBackendTarget, type Resolver,
 } from '../utils/ssrf.js';
-import type { PreparedDecisionV21 } from './strict-receipt-coordinator-v2-1-types.js';
+import type {
+  PreparedApprovalResolutionV21, PreparedDecisionV21,
+} from './strict-receipt-coordinator-v2-1-types.js';
 import { DEFINITIVE_NO_STORE } from './strict-receipt-prepared-state.js';
 import { verifyStrictReceiptV21 } from './strict-receipt-v2-1-verify.js';
 
@@ -34,6 +36,7 @@ export interface StrictAdmissionV21Coordinator {
   abortPrepared(token: string, receiptHash: string, capability: typeof DEFINITIVE_NO_STORE): void;
   freezePrepared(token: string, receiptHash: string, reason?: string): void;
 }
+export type PreparedStrictReceiptV21 = PreparedDecisionV21 | PreparedApprovalResolutionV21;
 
 export interface StrictAdmissionV21Options {
   ingest_url: string;
@@ -67,6 +70,11 @@ export type StrictAdmissionV21Result =
 export class StrictAdmissionV21ValidationError extends Error {
   constructor(message: string) { super(message); this.name = 'StrictAdmissionV21ValidationError'; }
 }
+function preparedReceipt(prepared: PreparedStrictReceiptV21) {
+  return prepared.kind === 'decision'
+    ? (prepared as PreparedDecisionV21).value.receipt
+    : (prepared as PreparedApprovalResolutionV21).value;
+}
 
 function positive(value: number | undefined, fallback: number, max: number, field: string): number {
   const result = value ?? fallback;
@@ -98,23 +106,25 @@ function endpoint(rawValue: string): { url: string; loopback: boolean } {
   return { url: parsed.toString(), loopback };
 }
 function identity(
-  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedDecisionV21,
+  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedStrictReceiptV21,
 ): ResultBase {
   const state = coordinator.inspectState();
-  if (state.frozen || !state.prepared || state.prepared.kind !== 'decision'
-    || prepared.kind !== 'decision' || prepared.token !== state.prepared.token
+  if (state.frozen || !state.prepared
+    || !['decision', 'resolution'].includes(prepared.kind)
+    || state.prepared.kind !== prepared.kind || prepared.token !== state.prepared.token
     || prepared.receipt_hash !== state.prepared.receipt_hash) {
-    throw new StrictAdmissionV21ValidationError('receipt is not the coordinator current prepared decision');
+    throw new StrictAdmissionV21ValidationError('receipt is not the coordinator current prepared receipt');
   }
-  const receipt = prepared.value?.receipt; const body = receipt?.body;
+  const receipt = preparedReceipt(prepared);
+  const body = receipt?.body;
   const verified = verifyStrictReceiptV21(receipt, {
     trusted_agent_keys: [], allowed_evaluator_manifest_hashes: [],
   });
-  if (!verified.integrity_valid || body?.record_type !== 'decision'
+  if (!verified.integrity_valid || body?.record_type !== prepared.kind
     || body.profile_version !== '2.1' || !HEX64.test(receipt.receipt_hash)
     || receipt.receipt_hash !== prepared.receipt_hash
     || body.tenant_id !== state.tenant_id || body.session_id !== state.session_id) {
-    throw new StrictAdmissionV21ValidationError('prepared receipt must be an intact strict profile-2.1 decision');
+    throw new StrictAdmissionV21ValidationError('prepared receipt must be an intact strict profile-2.1 record');
   }
   return { schema: STRICT_RECEIPT_V21_ADMISSION_SCHEMA,
     tenant_id: text(body.tenant_id, 'tenant_id'), session_id: text(body.session_id, 'session_id'),
@@ -153,7 +163,7 @@ export function assertStrictAdmissionV21RequestBytes(body: string): void {
   }
 }
 function finish(
-  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedDecisionV21,
+  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedStrictReceiptV21,
   result: StrictAdmissionV21Result,
 ): StrictAdmissionV21Result {
   if (result.disposition === 'accepted') {
@@ -170,7 +180,7 @@ function finish(
 
 /** @internal Transport only. The caller must reconcile the prepared coordinator state. */
 export async function transportPreparedStrictReceiptV21(
-  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedDecisionV21,
+  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedStrictReceiptV21,
   options: StrictAdmissionV21Options,
 ): Promise<StrictAdmissionV21Result> {
   const base = identity(coordinator, prepared); const location = endpoint(options.ingest_url);
@@ -184,7 +194,7 @@ export async function transportPreparedStrictReceiptV21(
   const now = options.clock_ms ?? (() => performance.now());
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const jitter = options.jitter ?? Math.random;
-  const receipt = structuredClone(prepared.value.receipt);
+  const receipt = structuredClone(preparedReceipt(prepared));
   const body = canonicalJsonForHash({ schema: STRICT_RECEIPT_V21_INGEST_SCHEMA,
     tenant_id: base.tenant_id, session_id: base.session_id, receipt });
   assertStrictAdmissionV21RequestBytes(body);
@@ -237,7 +247,7 @@ export async function transportPreparedStrictReceiptV21(
 }
 
 export async function admitPreparedStrictReceiptV21(
-  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedDecisionV21,
+  coordinator: StrictAdmissionV21Coordinator, prepared: PreparedStrictReceiptV21,
   options: StrictAdmissionV21Options,
 ): Promise<StrictAdmissionV21Result> {
   return finish(

@@ -15,6 +15,8 @@ from obsvr.strict_admission_v2_1 import (
     admit_prepared_strict_receipt_v2_1,
 )
 from obsvr.strict_receipt_prepared_state import DEFINITIVE_NO_STORE
+from obsvr.device_identity import load_device_signer
+from obsvr.strict_receipt_v2_1 import sign_strict_receipt_v2_1
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = json.loads(
@@ -49,6 +51,37 @@ def _prepared(**overrides):
     }
     result.update(overrides)
     return result
+
+
+def _prepared_resolution(tmp_path):
+    path = tmp_path / "v21-admission-seed.key"
+    path.write_text(FIXTURE["public_test_key"]["seed_hex"], encoding="ascii")
+    body = copy.deepcopy(FIXTURE["vector"]["body"])
+    body["record_type"] = "resolution"
+    body["receipt_id"] = f'{body["session_id"]}:2'
+    body["sequence"] = 2
+    body["timestamp_ms"] += 1
+    body["previous_receipt_hash"] = HASH
+    body["evaluation"]["requested_outcome"] = "ALLOW"
+    body["evaluation"]["outcome"] = "ALLOW"
+    body["outcome"] = "ALLOW"
+    body["execution_authorized"] = True
+    body.pop("suspension")
+    body["resolution"] = {
+        "resolves_receipt_hash": HASH,
+        "suspension_id": "approval-21",
+        "method": "approval_granted",
+        "resolver_ref_hash": "a" * 64,
+        "resolved_at_ms": body["timestamp_ms"],
+        "approval_evidence_hash": "b" * 64,
+    }
+    signed = sign_strict_receipt_v2_1(body, load_device_signer(str(path)))
+    return {
+        "token": "resolution-token",
+        "receipt_hash": signed["receipt_hash"],
+        "kind": "resolution",
+        "value": signed,
+    }
 
 
 class Coordinator:
@@ -98,13 +131,13 @@ class Coordinator:
         assert receipt_hash == self.current["receipt_hash"]
 
 
-def _accepted(status="accepted"):
+def _accepted(status="accepted", receipt_hash=HASH):
     return json.dumps(
         {
             "schema": STRICT_RECEIPT_V2_1_ADMISSION_SCHEMA,
             "ok": True,
             "status": status,
-            "receipt_hash": HASH,
+            "receipt_hash": receipt_hash,
             "accepted_at_ms": 10,
         }
     ).encode()
@@ -161,6 +194,27 @@ def test_exact_already_accepted_commits():
         lambda *_args: (200, _accepted("already_accepted")),
     )
     assert result["status"] == "already_accepted"
+    assert coordinator.commits == 1
+
+
+def test_intact_prepared_resolution_is_admitted_and_committed(tmp_path):
+    coordinator = Coordinator()
+    resolution = _prepared_resolution(tmp_path)
+    coordinator.current = {
+        "token": resolution["token"],
+        "receipt_hash": resolution["receipt_hash"],
+        "kind": "resolution",
+    }
+    captured = {}
+
+    def call(_target, _headers, body, _timeout, _limit):
+        captured.update(json.loads(body))
+        return 200, _accepted("accepted", resolution["receipt_hash"])
+
+    result = _call(coordinator, resolution, call)
+    assert captured["receipt"] == resolution["value"]
+    assert result["disposition"] == "accepted"
+    assert result["receipt_hash"] == resolution["receipt_hash"]
     assert coordinator.commits == 1
 
 
@@ -259,11 +313,11 @@ def test_redirect_dns_rejection_and_pinned_transport_failure_freeze():
     )
 
 
-def test_nondecision_or_state_drift_is_rejected_before_transport():
+def test_record_kind_or_state_drift_is_rejected_before_transport():
     coordinator = Coordinator()
     coordinator.current["kind"] = "resolution"
     calls = []
-    with pytest.raises(StrictAdmissionV21ValidationError, match="prepared decision"):
+    with pytest.raises(StrictAdmissionV21ValidationError, match="strict profile-2.1 record"):
         _call(
             coordinator,
             _prepared(kind="resolution"),
