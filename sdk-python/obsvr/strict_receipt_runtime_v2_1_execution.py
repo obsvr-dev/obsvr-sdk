@@ -21,7 +21,7 @@ from .strict_receipt_runtime_v2_1_support import (
 
 def _finish(
     runtime: Any,
-    action_id: str,
+    result_key: str,
     fingerprint: str,
     base: Dict[str, Any],
     admission: Dict[str, Any],
@@ -29,7 +29,7 @@ def _finish(
 ) -> Dict[str, Any]:
     return finish_runtime_result(
         runtime,
-        action_id,
+        result_key,
         fingerprint,
         {**base, "admission": admission, **result},
     )
@@ -37,7 +37,7 @@ def _finish(
 
 def _finalization_failed(
     runtime: Any,
-    action_id: str,
+    result_key: str,
     fingerprint: str,
     base: Dict[str, Any],
     admission: Dict[str, Any],
@@ -46,7 +46,7 @@ def _finalization_failed(
     runtime_state(runtime).frozen_reason = "terminal_outcome_failed"
     return _finish(
         runtime,
-        action_id,
+        result_key,
         fingerprint,
         base,
         admission,
@@ -63,6 +63,7 @@ def execute_committed_strict_action_v2_1(
     action: Dict[str, Any],
     arguments: Any,
     action_id: str,
+    result_key: str,
     fingerprint: str,
     admission: Dict[str, Any],
     base: Dict[str, Any],
@@ -76,7 +77,7 @@ def execute_committed_strict_action_v2_1(
         state.frozen_reason = "execution_start_unavailable"
         return _finish(
             runtime,
-            action_id,
+            result_key,
             fingerprint,
             base,
             admission,
@@ -98,7 +99,7 @@ def execute_committed_strict_action_v2_1(
         state.frozen_reason = "invocation_started_journal_failed"
         return _finish(
             runtime,
-            action_id,
+            result_key,
             fingerprint,
             base,
             admission,
@@ -106,7 +107,7 @@ def execute_committed_strict_action_v2_1(
             reason="checkpoint_persist_failed",
             error=error,
         )
-    state.results[action_id] = {
+    state.results[result_key] = {
         "fingerprint": fingerprint,
         "result": {
             **base,
@@ -152,7 +153,7 @@ def execute_committed_strict_action_v2_1(
         except Exception as finalization_error:
             return _finalization_failed(
                 runtime,
-                action_id,
+                result_key,
                 fingerprint,
                 base,
                 admission,
@@ -160,7 +161,7 @@ def execute_committed_strict_action_v2_1(
             )
         return _finish(
             runtime,
-            action_id,
+            result_key,
             fingerprint,
             base,
             admission,
@@ -204,7 +205,7 @@ def execute_committed_strict_action_v2_1(
         except Exception as finalization_error:
             return _finalization_failed(
                 runtime,
-                action_id,
+                result_key,
                 fingerprint,
                 base,
                 admission,
@@ -212,7 +213,7 @@ def execute_committed_strict_action_v2_1(
             )
         return _finish(
             runtime,
-            action_id,
+            result_key,
             fingerprint,
             base,
             admission,
@@ -244,7 +245,7 @@ def execute_committed_strict_action_v2_1(
     except Exception as error:
         return _finalization_failed(
             runtime,
-            action_id,
+            result_key,
             fingerprint,
             base,
             admission,
@@ -252,7 +253,7 @@ def execute_committed_strict_action_v2_1(
         )
     return _finish(
         runtime,
-        action_id,
+        result_key,
         fingerprint,
         base,
         admission,

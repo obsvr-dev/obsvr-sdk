@@ -20,6 +20,7 @@ class BoundCoordinator:
     __slots__ = (
         "inspect_state",
         "prepare_decision",
+        "prepare_approval_resolution",
         "commit_prepared",
         "abort_prepared",
         "freeze_prepared",
@@ -30,6 +31,7 @@ class BoundCoordinator:
     def __init__(self, coordinator: Any) -> None:
         self.inspect_state = coordinator.inspect_state
         self.prepare_decision = coordinator.prepare_decision
+        self.prepare_approval_resolution = coordinator.prepare_approval_resolution
         self.commit_prepared = coordinator.commit_prepared
         self.abort_prepared = coordinator.abort_prepared
         self.freeze_prepared = coordinator.freeze_prepared
@@ -77,6 +79,9 @@ class RuntimeState:
 
 TRUSTED_RUNTIMES: "weakref.WeakSet[Any]" = weakref.WeakSet()
 TRUSTED_RUNTIME_RUNNERS: "weakref.WeakKeyDictionary[Any, Any]" = (
+    weakref.WeakKeyDictionary()
+)
+TRUSTED_APPROVAL_RUNTIME_RUNNERS: "weakref.WeakKeyDictionary[Any, Any]" = (
     weakref.WeakKeyDictionary()
 )
 TRUSTED_RUNTIME_STATES: "weakref.WeakKeyDictionary[Any, RuntimeState]" = (
@@ -139,6 +144,30 @@ def runtime_fingerprint(
                 "runtime_action_id": action.get("runtime_action_id"),
                 "original_arguments_hash": getattr(original, "arguments_hash", None),
                 "effective_arguments_hash": getattr(effective, "arguments_hash", None),
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def approval_runtime_fingerprint(
+    runtime: Any, resolution: Dict[str, Any], action: Dict[str, Any]
+) -> str:
+    state = runtime_state(runtime)
+    original = action.get("original_arguments")
+    effective = action.get("effective_arguments")
+    return hashlib.sha256(
+        _canonical_json_for_hash(
+            {
+                "schema": "obsvr-strict-runtime-approval-operation-v2-1",
+                "tenant_id": state.tenant_id,
+                "session_id": state.session_id,
+                "resolution": resolution,
+                "original_arguments_hash": getattr(
+                    original, "arguments_hash", None
+                ),
+                "effective_arguments_hash": getattr(
+                    effective, "arguments_hash", None
+                ),
             }
         ).encode("utf-8")
     ).hexdigest()

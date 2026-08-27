@@ -22,6 +22,10 @@ export interface StrictV21RuntimeAction<A, R> {
   classify_error?: (error: unknown) => StrictRuntimeFailureClassificationV21;
 }
 
+export type StrictV21ApprovalRuntimeAction<A, R> = Omit<
+  StrictV21RuntimeAction<A, R>, 'runtime_action_id'
+>;
+
 export interface StrictV21CheckpointStore {
   /** Implementations must durably and atomically replace the prior journal entry. */
   save(checkpoint: StrictRuntimeExecutionJournalV21): Promise<void> | void;
