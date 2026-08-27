@@ -172,10 +172,13 @@ export {
   withStrictOtelCorrelationV21,
 } from "./proxy/otel-mirror.js";
 export {
+  finalizeInterruptedStrictRuntimeExecutionV21,
   reconcileStrictRuntimeExecutionV21,
   StrictRuntimeRecoveryV21Error,
 } from "./governance/strict-runtime-recovery-v2-1.js";
 export type {
+  StrictInterruptedExecutionCheckpointStoreV21,
+  StrictInterruptedExecutionFinalizerV21Options,
   StrictRuntimeRecoveryV21Result,
 } from "./governance/strict-runtime-recovery-v2-1.js";
 export {

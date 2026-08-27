@@ -7,6 +7,7 @@ import {
   type StrictExecutionOutcomeV21Body,
 } from '../../src/governance/strict-execution-outcome-v2-1.js';
 import {
+  finalizeInterruptedStrictRuntimeExecutionV21,
   reconcileStrictRuntimeExecutionV21,
   StrictRuntimeRecoveryV21Error,
 } from '../../src/governance/strict-runtime-recovery-v2-1.js';
@@ -129,4 +130,52 @@ describe('strict runtime recovery v2.1', () => {
         .toThrow(StrictRuntimeRecoveryV21Error);
     },
   );
+
+  test('persists a signed uncertain outcome for an interrupted process', async () => {
+    const subject = journal(); const saved: unknown[] = [];
+    const resolved = await finalizeInterruptedStrictRuntimeExecutionV21(
+      subject.value,
+      subject.device,
+      { save: (checkpoint) => { saved.push(structuredClone(checkpoint)); } },
+      { completed_at_ms: subject.body.started_at_ms + 500 },
+      trust(),
+    );
+    expect(resolved).toMatchObject({
+      status: 'resolved', terminal_status: 'invocation_uncertain', retry_safe: false,
+      journal: {
+        phase: 'terminal', terminal_status: 'invocation_uncertain',
+        execution_outcome: { body: {
+          status: 'uncertain', error_code: 'process_interrupted',
+          completed_at_ms: subject.body.started_at_ms + 500,
+        } },
+      },
+    });
+    expect(saved).toEqual([resolved.journal]);
+  });
+
+  test('does not report interruption finalization when durable persistence fails', async () => {
+    const subject = journal();
+    await expect(finalizeInterruptedStrictRuntimeExecutionV21(
+      subject.value,
+      subject.device,
+      { save: () => { throw new Error('disk full'); } },
+      { completed_at_ms: subject.body.started_at_ms + 500 },
+      trust(),
+    )).rejects.toThrow('disk full');
+    const terminal = reconcileStrictRuntimeExecutionV21(subject.value, undefined, trust());
+    expect(terminal).toMatchObject({ status: 'outcome_unresolved', retry_safe: false });
+  });
+
+  test('refuses to relabel committed or terminal work as process-interrupted', async () => {
+    const committed = journal('committed');
+    await expect(finalizeInterruptedStrictRuntimeExecutionV21(
+      committed.value, committed.device, { save: () => undefined }, {}, trust(),
+    )).rejects.toThrow('only an unresolved invocation_started journal');
+    const started = journal();
+    const outcome = signStrictExecutionOutcomeV21(started.body, started.device, started.decision);
+    const terminal = reconcileStrictRuntimeExecutionV21(started.value, outcome, trust());
+    await expect(finalizeInterruptedStrictRuntimeExecutionV21(
+      terminal.journal, started.device, { save: () => undefined }, {}, trust(),
+    )).rejects.toThrow('only an unresolved invocation_started journal');
+  });
 });

@@ -9,6 +9,7 @@ from obsvr.strict_execution_outcome_v2_1 import sign_strict_execution_outcome_v2
 from obsvr.strict_receipt_v2_1 import sign_strict_receipt_v2_1
 from obsvr.strict_runtime_recovery_v2_1 import (
     StrictRuntimeRecoveryV21Error,
+    finalize_interrupted_strict_runtime_execution_v2_1,
     reconcile_strict_runtime_execution_v2_1,
 )
 
@@ -148,4 +149,66 @@ def test_tampered_evidence_never_resolves_execution(tmp_path, field):
     with pytest.raises(StrictRuntimeRecoveryV21Error):
         reconcile_strict_runtime_execution_v2_1(
             changed, supplied, **_trust()
+        )
+
+
+class _Store:
+    def __init__(self, failure=None):
+        self.saved = []
+        self.failure = failure
+
+    def save(self, checkpoint):
+        if self.failure is not None:
+            raise self.failure
+        self.saved.append(copy.deepcopy(checkpoint))
+
+
+def test_interrupted_process_persists_signed_uncertain_outcome(tmp_path):
+    signer, _receipt_value, body, journal = _journal(tmp_path)
+    store = _Store()
+    resolved = finalize_interrupted_strict_runtime_execution_v2_1(
+        journal,
+        signer,
+        store,
+        completed_at_ms=body["started_at_ms"] + 500,
+        **_trust(),
+    )
+    assert resolved["terminal_status"] == "invocation_uncertain"
+    outcome = resolved["journal"]["execution_outcome"]
+    assert outcome["body"]["status"] == "uncertain"
+    assert outcome["body"]["error_code"] == "process_interrupted"
+    assert outcome["body"]["completed_at_ms"] == body["started_at_ms"] + 500
+    assert store.saved == [resolved["journal"]]
+
+
+def test_persistence_failure_never_reports_interruption_finalized(tmp_path):
+    signer, _receipt_value, body, journal = _journal(tmp_path)
+    with pytest.raises(RuntimeError, match="disk full"):
+        finalize_interrupted_strict_runtime_execution_v2_1(
+            journal,
+            signer,
+            _Store(RuntimeError("disk full")),
+            completed_at_ms=body["started_at_ms"] + 500,
+            **_trust(),
+        )
+    unresolved = reconcile_strict_runtime_execution_v2_1(journal, **_trust())
+    assert unresolved["status"] == "outcome_unresolved"
+
+
+@pytest.mark.parametrize("phase", ["committed", "terminal"])
+def test_only_unresolved_started_journal_can_be_finalized(tmp_path, phase):
+    signer, receipt, body, journal = _journal(
+        tmp_path, "committed" if phase == "committed" else "invocation_started"
+    )
+    if phase == "terminal":
+        outcome = sign_strict_execution_outcome_v2_1(body, signer, receipt)
+        journal = reconcile_strict_runtime_execution_v2_1(
+            journal, outcome, **_trust()
+        )["journal"]
+    with pytest.raises(
+        StrictRuntimeRecoveryV21Error,
+        match="only an unresolved invocation_started journal",
+    ):
+        finalize_interrupted_strict_runtime_execution_v2_1(
+            journal, signer, _Store(), **_trust()
         )

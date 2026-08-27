@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import time
 from typing import Any, Dict, Optional, Sequence
 
 from .strict_execution_outcome_v2_1 import (
+    sign_strict_execution_outcome_v2_1,
     strict_execution_start_v2_1_hash,
     verify_strict_execution_outcome_v2_1,
 )
@@ -292,7 +294,70 @@ def reconcile_strict_runtime_execution_v2_1(
     }
 
 
+def finalize_interrupted_strict_runtime_execution_v2_1(
+    value: Any,
+    signer: Any,
+    checkpoint_store: Any,
+    *,
+    completed_at_ms: Optional[int] = None,
+    outcome_id: Optional[str] = None,
+    trusted_agent_keys: Sequence[Dict[str, Any]] = (),
+    allowed_evaluator_manifest_hashes: Sequence[str] = (),
+) -> Dict[str, Any]:
+    """Persist a signed uncertain outcome for a process-interrupted invocation."""
+    if not callable(getattr(checkpoint_store, "save", None)):
+        _fail("durable checkpoint store is required")
+    recovered = reconcile_strict_runtime_execution_v2_1(
+        value,
+        trusted_agent_keys=trusted_agent_keys,
+        allowed_evaluator_manifest_hashes=allowed_evaluator_manifest_hashes,
+    )
+    journal = recovered["journal"]
+    if (
+        recovered["status"] != "outcome_unresolved"
+        or journal["phase"] != "invocation_started"
+        or "execution_start" not in journal
+        or "execution_start_hash" not in journal
+    ):
+        _fail(
+            "only an unresolved invocation_started journal can be finalized as interrupted"
+        )
+    requested = int(time.time() * 1000) if completed_at_ms is None else completed_at_ms
+    completed = max(_integer(requested, "completed_at_ms"), journal["execution_start"]["started_at_ms"])
+    resolved_outcome_id = outcome_id or (
+        f'{journal["session_id"]}:{journal["receipt"]["body"]["sequence"]}:'
+        "process_interrupted"
+    )
+    outcome = sign_strict_execution_outcome_v2_1(
+        {
+            "schema": "obsvr-strict-execution-outcome-v2-1",
+            "profile_version": "2.1",
+            "record_type": "execution_outcome",
+            "outcome_id": _text(resolved_outcome_id, "outcome_id"),
+            **journal["execution_start"],
+            "decision_sequence": journal["receipt"]["body"]["sequence"],
+            "execution_start_hash": journal["execution_start_hash"],
+            "completed_at_ms": completed,
+            "status": "uncertain",
+            "error_code": "process_interrupted",
+        },
+        signer,
+        journal["receipt"],
+    )
+    terminal = reconcile_strict_runtime_execution_v2_1(
+        journal,
+        outcome,
+        trusted_agent_keys=trusted_agent_keys,
+        allowed_evaluator_manifest_hashes=allowed_evaluator_manifest_hashes,
+    )
+    if terminal["status"] != "resolved":
+        _fail("interrupted outcome did not resolve the journal")
+    checkpoint_store.save(terminal["journal"])
+    return terminal
+
+
 __all__ = [
     "StrictRuntimeRecoveryV21Error",
+    "finalize_interrupted_strict_runtime_execution_v2_1",
     "reconcile_strict_runtime_execution_v2_1",
 ]

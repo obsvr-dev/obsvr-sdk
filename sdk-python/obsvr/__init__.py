@@ -93,6 +93,7 @@ from .strict_receipt_runtime_v2_1 import (  # noqa: F401
 )
 from .strict_runtime_recovery_v2_1 import (  # noqa: F401
     StrictRuntimeRecoveryV21Error,
+    finalize_interrupted_strict_runtime_execution_v2_1,
     reconcile_strict_runtime_execution_v2_1,
 )
 from .strict_policy_continuity_v2_1 import (  # noqa: F401
@@ -160,6 +161,7 @@ __all__ = [
     "StrictProviderBoundaryV21Capability",
     "StrictReceiptRuntimeV21",
     "StrictRuntimeRecoveryV21Error",
+    "finalize_interrupted_strict_runtime_execution_v2_1",
     "reconcile_strict_runtime_execution_v2_1",
     "STRICT_POLICY_CONTINUITY_V2_1_SCHEMA",
     "StrictPolicyContinuityV21Error",

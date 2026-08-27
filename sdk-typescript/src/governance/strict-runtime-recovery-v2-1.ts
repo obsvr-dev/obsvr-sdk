@@ -1,10 +1,12 @@
 import { canonicalJsonForHash } from '../policy/tool-pinning.js';
 import {
+  signStrictExecutionOutcomeV21,
   strictExecutionStartV21Hash,
   verifyStrictExecutionOutcomeV21,
   type StrictExecutionOutcomeV21Envelope,
   type StrictExecutionStartV21,
 } from './strict-execution-outcome-v2-1.js';
+import type { DeviceSigner } from '../proxy/device-identity.js';
 import type {
   StrictRuntimeExecutionJournalV21,
 } from './strict-receipt-runtime-v2-1-types.js';
@@ -47,6 +49,15 @@ export type StrictRuntimeRecoveryV21Result =
     terminal_status: TerminalStatusV21;
     decision_trusted: boolean; outcome_integrity_valid?: true; outcome_trusted?: boolean;
     journal: StrictRuntimeExecutionJournalV21 };
+
+export interface StrictInterruptedExecutionFinalizerV21Options {
+  completed_at_ms?: number;
+  outcome_id?: string;
+}
+
+export interface StrictInterruptedExecutionCheckpointStoreV21 {
+  save(checkpoint: StrictRuntimeExecutionJournalV21): Promise<void> | void;
+}
 
 function fail(message: string): never { throw new StrictRuntimeRecoveryV21Error(message); }
 function record(value: unknown, field: string): Record<string, unknown> {
@@ -212,4 +223,52 @@ export function reconcileStrictRuntimeExecutionV21(
   return { status: 'resolved', retry_safe: false, terminal_status: terminalStatus,
     decision_trusted: decisionTrusted, outcome_integrity_valid: true,
     outcome_trusted: verification.trusted, journal: terminal };
+}
+
+export async function finalizeInterruptedStrictRuntimeExecutionV21(
+  value: unknown,
+  signer: DeviceSigner,
+  checkpointStore: StrictInterruptedExecutionCheckpointStoreV21,
+  options: StrictInterruptedExecutionFinalizerV21Options = {},
+  trust: StrictReceiptV21TrustOptions = {
+    trusted_agent_keys: [], allowed_evaluator_manifest_hashes: [],
+  },
+): Promise<Extract<StrictRuntimeRecoveryV21Result, { status: 'resolved' }>> {
+  if (!checkpointStore || typeof checkpointStore.save !== 'function') {
+    fail('durable checkpoint store is required');
+  }
+  const recovered = reconcileStrictRuntimeExecutionV21(value, undefined, trust);
+  if (recovered.status !== 'outcome_unresolved'
+    || recovered.journal.phase !== 'invocation_started'
+    || !recovered.journal.execution_start
+    || !recovered.journal.execution_start_hash) {
+    fail('only an unresolved invocation_started journal can be finalized as interrupted');
+  }
+  const requestedCompletedAt = options.completed_at_ms ?? Date.now();
+  if (!Number.isSafeInteger(requestedCompletedAt) || requestedCompletedAt < 0) {
+    fail('completed_at_ms must be a nonnegative safe integer');
+  }
+  const completedAt = Math.max(
+    requestedCompletedAt, recovered.journal.execution_start.started_at_ms,
+  );
+  const outcomeId = options.outcome_id
+    ?? `${recovered.journal.session_id}:${recovered.journal.receipt.body.sequence}:process_interrupted`;
+  const outcome = signStrictExecutionOutcomeV21({
+    schema: 'obsvr-strict-execution-outcome-v2-1',
+    profile_version: '2.1',
+    record_type: 'execution_outcome',
+    outcome_id: text(outcomeId, 'outcome_id'),
+    ...recovered.journal.execution_start,
+    decision_sequence: recovered.journal.receipt.body.sequence,
+    execution_start_hash: recovered.journal.execution_start_hash,
+    completed_at_ms: completedAt,
+    status: 'uncertain',
+    error_code: 'process_interrupted',
+  }, signer, recovered.journal.receipt);
+  const terminal = reconcileStrictRuntimeExecutionV21(
+    recovered.journal, outcome, trust,
+  );
+  if (terminal.status !== 'resolved') fail('interrupted outcome did not resolve the journal');
+  await checkpointStore.save(terminal.journal);
+  return terminal;
 }
