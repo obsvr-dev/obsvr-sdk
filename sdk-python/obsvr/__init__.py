@@ -81,6 +81,17 @@ from .strict_receipt_runtime_v2_1 import (  # noqa: F401
     StrictReceiptRuntimeV21,
     bind_strict_v2_1_json_arguments,
 )
+from .strict_execution_outcome_v2_1 import (  # noqa: F401
+    StrictExecutionOutcomeV21ValidationError,
+    build_strict_execution_outcome_v2_1_body,
+    canonicalize_strict_execution_outcome_v2_1_body,
+    sign_strict_execution_outcome_v2_1,
+    strict_execution_outcome_v2_1_hash,
+    strict_execution_outcome_v2_1_signature_preimage,
+    strict_execution_result_v2_1_hash,
+    strict_execution_start_v2_1_hash,
+    verify_strict_execution_outcome_v2_1,
+)
 from .strict_receipt_coordinator_v2_1 import (  # noqa: F401
     StrictReceiptCoordinatorV21,
     create_trusted_intent_decision_provider_v2_1,
@@ -106,6 +117,15 @@ __all__ = [
     "ObsvrStrictProviderBoundaryV21Error",
     "StrictProviderBoundaryV21Capability",
     "StrictReceiptRuntimeV21",
+    "StrictExecutionOutcomeV21ValidationError",
+    "build_strict_execution_outcome_v2_1_body",
+    "canonicalize_strict_execution_outcome_v2_1_body",
+    "sign_strict_execution_outcome_v2_1",
+    "strict_execution_outcome_v2_1_hash",
+    "strict_execution_outcome_v2_1_signature_preimage",
+    "strict_execution_result_v2_1_hash",
+    "strict_execution_start_v2_1_hash",
+    "verify_strict_execution_outcome_v2_1",
     "StrictReceiptCoordinatorV21",
     "create_trusted_intent_decision_provider_v2_1",
     "create_trusted_evaluation_evidence_provider_v2_1",

@@ -149,6 +149,26 @@ export type {
   StrictRuntimeExecutionJournalV21,
 } from "./governance/strict-receipt-runtime-v2-1.js";
 export {
+  STRICT_EXECUTION_OUTCOME_V21_SCHEMA,
+  STRICT_EXECUTION_OUTCOME_V21_ENVELOPE_SCHEMA,
+  StrictExecutionOutcomeV21ValidationError,
+  buildStrictExecutionOutcomeV21Body,
+  canonicalizeStrictExecutionOutcomeV21Body,
+  signStrictExecutionOutcomeV21,
+  strictExecutionOutcomeV21Hash,
+  strictExecutionOutcomeV21SignaturePreimage,
+  strictExecutionResultV21Hash,
+  strictExecutionStartV21Hash,
+  verifyStrictExecutionOutcomeV21,
+} from "./governance/strict-execution-outcome-v2-1.js";
+export type {
+  StrictExecutionOutcomeV21Body,
+  StrictExecutionOutcomeV21Envelope,
+  StrictExecutionOutcomeV21Status,
+  StrictExecutionOutcomeV21Verification,
+  StrictExecutionStartV21,
+} from "./governance/strict-execution-outcome-v2-1.js";
+export {
   StrictReceiptCoordinatorV21,
   createTrustedIntentDecisionProviderV21,
 } from "./governance/strict-receipt-coordinator-v2-1.js";

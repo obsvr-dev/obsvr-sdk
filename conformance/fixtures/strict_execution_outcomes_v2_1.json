@@ -1,0 +1,62 @@
+{
+  "schema": "obsvr-strict-execution-outcome-fixtures-v2-1",
+  "profile_version": "2.1",
+  "description": "Public deterministic parity vectors for terminal outcomes linked to strict 2.1 decisions.",
+  "decision_fixture": "strict_receipts_v2_1.json",
+  "decision_patch": {
+    "evaluation": {
+      "requested_outcome": "ALLOW",
+      "outcome": "ALLOW",
+      "decision_reason_codes": [
+        "policy_matched"
+      ]
+    },
+    "outcome": "ALLOW",
+    "execution_authorized": true,
+    "remove": [
+      "suspension"
+    ]
+  },
+  "decision_receipt_hash": "c01456dcdb46db7463c7b509018ef5b547dc3dd8184bdb88fef2f1d4da3a243a",
+  "result_projection": {
+    "output_hash": "8888888888888888888888888888888888888888888888888888888888888888",
+    "provider_request_id": "req-public",
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 4
+    }
+  },
+  "vector": {
+    "body": {
+      "schema": "obsvr-strict-execution-outcome-v2-1",
+      "profile_version": "2.1",
+      "record_type": "execution_outcome",
+      "outcome_id": "session-21:1:outcome",
+      "tenant_id": "tenant-21",
+      "session_id": "session-21",
+      "action_id": "action-21",
+      "decision_receipt_hash": "c01456dcdb46db7463c7b509018ef5b547dc3dd8184bdb88fef2f1d4da3a243a",
+      "decision_sequence": 1,
+      "operation_fingerprint": "9999999999999999999999999999999999999999999999999999999999999999",
+      "attempt": 1,
+      "started_at_ms": 1700002000100,
+      "execution_start_hash": "fdfd0bca86016d34c1cd5f6efb1da8b6b835e132c86293b9e13108d8af73b83f",
+      "completed_at_ms": 1700002000200,
+      "status": "succeeded",
+      "result_hash": "3e995be120b9b1c0393c5a9ca412946b92e3d8ffd25ae39cf2d2105651d51f0a"
+    },
+    "canonical_sha256": "6f95893b1fd268724416304b2eb26825f4cc61d34e512631ed0b8559e7b05bcd",
+    "outcome_hash": "5d1d16fc17fbeca317d1a0714d28fdc385592c4a13af95503621be4a3deccc74",
+    "signature": "73e77aa8b48a748b0188499ac1473f7e4fbaa5715bc85a790dec99a716825c7a1ab133ca43cf91525072d5f7cccb60e2832a76c9a8bedd01f1ad5e346ccee00e"
+  },
+  "terminal_error_patches": [
+    {
+      "status": "failed",
+      "error_code": "provider_rejected"
+    },
+    {
+      "status": "uncertain",
+      "error_code": "connection_lost_after_send"
+    }
+  ]
+}

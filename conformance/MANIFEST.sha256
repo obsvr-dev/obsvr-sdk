@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = 89b4a46080057b0a76701fe83376d73f5c5c8fba4d93011468bbea04cf3cc100
+# corpus_sha256 = d802a66b70aaf609b3f9887927254a4055aacaaac33a668c51494e36a7f6b990
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -52,6 +52,7 @@ b326ca8bb7fa352437a91cfe709efa19998744bff5996be59c87620bbe036d57  fixtures/regex
 6ff878e8cd07e34e462daf6514b079336f89ecd3702230c0a368fc1d1e8657d8  fixtures/rules_hash.json
 58440346c8a54d19d6b36e5cc90d062983dc40b8d40f92b2f41537ac940c187d  fixtures/session_taint.json
 d8bc262148c9714293e6ff61aa1f6431dd5a9ca52e816072701aa4095db86001  fixtures/signing_vectors.json
+1d782802ff9965e922b0ff34b6f34940354f7abdce43edef1015e7f33281cd8c  fixtures/strict_execution_outcomes_v2_1.json
 6c7263bf58033ac78e2d9281fa7d93dd0b0fe6c70777966a94458270d484c3a5  fixtures/strict_receipts.json
 66db81a97dd34fc15c33ad46665145dafff5a59190b14766aad0d0e9301ceaa5  fixtures/strict_receipts_v2.json
 c183e63b472e91c72fa682c0fa76fa9e858639d6f3b4733f026072088cc23d4b  fixtures/strict_receipts_v2_1.json
