@@ -185,6 +185,21 @@ export type {
   StrictPolicyTransitionV21,
 } from "./governance/strict-policy-continuity-v2-1.js";
 export {
+  STRICT_EVIDENCE_BUNDLE_V21_SCHEMA,
+  STRICT_EVIDENCE_BUNDLE_V21_ENVELOPE_SCHEMA,
+  StrictEvidenceBundleV21Error,
+  buildStrictEvidenceBundleV21Body,
+  createStrictEvidenceBundleV21,
+  strictEvidenceBundleV21Hash,
+  verifyStrictEvidenceBundleV21,
+} from "./governance/strict-evidence-bundle-v2-1.js";
+export type {
+  StrictEvidenceBundleV21Body,
+  StrictEvidenceBundleV21Envelope,
+  StrictEvidenceBundleV21Verification,
+  StrictEvidenceCoverageV21,
+} from "./governance/strict-evidence-bundle-v2-1.js";
+export {
   STRICT_EXECUTION_OUTCOME_V21_SCHEMA,
   STRICT_EXECUTION_OUTCOME_V21_ENVELOPE_SCHEMA,
   StrictExecutionOutcomeV21ValidationError,

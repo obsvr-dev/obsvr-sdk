@@ -96,6 +96,16 @@ from .strict_policy_continuity_v2_1 import (  # noqa: F401
     StrictPolicyContinuityV21Error,
     reconstruct_strict_policy_continuity_v2_1,
 )
+from .strict_evidence_bundle_v2_1 import (  # noqa: F401
+    STRICT_EVIDENCE_BUNDLE_V2_1_ENVELOPE_SCHEMA,
+    STRICT_EVIDENCE_BUNDLE_V2_1_SCHEMA,
+    StrictEvidenceBundleV21Error,
+    build_strict_evidence_bundle_v2_1_body,
+    create_strict_evidence_bundle_v2_1,
+    strict_evidence_bundle_v2_1_hash,
+    strict_evidence_bundle_v2_1_signature_preimage,
+    verify_strict_evidence_bundle_v2_1,
+)
 from .strict_execution_outcome_v2_1 import (  # noqa: F401
     StrictExecutionOutcomeV21ValidationError,
     build_strict_execution_outcome_v2_1_body,
@@ -141,6 +151,14 @@ __all__ = [
     "STRICT_POLICY_CONTINUITY_V2_1_SCHEMA",
     "StrictPolicyContinuityV21Error",
     "reconstruct_strict_policy_continuity_v2_1",
+    "STRICT_EVIDENCE_BUNDLE_V2_1_SCHEMA",
+    "STRICT_EVIDENCE_BUNDLE_V2_1_ENVELOPE_SCHEMA",
+    "StrictEvidenceBundleV21Error",
+    "build_strict_evidence_bundle_v2_1_body",
+    "create_strict_evidence_bundle_v2_1",
+    "strict_evidence_bundle_v2_1_hash",
+    "strict_evidence_bundle_v2_1_signature_preimage",
+    "verify_strict_evidence_bundle_v2_1",
     "StrictExecutionOutcomeV21ValidationError",
     "build_strict_execution_outcome_v2_1_body",
     "canonicalize_strict_execution_outcome_v2_1_body",

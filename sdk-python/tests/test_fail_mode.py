@@ -220,6 +220,7 @@ class TestRegistryGate:
         "strict_action_boundary_v2_1.py",
         "strict_canonical.py",
         "strict_evaluation_evidence_v2_1.py",
+        "strict_evidence_bundle_v2_1.py",
         "strict_identity_evidence_v2_1.py",
         "strict_policy_continuity_v2_1.py",
         "strict_execution_outcome_v2_1.py",
