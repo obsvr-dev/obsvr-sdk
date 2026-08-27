@@ -197,6 +197,8 @@ The controlled live calls are release-validation evidence, not part of CI. They 
 
 Every strict call also requires a trusted profile 2.1 runtime, a durable atomic checkpoint store, positive admission for the exact receipt, a `model:invoke` scope, and an official provider target. The target and exact cleaned JSON invocation are receipt-bound and rechecked before invocation. Only `ALLOW` executes at the direct-provider boundary; `DENY`, `MODIFY`, `STEP_UP`, and `DEFER` fail without contacting the provider.
 
+Signed terminal outcomes can be submitted independently to `/ingest/strict-execution-outcomes/v2-1`. Python and TypeScript use the same exact wrapper, idempotency key, bounded DNS-pinned transport rules, response validation, and retry classification. An `invocation_started` journal recovered after a process interruption can be finalized only as `uncertain/process_interrupted`; recovery never makes it retry-safe or claims what happened remotely.
+
 The provider-neutral `createStrictActionBoundaryV21` / `create_strict_action_boundary_v2_1` surface uses the same runtime for caller-defined side effects and explicit scopes. Its compatibility boundary is the JSON-serializable invocation and the callable supplied by the application, not a third-party package version.
 
 Optional strict trace correlation supports `@opentelemetry/api >=1.4.0,<2.0.0` in TypeScript and `opentelemetry-api >=1.20.0,<2.0.0` in Python. It annotates an existing recording span after the durable checkpoint succeeds; it does not create a span or participate in authorization. The attribute set is fixture-pinned across both SDKs.

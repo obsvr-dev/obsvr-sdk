@@ -62,7 +62,7 @@ The direct-provider sequence is fixed:
 | `invocation_started` | The execution journal records that provider invocation may begin. |
 | `terminal` | The journal records executed, invocation failed, invocation uncertain, or nonexecuted; an invocation that started carries its signed terminal outcome. |
 
-The provider callable is entered only after the first four phases succeed. A rejection, malformed response, timeout, transport ambiguity, local commit failure, or checkpoint failure before `invocation_started` produces no provider call and never falls back to the ordinary wrapper. Once `invocation_started` is durable, a crash or missing terminal record is `invocation_uncertain`; callers must reconcile it rather than automatically retrying an action that may already have executed.
+The provider callable is entered only after the first four phases succeed. A rejection, malformed response, timeout, transport ambiguity, local commit failure, or checkpoint failure before `invocation_started` produces no provider call and never falls back to the ordinary wrapper. Once `invocation_started` is durable, a crash or missing terminal record is unresolved; callers must reconcile it rather than automatically retrying an action that may already have executed. The interruption finalizer may turn that exact state into a device-signed `uncertain` outcome with `process_interrupted`, but only after durably saving the terminal journal. It never infers remote success or failure.
 
 An authorized action has two signed records with different meanings. The decision receipt proves what was admitted. The terminal execution outcome proves what the runtime later recorded for that admitted attempt: `succeeded`, `failed`, or `uncertain`, bound to the decision receipt, operation fingerprint, attempt number, start time, and a result digest or bounded error code. The outcome cannot prove that a remote provider told the truth, and projecting a result to a digest does not make the omitted result recoverable.
 
@@ -80,6 +80,8 @@ A `STEP_UP` decision can be resumed only through the strict approval-resolution 
 ### Recovery, bundles, and telemetry
 
 Recovery accepts a self-contained execution journal only after validating its exact schema, receipt binding, chain position, execution-start hash, terminal state, and any signed outcome. It reports pre-invocation, unresolved, or resolved state, but always returns `retry_safe: false`: the recovery helper does not own enough external state to authorize replay.
+
+Terminal-outcome upload is separate from execution and recovery. Before sending, the SDK verifies the outcome signature, decision signature, signer identity, and all decision bindings. The transport uses bounded DNS resolution, a pinned address snapshot, no redirects, HTTPS except loopback, bounded request and response sizes, a retry deadline, and the outcome hash as the idempotency key. A failed or ambiguous upload does not relabel an executed, failed, or uncertain local outcome.
 
 A strict evidence bundle is a separate portable envelope containing a contiguous trusted receipt chain, zero or one trusted terminal outcome per authorized decision, coverage status, and reconstructed policy continuity. It rejects partial chains, foreign or duplicate outcomes, unknown keys, unsupported fields, invalid signatures, and a bundle signer that does not match the head receipt signer. `complete` means every authorized decision in that supplied chain has a terminal outcome; it does not prove the supplied chain includes every action that ever occurred outside it.
 
