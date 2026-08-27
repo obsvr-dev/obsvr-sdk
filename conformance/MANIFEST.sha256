@@ -12,7 +12,7 @@
 #
 # Format: "<sha256>  <path relative to conformance/>", sorted by path.
 #
-# corpus_sha256 = d802a66b70aaf609b3f9887927254a4055aacaaac33a668c51494e36a7f6b990
+# corpus_sha256 = 9045d929f2e097de973827f3f3b66e7ef5463369f0e2c3bc9c9367c3c3b5c913
 #   sha256 of the lines below (this header excluded, so editing these comments
 #   does not invalidate the pins). This is the value both conformance.pin files
 #   must carry.
@@ -41,7 +41,7 @@ e2eb05ebd6bb173c714338d851b85160bc4cfa5382323612def39d60eefa3508  fixtures/eval_
 5794914f4815e7cec456e5d885fb4bafccc310260b2bb5e99622f84180d8c490  fixtures/intent_alignment.json
 d17f76f2eb845867890632c52ee0f672a45df3c493d6f9a14b40f3d35d5803e2  fixtures/intent_alignment_v2.json
 46cac3b1aee572e88828b103545f27e97c9a74ba7e8646799b67f98523f241ca  fixtures/normalization.json
-490d354986ad59015e651c589bdebfb3d8d06640142c3c51e17dea589f748006  fixtures/otel_attributes.json
+7f582cffd792f2d68dc350444434d621aa21675157a2d8ea19dbaa26727982f7  fixtures/otel_attributes.json
 d66f66837586e7289ff4be348858fe2b4151224aab8765ef6020bac4457cd1e1  fixtures/pii_scan.json
 ec2505549c68066f4f15b1cc20a60a82bc5c34191607a2335fd51437197c9078  fixtures/policy_floor.json
 d95e7d3f27cd37d917e45cbc9e52840433733ed11996c548830513ff7e633975  fixtures/policy_signature.json
@@ -53,6 +53,7 @@ b326ca8bb7fa352437a91cfe709efa19998744bff5996be59c87620bbe036d57  fixtures/regex
 58440346c8a54d19d6b36e5cc90d062983dc40b8d40f92b2f41537ac940c187d  fixtures/session_taint.json
 d8bc262148c9714293e6ff61aa1f6431dd5a9ca52e816072701aa4095db86001  fixtures/signing_vectors.json
 1d782802ff9965e922b0ff34b6f34940354f7abdce43edef1015e7f33281cd8c  fixtures/strict_execution_outcomes_v2_1.json
+fd240ce73c0e9d6b9d6f9fdcf5d26c0998a96bf37c8c621c567a3e07763dcd1d  fixtures/strict_otel_attributes_v2_1.json
 6c7263bf58033ac78e2d9281fa7d93dd0b0fe6c70777966a94458270d484c3a5  fixtures/strict_receipts.json
 66db81a97dd34fc15c33ad46665145dafff5a59190b14766aad0d0e9301ceaa5  fixtures/strict_receipts_v2.json
 c183e63b472e91c72fa682c0fa76fa9e858639d6f3b4733f026072088cc23d4b  fixtures/strict_receipts_v2_1.json
