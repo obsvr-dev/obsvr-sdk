@@ -121,6 +121,15 @@ from .strict_execution_outcome_v2_1 import (  # noqa: F401
     strict_execution_start_v2_1_hash,
     verify_strict_execution_outcome_v2_1,
 )
+from .strict_execution_outcome_transport_v2_1 import (  # noqa: F401
+    STRICT_EXECUTION_OUTCOME_V2_1_ADMISSION_SCHEMA,
+    STRICT_EXECUTION_OUTCOME_V2_1_ENDPOINT,
+    STRICT_EXECUTION_OUTCOME_V2_1_INGEST_SCHEMA,
+    STRICT_EXECUTION_OUTCOME_V2_1_MAX_REQUEST_BYTES,
+    StrictExecutionOutcomeV21TransportError,
+    submit_strict_execution_outcome_v2_1,
+    submit_strict_runtime_terminal_journal_v2_1,
+)
 from .strict_receipt_coordinator_v2_1 import (  # noqa: F401
     StrictReceiptCoordinatorV21,
     create_trusted_intent_decision_provider_v2_1,
@@ -172,6 +181,13 @@ __all__ = [
     "strict_execution_result_v2_1_hash",
     "strict_execution_start_v2_1_hash",
     "verify_strict_execution_outcome_v2_1",
+    "STRICT_EXECUTION_OUTCOME_V2_1_INGEST_SCHEMA",
+    "STRICT_EXECUTION_OUTCOME_V2_1_ADMISSION_SCHEMA",
+    "STRICT_EXECUTION_OUTCOME_V2_1_ENDPOINT",
+    "STRICT_EXECUTION_OUTCOME_V2_1_MAX_REQUEST_BYTES",
+    "StrictExecutionOutcomeV21TransportError",
+    "submit_strict_execution_outcome_v2_1",
+    "submit_strict_runtime_terminal_journal_v2_1",
     "StrictReceiptCoordinatorV21",
     "create_trusted_intent_decision_provider_v2_1",
     "create_trusted_evaluation_evidence_provider_v2_1",

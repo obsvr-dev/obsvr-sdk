@@ -224,6 +224,21 @@ export type {
   StrictExecutionStartV21,
 } from "./governance/strict-execution-outcome-v2-1.js";
 export {
+  STRICT_EXECUTION_OUTCOME_V21_ADMISSION_SCHEMA,
+  STRICT_EXECUTION_OUTCOME_V21_ENDPOINT,
+  STRICT_EXECUTION_OUTCOME_V21_INGEST_SCHEMA,
+  STRICT_EXECUTION_OUTCOME_V21_MAX_REQUEST_BYTES,
+  StrictExecutionOutcomeV21TransportError,
+  assertStrictExecutionOutcomeV21RequestBytes,
+  submitStrictExecutionOutcomeV21,
+  submitStrictRuntimeTerminalJournalV21,
+} from "./governance/strict-execution-outcome-transport-v2-1.js";
+export type {
+  StrictExecutionOutcomeV21PinnedTransport,
+  StrictExecutionOutcomeV21TransportOptions,
+  StrictExecutionOutcomeV21TransportResult,
+} from "./governance/strict-execution-outcome-transport-v2-1.js";
+export {
   StrictReceiptCoordinatorV21,
   createTrustedIntentDecisionProviderV21,
 } from "./governance/strict-receipt-coordinator-v2-1.js";
