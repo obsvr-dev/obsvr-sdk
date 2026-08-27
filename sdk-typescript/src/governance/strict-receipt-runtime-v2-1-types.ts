@@ -41,7 +41,7 @@ export interface StrictRuntimeExecutionJournalV21 {
   committed_sequence: number;
   committed_head_receipt_hash: string | null;
   terminal_status?: 'executed' | 'invocation_failed' | 'invocation_uncertain' | 'nonexecuted';
-  receipt?: StrictReceiptV21Envelope;
+  receipt: StrictReceiptV21Envelope;
   execution_start?: StrictExecutionStartV21;
   execution_start_hash?: string;
   execution_outcome?: StrictExecutionOutcomeV21Envelope;

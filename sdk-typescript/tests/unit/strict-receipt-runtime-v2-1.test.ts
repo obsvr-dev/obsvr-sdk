@@ -99,6 +99,8 @@ describe('strict profile 2.1 runtime', () => {
     expect(result).toMatchObject({ status: 'executed', value: 'hello' });
     expect(events).toEqual(['persist:prepared', 'admit', 'persist:remote_accepted', 'commit',
       'persist:committed', 'persist:invocation_started', 'invoke', 'persist:terminal']);
+    expect(checkpoints.every((checkpoint) => checkpoint.receipt.receipt_hash
+      === result.receipt_hash)).toBe(true);
     expect(checkpoints[0]).toMatchObject({ schema: 'obsvr-strict-runtime-execution-journal-v2-1',
       profile_version: '2.1', phase: 'prepared', tenant_id: 'tenant-1', session_id: 'session-1',
       runtime_action_id: 'action-1', prepared_token: 'prepared-token' });

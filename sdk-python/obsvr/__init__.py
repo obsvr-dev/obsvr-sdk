@@ -87,6 +87,10 @@ from .strict_receipt_runtime_v2_1 import (  # noqa: F401
     StrictReceiptRuntimeV21,
     bind_strict_v2_1_json_arguments,
 )
+from .strict_runtime_recovery_v2_1 import (  # noqa: F401
+    StrictRuntimeRecoveryV21Error,
+    reconcile_strict_runtime_execution_v2_1,
+)
 from .strict_execution_outcome_v2_1 import (  # noqa: F401
     StrictExecutionOutcomeV21ValidationError,
     build_strict_execution_outcome_v2_1_body,
@@ -127,6 +131,8 @@ __all__ = [
     "ObsvrStrictProviderBoundaryV21Error",
     "StrictProviderBoundaryV21Capability",
     "StrictReceiptRuntimeV21",
+    "StrictRuntimeRecoveryV21Error",
+    "reconcile_strict_runtime_execution_v2_1",
     "StrictExecutionOutcomeV21ValidationError",
     "build_strict_execution_outcome_v2_1_body",
     "canonicalize_strict_execution_outcome_v2_1_body",

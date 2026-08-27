@@ -138,7 +138,6 @@ class StrictReceiptRuntimeV21:
                 receipt,
                 action_id,
                 fingerprint,
-                include_receipt=True,
             )
         except Exception as error:
             state.coordinator.abort_prepared(
@@ -184,7 +183,6 @@ class StrictReceiptRuntimeV21:
                     receipt,
                     action_id,
                     fingerprint,
-                    include_receipt=False,
                     terminal_status="nonexecuted",
                 )
             except Exception as error:
@@ -238,7 +236,6 @@ class StrictReceiptRuntimeV21:
                 receipt,
                 action_id,
                 fingerprint,
-                include_receipt=True,
             )
         except Exception as error:
             _STRICT_RUNTIME_FREEZE_PREPARED_IMPL(
@@ -284,7 +281,6 @@ class StrictReceiptRuntimeV21:
                 receipt,
                 action_id,
                 fingerprint,
-                include_receipt=False,
             )
         except Exception as error:
             state.frozen_reason = "committed_journal_failed"
@@ -309,7 +305,6 @@ class StrictReceiptRuntimeV21:
                     receipt,
                     action_id,
                     fingerprint,
-                    include_receipt=False,
                     terminal_status="nonexecuted",
                 )
             except Exception as error:

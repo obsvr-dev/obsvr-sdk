@@ -1,0 +1,151 @@
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from obsvr.device_identity import load_device_signer
+from obsvr.strict_execution_outcome_v2_1 import sign_strict_execution_outcome_v2_1
+from obsvr.strict_receipt_v2_1 import sign_strict_receipt_v2_1
+from obsvr.strict_runtime_recovery_v2_1 import (
+    StrictRuntimeRecoveryV21Error,
+    reconcile_strict_runtime_execution_v2_1,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DECISION = json.loads(
+    (ROOT / "conformance/fixtures/strict_receipts_v2_1.json").read_text("utf-8")
+)
+OUTCOME = json.loads(
+    (ROOT / "conformance/fixtures/strict_execution_outcomes_v2_1.json").read_text(
+        "utf-8"
+    )
+)
+
+
+def _signer(tmp_path):
+    path = tmp_path / "runtime-recovery-public-seed.key"
+    path.write_text(DECISION["public_test_key"]["seed_hex"], encoding="ascii")
+    return load_device_signer(str(path))
+
+
+def _receipt(signer):
+    body = copy.deepcopy(DECISION["vector"]["body"])
+    patch = OUTCOME["decision_patch"]
+    body["evaluation"].update(copy.deepcopy(patch["evaluation"]))
+    body["outcome"] = patch["outcome"]
+    body["execution_authorized"] = patch["execution_authorized"]
+    for field in patch["remove"]:
+        body.pop(field, None)
+    return sign_strict_receipt_v2_1(body, signer)
+
+
+def _trust():
+    return {
+        "trusted_agent_keys": [
+            {
+                "tenant_id": "tenant-21",
+                "agent_ref_hash": "b" * 64,
+                "key_id": DECISION["public_test_key"]["key_id"],
+                "public_key_b64": DECISION["public_test_key"]["public_key_b64"],
+                "status": "active",
+            }
+        ],
+        "allowed_evaluator_manifest_hashes": [DECISION["evaluator_manifest_hash"]],
+    }
+
+
+def _journal(tmp_path, phase="invocation_started"):
+    signer = _signer(tmp_path)
+    receipt = _receipt(signer)
+    body = copy.deepcopy(OUTCOME["vector"]["body"])
+    start = {
+        "tenant_id": body["tenant_id"],
+        "session_id": body["session_id"],
+        "action_id": body["action_id"],
+        "decision_receipt_hash": body["decision_receipt_hash"],
+        "operation_fingerprint": body["operation_fingerprint"],
+        "attempt": body["attempt"],
+        "started_at_ms": body["started_at_ms"],
+    }
+    journal = {
+        "schema": "obsvr-strict-runtime-execution-journal-v2-1",
+        "profile_version": "2.1",
+        "phase": phase,
+        "tenant_id": receipt["body"]["tenant_id"],
+        "session_id": receipt["body"]["session_id"],
+        "runtime_action_id": receipt["body"]["action"]["action_id"],
+        "operation_fingerprint": body["operation_fingerprint"],
+        "prepared_token": "prepared-public",
+        "receipt_hash": receipt["receipt_hash"],
+        "committed_sequence": receipt["body"]["sequence"],
+        "committed_head_receipt_hash": receipt["receipt_hash"],
+        "receipt": receipt,
+        **(
+            {
+                "execution_start": start,
+                "execution_start_hash": body["execution_start_hash"],
+            }
+            if phase == "invocation_started"
+            else {}
+        ),
+    }
+    return signer, receipt, body, journal
+
+
+def test_started_action_without_terminal_outcome_is_never_retry_safe(tmp_path):
+    _signer_value, _receipt_value, _body, journal = _journal(tmp_path)
+    result = reconcile_strict_runtime_execution_v2_1(journal, **_trust())
+    assert result["status"] == "outcome_unresolved"
+    assert result["retry_safe"] is False
+    assert result["decision_trusted"] is True
+    assert result["journal"]["phase"] == "invocation_started"
+
+
+def test_only_bound_signed_outcome_resolves_durable_start(tmp_path):
+    signer, receipt, body, journal = _journal(tmp_path)
+    outcome = sign_strict_execution_outcome_v2_1(body, signer, receipt)
+    resolved = reconcile_strict_runtime_execution_v2_1(
+        journal, outcome, **_trust()
+    )
+    assert resolved["status"] == "resolved"
+    assert resolved["retry_safe"] is False
+    assert resolved["terminal_status"] == "executed"
+    assert resolved["decision_trusted"] is True
+    assert resolved["outcome_integrity_valid"] is True
+    assert resolved["outcome_trusted"] is True
+    assert resolved["journal"]["execution_outcome"] == outcome
+    again = reconcile_strict_runtime_execution_v2_1(
+        resolved["journal"], **_trust()
+    )
+    assert again["status"] == "resolved"
+    assert again["terminal_status"] == "executed"
+
+
+def test_pre_invocation_state_requires_receipt_reconciliation(tmp_path):
+    _signer_value, receipt, _body, journal = _journal(tmp_path, "committed")
+    result = reconcile_strict_runtime_execution_v2_1(journal, **_trust())
+    assert result["status"] == "pre_invocation"
+    assert result["retry_safe"] is False
+    assert result["decision_trusted"] is True
+    assert result["journal"]["receipt"] == receipt
+
+
+@pytest.mark.parametrize("field", ["receipt", "start", "outcome"])
+def test_tampered_evidence_never_resolves_execution(tmp_path, field):
+    signer, receipt, body, journal = _journal(tmp_path)
+    outcome = sign_strict_execution_outcome_v2_1(body, signer, receipt)
+    changed = copy.deepcopy(journal)
+    supplied = outcome
+    if field == "receipt":
+        changed["receipt"]["body"]["sequence"] += 1
+    elif field == "start":
+        changed["execution_start"]["started_at_ms"] += 1
+    else:
+        supplied = copy.deepcopy(outcome)
+        supplied["body"]["result_hash"] = "7" * 64
+    with pytest.raises(StrictRuntimeRecoveryV21Error):
+        reconcile_strict_runtime_execution_v2_1(
+            changed, supplied, **_trust()
+        )

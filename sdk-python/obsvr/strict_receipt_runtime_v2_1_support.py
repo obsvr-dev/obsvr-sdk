@@ -158,7 +158,6 @@ def persist_runtime_checkpoint(
     action_id: str,
     fingerprint: str,
     *,
-    include_receipt: bool,
     terminal_status: str | None = None,
     execution_start: Dict[str, Any] | None = None,
     execution_outcome: Dict[str, Any] | None = None,
@@ -175,13 +174,12 @@ def persist_runtime_checkpoint(
         "operation_fingerprint": fingerprint,
         "prepared_token": prepared["token"],
         "receipt_hash": receipt["receipt_hash"],
+        "receipt": copy.deepcopy(receipt),
         "committed_sequence": coordinator_state["sequence"],
         "committed_head_receipt_hash": coordinator_state["head_receipt_hash"],
     }
     if terminal_status is not None:
         checkpoint["terminal_status"] = terminal_status
-    if include_receipt:
-        checkpoint["receipt"] = copy.deepcopy(receipt)
     if execution_start is not None:
         checkpoint["execution_start"] = {
             key: execution_start[key]

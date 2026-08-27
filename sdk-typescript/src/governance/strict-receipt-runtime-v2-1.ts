@@ -78,7 +78,6 @@ type TrustedPersist = (
   receipt: StrictReceiptV21Envelope,
   actionId: string,
   fingerprint: string,
-  includeReceipt: boolean,
   terminalStatus?: StrictRuntimeExecutionJournalV21['terminal_status'],
   executionStart?: StrictExecutionStartV21 & { execution_start_hash: string },
   executionOutcome?: StrictExecutionOutcomeV21Envelope,
@@ -236,7 +235,7 @@ export class StrictReceiptRuntimeV21 {
         this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'binding_unavailable' });
       }
-      try { await trustedPersistImpl.call(this, 'prepared', prepared, receipt, actionId, fingerprint, true); } catch (error) {
+      try { await trustedPersistImpl.call(this, 'prepared', prepared, receipt, actionId, fingerprint); } catch (error) {
         this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', error });
       }
@@ -251,7 +250,7 @@ export class StrictReceiptRuntimeV21 {
       }
       if (admission.disposition === 'definitive_no_store') {
         this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
-        try { await trustedPersistImpl.call(this, 'terminal', prepared, receipt, actionId, fingerprint, false, 'nonexecuted'); } catch (error) {
+        try { await trustedPersistImpl.call(this, 'terminal', prepared, receipt, actionId, fingerprint, 'nonexecuted'); } catch (error) {
           this.frozenReason = 'journal_terminal_failed';
           return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', admission, error }); }
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'definitive_no_store', admission });
@@ -261,7 +260,7 @@ export class StrictReceiptRuntimeV21 {
         this.frozenReason = `admission_${admission.reason}`;
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'admission_uncertain', admission });
       }
-      try { await trustedPersistImpl.call(this, 'remote_accepted', prepared, receipt, actionId, fingerprint, true); } catch (error) {
+      try { await trustedPersistImpl.call(this, 'remote_accepted', prepared, receipt, actionId, fingerprint); } catch (error) {
         trustedFreezePreparedImpl.call(this, prepared, 'remote_accepted_journal_failed');
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', admission, error });
       }
@@ -269,11 +268,11 @@ export class StrictReceiptRuntimeV21 {
         trustedFreezePreparedImpl.call(this, prepared, 'accepted_but_local_commit_failed');
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'admission_uncertain', admission, error });
       }
-      try { await trustedPersistImpl.call(this, 'committed', prepared, receipt, actionId, fingerprint, false); } catch (error) {
+      try { await trustedPersistImpl.call(this, 'committed', prepared, receipt, actionId, fingerprint); } catch (error) {
         this.frozenReason = 'committed_journal_failed';
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', admission, error }); }
       if (!receipt.body.execution_authorized) {
-        try { await trustedPersistImpl.call(this, 'terminal', prepared, receipt, actionId, fingerprint, false, 'nonexecuted'); } catch (error) {
+        try { await trustedPersistImpl.call(this, 'terminal', prepared, receipt, actionId, fingerprint, 'nonexecuted'); } catch (error) {
           this.frozenReason = 'terminal_journal_failed';
           return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', admission, error }); }
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'not_authorized', admission });
@@ -292,7 +291,7 @@ export class StrictReceiptRuntimeV21 {
       try {
         await trustedPersistImpl.call(
           this, 'invocation_started', prepared, receipt, actionId, fingerprint,
-          false, undefined, executionStart,
+          undefined, executionStart,
         );
       } catch (error) {
         this.frozenReason = 'invocation_started_journal_failed';
@@ -314,7 +313,7 @@ export class StrictReceiptRuntimeV21 {
             ), receipt,
           );
           await trustedPersistImpl.call(
-            this, 'terminal', prepared, receipt, actionId, fingerprint, false,
+            this, 'terminal', prepared, receipt, actionId, fingerprint,
             classification.status === 'failed' ? 'invocation_failed' : 'invocation_uncertain',
             executionStart, executionOutcome,
           );
@@ -347,7 +346,7 @@ export class StrictReceiptRuntimeV21 {
             ), receipt,
           );
           await trustedPersistImpl.call(
-            this, 'terminal', prepared, receipt, actionId, fingerprint, false,
+            this, 'terminal', prepared, receipt, actionId, fingerprint,
             'invocation_uncertain', executionStart, executionOutcome,
           );
           return callTrustedFinish(this, actionId, fingerprint, {
@@ -369,7 +368,7 @@ export class StrictReceiptRuntimeV21 {
           ), receipt,
         );
         await trustedPersistImpl.call(
-          this, 'terminal', prepared, receipt, actionId, fingerprint, false,
+          this, 'terminal', prepared, receipt, actionId, fingerprint,
           'executed', executionStart, executionOutcome,
         );
       } catch (error) {
@@ -388,7 +387,7 @@ export class StrictReceiptRuntimeV21 {
   private async persist(
     phase: StrictRuntimeExecutionJournalV21['phase'], prepared: PreparedDecisionV21,
     receipt: StrictReceiptV21Envelope, actionId: string, fingerprint: string,
-    includeReceipt: boolean, terminalStatus?: StrictRuntimeExecutionJournalV21['terminal_status'],
+    terminalStatus?: StrictRuntimeExecutionJournalV21['terminal_status'],
     executionStart?: StrictExecutionStartV21 & { execution_start_hash: string },
     executionOutcome?: StrictExecutionOutcomeV21Envelope,
   ): Promise<void> {
@@ -398,10 +397,10 @@ export class StrictReceiptRuntimeV21 {
       tenant_id: this.tenantId, session_id: this.sessionId,
       runtime_action_id: actionId, operation_fingerprint: fingerprint,
       prepared_token: prepared.token, receipt_hash: receipt.receipt_hash,
+      receipt: structuredClone(receipt),
       committed_sequence: Number((coordinatorState as { sequence?: number }).sequence ?? 0),
       committed_head_receipt_hash: (coordinatorState as { head_receipt_hash?: string | null }).head_receipt_hash ?? null,
       ...(terminalStatus ? { terminal_status: terminalStatus } : {}),
-      ...(includeReceipt ? { receipt: structuredClone(receipt) } : {}),
       ...(executionStart ? {
         execution_start: {
           tenant_id: executionStart.tenant_id,

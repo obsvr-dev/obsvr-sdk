@@ -92,7 +92,6 @@ def execute_committed_strict_action_v2_1(
             receipt,
             action_id,
             fingerprint,
-            include_receipt=False,
             execution_start=execution_start,
         )
     except Exception as error:
@@ -146,7 +145,6 @@ def execute_committed_strict_action_v2_1(
                 receipt,
                 action_id,
                 fingerprint,
-                include_receipt=False,
                 terminal_status=terminal_status,
                 execution_start=execution_start,
                 execution_outcome=execution_outcome,
@@ -199,7 +197,6 @@ def execute_committed_strict_action_v2_1(
                 receipt,
                 action_id,
                 fingerprint,
-                include_receipt=False,
                 terminal_status="invocation_uncertain",
                 execution_start=execution_start,
                 execution_outcome=execution_outcome,
@@ -240,7 +237,6 @@ def execute_committed_strict_action_v2_1(
             receipt,
             action_id,
             fingerprint,
-            include_receipt=False,
             terminal_status="executed",
             execution_start=execution_start,
             execution_outcome=execution_outcome,

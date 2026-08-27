@@ -167,6 +167,13 @@ export type {
   StrictRuntimeFailureClassificationV21,
 } from "./governance/strict-receipt-runtime-v2-1-outcomes.js";
 export {
+  reconcileStrictRuntimeExecutionV21,
+  StrictRuntimeRecoveryV21Error,
+} from "./governance/strict-runtime-recovery-v2-1.js";
+export type {
+  StrictRuntimeRecoveryV21Result,
+} from "./governance/strict-runtime-recovery-v2-1.js";
+export {
   STRICT_EXECUTION_OUTCOME_V21_SCHEMA,
   STRICT_EXECUTION_OUTCOME_V21_ENVELOPE_SCHEMA,
   StrictExecutionOutcomeV21ValidationError,

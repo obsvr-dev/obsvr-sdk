@@ -204,6 +204,10 @@ def test_ordering_checkpoint_parity_and_execution(tmp_path):
         "invoke",
         "persist:terminal",
     ]
+    assert all(
+        checkpoint["receipt"]["receipt_hash"] == result["receipt_hash"]
+        for checkpoint in store.checkpoints
+    )
     assert "hello" not in json.dumps(store.checkpoints[0])
     assert "api_key" not in store.checkpoints[0]
     assert "provider_response" not in store.checkpoints[0]
