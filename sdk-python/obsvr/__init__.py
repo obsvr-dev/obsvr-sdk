@@ -71,6 +71,10 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 # SDKs must not diverge on the entry point for the same primitive.
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
+from .otel_mirror import (  # noqa: F401
+    correlate_strict_runtime_checkpoint_v2_1_to_otel,
+    with_strict_otel_correlation_v2_1,
+)
 from .wrap import wrap  # noqa: F401
 from .strict_action_boundary_v2_1 import (  # noqa: F401
     ObsvrStrictActionBoundaryV21Error,
@@ -214,6 +218,8 @@ __all__ = [
     "ObsvrUnknownPolicyError",
     "ChainVerificationResult",
     "SPAN_ATTR",
+    "correlate_strict_runtime_checkpoint_v2_1_to_otel",
+    "with_strict_otel_correlation_v2_1",
     "ResolvedConfig",
     "ReasonCode",
     "REASON_CODES",

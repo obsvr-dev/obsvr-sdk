@@ -8,6 +8,7 @@
   "name": "otel_attributes.parity",
   "description": "Both SDKs' OTel mirrors must emit spans with EXACTLY this attribute key set (GenAI semconv + obsvr governance outcomes). A key added to one SDK without the other (and this file) is a parity break. The keys in conditional_keys are present ONLY when their value is actually known: an absent OTel attribute means 'not recorded', while an attribute set to 0 claims a measurement was taken and came out zero. Emitting the second on evidence for the first is the same fabrication the token extractors were fixed to stop making, so the mirror omits the key instead. attribute_keys is the FULL set, emitted when every conditional value is known; subtract conditional_keys for the shape emitted when they are not.",
   "attribute_keys": [
+    "gen_ai.provider.name",
     "gen_ai.request.model",
     "gen_ai.system",
     "gen_ai.usage.input_tokens",

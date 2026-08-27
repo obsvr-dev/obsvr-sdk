@@ -168,6 +168,10 @@ export type {
   StrictRuntimeFailureClassificationV21,
 } from "./governance/strict-receipt-runtime-v2-1-outcomes.js";
 export {
+  correlateStrictRuntimeCheckpointV21ToOtel,
+  withStrictOtelCorrelationV21,
+} from "./proxy/otel-mirror.js";
+export {
   reconcileStrictRuntimeExecutionV21,
   StrictRuntimeRecoveryV21Error,
 } from "./governance/strict-runtime-recovery-v2-1.js";

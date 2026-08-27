@@ -1,0 +1,37 @@
+{
+  "claimable": false,
+  "sdk_support": {
+    "ts": "required",
+    "py": "required"
+  },
+  "schema_version": 1,
+  "name": "strict_otel_attributes_v2_1.parity",
+  "description": "Both SDKs attach only content-free strict evidence references to an active OpenTelemetry span after the corresponding checkpoint is durable. Terminal-only fields are absent from the committed phase and present when a bound terminal outcome exists.",
+  "committed_attribute_keys": [
+    "obsvr.strict.decision_outcome",
+    "obsvr.strict.evaluator_manifest_hash",
+    "obsvr.strict.execution_authorized",
+    "obsvr.strict.journal_phase",
+    "obsvr.strict.policy_artifact_hash",
+    "obsvr.strict.policy_version",
+    "obsvr.strict.profile_version",
+    "obsvr.strict.receipt_hash",
+    "obsvr.strict.receipt_sequence",
+    "obsvr.strict.record_type"
+  ],
+  "terminal_attribute_keys": [
+    "obsvr.strict.decision_outcome",
+    "obsvr.strict.evaluator_manifest_hash",
+    "obsvr.strict.execution_authorized",
+    "obsvr.strict.execution_outcome_hash",
+    "obsvr.strict.execution_status",
+    "obsvr.strict.journal_phase",
+    "obsvr.strict.policy_artifact_hash",
+    "obsvr.strict.policy_version",
+    "obsvr.strict.profile_version",
+    "obsvr.strict.receipt_hash",
+    "obsvr.strict.receipt_sequence",
+    "obsvr.strict.record_type",
+    "obsvr.strict.terminal_status"
+  ]
+}

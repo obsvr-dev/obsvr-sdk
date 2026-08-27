@@ -13,19 +13,25 @@
  */
 
 import { createRequire } from "node:module";
+import type { StrictRuntimeExecutionJournalV21, StrictV21CheckpointStore } from "../governance/strict-receipt-runtime-v2-1-types.js";
 import type { AuditEvent, ResolvedConfig } from "./types.js";
 import { debugLog } from "../utils/logger.js";
 
+interface OtelSpan {
+  setStatus(status: { code: number; message?: string }): void;
+  setAttributes?(attributes: Record<string, string | number | boolean>): unknown;
+  isRecording?(): boolean;
+  end(endTime?: number): void;
+}
+
 interface OtelApi {
   trace: {
+    getActiveSpan?(): OtelSpan | undefined;
     getTracer(name: string, version?: string): {
       startSpan(
         name: string,
         options?: { startTime?: number; attributes?: Record<string, unknown>; kind?: number },
-      ): {
-        setStatus(status: { code: number; message?: string }): void;
-        end(endTime?: number): void;
-      };
+      ): OtelSpan;
     };
   };
   SpanStatusCode: { OK: number; ERROR: number };
@@ -107,6 +113,9 @@ export function mirrorToOtel(config: ResolvedConfig, event: AuditEvent): void {
       kind: api.SpanKind?.CLIENT,
       attributes: {
         "gen_ai.system": event.provider ?? "unknown",
+        // Current GenAI semantic conventions use provider.name. Keep system
+        // during the compatibility window for existing dashboards.
+        "gen_ai.provider.name": event.provider ?? "unknown",
         "gen_ai.request.model": event.model ?? "unknown",
         // The two token attributes are OMITTED when the count is unknown, and
         // that is the whole point: a span reporting 0 for a measurement that
@@ -141,6 +150,84 @@ export function mirrorToOtel(config: ResolvedConfig, event: AuditEvent): void {
   } catch (e) {
     debugLog(config, "warn", "OTel mirror failed (non-fatal):", e instanceof Error ? e.message : String(e));
   }
+}
+
+function strictCheckpointAttributes(
+  checkpoint: StrictRuntimeExecutionJournalV21,
+): Record<string, string | number | boolean> | undefined {
+  if (checkpoint.phase !== "committed" && checkpoint.phase !== "terminal") return undefined;
+  const receipt = checkpoint.receipt;
+  if (checkpoint.receipt_hash !== receipt.receipt_hash
+    || checkpoint.tenant_id !== receipt.body.tenant_id
+    || checkpoint.session_id !== receipt.body.session_id) return undefined;
+  const policy = receipt.body.evaluation.effective_policy;
+  const attributes: Record<string, string | number | boolean> = {
+    "obsvr.strict.profile_version": receipt.body.profile_version,
+    "obsvr.strict.receipt_hash": receipt.receipt_hash,
+    "obsvr.strict.receipt_sequence": receipt.body.sequence,
+    "obsvr.strict.record_type": receipt.body.record_type,
+    "obsvr.strict.execution_authorized": receipt.body.execution_authorized,
+    "obsvr.strict.decision_outcome": receipt.body.outcome,
+    "obsvr.strict.policy_version": policy.version,
+    "obsvr.strict.policy_artifact_hash": policy.artifact_hash,
+    "obsvr.strict.evaluator_manifest_hash": receipt.body.evaluation.evaluator_manifest_hash,
+    "obsvr.strict.journal_phase": checkpoint.phase,
+  };
+  const supported = Object.values(attributes).every((value) => (
+    typeof value === "boolean"
+    || (typeof value === "string" && value.length > 0)
+    || (typeof value === "number" && Number.isSafeInteger(value))
+  ));
+  if (!supported) return undefined;
+  if (checkpoint.terminal_status) {
+    attributes["obsvr.strict.terminal_status"] = checkpoint.terminal_status;
+  }
+  const outcome = checkpoint.execution_outcome;
+  if (outcome && /^[0-9a-f]{64}$/.test(outcome.outcome_hash)
+    && ["succeeded", "failed", "uncertain"].includes(outcome.body.status)
+    && outcome.body.decision_receipt_hash === receipt.receipt_hash
+    && outcome.body.decision_sequence === receipt.body.sequence) {
+    attributes["obsvr.strict.execution_outcome_hash"] = outcome.outcome_hash;
+    attributes["obsvr.strict.execution_status"] = outcome.body.status;
+  }
+  return attributes;
+}
+
+/** Attach durable strict evidence references to the currently recording span. */
+export function correlateStrictRuntimeCheckpointV21ToOtel(
+  checkpoint: StrictRuntimeExecutionJournalV21,
+): boolean {
+  try {
+    const attributes = strictCheckpointAttributes(checkpoint);
+    if (!attributes) return false;
+    const span = resolveOtel({ debug: false } as ResolvedConfig)?.trace.getActiveSpan?.();
+    if (!span || span.isRecording?.() === false || typeof span.setAttributes !== "function") {
+      return false;
+    }
+    span.setAttributes(attributes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decorate a durable checkpoint store with best-effort active-span correlation.
+ * The underlying save completes first; telemetry failure never changes runtime behavior.
+ */
+export function withStrictOtelCorrelationV21(
+  checkpointStore: StrictV21CheckpointStore,
+): StrictV21CheckpointStore {
+  if (!checkpointStore || typeof checkpointStore.save !== "function") {
+    throw new TypeError("durable checkpoint store is required");
+  }
+  const save = checkpointStore.save.bind(checkpointStore);
+  return Object.freeze({
+    save: async (checkpoint: StrictRuntimeExecutionJournalV21): Promise<void> => {
+      await save(checkpoint);
+      correlateStrictRuntimeCheckpointV21ToOtel(checkpoint);
+    },
+  });
 }
 
 /** @internal test hook */
