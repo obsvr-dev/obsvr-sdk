@@ -116,7 +116,8 @@ describe('strict execution outcome transport v2.1', () => {
         value.decision,
         options(async () => ({ status, body: bytes({
           schema: STRICT_EXECUTION_OUTCOME_V21_ADMISSION_SCHEMA, ok: false,
-          status: 'rejected', code: 'rejected', outcome_hash: value.outcome.outcome_hash,
+          status: 'rejected', code: 'rejected', stored: false,
+          outcome_hash: value.outcome.outcome_hash,
         }) })),
         value.trust,
       );

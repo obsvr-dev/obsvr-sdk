@@ -99,13 +99,17 @@ def _accepted(value: Optional[Dict[str, Any]], outcome_hash: str) -> Optional[st
 def _rejected(
     value: Optional[Dict[str, Any]], outcome_hash: str, status: str
 ) -> bool:
+    fields = {"schema", "ok", "status", "code", "outcome_hash"}
+    if status == "rejected":
+        fields.add("stored")
     return bool(
         value is not None
-        and set(value) == {"schema", "ok", "status", "code", "outcome_hash"}
+        and set(value) == fields
         and value.get("schema") == STRICT_EXECUTION_OUTCOME_V2_1_ADMISSION_SCHEMA
         and value.get("ok") is False
         and value.get("status") == status
         and value.get("outcome_hash") == outcome_hash
+        and (status != "rejected" or value.get("stored") is False)
         and isinstance(value.get("code"), str)
         and bool(value["code"])
     )

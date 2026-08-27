@@ -129,6 +129,7 @@ def test_exact_rejection_is_definitive_no_store(tmp_path, status):
             "ok": False,
             "status": "rejected",
             "code": "rejected",
+            "stored": False,
             "outcome_hash": outcome["outcome_hash"],
         }
     ).encode()

@@ -137,10 +137,14 @@ function rejected(
   outcomeHash: string,
   status: 'rejected' | 'conflict',
 ): boolean {
+  const keys = status === 'rejected'
+    ? 'code,ok,outcome_hash,schema,status,stored'
+    : 'code,ok,outcome_hash,schema,status';
   return !!value
-    && Object.keys(value).sort().join(',') === 'code,ok,outcome_hash,schema,status'
+    && Object.keys(value).sort().join(',') === keys
     && value.schema === STRICT_EXECUTION_OUTCOME_V21_ADMISSION_SCHEMA
     && value.ok === false && value.status === status && value.outcome_hash === outcomeHash
+    && (status !== 'rejected' || value.stored === false)
     && typeof value.code === 'string' && value.code.length > 0;
 }
 
