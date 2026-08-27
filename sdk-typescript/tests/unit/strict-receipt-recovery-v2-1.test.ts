@@ -61,17 +61,20 @@ describe('strict profile 2.1 authenticated recovery', () => {
     const prepared = original.prepareDecision(action('pending'));
     const checkpoint = original.exportRecoveryCheckpoint();
     expect({ hash: checkpoint.checkpoint_hash, signature: checkpoint.signature.value }).toEqual({
-      hash: '3472230724af95bbcf13a5bfbbda49939cd88317be0eee9496f80ff81af77128',
-      signature: '2b9f08bf24f94900e7256f1745f1c976c4b6cd64f417f53c681c121515ef1c3175479a33d3b6525667644fca18304fc1a535448b59f910346e5c37ab35008203',
+      hash: '61a5df39cf47929f07d064e5d26f8d8572c7071d3c704aac360ef49dbea9e14a',
+      signature: 'df8b6864f51cc1a8680c983acb771ea5aa065cf3959eddf372157a0dd7432748bb5ad102566ee8d335ae633e1627ccf8aa11ce238c9a3890bb3936643fc19b00',
     });
-    expect(checkpoint.document.prepared?.result.receipt.receipt_hash).toBe(prepared.receipt_hash);
+    expect(checkpoint.document.prepared?.kind).toBe('decision');
+    const recoveredDecision = checkpoint.document.prepared;
+    if (!recoveredDecision || recoveredDecision.kind !== 'decision') throw new Error('decision missing');
+    expect(recoveredDecision.result.receipt.receipt_hash).toBe(prepared.receipt_hash);
     const restored = new RecoverableStrictReceiptCoordinatorV21(options(deviceSigner), {
       checkpoint, expected_origin_pid: 7,
     });
     expect(restored.inspectState()).toMatchObject({ sequence: 1, head_receipt_hash: committed.receipt_hash, frozen: true,
       freeze_reason: 'restart_reconciliation_required' });
     expect(() => restored.prepareDecision(action('other'))).toThrow('requires accepted reconciliation');
-    const receipt = checkpoint.document.prepared!.result.receipt;
+    const receipt = recoveredDecision.result.receipt;
     const absent = await reconcileStrictReceiptV21(receipt, { ingest_url: 'http://127.0.0.1:8080',
       api_key: 'test', max_attempts: 1, resolver: async () => ['127.0.0.1'],
       trusted_pinned_transport: () => response({ schema: 'obsvr-strict-receipt-reconciliation-v2-1',
@@ -132,7 +135,9 @@ describe('strict profile 2.1 authenticated recovery', () => {
       const restored = new RecoverableStrictReceiptCoordinatorV21(options(deviceSigner), {
         checkpoint, expected_origin_pid: 7,
       });
-      const receipt = checkpoint.document.prepared!.result.receipt;
+      const recovered = checkpoint.document.prepared;
+      if (!recovered || recovered.kind !== 'decision') throw new Error('decision missing');
+      const receipt = recovered.result.receipt;
       const result = await reconcileStrictReceiptV21(receipt, { ingest_url: 'http://127.0.0.1:8080',
         api_key: 'test', max_attempts: 1, resolver: async () => ['127.0.0.1'],
         trusted_pinned_transport: () => response(value, status) });
@@ -140,5 +145,46 @@ describe('strict profile 2.1 authenticated recovery', () => {
       expect(() => restored.reconcileRecoveredAccepted(result)).toThrow('trusted accepted');
       expect(restored.inspectState()).toMatchObject({ sequence: 0, frozen: true });
     }
+  });
+
+  test('restores a prepared approval without persisting raw approval evidence', async () => {
+    const deviceSigner = signer(); const times = [1_000, 1_100];
+    const recoveryOptions = { ...options(deviceSigner), clock: () => times.shift()!,
+      intent_decision_provider: createTrustedIntentDecisionProviderV21(() => ({
+        action_taken: 'blocked', approval_required: true, approval_request_id: 'approval-1',
+        approval_action_hash: A, approval_expires_at_ms: 1_500,
+      })), approval_verifier: (_evidence: unknown, expected: {
+        request_id: string; action_hash: string; decision: 'granted' | 'denied';
+      }) => ({ request_id: expected.request_id, action_hash: expected.action_hash,
+        principal_id: 'reviewer-1', decision: expected.decision,
+        source_hash: B, expires_at_ms: 1_400 }) };
+    const original = new RecoverableStrictReceiptCoordinatorV21(recoveryOptions);
+    const pending = original.prepareDecision(action('approval-action'));
+    original.commitPrepared(pending.token, pending.receipt_hash);
+    const prepared = original.prepareApprovalResolution({
+      suspended_receipt_hash: pending.receipt_hash, method: 'approval_granted',
+      approval_evidence: { token: 'must-not-persist' },
+    });
+    const checkpoint = original.exportRecoveryCheckpoint();
+    expect(checkpoint.document.prepared?.kind).toBe('resolution');
+    expect(JSON.stringify(checkpoint)).not.toContain('must-not-persist');
+    const restored = new RecoverableStrictReceiptCoordinatorV21(recoveryOptions, {
+      checkpoint, expected_origin_pid: 7,
+    });
+    const accepted = await reconcileStrictReceiptV21(prepared.value, {
+      ingest_url: 'http://127.0.0.1:8080', api_key: 'test', max_attempts: 1,
+      resolver: async () => ['127.0.0.1'], trusted_pinned_transport: () => response({
+        schema: 'obsvr-strict-receipt-reconciliation-v2-1', ok: true,
+        status: 'accepted', session_id: 'session-1', receipt_hash: prepared.receipt_hash,
+        accepted_at_ms: 2_000,
+      }),
+    });
+    expect(restored.reconcileRecoveredAccepted(accepted)).toEqual(prepared.value);
+    expect(restored.inspectState()).toMatchObject({ sequence: 2,
+      head_receipt_hash: prepared.receipt_hash, frozen: false });
+    expect(() => restored.prepareApprovalResolution({
+      suspended_receipt_hash: pending.receipt_hash, method: 'approval_granted',
+      approval_evidence: {},
+    })).toThrow('already resolved');
   });
 });

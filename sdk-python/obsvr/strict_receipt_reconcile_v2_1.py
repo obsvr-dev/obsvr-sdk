@@ -85,7 +85,7 @@ def _validate_receipt(receipt):
     if (
         not result["integrity_valid"]
         or body.get("profile_version") != "2.1"
-        or body.get("record_type") != "decision"
+        or body.get("record_type") not in ("decision", "resolution")
     ):
         raise ValueError("receipt must be an intact profile-2.1 decision")
 

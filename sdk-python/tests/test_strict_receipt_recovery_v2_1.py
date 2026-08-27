@@ -137,10 +137,10 @@ def test_restore_blocks_and_only_exact_accepted_commits(tmp_path):
         "hash": checkpoint["checkpoint_hash"],
         "signature": checkpoint["signature"]["value"],
     } == {
-        "hash": "5db259b4a589ea3726793eefccb2096f314821a138fff51ab47b9b5bb0741dcb",
+        "hash": "19883b822ca1dac5f1a04570fd4138e5952201f2275e94e838276c9dc1fbbbab",
         "signature": (
-            "304e4ba221e33e9454fb3d4e812a688838545df0d97903c6618c255623f85b00"
-            "938fa51220d0ebec29d41419cafc8cf20b332ae669adf42caab94cef003bfc0c"
+            "bef41c34e306df6a1a2c2f93841bcb83efccd61f898da4ac88e89e2125a93ef5"
+            "bfc639da0d8cd83a427c63704d94f4157dd7fde119d8b471c9df0b40616b470c"
         ),
     }
     restored = RecoverableStrictReceiptCoordinatorV21(
@@ -286,3 +286,75 @@ def test_nonaccepted_reconciliation_stays_frozen(tmp_path, status, value):
     with pytest.raises(ValueError, match="trusted accepted"):
         restored.reconcile_recovered_accepted(result)
     assert restored.inspect_state()["frozen"] is True
+
+
+def test_restores_approval_without_persisting_raw_evidence(tmp_path):
+    signer = make_signer(tmp_path)
+    times = iter((1_000, 1_100))
+    approval_options = options(signer)
+    approval_options["clock"] = lambda: next(times)
+    approval_options["intent_decision_provider"] = (
+        create_trusted_intent_decision_provider_v2_1(
+            lambda _context: {
+                "action_taken": "blocked",
+                "approval_required": True,
+                "approval_request_id": "approval-1",
+                "approval_action_hash": A,
+                "approval_expires_at_ms": 1_500,
+            }
+        )
+    )
+    approval_options["approval_verifier"] = lambda _evidence, expected: {
+        "request_id": expected["request_id"],
+        "action_hash": expected["action_hash"],
+        "principal_id": "reviewer-1",
+        "decision": expected["decision"],
+        "source_hash": B,
+        "expires_at_ms": 1_400,
+    }
+    original = RecoverableStrictReceiptCoordinatorV21(**approval_options)
+    pending = original.prepare_decision(action("approval-action"))
+    original.commit_prepared(pending["token"], pending["receipt_hash"])
+    prepared = original.prepare_approval_resolution(
+        {
+            "suspended_receipt_hash": pending["receipt_hash"],
+            "method": "approval_granted",
+            "approval_evidence": {"token": "must-not-persist"},
+        }
+    )
+    checkpoint = original.export_recovery_checkpoint()
+    assert checkpoint["document"]["prepared"]["kind"] == "resolution"
+    assert "must-not-persist" not in json.dumps(checkpoint)
+    restored = RecoverableStrictReceiptCoordinatorV21(
+        **approval_options, recovery_checkpoint=checkpoint, expected_origin_pid=7
+    )
+    receipt = prepared["value"]
+    accepted = reconcile_strict_receipt_v2_1(
+        receipt,
+        ingest_url="http://127.0.0.1:8080",
+        api_key="test",
+        max_attempts=1,
+        resolver=lambda *_args: ["127.0.0.1"],
+        trusted_pinned_transport=transport(
+            200,
+            {
+                "schema": "obsvr-strict-receipt-reconciliation-v2-1",
+                "ok": True,
+                "status": "accepted",
+                "session_id": "session-1",
+                "receipt_hash": receipt["receipt_hash"],
+                "accepted_at_ms": 2_000,
+            },
+        ),
+    )
+    assert restored.reconcile_recovered_accepted(accepted) == receipt
+    assert restored.inspect_state()["sequence"] == 2
+    assert restored.inspect_state()["head_receipt_hash"] == receipt["receipt_hash"]
+    with pytest.raises(ValueError, match="already resolved"):
+        restored.prepare_approval_resolution(
+            {
+                "suspended_receipt_hash": pending["receipt_hash"],
+                "method": "approval_granted",
+                "approval_evidence": {},
+            }
+        )
