@@ -23,7 +23,15 @@ import type {
   StrictDecisionV21Result,
   StrictReceiptCoordinatorV21Options,
 } from './strict-receipt-coordinator-v2-1-types.js';
-import { strictReceiptV21KeyId } from './strict-receipt-v2-1.js';
+import {
+  strictReceiptV21KeyId,
+  type StrictReceiptV21Envelope,
+} from './strict-receipt-v2-1.js';
+import {
+  signStrictExecutionOutcomeV21,
+  type StrictExecutionOutcomeV21Body,
+  type StrictExecutionOutcomeV21Envelope,
+} from './strict-execution-outcome-v2-1.js';
 import {
   PreparedReceiptState,
   type DefinitiveNoStore,
@@ -157,6 +165,23 @@ export class StrictReceiptCoordinatorV21 {
       head_receipt_hash: this.headReceiptHash,
       ...this.preparedState.inspect(),
     };
+  }
+
+  observeExecutionTime(): number {
+    this.ensureProcess();
+    const observed = v21Integer(this.options.clock(), 'clock');
+    if (this.lastTimestamp !== null && observed < this.lastTimestamp) {
+      throw new StrictReceiptCoordinatorV21Error('clock regressed');
+    }
+    return observed;
+  }
+
+  signExecutionOutcome(
+    body: StrictExecutionOutcomeV21Body,
+    decision: StrictReceiptV21Envelope,
+  ): StrictExecutionOutcomeV21Envelope {
+    this.ensureProcess();
+    return signStrictExecutionOutcomeV21(body, this.options.signer, decision);
   }
 
   private allocateTimestamp(): number {

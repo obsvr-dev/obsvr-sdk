@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import uuid
 import weakref
 from typing import Any, Callable, Dict, Optional
@@ -16,6 +17,7 @@ from .strict_receipt_runtime_v2_1 import (
     bind_strict_v2_1_json_arguments,
     run_trusted_strict_receipt_runtime_v2_1,
 )
+from .tool_pinning import _canonical_json_for_hash
 
 
 class ObsvrStrictProviderBoundaryV21Error(RuntimeError):
@@ -79,6 +81,66 @@ _TRUSTED_PROVIDER_HOSTS = frozenset(
         "api.groq.com",
     }
 )
+_AMBIGUOUS_TRANSPORT_CODES = frozenset(
+    {
+        "ECONNABORTED",
+        "ECONNRESET",
+        "ETIMEDOUT",
+        "UND_ERR_CONNECT_TIMEOUT",
+        "UND_ERR_HEADERS_TIMEOUT",
+        "UND_ERR_SOCKET",
+    }
+)
+
+
+def _provider_response_value(value: Any) -> Any:
+    for method_name in ("model_dump", "to_dict"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            return method()
+    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
+        return copy.deepcopy(value)
+    instance = getattr(value, "__dict__", None)
+    if isinstance(instance, dict) and instance:
+        return copy.deepcopy(instance)
+    common = {
+        field: copy.deepcopy(getattr(value, field))
+        for field in ("id", "model", "usage", "choices", "content")
+        if hasattr(value, field)
+    }
+    if common:
+        return common
+    raise TypeError("provider response has no deterministic projection")
+
+
+def _provider_result_projection(call: Dict[str, Any], value: Any) -> Dict[str, str]:
+    canonical = _canonical_json_for_hash(_provider_response_value(value))
+    return {
+        "schema": "obsvr-strict-provider-result-v2-1",
+        "provider": call["provider"],
+        "operation": call["operation"],
+        "response_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def _classify_provider_error(error: Any) -> Dict[str, str]:
+    current = error
+    for _depth in range(4):
+        if current is None:
+            break
+        if getattr(current, "code", None) in _AMBIGUOUS_TRANSPORT_CODES or (
+            current.__class__.__name__ == "AbortError"
+        ):
+            return {
+                "status": "uncertain",
+                "error_code": "provider_transport_ambiguous",
+            }
+        if isinstance(getattr(current, "status", None), int):
+            return {"status": "failed", "error_code": "provider_rejected"}
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    return {"status": "failed", "error_code": "provider_call_failed"}
 
 
 def _read_strict_provider_base_url(client: Any) -> Optional[str]:
@@ -157,6 +219,10 @@ def execute_strict_provider_call_v2_1(
         "runtime_action_id": action_id,
         "original_arguments": original,
         "invoke": invoke,
+        "result_projection": lambda value: _provider_result_projection(
+            trusted_call, value
+        ),
+        "classify_error": _classify_provider_error,
     }
     try:
         result = run_trusted_strict_receipt_runtime_v2_1(

@@ -23,6 +23,10 @@ from obsvr.strict_receipt_runtime_v2_1 import (
     StrictReceiptRuntimeV21Error,
     bind_strict_v2_1_json_arguments,
 )
+from obsvr.strict_execution_outcome_v2_1 import (
+    strict_execution_result_v2_1_hash,
+    verify_strict_execution_outcome_v2_1,
+)
 from obsvr.strict_receipt_v2_1 import strict_receipt_v2_1_key_id
 from obsvr.tool_pinning import _canonical_json_for_hash
 
@@ -185,6 +189,7 @@ def test_ordering_checkpoint_parity_and_execution(tmp_path):
             "runtime_action_id": "action-1",
             "original_arguments": bound,
             "invoke": lambda value: events.append("invoke") or value["message"],
+            "result_projection": lambda value: {"message": value},
         },
     )
     assert result["status"] == "executed"
@@ -209,6 +214,35 @@ def test_ordering_checkpoint_parity_and_execution(tmp_path):
         ).hexdigest()
         == CHECKPOINT_SHA256
     )
+    started = next(
+        item for item in store.checkpoints if item["phase"] == "invocation_started"
+    )
+    terminal = store.checkpoints[-1]
+    outcome = terminal["execution_outcome"]
+    assert outcome["body"]["decision_receipt_hash"] == result["receipt_hash"]
+    assert outcome["body"]["execution_start_hash"] == started["execution_start_hash"]
+    assert outcome["body"]["result_hash"] == strict_execution_result_v2_1_hash(
+        {"message": "hello"}
+    )
+    receipt = result["receipt"]
+    assert verify_strict_execution_outcome_v2_1(
+        outcome,
+        receipt,
+        trusted_agent_keys=[
+            {
+                "tenant_id": receipt["body"]["tenant_id"],
+                "agent_ref_hash": receipt["body"]["identity"]["initiator"][
+                    "agent_ref_hash"
+                ],
+                "key_id": receipt["signature"]["key_id"],
+                "public_key_b64": receipt["public_key_b64"],
+                "status": "active",
+            }
+        ],
+        allowed_evaluator_manifest_hashes=[
+            receipt["body"]["evaluation"]["evaluator_manifest_hash"]
+        ],
+    )["trusted"]
 
 
 def test_modify_invokes_only_bound_effective_arguments(tmp_path):

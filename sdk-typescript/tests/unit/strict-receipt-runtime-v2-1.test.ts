@@ -20,6 +20,10 @@ import {
   type StrictRuntimeExecutionJournalV21,
 } from '../../src/governance/strict-receipt-runtime-v2-1.js';
 import { strictReceiptV21KeyId } from '../../src/governance/strict-receipt-v2-1.js';
+import {
+  strictExecutionResultV21Hash,
+  verifyStrictExecutionOutcomeV21,
+} from '../../src/governance/strict-execution-outcome-v2-1.js';
 import { intentPolicyV2Hash, type IntentV2BaseResult } from '../../src/policy/intent-alignment-v2.js';
 import { loadDeviceSigner } from '../../src/proxy/device-identity.js';
 
@@ -90,7 +94,8 @@ describe('strict profile 2.1 runtime', () => {
     const { runtime, events, checkpoints } = setup();
     const result = await runtime.runDecision({ decision: decision('action-1', bound.arguments_hash),
       action: { runtime_action_id: 'action-1', original_arguments: bound,
-        invoke: (value) => { events.push('invoke'); return value.message; } } });
+        invoke: (value) => { events.push('invoke'); return value.message; },
+        result_projection: (value) => ({ message: value }) } });
     expect(result).toMatchObject({ status: 'executed', value: 'hello' });
     expect(events).toEqual(['persist:prepared', 'admit', 'persist:remote_accepted', 'commit',
       'persist:committed', 'persist:invocation_started', 'invoke', 'persist:terminal']);
@@ -103,6 +108,35 @@ describe('strict profile 2.1 runtime', () => {
     expect(checkpoints[0]).not.toHaveProperty('error');
     expect(createHash('sha256').update(canonicalJsonForHash(checkpoints[0])).digest('hex'))
       .toBe(CHECKPOINT_SHA256);
+    const started = checkpoints.find((item) => item.phase === 'invocation_started') as any;
+    const terminal = checkpoints.at(-1) as any;
+    expect(started).toMatchObject({ execution_start_hash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(terminal.execution_outcome.body).toMatchObject({
+      decision_receipt_hash: result.receipt_hash,
+      execution_start_hash: started.execution_start_hash,
+      status: 'succeeded',
+      result_hash: strictExecutionResultV21Hash({ message: 'hello' }),
+    });
+    const receipt = result.receipt;
+    expect(verifyStrictExecutionOutcomeV21(terminal.execution_outcome, receipt, {
+      trusted_agent_keys: [{ tenant_id: receipt.body.tenant_id,
+        agent_ref_hash: receipt.body.identity.initiator.agent_ref_hash,
+        key_id: receipt.signature.key_id, public_key_b64: receipt.public_key_b64,
+        status: 'active' }],
+      allowed_evaluator_manifest_hashes: [receipt.body.evaluation.evaluator_manifest_hash],
+    }).trusted).toBe(true);
+  });
+
+  test('unclassified invocation errors are signed as uncertain', async () => {
+    const bound = bindStrictV21JsonArguments({ message: 'hello' });
+    const { runtime, checkpoints } = setup();
+    const result = await runtime.runDecision({ decision: decision('error', bound.arguments_hash),
+      action: { runtime_action_id: 'error', original_arguments: bound,
+        invoke: () => { throw new Error('connection disappeared'); } } });
+    expect(result).toMatchObject({ status: 'invocation_uncertain',
+      execution_outcome: { body: { status: 'uncertain', error_code: 'action_error_unclassified' } } });
+    expect(checkpoints.at(-1)).toMatchObject({ phase: 'terminal',
+      terminal_status: 'invocation_uncertain', execution_outcome: result.execution_outcome });
   });
 
   test('MODIFY invokes only the bound effective arguments', async () => {

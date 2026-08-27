@@ -146,8 +146,14 @@ export {
 } from "./governance/strict-receipt-runtime-v2-1.js";
 export type {
   StrictV21CheckpointStore,
+  StrictV21BoundArguments,
+  StrictV21RuntimeAction,
   StrictRuntimeExecutionJournalV21,
+  StrictRuntimeV21Result,
 } from "./governance/strict-receipt-runtime-v2-1.js";
+export type {
+  StrictRuntimeFailureClassificationV21,
+} from "./governance/strict-receipt-runtime-v2-1-outcomes.js";
 export {
   STRICT_EXECUTION_OUTCOME_V21_SCHEMA,
   STRICT_EXECUTION_OUTCOME_V21_ENVELOPE_SCHEMA,

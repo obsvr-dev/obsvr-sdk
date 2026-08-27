@@ -11,50 +11,50 @@ import type {
 } from './strict-receipt-coordinator-v2-1-types.js';
 import { DEFINITIVE_NO_STORE } from './strict-receipt-prepared-state.js';
 import type { StrictReceiptV21Envelope } from './strict-receipt-v2-1.js';
+import type {
+  StrictExecutionOutcomeV21Envelope,
+  StrictExecutionStartV21,
+} from './strict-execution-outcome-v2-1.js';
+import {
+  classifyStrictRuntimeErrorV21,
+  createStrictRuntimeErrorOutcomeV21,
+  createStrictRuntimeExecutionStartV21,
+  createStrictRuntimeSuccessOutcomeV21,
+  defaultStrictRuntimeResultProjectionV21,
+  type StrictRuntimeFailureClassificationV21,
+} from './strict-receipt-runtime-v2-1-outcomes.js';
+import type {
+  StrictRuntimeExecutionJournalV21,
+  StrictRuntimeV21Result,
+  StrictV21BoundArguments,
+  StrictV21CheckpointStore,
+  StrictV21RuntimeAction,
+} from './strict-receipt-runtime-v2-1-types.js';
+import {
+  bindStrictV21JsonArguments,
+  deepFreezeStrictV21,
+  readStrictV21ExecutionArguments,
+} from './strict-receipt-runtime-v2-1-bindings.js';
+export { bindStrictV21JsonArguments } from './strict-receipt-runtime-v2-1-bindings.js';
+export type {
+  StrictRuntimeExecutionJournalV21,
+  StrictRuntimeV21Result,
+  StrictV21BoundArguments,
+  StrictV21CheckpointStore,
+  StrictV21RuntimeAction,
+} from './strict-receipt-runtime-v2-1-types.js';
 
-const boundArguments = new WeakSet<object>();
 const trustedRuntimes = new WeakSet<object>();
 export const STRICT_RUNTIME_EXECUTION_JOURNAL_V21_SCHEMA = 'obsvr-strict-runtime-execution-journal-v2-1' as const;
 
-export interface StrictV21BoundArguments<T> {
-  readonly arguments_hash: string;
-  readonly value: T;
-}
-export interface StrictV21RuntimeAction<A, R> {
-  runtime_action_id: string;
-  original_arguments: StrictV21BoundArguments<A>;
-  effective_arguments?: StrictV21BoundArguments<A>;
-  invoke: (value: A) => Promise<R> | R;
-}
-export interface StrictV21CheckpointStore {
-  /** Implementations must durably and atomically replace the prior journal entry. */
-  save(checkpoint: StrictRuntimeExecutionJournalV21): Promise<void> | void;
-}
-/** An execution journal entry, not an authenticated recovery checkpoint. */
-export interface StrictRuntimeExecutionJournalV21 {
-  schema: typeof STRICT_RUNTIME_EXECUTION_JOURNAL_V21_SCHEMA;
-  profile_version: '2.1';
-  phase: 'prepared' | 'remote_accepted' | 'committed' | 'invocation_started' | 'terminal';
-  tenant_id: string;
-  session_id: string;
-  runtime_action_id: string;
-  operation_fingerprint: string;
-  prepared_token: string;
-  receipt_hash: string;
-  committed_sequence: number;
-  committed_head_receipt_hash: string | null;
-  terminal_status?: 'executed' | 'invocation_failed' | 'nonexecuted';
-  receipt?: StrictReceiptV21Envelope;
-}
 interface CoordinatorV21 extends StrictAdmissionV21Coordinator {
   prepareDecision(input: StrictDecisionActionV21Input): PreparedDecisionV21;
+  observeExecutionTime(): number;
+  signExecutionOutcome(
+    body: import('./strict-execution-outcome-v2-1.js').StrictExecutionOutcomeV21Body,
+    decision: StrictReceiptV21Envelope,
+  ): StrictExecutionOutcomeV21Envelope;
 }
-interface ResultBase { receipt: StrictReceiptV21Envelope; receipt_hash: string }
-export type StrictRuntimeV21Result<T> =
-  | (ResultBase & { status: 'executed'; value: T; admission: StrictAdmissionV21Result })
-  | (ResultBase & { status: 'invocation_failed'; error: unknown; admission: StrictAdmissionV21Result })
-  | (ResultBase & { status: 'invocation_uncertain'; error: unknown; admission: StrictAdmissionV21Result })
-  | (ResultBase & { status: 'nonexecuted'; reason: 'not_authorized' | 'binding_unavailable' | 'checkpoint_persist_failed' | 'definitive_no_store' | 'admission_uncertain'; admission?: StrictAdmissionV21Result; error?: unknown });
 type TrustedRuntimeRunner = <A, R>(input: {
   decision: StrictDecisionActionV21Input;
   action: StrictV21RuntimeAction<A, R>;
@@ -71,11 +71,6 @@ type TrustedRunExclusive = <A, R>(
   actionId: string,
   fingerprint: string,
 ) => Promise<StrictRuntimeV21Result<R>>;
-type TrustedExecutionArguments = <A>(
-  this: StrictReceiptRuntimeV21,
-  action: StrictV21RuntimeAction<A, unknown>,
-  receipt: StrictReceiptV21Envelope,
-) => { ok: true; value: A } | { ok: false };
 type TrustedPersist = (
   this: StrictReceiptRuntimeV21,
   phase: StrictRuntimeExecutionJournalV21['phase'],
@@ -85,6 +80,8 @@ type TrustedPersist = (
   fingerprint: string,
   includeReceipt: boolean,
   terminalStatus?: StrictRuntimeExecutionJournalV21['terminal_status'],
+  executionStart?: StrictExecutionStartV21 & { execution_start_hash: string },
+  executionOutcome?: StrictExecutionOutcomeV21Envelope,
 ) => Promise<void>;
 type TrustedFreezePrepared = (
   this: StrictReceiptRuntimeV21, prepared: PreparedDecisionV21, reason: string,
@@ -102,7 +99,6 @@ type TrustedText = (
 ) => string;
 let trustedRunDecisionImpl: TrustedRuntimeMethod;
 let trustedRunExclusiveImpl: TrustedRunExclusive;
-let trustedExecutionArgumentsImpl: TrustedExecutionArguments;
 let trustedPersistImpl: TrustedPersist;
 let trustedFreezePreparedImpl: TrustedFreezePrepared;
 let trustedFinishImpl: TrustedFinish;
@@ -124,19 +120,6 @@ function callTrustedRunExclusive<A, R>(
     fingerprint: string,
   ) => Promise<StrictRuntimeV21Result<R>>;
   return implementation.call(runtime, decision, action, actionId, fingerprint);
-}
-
-function callTrustedExecutionArguments<A, R>(
-  runtime: StrictReceiptRuntimeV21,
-  action: StrictV21RuntimeAction<A, R>,
-  receipt: StrictReceiptV21Envelope,
-): { ok: true; value: A } | { ok: false } {
-  const implementation = trustedExecutionArgumentsImpl as unknown as (
-    this: StrictReceiptRuntimeV21,
-    action: StrictV21RuntimeAction<A, R>,
-    receipt: StrictReceiptV21Envelope,
-  ) => { ok: true; value: A } | { ok: false };
-  return implementation.call(runtime, action, receipt);
 }
 
 function callTrustedFinish<T>(
@@ -171,21 +154,6 @@ export class StrictReceiptRuntimeV21Error extends Error {
   constructor(message: string) { super(message); this.name = 'StrictReceiptRuntimeV21Error'; }
 }
 
-function clone<T>(value: T): T { return structuredClone(value); }
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === 'object') {
-    Object.values(value as Record<string, unknown>).forEach(deepFreeze);
-    Object.freeze(value);
-  }
-  return value;
-}
-export function bindStrictV21JsonArguments<T>(value: T): StrictV21BoundArguments<T> {
-  const snapshot = deepFreeze(clone(value));
-  const hash = createHash('sha256').update(canonicalJsonForHash(snapshot)).digest('hex');
-  const result = Object.freeze({ arguments_hash: hash, value: snapshot });
-  boundArguments.add(result); return result;
-}
-
 export class StrictReceiptRuntimeV21 {
   private readonly tenantId: string;
   private readonly sessionId: string;
@@ -209,6 +177,8 @@ export class StrictReceiptRuntimeV21 {
       commitPrepared: coordinator.commitPrepared.bind(coordinator),
       abortPrepared: coordinator.abortPrepared.bind(coordinator),
       freezePrepared: coordinator.freezePrepared.bind(coordinator),
+      observeExecutionTime: coordinator.observeExecutionTime.bind(coordinator),
+      signExecutionOutcome: coordinator.signExecutionOutcome.bind(coordinator),
     });
     this.admissionConfig = Object.freeze({ ...admissionConfig });
     this.checkpointStore = Object.freeze({ save: checkpointStore.save.bind(checkpointStore) });
@@ -253,14 +223,14 @@ export class StrictReceiptRuntimeV21 {
     this.busy = true;
     try {
       const prepared = this.coordinator.prepareDecision(decision);
-      const receipt = clone(prepared.value.receipt);
+      const receipt = structuredClone(prepared.value.receipt);
       const base = { receipt, receipt_hash: prepared.receipt_hash };
       if (receipt.body.action.action_id !== actionId) {
         this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'binding_unavailable' });
       }
       const argumentsSnapshot = receipt.body.execution_authorized
-        ? callTrustedExecutionArguments(this, action, receipt)
+        ? readStrictV21ExecutionArguments(action, receipt)
         : { ok: true as const, value: undefined as A };
       if (!argumentsSnapshot.ok) {
         this.coordinator.abortPrepared(prepared.token, prepared.receipt_hash, DEFINITIVE_NO_STORE);
@@ -308,42 +278,119 @@ export class StrictReceiptRuntimeV21 {
           return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', admission, error }); }
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'not_authorized', admission });
       }
-      try { await trustedPersistImpl.call(this, 'invocation_started', prepared, receipt, actionId, fingerprint, false); } catch (error) {
+      let executionStart: StrictExecutionStartV21 & { execution_start_hash: string };
+      try {
+        executionStart = createStrictRuntimeExecutionStartV21(
+          receipt, fingerprint, this.coordinator.observeExecutionTime(),
+        );
+      } catch (error) {
+        this.frozenReason = 'execution_start_unavailable';
+        return callTrustedFinish(this, actionId, fingerprint, {
+          ...base, status: 'nonexecuted', reason: 'execution_state_unavailable', admission, error,
+        });
+      }
+      try {
+        await trustedPersistImpl.call(
+          this, 'invocation_started', prepared, receipt, actionId, fingerprint,
+          false, undefined, executionStart,
+        );
+      } catch (error) {
         this.frozenReason = 'invocation_started_journal_failed';
         return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'nonexecuted', reason: 'checkpoint_persist_failed', admission, error }); }
       this.results.set(actionId, { fingerprint, result: {
         ...base, status: 'invocation_uncertain', admission,
         error: new StrictReceiptRuntimeV21Error('action invocation is already in progress'),
       } });
+      let value: R;
       try {
-        const value = await action.invoke(argumentsSnapshot.value);
-        try { await trustedPersistImpl.call(this, 'terminal', prepared, receipt, actionId, fingerprint, false, 'executed'); } catch (error) {
-          this.frozenReason = 'terminal_journal_failed';
-          return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'invocation_uncertain', admission, error }); }
-        return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'executed', admission, value });
+        value = await action.invoke(argumentsSnapshot.value);
       } catch (error) {
-        try { await trustedPersistImpl.call(this, 'terminal', prepared, receipt, actionId, fingerprint, false, 'invocation_failed'); } catch (journalError) {
-          this.frozenReason = 'terminal_journal_failed';
-          return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'invocation_uncertain', admission, error: journalError }); }
-        return callTrustedFinish(this, actionId, fingerprint, { ...base, status: 'invocation_failed', admission, error });
+        const classification = classifyStrictRuntimeErrorV21(error, action.classify_error);
+        let executionOutcome: StrictExecutionOutcomeV21Envelope;
+        try {
+          executionOutcome = this.coordinator.signExecutionOutcome(
+            createStrictRuntimeErrorOutcomeV21(
+              receipt, executionStart, this.coordinator.observeExecutionTime(), classification,
+            ), receipt,
+          );
+          await trustedPersistImpl.call(
+            this, 'terminal', prepared, receipt, actionId, fingerprint, false,
+            classification.status === 'failed' ? 'invocation_failed' : 'invocation_uncertain',
+            executionStart, executionOutcome,
+          );
+        } catch (finalizationError) {
+          this.frozenReason = 'terminal_outcome_failed';
+          return callTrustedFinish(this, actionId, fingerprint, {
+            ...base, status: 'invocation_uncertain', admission, error: finalizationError,
+          });
+        }
+        return callTrustedFinish(this, actionId, fingerprint, {
+          ...base,
+          execution_outcome: executionOutcome,
+          status: classification.status === 'failed' ? 'invocation_failed' : 'invocation_uncertain',
+          admission,
+          error,
+        } as StrictRuntimeV21Result<R>);
       }
+      let resultProjection: unknown;
+      try {
+        resultProjection = action.result_projection
+          ? action.result_projection(value) : defaultStrictRuntimeResultProjectionV21();
+      } catch (error) {
+        const classification: StrictRuntimeFailureClassificationV21 = {
+          status: 'uncertain', error_code: 'result_projection_failed',
+        };
+        try {
+          const executionOutcome = this.coordinator.signExecutionOutcome(
+            createStrictRuntimeErrorOutcomeV21(
+              receipt, executionStart, this.coordinator.observeExecutionTime(), classification,
+            ), receipt,
+          );
+          await trustedPersistImpl.call(
+            this, 'terminal', prepared, receipt, actionId, fingerprint, false,
+            'invocation_uncertain', executionStart, executionOutcome,
+          );
+          return callTrustedFinish(this, actionId, fingerprint, {
+            ...base, execution_outcome: executionOutcome,
+            status: 'invocation_uncertain', admission, error,
+          });
+        } catch (finalizationError) {
+          this.frozenReason = 'terminal_outcome_failed';
+          return callTrustedFinish(this, actionId, fingerprint, {
+            ...base, status: 'invocation_uncertain', admission, error: finalizationError,
+          });
+        }
+      }
+      let executionOutcome: StrictExecutionOutcomeV21Envelope;
+      try {
+        executionOutcome = this.coordinator.signExecutionOutcome(
+          createStrictRuntimeSuccessOutcomeV21(
+            receipt, executionStart, this.coordinator.observeExecutionTime(), resultProjection,
+          ), receipt,
+        );
+        await trustedPersistImpl.call(
+          this, 'terminal', prepared, receipt, actionId, fingerprint, false,
+          'executed', executionStart, executionOutcome,
+        );
+      } catch (error) {
+        this.frozenReason = 'terminal_outcome_failed';
+        return callTrustedFinish(this, actionId, fingerprint, {
+          ...base, status: 'invocation_uncertain', admission, error,
+        });
+      }
+      return callTrustedFinish(this, actionId, fingerprint, {
+        ...base, execution_outcome: executionOutcome,
+        status: 'executed', admission, value,
+      });
     } finally { this.busy = false; }
-  }
-
-  private executionArguments<A>(action: StrictV21RuntimeAction<A, unknown>, receipt: StrictReceiptV21Envelope):
-    { ok: true; value: A } | { ok: false } {
-    const modified = receipt.body.outcome === 'MODIFY';
-    const bound = modified ? action.effective_arguments : action.original_arguments;
-    const expected = modified
-      ? receipt.body.action.effective_arguments_hash : receipt.body.action.arguments_hash;
-    if (!bound || !boundArguments.has(bound) || bound.arguments_hash !== expected) return { ok: false };
-    return { ok: true, value: bound.value };
   }
 
   private async persist(
     phase: StrictRuntimeExecutionJournalV21['phase'], prepared: PreparedDecisionV21,
     receipt: StrictReceiptV21Envelope, actionId: string, fingerprint: string,
     includeReceipt: boolean, terminalStatus?: StrictRuntimeExecutionJournalV21['terminal_status'],
+    executionStart?: StrictExecutionStartV21 & { execution_start_hash: string },
+    executionOutcome?: StrictExecutionOutcomeV21Envelope,
   ): Promise<void> {
     const coordinatorState = this.coordinator.inspectState();
     const checkpoint: StrictRuntimeExecutionJournalV21 = {
@@ -354,9 +401,22 @@ export class StrictReceiptRuntimeV21 {
       committed_sequence: Number((coordinatorState as { sequence?: number }).sequence ?? 0),
       committed_head_receipt_hash: (coordinatorState as { head_receipt_hash?: string | null }).head_receipt_hash ?? null,
       ...(terminalStatus ? { terminal_status: terminalStatus } : {}),
-      ...(includeReceipt ? { receipt: clone(receipt) } : {}),
+      ...(includeReceipt ? { receipt: structuredClone(receipt) } : {}),
+      ...(executionStart ? {
+        execution_start: {
+          tenant_id: executionStart.tenant_id,
+          session_id: executionStart.session_id,
+          action_id: executionStart.action_id,
+          decision_receipt_hash: executionStart.decision_receipt_hash,
+          operation_fingerprint: executionStart.operation_fingerprint,
+          attempt: executionStart.attempt,
+          started_at_ms: executionStart.started_at_ms,
+        },
+        execution_start_hash: executionStart.execution_start_hash,
+      } : {}),
+      ...(executionOutcome ? { execution_outcome: structuredClone(executionOutcome) } : {}),
     };
-    await this.checkpointStore.save(deepFreeze(checkpoint));
+    await this.checkpointStore.save(deepFreezeStrictV21(checkpoint));
   }
   private freezePrepared(prepared: PreparedDecisionV21, reason: string): void {
     this.frozenReason = reason;
@@ -388,7 +448,6 @@ export class StrictReceiptRuntimeV21 {
   static {
     trustedRunDecisionImpl = StrictReceiptRuntimeV21.prototype.runDecision;
     trustedRunExclusiveImpl = StrictReceiptRuntimeV21.prototype.runExclusive;
-    trustedExecutionArgumentsImpl = StrictReceiptRuntimeV21.prototype.executionArguments;
     trustedPersistImpl = StrictReceiptRuntimeV21.prototype.persist;
     trustedFreezePreparedImpl = StrictReceiptRuntimeV21.prototype.freezePrepared;
     trustedFinishImpl = StrictReceiptRuntimeV21.prototype.finish;

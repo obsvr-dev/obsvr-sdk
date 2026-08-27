@@ -165,6 +165,22 @@ describe('strict provider boundary v2.1', () => {
       .rejects.toBe(failure);
   });
 
+  test('marks ambiguous provider transport failures as uncertain', async () => {
+    const raw = new FakeOpenAI();
+    const failure = Object.assign(new Error('timed out after send'), { code: 'ETIMEDOUT' });
+    raw.chat.completions.create = jest.fn(async () => { throw failure; });
+    const strict = capability();
+    const client = wrap(raw, { strict_receipt_v2_1: strict.value });
+    await expect(client.chat.completions.create({ model: 'm', messages: [] }))
+      .rejects.toMatchObject({ code: 'admission_not_confirmed' });
+    expect(strict.checkpoints.at(-1)).toMatchObject({
+      terminal_status: 'invocation_uncertain',
+      execution_outcome: { body: {
+        status: 'uncertain', error_code: 'provider_transport_ambiguous',
+      } },
+    });
+  });
+
   test('rejects an unbranded runtime', () => {
     expect(() => createStrictProviderBoundaryV21({
       runtime: { runDecision: jest.fn() } as unknown as StrictReceiptRuntimeV21,

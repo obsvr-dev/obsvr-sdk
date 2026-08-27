@@ -23,6 +23,7 @@ from .strict_receipt_coordinator_v2_1_support import (
     v21_text,
 )
 from .strict_receipt_prepared_state import PreparedReceiptState
+from .strict_execution_outcome_v2_1 import sign_strict_execution_outcome_v2_1
 from .strict_receipt_v2_1 import strict_receipt_v2_1_key_id
 
 
@@ -199,6 +200,21 @@ class StrictReceiptCoordinatorV21:
                 "head_receipt_hash": self._head_receipt_hash,
                 **self._prepared_state.inspect(),
             }
+
+    def observe_execution_time(self) -> int:
+        with self._lock:
+            self._ensure_process()
+            observed = v21_integer(self._clock(), "clock")
+            if self._last_timestamp is not None and observed < self._last_timestamp:
+                raise StrictReceiptCoordinatorV21Error("clock regressed")
+            return observed
+
+    def sign_execution_outcome(
+        self, body: Dict[str, Any], decision: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        with self._lock:
+            self._ensure_process()
+            return sign_strict_execution_outcome_v2_1(body, self._signer, decision)
 
     def _allocate_timestamp(self) -> int:
         observed = v21_integer(self._clock(), "clock")
