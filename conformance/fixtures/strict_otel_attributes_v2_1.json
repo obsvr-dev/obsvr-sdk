@@ -1,5 +1,5 @@
 {
-  "claimable": false,
+  "claimable": true,
   "sdk_support": {
     "ts": "required",
     "py": "required"

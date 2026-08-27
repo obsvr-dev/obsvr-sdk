@@ -187,15 +187,19 @@ Strict mode is opt-in and narrower than the ordinary wrapper. It supports unary 
 
 | Provider | Python strict methods | TypeScript strict methods | Current evidence |
 | --- | --- | --- | --- |
-| OpenAI | `chat.completions.create`, `chat.completions.parse`, `responses.create`, `responses.parse` | same | Shared boundary tests in both SDKs; controlled live Python call on `chat.completions.create` |
-| Anthropic | `messages.create`, `messages.parse` | same | Shared boundary tests in both SDKs; controlled live Python call on `messages.create` |
+| OpenAI | `chat.completions.create`, `chat.completions.parse`, `responses.create`, `responses.parse` | same | Shared boundary tests in both SDKs; controlled live Python and TypeScript calls on `chat.completions.create` |
+| Anthropic | `messages.create`, `messages.parse` | same | Shared boundary tests in both SDKs; controlled live Python and TypeScript calls on `messages.create` |
 | Gemini, legacy | `generate_content` | `generateContent` | Boundary and endpoint tests; no strict live-provider claim |
-| Gemini, maintained | `models.generate_content` | `models.generateContent` | Real-package shape tests in both SDKs; controlled live Python call on the maintained unary method |
+| Gemini, maintained | `models.generate_content` | `models.generateContent` | Real-package shape tests in both SDKs; controlled live Python and TypeScript calls on the maintained unary method |
 | Groq, OpenAI-compatible endpoint | OpenAI-shaped methods above | OpenAI-shaped methods above | Endpoint, target-binding, and boundary tests only; no successful live-provider claim |
 
 The controlled live calls are release-validation evidence, not part of CI. They prove that one admitted call crossed each named provider path at the time tested; they do not extend the supported version ranges or prove every method in the row. Groq remains supported by the endpoint and OpenAI-compatible method contract but was not live-validated in this cycle.
 
 Every strict call also requires a trusted profile 2.1 runtime, a durable atomic checkpoint store, positive admission for the exact receipt, a `model:invoke` scope, and an official provider target. The target and exact cleaned JSON invocation are receipt-bound and rechecked before invocation. Only `ALLOW` executes at the direct-provider boundary; `DENY`, `MODIFY`, `STEP_UP`, and `DEFER` fail without contacting the provider.
+
+The provider-neutral `createStrictActionBoundaryV21` / `create_strict_action_boundary_v2_1` surface uses the same runtime for caller-defined side effects and explicit scopes. Its compatibility boundary is the JSON-serializable invocation and the callable supplied by the application, not a third-party package version.
+
+Optional strict trace correlation supports `@opentelemetry/api >=1.4.0,<2.0.0` in TypeScript and `opentelemetry-api >=1.20.0,<2.0.0` in Python. It annotates an existing recording span after the durable checkpoint succeeds; it does not create a span or participate in authorization. The attribute set is fixture-pinned across both SDKs.
 
 The AARM outcome mapping is obsvr compatibility profile 1.0. These profiles and fixtures are not official AARM conformance vectors and make no certification claim.
 

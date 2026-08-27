@@ -15,6 +15,13 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+### Added
+
+- Strict profile 2.1 now binds every started action to a device-signed terminal execution outcome, persists the complete execution journal, and reconciles interrupted state without authorizing automatic replay.
+- The strict runtime can govern provider-neutral side effects and resume signed approval resolutions with at-most-once execution of the original action.
+- Portable signed evidence bundles verify receipt continuity, terminal-outcome coverage, policy continuity, and the head signer in both SDKs.
+- Durable strict checkpoints can add content-free receipt and terminal references to an existing OpenTelemetry span without making telemetry part of the execution boundary.
+
 ## [0.12.0] - 2026-08-24
 
 ### Added

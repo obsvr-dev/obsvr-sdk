@@ -39,6 +39,7 @@ Obsvr runs inside your application to enforce deterministic policy before suppor
 - [Identity, attribution, and budgets](#identity-attribution-and-budgets)
 - [Integration coverage](#integration-coverage)
 - [The evidence model](#the-evidence-model)
+- [AARM compatibility and strict execution receipts](#aarm-compatibility-and-strict-execution-receipts)
 - [What's in this repo, what isn't, and why](#whats-in-this-repo-what-isnt-and-why)
 - [Verify a record](#verify-a-record)
 - [Cross-language conformance](#cross-language-conformance)
@@ -383,14 +384,22 @@ flowchart LR
     receipt --> admit["positive ingest admission"]
     admit --> commit["local receipt commit"]
     commit --> started["invocation-started checkpoint"]
-    started --> provider["provider call"]
+    started --> provider["provider call or governed side effect"]
+    provider --> outcome["device-signed terminal outcome"]
 ```
 
 - The exact JSON invocation, normalized provider endpoint, active intent, requested `model:invoke` scope, identity evidence, policy evidence, and a unique action id are bound into the decision receipt.
 - The provider is contacted only after the receipt is admitted, committed locally, and durably checkpointed as `invocation_started`. A missing or ambiguous admission never falls back to an ungoverned call.
 - `DENY`, `STEP_UP`, and `DEFER` do not execute. The direct-provider boundary also fails closed on `MODIFY`, because it does not accept an unverified argument transformation; only `ALLOW` crosses this boundary.
-- Once `invocation_started` is durable, an interrupted or ambiguous call is reported as `invocation_uncertain` and is not automatically retried.
+- An admitted invocation produces a device-signed terminal outcome that binds the execution start, decision receipt, status, and either a result digest or a bounded error classification. A decision receipt alone is therefore not presented as proof that execution succeeded.
+- Once `invocation_started` is durable, an interrupted or ambiguous call is reported as `invocation_uncertain` and is not automatically retried. Recovery validates the self-contained journal and any supplied signed outcome, but deliberately never labels a recovered action retry-safe.
 - This profile is deliberately narrow: supported unary methods only. Python async-client paths, streams, helper managers, runners, and unsupported methods fail with `unsupported_surface`.
+
+The same protocol can guard a provider-neutral side effect through `createStrictActionBoundaryV21` / `create_strict_action_boundary_v2_1`: the caller declares the action, target, data classifications, and requested scopes, and supplies the function that may run only after admission. Approval resolution is also explicit. A signed `STEP_UP` receipt is resumed through a new signed resolution receipt; the original action executes at most once only when the resolved outcome is `ALLOW` and every binding still matches.
+
+Receipts and terminal outcomes can be exported as a portable, Ed25519-signed evidence bundle. Verification checks the exact schema, receipt-chain trust, outcome-to-decision bindings, policy continuity, coverage, and a bundle signature made by the head receipt signer. Cross-language terminal-outcome bytes are pinned by [`strict_execution_outcomes_v2_1.json`](conformance/fixtures/strict_execution_outcomes_v2_1.json).
+
+Strict checkpoints can also be correlated with the currently recording OpenTelemetry span through a checkpoint-store decorator. Correlation happens only after the durable save succeeds, exports content-free `obsvr.strict.*` references, and is best-effort telemetry rather than admission or execution authority. Its exact Python/TypeScript attribute sets are pinned by [`strict_otel_attributes_v2_1.json`](conformance/fixtures/strict_otel_attributes_v2_1.json).
 
 Strict mode is not enabled by ordinary `wrap()` calls. Supply a profile 2.1 capability explicitly with `strict_receipt_v2_1` after configuring a device signer, intent policy, identity and evaluation evidence, admission, and a durable atomic checkpoint store. See the [Python](sdk-python/README.md#strict-profile-21-provider-boundary) and [TypeScript](sdk-typescript/README.md#strict-profile-21-provider-boundary) setup notes, the [security boundary](SECURITY.md#strict-profile-21-execution-boundary), and the [method matrix](COMPATIBILITY.md#strict-profile-21-direct-provider-boundary).
 
@@ -402,6 +411,7 @@ This Apache-2.0 repository contains the complete client implementation. The seal
 | --- | --- | :---: |
 | Interception, policy, PII and injection detection, MCP/agent controls, budgets | your process | ✅ |
 | Client HMAC chain, device signatures, gap markers | your process | ✅ |
+| Strict decision receipts, signed terminal outcomes, recovery, and portable evidence bundles | your process / verifier | ✅ |
 | `obsvr-verify` CLI and verification libraries | anywhere | ✅ |
 | Cross-language behavioral contract | CI | ✅ |
 | Server countersignature | ingest service | ❌ |
@@ -447,7 +457,8 @@ TypeScript and Python implement one fixture-pinned contract in [`conformance/fix
 - [`reason_codes.json`](conformance/fixtures/reason_codes.json) and [`action_taken.json`](conformance/fixtures/action_taken.json) form closed decision registries. Both suites fail if a runtime emits a value outside them.
 - [`normalization.json`](conformance/fixtures/normalization.json) pins the Unicode fold across Node and Python.
 - [`tool_pinning.json`](conformance/fixtures/tool_pinning.json) and [`tool_content_hash.json`](conformance/fixtures/tool_content_hash.json) keep descriptor-rug-pull detection distinct from per-call tool evidence.
-- The same corpus exercises the obsvr-authored compatibility outcomes, structured action context, intent evaluation, and strict receipt formats through profile 2.1. Those compatibility fixtures remain explicitly non-claimable and are not official AARM conformance evidence.
+- [`strict_execution_outcomes_v2_1.json`](conformance/fixtures/strict_execution_outcomes_v2_1.json) pins the terminal record that binds a started action back to its admitted decision, while [`strict_otel_attributes_v2_1.json`](conformance/fixtures/strict_otel_attributes_v2_1.json) pins the content-free trace references projected after durable checkpoints.
+- The same corpus exercises the obsvr-authored compatibility outcomes, structured action context, intent evaluation, and strict receipt formats through profile 2.1. The AARM compatibility vectors themselves remain explicitly non-claimable and are not official AARM conformance evidence.
 
 The corpus is hash-pinned by `conformance/MANIFEST.sha256`; each SDK records the corpus hash its suite targets. CI fails when fixtures change without regenerated pins, the two pins disagree, or a fixture has no in-repository consumer. A behavior difference is release-blocking unless it is explicitly represented in the machine-readable divergence catalog and its validated narrative.
 

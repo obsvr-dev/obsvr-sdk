@@ -1,4 +1,5 @@
 {
+  "claimable": true,
   "schema": "obsvr-strict-execution-outcome-fixtures-v2-1",
   "profile_version": "2.1",
   "description": "Public deterministic parity vectors for terminal outcomes linked to strict 2.1 decisions.",

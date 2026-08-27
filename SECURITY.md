@@ -60,9 +60,11 @@ The direct-provider sequence is fixed:
 | `remote_accepted` | Ingest positively confirms the exact receipt hash. |
 | `committed` | The local receipt chain commits the admitted receipt. |
 | `invocation_started` | The execution journal records that provider invocation may begin. |
-| `terminal` | The journal records executed, invocation failed, or nonexecuted. |
+| `terminal` | The journal records executed, invocation failed, invocation uncertain, or nonexecuted; an invocation that started carries its signed terminal outcome. |
 
 The provider callable is entered only after the first four phases succeed. A rejection, malformed response, timeout, transport ambiguity, local commit failure, or checkpoint failure before `invocation_started` produces no provider call and never falls back to the ordinary wrapper. Once `invocation_started` is durable, a crash or missing terminal record is `invocation_uncertain`; callers must reconcile it rather than automatically retrying an action that may already have executed.
+
+An authorized action has two signed records with different meanings. The decision receipt proves what was admitted. The terminal execution outcome proves what the runtime later recorded for that admitted attempt: `succeeded`, `failed`, or `uncertain`, bound to the decision receipt, operation fingerprint, attempt number, start time, and a result digest or bounded error code. The outcome cannot prove that a remote provider told the truth, and projecting a result to a digest does not make the omitted result recoverable.
 
 ### Authorization and surface limits
 
@@ -70,6 +72,18 @@ The provider callable is entered only after the first four phases succeed. A rej
 - Arguments must be representable as bounded JSON. The boundary snapshots the cleaned invocation and verifies its hash at execution time. Non-JSON values, changed arguments, or a reused action id with different input fail before provider invocation.
 - Supported methods are listed in [`COMPATIBILITY.md`](COMPATIBILITY.md#strict-profile-21-direct-provider-boundary). Python async-client methods, streaming, raw-response helpers, runner/factory paths, and every callable outside that allowlist fail closed with `unsupported_surface`.
 - Errors use the closed codes `unsupported_surface`, `context_unavailable`, `runtime_unavailable`, `not_authorized`, and `admission_not_confirmed`. A provider exception after invocation begins is preserved as the provider failure; it is not relabeled as a policy denial.
+
+The provider-neutral action boundary applies the same admit-commit-start-terminal sequence to an operator-declared side effect. Unlike the provider adapter, it does not invent a scope: the action supplies its explicit requested scopes, target, kind, name, and data classifications. The passed callable is the execution boundary. Any other reference to the underlying side effect remains a bypass.
+
+A `STEP_UP` decision can be resumed only through the strict approval-resolution path. The resolution must bind the suspended receipt, action, policy evidence, and approval evidence; a new signed resolution receipt is admitted before the original action can run. Duplicate, conflicting, expired, or already-consumed resolutions do not execute the action again.
+
+### Recovery, bundles, and telemetry
+
+Recovery accepts a self-contained execution journal only after validating its exact schema, receipt binding, chain position, execution-start hash, terminal state, and any signed outcome. It reports pre-invocation, unresolved, or resolved state, but always returns `retry_safe: false`: the recovery helper does not own enough external state to authorize replay.
+
+A strict evidence bundle is a separate portable envelope containing a contiguous trusted receipt chain, zero or one trusted terminal outcome per authorized decision, coverage status, and reconstructed policy continuity. It rejects partial chains, foreign or duplicate outcomes, unknown keys, unsupported fields, invalid signatures, and a bundle signer that does not match the head receipt signer. `complete` means every authorized decision in that supplied chain has a terminal outcome; it does not prove the supplied chain includes every action that ever occurred outside it.
+
+The OpenTelemetry decorator is correlation only. It waits for the underlying durable checkpoint save, then attaches content-free `obsvr.strict.*` receipt, policy, phase, and terminal references to the active recording span. No active span is created, no prompt or response is copied, and telemetry failure never changes admission or execution. Trace attributes are not trusted evidence: use the signed receipt, outcome, and bundle for verification. The shared attribute contract is [`conformance/fixtures/strict_otel_attributes_v2_1.json`](conformance/fixtures/strict_otel_attributes_v2_1.json).
 
 ### Endpoint and recovery boundary
 
