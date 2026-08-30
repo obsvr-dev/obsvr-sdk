@@ -22,6 +22,16 @@ from .config import (  # noqa: F401
 )
 from .policy import explain  # noqa: F401
 from .canary import mint_canary, scan_for_canary  # noqa: F401
+from .policy_lifecycle_v1 import (  # noqa: F401
+    POLICY_CANDIDATE_V1_SCHEMA,
+    POLICY_PROMOTION_V1_SCHEMA,
+    POLICY_REPLAY_REPORT_V1_SCHEMA,
+    PolicyLifecycleV1ValidationError,
+    build_policy_candidate_v1,
+    decide_policy_promotion_v1,
+    policy_candidate_v1_hash,
+    replay_policy_candidate_v1,
+)
 from .reason_codes import (  # noqa: F401
     REASON_CODES,
     RULE_TYPE_TO_REASON_CODE,
@@ -267,6 +277,14 @@ __all__ = [
     "explain",
     "mint_canary",
     "scan_for_canary",
+    "POLICY_CANDIDATE_V1_SCHEMA",
+    "POLICY_PROMOTION_V1_SCHEMA",
+    "POLICY_REPLAY_REPORT_V1_SCHEMA",
+    "PolicyLifecycleV1ValidationError",
+    "build_policy_candidate_v1",
+    "decide_policy_promotion_v1",
+    "policy_candidate_v1_hash",
+    "replay_policy_candidate_v1",
     "get_config",
     "is_initialized",
     "try_get_config",

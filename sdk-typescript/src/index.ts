@@ -348,6 +348,23 @@ export type { OpenAICompatConfig } from "./integrations/openai-compat.js";
 // a CRITICAL leak. Only the token HASH is ever stored or audited.
 export { mintCanary, scanForCanary, canaryCandidates } from "./policy/canary.js";
 export type { MintedCanary, CanaryHit, CanaryScanResult, CanaryCandidate } from "./policy/canary.js";
+export {
+  POLICY_CANDIDATE_V1_SCHEMA,
+  POLICY_REPLAY_REPORT_V1_SCHEMA,
+  POLICY_PROMOTION_V1_SCHEMA,
+  PolicyLifecycleV1ValidationError,
+  buildPolicyCandidateV1,
+  policyCandidateV1Hash,
+  replayPolicyCandidateV1,
+  decidePolicyPromotionV1,
+} from "./governance/policy-lifecycle-v1.js";
+export type {
+  PolicyCandidateV1Input,
+  PolicyReplayCaseV1,
+  PolicyPromotionThresholdsV1,
+  PolicyStageV1,
+  ReplayOutcomeV1,
+} from "./governance/policy-lifecycle-v1.js";
 
 // Resolved config accessor (needed by obsvrGovernMCP and custom integrations)
 export { getConfig } from "./proxy/index.js";
