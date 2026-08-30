@@ -41,6 +41,7 @@ dependencies = []
 # codes, and verdicts as the npm `obsvr-verify` CLI.
 [project.scripts]
 obsvr-verify = "obsvr.cli_verify:main"
+obsvr-run = "obsvr.auto_run:main"
 
 [project.urls]
 Homepage = "https://github.com/obsvr-dev/obsvr-sdk"
