@@ -1,9 +1,11 @@
-"""LangChain (Python) integration — a callback handler that also gates tools.
+"""LangChain (Python) integration — a callback handler that gates models and tools.
 
-Model calls are observe-only: on_llm_start/on_chat_model_start pair with
-on_llm_end/on_llm_error by run_id, and PII policy applies to the *stored* copy
-(block is downgraded to redact-in-event) because the request already went to
-the LLM.
+LangChain dispatches model-start callbacks before entering the model
+implementation and propagates handler errors when ``raise_error`` is true.
+The handler therefore applies the shared pre-call policy at that boundary and
+raises a typed policy error before provider dispatch. LangChain does not expose
+a stable callback API for replacing the provider-bound prompt, so a requested
+redaction that cannot be applied is resolved closed rather than leaked.
 
 Tool calls are not. ``on_tool_start`` is a real pre-execution gate: the tool
 base class dispatches it before the ``try`` that guards execution, and this
@@ -41,14 +43,20 @@ from ..agent_policy import (
 )
 from ..config import try_get_config
 from ..events import (
+    blocked_call_error,
     emit_event,
     infer_provider_from_string,
     step_limit_compliance,
     tool_denied_compliance,
     tool_gate_not_evaluated_compliance,
 )
-from ..deobfuscate import redact_for_storage
-from ..policy import apply_observe_policy
+from ..errors import ObsvrPolicyError
+from ..policy import (
+    apply_pre_call_policy,
+    blocked_prompt_for_storage,
+    blocked_user_input_for_storage,
+)
+from ..reason_codes import ReasonCode
 from ..span import emit_span
 from ..span_attributes import SPAN_ATTR
 
@@ -850,6 +858,8 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             prompt = "\n".join(p for p in (prompts or []) if isinstance(p, str))
             self._start(serialized, prompt, None, run_id, kwargs,
                         parent_run_id=parent_run_id)
+        except ObsvrPolicyError:
+            raise
         except Exception:
             pass
 
@@ -869,6 +879,8 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
                         user_text = content
             self._start(serialized, "\n".join(lines), user_text, run_id, kwargs,
                         parent_run_id=parent_run_id)
+        except ObsvrPolicyError:
+            raise
         except Exception:
             pass
 
@@ -884,11 +896,8 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         config = try_get_config()
         if config is None:
             return
-        # Sampling gates the EMISSION of clean allowed events, never the PII
-        # scan. Returning here skipped apply_observe_policy below, so a sub-1.0
-        # sample_rate silently dropped the scan and the redaction of the stored
-        # copy on a fraction of traffic. Carry the decision to the emit site,
-        # the same posture wrap.py ``_emit_audit`` already takes.
+        # Sampling gates only clean-event emission. The pre-call policy
+        # boundary still runs on every invocation.
         should_audit = _sender.should_emit(config)
 
         serialized = serialized or {}
@@ -906,8 +915,6 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             or (str(id_parts[-1]) if id_parts else "unknown")
         )
 
-        observed = apply_observe_policy(prompt, config)
-
         # Link to parent agent run if available
         parent_agent_run_id = None
         if parent_run_id is not None:
@@ -915,9 +922,85 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             if parent_state:
                 parent_agent_run_id = parent_state["agent_run_id"]
 
-        run_meta: Optional[Dict[str, Any]] = None
+        run_meta: Dict[str, Any] = {}
         if parent_agent_run_id:
-            run_meta = {"agent_run_id": parent_agent_run_id}
+            run_meta["agent_run_id"] = parent_agent_run_id
+
+        policy_metadata: Dict[str, Any] = {}
+        callback_metadata = kwargs.get("metadata")
+        if isinstance(callback_metadata, dict):
+            policy_metadata.update(callback_metadata)
+        option_metadata = self._options.get("metadata")
+        if isinstance(option_metadata, dict):
+            policy_metadata.update(option_metadata)
+        for key in ("user_id", "service_name"):
+            value = self._options.get(key)
+            if value is not None:
+                policy_metadata[key] = value
+
+        policy = apply_pre_call_policy(
+            prompt,
+            config,
+            provider=provider,
+            operation="langchain.llm",
+            metadata=policy_metadata,
+            model=str(model),
+            turn_text=user_text or prompt,
+        )
+        compliance = policy["compliance"]
+
+        if policy["decision"] == "redact":
+            compliance = dict(compliance)
+            compliance.update(
+                {
+                    "event_type": "blocked_call",
+                    "action_taken": "blocked",
+                    "action_reason": "policy_violation",
+                    "reason_code": ReasonCode.POLICY_VIOLATION.value,
+                    "redacted_types": [],
+                    "blocked_types": list(
+                        dict.fromkeys(
+                            list(compliance.get("blocked_types") or [])
+                            + list(compliance.get("redacted_types") or [])
+                        )
+                    ),
+                    "rule_id": "sdk:outbound_redaction_unsupported",
+                    "policy_reason": (
+                        "LangChain model-start callbacks cannot replace the "
+                        "provider-bound request; blocked instead of forwarding "
+                        "unredacted content"
+                    ),
+                }
+            )
+
+        telemetry: Dict[str, Any] = {}
+        if policy.get("canary_telemetry") is not None:
+            telemetry.update(policy["canary_telemetry"])
+        if policy.get("floor_telemetry") is not None:
+            telemetry.update(policy["floor_telemetry"])
+        if telemetry:
+            run_meta["obsvr_telemetry"] = telemetry
+
+        if policy["decision"] == "block" or compliance["action_taken"] == "blocked":
+            emit_event(
+                config,
+                provider=provider,
+                model=str(model),
+                operation="langchain.llm",
+                source=SOURCE,
+                prompt=blocked_prompt_for_storage(
+                    prompt, compliance, policy.get("security_normalized")
+                ),
+                response="",
+                user_input=blocked_user_input_for_storage(user_text or prompt, policy),
+                latency_ms=0,
+                success=False,
+                status_code=403,
+                compliance=compliance,
+                metadata=run_meta or None,
+                options=self._options or None,
+            )
+            raise blocked_call_error(compliance)
 
         self._runs[str(run_id)] = {
             "prompt": prompt,
@@ -925,17 +1008,14 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             "model": model,
             "provider": provider,
             "start_time": time.time(),
-            "compliance": observed["compliance"],
-            "redact": observed["should_redact_stored"],
-            # View-only hit: stored copies use a whole-text placeholder.
-            "redact_via": observed.get("stored_redaction_via"),
+            "compliance": compliance,
             "agent_run_id": parent_agent_run_id,
-            "metadata": run_meta,
+            "metadata": run_meta or None,
             # Allowed: emit only when sampled in. Anything the scan acted on is
             # enforcement evidence and is always recorded, as are errors.
             "audit_this_call": (
                 should_audit
-                or observed["compliance"].get("action_reason", "none") != "none"
+                or compliance.get("action_reason", "none") != "none"
             ),
         }
 
@@ -985,13 +1065,6 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
 
             prompt = state["prompt"]
             user_text = state["user_text"]
-            if state["redact"]:
-                via = state.get("redact_via")
-                prompt = redact_for_storage(prompt, via)
-                text = redact_for_storage(text, via)
-                if user_text is not None:
-                    user_text = redact_for_storage(user_text, via)
-
             emit_event(
                 config,
                 provider=state["provider"],
@@ -1021,8 +1094,6 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
             if config is None:
                 return
             prompt = state["prompt"]
-            if state["redact"]:
-                prompt = redact_for_storage(prompt, state.get("redact_via"))
             emit_event(
                 config,
                 provider=state["provider"],

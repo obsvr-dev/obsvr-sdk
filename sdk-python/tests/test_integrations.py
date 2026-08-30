@@ -102,21 +102,19 @@ def test_langchain_llm_error(sent):
     assert sent[0]["error_message"] == "connection reset"
 
 
-def test_langchain_observe_only_pii_storage_is_separate_from_outbound(sent):
+def test_langchain_pii_block_stops_model_start(sent):
     _init_pii()
     from obsvr.integrations.langchain import ObsvrCallbackHandler
     h = ObsvrCallbackHandler()
-    h.on_llm_start(SERIALIZED_OPENAI, ["my ssn is 123-45-6789"], run_id="run-4")
-    h.on_llm_end(_FakeLLMResult("noted"), run_id="run-4")
+    with pytest.raises(obsvr.ObsvrPolicyError, match="Request blocked by policy"):
+        h.on_llm_start(SERIALIZED_OPENAI, ["my ssn is 123-45-6789"], run_id="run-4")
     assert len(sent) == 1
     e = sent[0]
-    assert e["event_type"] == "llm_call"       # not blocked_call
-    assert e["action_taken"] == "not_evaluated"
+    assert e["event_type"] == "blocked_call"
+    assert e["action_taken"] == "blocked"
     assert e["action_reason"] == "pii_detected"
     assert "[REDACTED_SSN]" in e["prompt"]
     assert "123-45-6789" not in e["prompt"]
-    assert e["metadata"]["obsvr_telemetry"]["stored_redaction_scope"] == "observe_only"
-    assert e["metadata"]["obsvr_telemetry"]["stored_redaction_outbound_unmodified"] is True
 
 
 def test_langchain_ghost_end_ignored(sent):

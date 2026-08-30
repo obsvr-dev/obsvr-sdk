@@ -5,9 +5,12 @@
  * `CallbackHandlerMethods` - no hard dependency on `@langchain/core`.
  * Pass an instance via `callbacks: [...]` on any model/chain.
  *
- * Observe-only for LLM calls: the request has already been sent to the LLM
- * by the time callbacks fire, so PII policy applies to the *stored* copy
- * ("block" is downgraded to redact-in-event with action_reason "pii_detected").
+ * Enforcing for LLM calls: LangChain awaits model-start callbacks before it
+ * enters the model implementation. With `raiseError = true`, a policy refusal
+ * propagates out of the callback and the provider dispatch never runs.
+ * LangChain does not provide a stable API for replacing provider-bound prompt
+ * values from a callback, so a requested redaction that cannot be applied is
+ * resolved closed rather than forwarding the original content.
  *
  * Agent-level tracing: handleChainStart/End/Error track AgentExecutor runs
  * and enforce agentPolicy (tool restrictions, step limits, output controls).
@@ -32,14 +35,15 @@
 import {
   applyLoopDetection,
   applyDelegationPolicy,
-  applyObservePolicy,
+  applyPreCallPolicy,
+  blockedCallError,
+  blockedPromptForStorage,
+  blockedUserInputForStorage,
   createLoopDetector,
   createDelegationTracker,
   emitIntegrationEvent,
   inferProviderFromString,
   monitorModeRequiresEvidence,
-  redactForStorage,
-  type DeobfuscationView,
   setupExitHandlers,
   shouldSample,
   tryGetConfig,
@@ -47,6 +51,7 @@ import {
   type IntegrationOptions,
   type IntegrationProvider,
 } from "./core.js";
+import { ObsvrPolicyError } from "../policy/policy-error.js";
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
 import type { DelegationTracker } from "../policy/industry/agentic.js";
@@ -96,12 +101,10 @@ interface RunState {
   provider: IntegrationProvider;
   startTime: number;
   compliance: ComplianceInfo;
-  shouldRedactStored: boolean;
-  /** View-only detection: stored copies use a whole-text placeholder. */
-  storedRedactionVia?: DeobfuscationView["method"];
   /** Sampled in, OR the policy acted — governed calls are always recorded. */
   auditThisCall: boolean;
   agentRunId?: string;
+  floorTelemetry?: Record<string, unknown>;
 }
 
 interface AgentRunState {
@@ -854,7 +857,7 @@ export class ObsvrCallbackHandler {
     metadata?: Record<string, unknown>,
   ): Promise<void> {
     const prompt = Array.isArray(prompts) ? prompts.join("\n") : "";
-    this.startRun(llm, prompt, prompt, runId, parentRunId, extraParams, metadata);
+    await this.startRun(llm, prompt, prompt, runId, parentRunId, extraParams, metadata);
   }
 
   async handleChatModelStart(
@@ -878,10 +881,10 @@ export class ObsvrCallbackHandler {
         break;
       }
     }
-    this.startRun(llm, prompt, userText || prompt, runId, parentRunId, extraParams, metadata);
+    await this.startRun(llm, prompt, userText || prompt, runId, parentRunId, extraParams, metadata);
   }
 
-  private startRun(
+  private async startRun(
     llm: SerializedLike,
     prompt: string,
     userText: string,
@@ -889,20 +892,25 @@ export class ObsvrCallbackHandler {
     parentRunId?: string,
     extraParams?: Record<string, unknown>,
     metadata?: Record<string, unknown>,
-  ): void {
+  ): Promise<void> {
     try {
       const config = tryGetConfig();
       if (!config) return;
-      // Sampling gates the EMISSION of clean allowed events, never the PII
-      // scan. Returning here skipped applyObservePolicy below, so a sub-1.0
-      // sample_rate silently dropped the scan and the redaction of the stored
-      // copy on a fraction of traffic. Carry the decision to the emit site.
+      // Sampling gates only clean-event emission. The pre-call policy boundary
+      // still runs on every invocation.
       const shouldAudit = shouldSample(config.sample_rate);
 
-      const { shouldRedactStored, compliance, storedRedactionVia } = applyObservePolicy(
-        `${prompt} ${userText}`,
+      const model = extractModelName(llm, extraParams, metadata);
+      const provider = inferProvider(llm);
+      const policy = await applyPreCallPolicy(prompt, {
         config,
-      );
+        provider,
+        operation: "llm",
+        userId: this.opts.user_id,
+        serviceName: this.opts.service_name,
+        model,
+        metadata: { ...this.opts.metadata, ...metadata },
+      });
 
       // Link to parent agent run if available
       const parentAgentState = parentRunId
@@ -910,27 +918,65 @@ export class ObsvrCallbackHandler {
         : undefined;
       const agentRunId = parentAgentState?.agentRunId;
 
+      let compliance = policy.compliance;
+      if (policy.decision === "redact") {
+        compliance = {
+          ...compliance,
+          event_type: "blocked_call",
+          action_taken: "blocked",
+          action_reason: "policy_violation",
+          reason_code: ReasonCode.POLICY_VIOLATION,
+          redacted_types: [],
+          blocked_types: [
+            ...new Set([...compliance.blocked_types, ...compliance.redacted_types]),
+          ],
+          rule_id: "sdk:outbound_redaction_unsupported",
+          policy_reason:
+            "LangChain model-start callbacks cannot replace the provider-bound request; blocked instead of forwarding unredacted content",
+        };
+      }
+
+      if (policy.decision === "block" || compliance.action_taken === "blocked") {
+        emitIntegrationEvent({
+          config,
+          provider,
+          model,
+          operation: "llm",
+          source: SOURCE,
+          prompt: blockedPromptForStorage(prompt, compliance, policy.securityNormalized),
+          response: "",
+          userInput: blockedUserInputForStorage(userText, policy),
+          latencyMs: 0,
+          success: false,
+          statusCode: 403,
+          metadata: agentRunId ? { agent_run_id: agentRunId } : undefined,
+          options: this.opts,
+          canaryTelemetry: policy.canaryTelemetry,
+          floorTelemetry: policy.floorTelemetry,
+          compliance,
+        });
+        throw blockedCallError(compliance);
+      }
+
       this.runs.set(runId, {
         prompt,
         userText,
-        model: extractModelName(llm, extraParams, metadata),
-        provider: inferProvider(llm),
+        model,
+        provider,
         startTime: performance.now(),
         compliance,
-        shouldRedactStored,
-        storedRedactionVia,
-        // Observe-only is classified `not_evaluated` even when the scan found
-        // nothing, so that status alone must not bypass sampling. Actual scan /
-        // storage action and monitor mode remain unsampled evidence.
         auditThisCall:
           monitorModeRequiresEvidence(config) ||
           shouldAudit ||
-          shouldRedactStored ||
           compliance.action_reason !== "none",
         agentRunId,
+        floorTelemetry: policy.floorTelemetry,
       });
-    } catch {
-      // Never throw inside a framework callback
+    } catch (error) {
+      if (error instanceof ObsvrPolicyError) throw error;
+      // Callback bookkeeping and audit failures do not affect the model call.
+      // Policy and detector failure behavior is already resolved inside the
+      // shared pre-call pipeline and reaches this point as ObsvrPolicyError.
     }
   }
 
@@ -984,21 +1030,16 @@ export class ObsvrCallbackHandler {
         provenance_source: resolvedModel ? "framework_reported" : undefined,
         operation: "llm",
         source: SOURCE,
-        prompt: state.shouldRedactStored
-          ? redactForStorage(state.prompt, state.storedRedactionVia)
-          : state.prompt,
-        response: state.shouldRedactStored
-          ? redactForStorage(responseText, state.storedRedactionVia)
-          : responseText,
-        userInput: state.shouldRedactStored
-          ? redactForStorage(state.userText, state.storedRedactionVia)
-          : state.userText,
+        prompt: state.prompt,
+        response: responseText,
+        userInput: state.userText,
         inputTokens: num(tokenUsage?.promptTokens),
         outputTokens: num(tokenUsage?.completionTokens),
         totalTokens: num(tokenUsage?.totalTokens),
         latencyMs: Math.round(performance.now() - state.startTime),
         metadata,
         options: this.opts,
+        floorTelemetry: state.floorTelemetry,
         compliance: state.compliance,
       });
     } catch {
@@ -1025,18 +1066,15 @@ export class ObsvrCallbackHandler {
         model: state.model,
         operation: "llm",
         source: SOURCE,
-        prompt: state.shouldRedactStored
-          ? redactForStorage(state.prompt, state.storedRedactionVia)
-          : state.prompt,
+        prompt: state.prompt,
         response: "",
-        userInput: state.shouldRedactStored
-          ? redactForStorage(state.userText, state.storedRedactionVia)
-          : state.userText,
+        userInput: state.userText,
         latencyMs: Math.round(performance.now() - state.startTime),
         success: false,
         error,
         metadata,
         options: this.opts,
+        floorTelemetry: state.floorTelemetry,
         compliance: state.compliance,
       });
     } catch {
