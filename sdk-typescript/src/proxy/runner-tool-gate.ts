@@ -30,7 +30,6 @@
  */
 
 import { obsvrGovernTool } from "../integrations/tools.js";
-import { resolveSessionTaint } from "../policy/session-taint.js";
 import type { IntegrationOptions } from "../integrations/core.js";
 import type { ResolvedConfig } from "./types.js";
 
@@ -48,7 +47,7 @@ export interface RunnerToolGateReport {
    */
   ungatable: string[];
   /** Why no gate was installed, when none was. */
-  reason?: "no_tool_control_configured" | "no_tools_in_request" | "no_gateable_tool";
+  reason?: "no_tools_in_request" | "no_gateable_tool";
 }
 
 const NOT_INSTALLED = (reason: RunnerToolGateReport["reason"]): RunnerToolGateReport => ({
@@ -72,26 +71,6 @@ function stringOr(value: unknown, fallback: string): string {
 }
 
 /**
- * Whether any tool-level control is configured at all.
- *
- * A deployment that configured none has nothing for this gate to decide, and
- * installing it anyway would add an event per tool call to every caller on this
- * path to record a verdict nobody asked for. The emitted record distinguishes
- * this case from a gate that could not be installed, so "ungated" never has to
- * be read as one thing when it is the other.
- */
-function hasToolControl(config: ResolvedConfig): boolean {
-  const policy = config.agentPolicy;
-  if (policy && (policy.deniedTools !== undefined || policy.allowedTools !== undefined)) {
-    return true;
-  }
-  // Boolean, not a null comparison: this returns `undefined` when the latch is
-  // off, and `undefined !== null` is true — which quietly reported every
-  // deployment as having a tool control.
-  return Boolean(resolveSessionTaint(config));
-}
-
-/**
  * Gate every tool callback in a tool-runner request.
  *
  * Returns a NEW argument list. Nothing the caller passed is mutated: the first
@@ -102,13 +81,9 @@ function hasToolControl(config: ResolvedConfig): boolean {
  */
 export function governRunnerTools(
   args: unknown[],
-  config: ResolvedConfig,
+  _config: ResolvedConfig,
   options: IntegrationOptions,
 ): { args: unknown[]; report: RunnerToolGateReport } {
-  if (!hasToolControl(config)) {
-    return { args, report: NOT_INSTALLED("no_tool_control_configured") };
-  }
-
   const first = args[0];
   if (!isPlainObject(first) || !Array.isArray(first.tools) || first.tools.length === 0) {
     return { args, report: NOT_INSTALLED("no_tools_in_request") };
