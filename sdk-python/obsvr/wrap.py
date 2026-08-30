@@ -317,6 +317,11 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     system = kwargs.get("system")
     if isinstance(system, str):
         parts.append(system)
+    elif isinstance(system, (list, tuple)):
+        for block in system:
+            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
 
     messages = kwargs.get("messages")
     if isinstance(messages, list):
@@ -603,6 +608,12 @@ def _redact_messages_in_place(
         kwargs["messages"] = rebuilt
     if isinstance(kwargs.get("system"), str):
         kwargs["system"] = redact_fn(kwargs["system"])
+    elif isinstance(kwargs.get("system"), list):
+        kwargs["system"] = _redact_text_blocks(kwargs["system"], redact_fn)
+    elif isinstance(kwargs.get("system"), tuple):
+        kwargs["system"] = tuple(
+            _redact_text_blocks(list(kwargs["system"]), redact_fn)
+        )
 
     # OpenAI Responses API: instructions + input (bare string or message list)
     if isinstance(kwargs.get("instructions"), str):

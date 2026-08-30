@@ -370,6 +370,53 @@ describe('wrap with auditable method', () => {
     expect(JSON.stringify(received.messages)).not.toContain('bob@example.com');
   });
 
+  it('blocks Anthropic array-form system content before provider execution', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    const create = jest.fn(async (_request: any) => ({
+      content: [{ type: 'text', text: 'ok' }],
+    }));
+    const client = wrap({ messages: { create } });
+
+    await expect(
+      client.messages.create({
+        model: 'claude-test',
+        max_tokens: 32,
+        system: [{ type: 'text', text: 'SSN 123-45-6789' }],
+        messages: [{ role: 'user', content: 'safe request' }],
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('redacts Anthropic array-form system content before provider execution', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      pii_policy: { rules: { email: 'redact' } },
+    });
+    let outbound: any;
+    const create = jest.fn(async (request: any) => {
+      outbound = request;
+      return { content: [{ type: 'text', text: 'ok' }] };
+    });
+    const client = wrap({ messages: { create } });
+
+    await client.messages.create({
+      model: 'claude-test',
+      max_tokens: 32,
+      system: [{ type: 'text', text: 'Contact secret@example.com' }],
+      messages: [{ role: 'user', content: 'safe request' }],
+    });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(outbound.system[0].text).toContain('[REDACTED_EMAIL]');
+    expect(outbound.system[0].text).not.toContain('secret@example.com');
+  });
+
   it('should skip streaming requests by default', async () => {
     init({ api_key: 'test', sample_rate: 1, streaming_mode: 'skip' });
 

@@ -855,6 +855,36 @@ class TestWireRedactionShapes:
         assert "[REDACTED_EMAIL]" in block["text"]
         assert "a@b.com" not in sent["system"]
 
+    def test_anthropic_system_block_list_blocks_before_execution(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        _captured_events(monkeypatch)
+        raw = FakeAnthropic()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            obsvr.wrap(raw).messages.create(
+                model="claude-sonnet-5",
+                max_tokens=64,
+                system=[{"type": "text", "text": "SSN 123-45-6789"}],
+                messages=[{"role": "user", "content": "safe request"}],
+            )
+
+        assert raw.messages.calls == []
+
+    def test_anthropic_system_block_list_redacts_outbound(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        _captured_events(monkeypatch)
+        raw = FakeAnthropic()
+
+        obsvr.wrap(raw).messages.create(
+            model="claude-sonnet-5",
+            max_tokens=64,
+            system=[{"type": "text", "text": "Contact secret@example.com"}],
+            messages=[{"role": "user", "content": "safe request"}],
+        )
+
+        sent = raw.messages.calls[0]
+        assert sent["system"][0]["text"] == "Contact [REDACTED_EMAIL]"
+
     def test_gemini_contents_kwargs_redacted_outbound(self, monkeypatch):
         _init(pii_policy={"rules": {"email": "redact"}})
         _captured_events(monkeypatch)

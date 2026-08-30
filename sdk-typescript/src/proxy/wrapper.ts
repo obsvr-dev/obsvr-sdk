@@ -571,6 +571,10 @@ function extractPromptTextFromArgs(args: unknown): string {
 
   if (typeof req.system === "string") {
     parts.push(req.system);
+  } else if (Array.isArray(req.system)) {
+    for (const block of req.system as Record<string, unknown>[]) {
+      if (block && typeof block.text === "string") parts.push(block.text);
+    }
   }
 
   if (Array.isArray(req.messages)) {
@@ -734,6 +738,8 @@ function redactMessagesInPlace(args: unknown): void {
 
   if (typeof req.system === "string") {
     req.system = redactBuiltinPii(req.system);
+  } else if (Array.isArray(req.system)) {
+    req.system = redactTextParts(req.system);
   }
 
   if (Array.isArray(req.messages)) {
