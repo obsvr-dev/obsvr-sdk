@@ -61,6 +61,7 @@ import {
   type IntegrationProvider,
 } from "./core.js";
 import { applyOutboundRedaction } from "../policy/detector-guard.js";
+import { NLP_ONLY_PII_TYPES } from "../policy/presidio.js";
 import type { ResolvedConfig } from "../proxy/types.js";
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
@@ -149,15 +150,7 @@ function redactRequest(
   // The TypeScript SDK's local outbound redactor is the built-in structured
   // PII tier. If an external analyzer alone located an entity, this boundary
   // cannot synchronously rewrite it and therefore fails closed.
-  const nlpOnly = new Set([
-    "name",
-    "person",
-    "address",
-    "location",
-    "medical",
-    "national_id",
-  ]);
-  if (types.some((name) => nlpOnly.has(name))) {
+  if (types.some((name) => NLP_ONLY_PII_TYPES.has(name))) {
     throw new RedactionNotApplied("an external-only PII span cannot be rewritten here");
   }
 
