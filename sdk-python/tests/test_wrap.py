@@ -969,6 +969,44 @@ class TestResponsesAPIInterception:
         assert "[REDACTED_EMAIL]" in sent["input"][0]["content"]
         assert "a@b.com" not in sent["instructions"]
 
+    def test_responses_function_output_blocks_before_execution(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        _captured_events(monkeypatch)
+        raw = FakeOpenAIResponses()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            obsvr.wrap(raw).responses.create(
+                model="gpt-4o",
+                input=[{
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "SSN 123-45-6789",
+                }],
+            )
+
+        assert raw.responses.calls == []
+
+    def test_responses_structured_function_output_redacts_outbound(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        _captured_events(monkeypatch)
+        raw = FakeOpenAIResponses()
+
+        obsvr.wrap(raw).responses.create(
+            model="gpt-4o",
+            input=[{
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": [{
+                    "type": "input_text",
+                    "text": "Contact secret@example.com",
+                }],
+            }],
+        )
+
+        sent = raw.responses.calls[0]
+        assert "secret@example.com" not in str(sent)
+        assert "[REDACTED_EMAIL]" in str(sent)
+
     def test_responses_output_list_fallback_text(self, monkeypatch):
         _init()
         captured = _captured_events(monkeypatch)

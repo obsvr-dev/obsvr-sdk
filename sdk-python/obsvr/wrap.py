@@ -293,6 +293,33 @@ def _detect_provider(client: Any) -> str:
 
 # ── Prompt / response extractors ─────────────────────────────────────────────
 
+def _append_string_leaves(value: Any, parts: List[str]) -> None:
+    """Collect strings from a provider-bound structured content value."""
+    if isinstance(value, str):
+        parts.append(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _append_string_leaves(item, parts)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _append_string_leaves(item, parts)
+
+
+def _redact_string_leaves(value: Any, redact_fn: Callable[[str], str]) -> Any:
+    """Copy a structured content value while redacting every string leaf."""
+    if isinstance(value, str):
+        return redact_fn(value)
+    if isinstance(value, list):
+        return [_redact_string_leaves(item, redact_fn) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_string_leaves(item, redact_fn) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: _redact_string_leaves(item, redact_fn)
+            for key, item in value.items()
+        }
+    return value
+
 def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     """Pull all visible prompt text for PII/policy scanning."""
     parts: List[str] = []
@@ -343,6 +370,9 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
         parts.append(input_val)
     elif isinstance(input_val, list):
         for item in input_val:
+            output = item.get("output") if isinstance(item, dict) else getattr(item, "output", None)
+            if output is not None:
+                _append_string_leaves(output, parts)
             content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
             if isinstance(content, str):
                 parts.append(content)
@@ -625,13 +655,27 @@ def _redact_messages_in_place(
         rebuilt_input = []
         for item in input_val:
             if isinstance(item, dict):
+                output = (
+                    _redact_string_leaves(item["output"], redact_fn)
+                    if "output" in item else None
+                )
                 content = item.get("content")
                 if isinstance(content, str):
-                    rebuilt_input.append({**item, "content": redact_fn(content)})
+                    rebuilt_input.append({
+                        **item,
+                        **({"output": output} if "output" in item else {}),
+                        "content": redact_fn(content),
+                    })
                 elif isinstance(content, list):
                     rebuilt_input.append(
-                        {**item, "content": _redact_text_blocks(content, redact_fn)}
+                        {
+                            **item,
+                            **({"output": output} if "output" in item else {}),
+                            "content": _redact_text_blocks(content, redact_fn),
+                        }
                     )
+                elif "output" in item:
+                    rebuilt_input.append({**item, "output": output})
                 else:
                     rebuilt_input.append(item)
             else:

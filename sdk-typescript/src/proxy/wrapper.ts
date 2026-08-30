@@ -562,6 +562,18 @@ function classifyError(error: unknown): AuditEvent["error_type"] {
  * Extract all visible prompt text from request args for PII scanning.
  * Handles OpenAI (messages), Anthropic (messages + system), and Gemini (contents).
  */
+function appendStringLeaves(value: unknown, parts: string[]): void {
+  if (typeof value === "string") {
+    parts.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) appendStringLeaves(item, parts);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      appendStringLeaves(item, parts);
+    }
+  }
+}
+
 function extractPromptTextFromArgs(args: unknown): string {
   // Gemini accepts a plain string: generateContent('text')
   if (typeof args === "string") return args;
@@ -603,6 +615,7 @@ function extractPromptTextFromArgs(args: unknown): string {
     parts.push(req.input);
   } else if (Array.isArray(req.input)) {
     for (const item of req.input as Record<string, unknown>[]) {
+      if ("output" in item) appendStringLeaves(item.output, parts);
       if (typeof item.content === "string") {
         parts.push(item.content);
       } else if (Array.isArray(item.content)) {
@@ -708,6 +721,21 @@ function redactMessagesInPlace(args: unknown): void {
       return { ...p, text: redactBuiltinPii(p.text) };
     });
 
+  /** Redact string leaves in provider-bound structured tool output. */
+  const redactStringLeaves = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactStringLeaves);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+          key,
+          redactStringLeaves(item),
+        ]),
+      );
+    }
+    return value;
+  };
+
   /** Redact every text carrier in the maintained SDK's ContentListUnion. */
   const redactGeminiContent = (value: unknown): unknown => {
     if (typeof value === "string") return redactBuiltinPii(value);
@@ -727,13 +755,22 @@ function redactMessagesInPlace(args: unknown): void {
   const redactContentCarrier = (entry: unknown): unknown => {
     if (!entry || typeof entry !== "object") return entry;
     const e = entry as Record<string, unknown>;
+    const output = "output" in e ? redactStringLeaves(e.output) : undefined;
     if (typeof e.content === "string") {
-      return { ...e, content: redactBuiltinPii(e.content) };
+      return {
+        ...e,
+        ...(output !== undefined ? { output } : {}),
+        content: redactBuiltinPii(e.content),
+      };
     }
     if (Array.isArray(e.content)) {
-      return { ...e, content: redactTextParts(e.content) };
+      return {
+        ...e,
+        ...(output !== undefined ? { output } : {}),
+        content: redactTextParts(e.content),
+      };
     }
-    return entry;
+    return output !== undefined ? { ...e, output } : entry;
   };
 
   if (typeof req.system === "string") {
