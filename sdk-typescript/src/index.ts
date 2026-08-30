@@ -114,6 +114,25 @@ export {
   actionTargetHash,
   ActionContextV2ValidationError,
 } from "./governance/action-context-v2.js";
+export {
+  REMEDIATION_PLAN_V1_SCHEMA,
+  REMEDIATION_RETRY_V1_SCHEMA,
+  REMEDIATION_PLAN_HASH_DOMAIN,
+  RemediationV1ValidationError,
+  buildRemediationPlanV1,
+  canonicalizeRemediationPlanV1,
+  remediationPlanV1Hash,
+  buildRemediationRetryV1,
+  remediationRetryV1Hash,
+} from "./governance/remediation-v1.js";
+export type {
+  RemediationRequirementV1Input,
+  RemediationPlanV1Input,
+  RemediationPlanV1Document,
+  SatisfiedRemediationRequirementV1Input,
+  RemediationRetryV1Input,
+  RemediationRetryV1Document,
+} from "./governance/remediation-v1.js";
 export type {
   ActionContextV2Input,
   ActionContextV2Document,

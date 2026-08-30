@@ -233,6 +233,9 @@ def build_action_context_v2(input_value: Any) -> Dict[str, Any]:
             "arguments_hash",
             "target",
             "target_hash",
+            "attempt_id",
+            "parent_attempt_id",
+            "remediation_retry_hash",
             "data_classifications",
             "requested_scopes",
         },
@@ -275,6 +278,27 @@ def build_action_context_v2(input_value: Any) -> Dict[str, Any]:
     elif "target_hash" in current:
         action["target_hash"] = _hash(
             current["target_hash"], "current_action.target_hash"
+        )
+    attempt_id = _optional_text(current, "attempt_id", "current_action.attempt_id")
+    parent_attempt_id = _optional_text(
+        current, "parent_attempt_id", "current_action.parent_attempt_id"
+    )
+    has_retry_hash = "remediation_retry_hash" in current
+    if (parent_attempt_id is None) != (not has_retry_hash):
+        _fail(
+            "current_action parent_attempt_id and remediation_retry_hash must appear together"
+        )
+    if (parent_attempt_id is not None or has_retry_hash) and attempt_id is None:
+        _fail("current_action retry linkage requires attempt_id")
+    if attempt_id is not None:
+        action["attempt_id"] = attempt_id
+    if parent_attempt_id is not None:
+        if parent_attempt_id == attempt_id:
+            _fail("current_action retry must use a new attempt_id")
+        action["parent_attempt_id"] = parent_attempt_id
+        action["remediation_retry_hash"] = _hash(
+            current["remediation_retry_hash"],
+            "current_action.remediation_retry_hash",
         )
 
     prior_input = root.get("prior_actions")

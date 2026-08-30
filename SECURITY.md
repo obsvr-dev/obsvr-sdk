@@ -130,6 +130,14 @@ coverage statements travel by hash, and arbitrary prompt/output fields are
 rejected. Adding the layers is backward-compatible for callers that omit them:
 their canonical v2 bytes do not change.
 
+Remediation plans are nonexecuting structured instructions for `MODIFY`,
+`STEP_UP`, and `DEFER`; a terminal `DENY` cannot be converted into a retry plan.
+Every retry must use a new attempt id and supply one evidence hash for every
+plan requirement. The retry hash binds the original attempt, original receipt,
+plan, new attempt, and evidence set. These hashes prove linkage and integrity,
+not the truth of the external evidence itself; the policy or approval authority
+must still validate that evidence before allowing execution.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.

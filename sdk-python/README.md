@@ -113,6 +113,9 @@ reported as a coverage exclusion.
 application actions. Optional principal, execution, and governance layers
 carry stable facts and hashes only; unknown fields and raw target storage are
 rejected.
+Structured remediation uses `build_remediation_plan_v1()` and
+`build_remediation_retry_v1()`: a retry is a new attempt linked to the original
+receipt and requires hashed evidence for every declared requirement.
 
 The same manifest is enforced by direct `obsvr.init(auto=True)`. Production
 direct-init also warns if a supported package was imported first, because a

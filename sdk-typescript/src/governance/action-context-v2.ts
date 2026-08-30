@@ -47,6 +47,9 @@ export interface ActionContextV2Input {
     arguments_hash: string;
     target?: string;
     target_hash?: string;
+    attempt_id?: string;
+    parent_attempt_id?: string;
+    remediation_retry_hash?: string;
     data_classifications: string[];
     requested_scopes: string[];
   };
@@ -88,6 +91,9 @@ export interface ActionContextV2Document {
     name: string;
     arguments_hash: string;
     target_hash?: string;
+    attempt_id?: string;
+    parent_attempt_id?: string;
+    remediation_retry_hash?: string;
     data_classifications: string[];
     requested_scopes: string[];
   };
@@ -244,6 +250,7 @@ export function buildActionContextV2(input: ActionContextV2Input): ActionContext
     'principal', 'execution', 'governance'], 'action context');
   const current = record(root.current_action, 'current_action');
   exactKeys(current, ['kind', 'name', 'arguments_hash', 'target', 'target_hash',
+    'attempt_id', 'parent_attempt_id', 'remediation_retry_hash',
     'data_classifications', 'requested_scopes'], 'current_action');
 
   const activeIntents = stringSet(root.active_intents, 'active_intents');
@@ -274,6 +281,25 @@ export function buildActionContextV2(input: ActionContextV2Input): ActionContext
     action.target_hash = actionTargetHash(current.target);
   } else if (Object.prototype.hasOwnProperty.call(current, 'target_hash')) {
     action.target_hash = hash(current.target_hash, 'current_action.target_hash');
+  }
+  const attemptId = optionalText(current, 'attempt_id', 'current_action.attempt_id');
+  const parentAttemptId = optionalText(
+    current, 'parent_attempt_id', 'current_action.parent_attempt_id',
+  );
+  const hasRetryHash = Object.prototype.hasOwnProperty.call(current, 'remediation_retry_hash');
+  if ((parentAttemptId === undefined) !== !hasRetryHash) {
+    fail('current_action parent_attempt_id and remediation_retry_hash must appear together');
+  }
+  if ((parentAttemptId !== undefined || hasRetryHash) && attemptId === undefined) {
+    fail('current_action retry linkage requires attempt_id');
+  }
+  if (attemptId !== undefined) action.attempt_id = attemptId;
+  if (parentAttemptId !== undefined) {
+    if (parentAttemptId === attemptId) fail('current_action retry must use a new attempt_id');
+    action.parent_attempt_id = parentAttemptId;
+    action.remediation_retry_hash = hash(
+      current.remediation_retry_hash, 'current_action.remediation_retry_hash',
+    );
   }
 
   if (!Array.isArray(root.prior_actions)) fail('prior_actions must be an array');

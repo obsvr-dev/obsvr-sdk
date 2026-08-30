@@ -241,6 +241,13 @@ documents. Existing inputs that omit the layers retain their pinned canonical
 bytes and hash. The layered fixture separately pins ordering, deduplication,
 target tokenization, enum validation, and the new canonical hash.
 
+`obsvr-remediation-plan-v1` and `obsvr-remediation-retry-v1` are pinned
+cross-language. Plans accept only `MODIFY`, `STEP_UP`, and `DEFER`; requirements
+are sorted by code-bearing identity and retry evidence must cover every unique
+requirement exactly once. Action-context retry linkage is optional, but when a
+parent attempt is present the new attempt id and remediation retry hash are
+both required.
+
 ## Ordinary enforcement boundary
 
 The ordinary wrappers are broader than strict profile 2.1. On every method

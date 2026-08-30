@@ -79,6 +79,16 @@ from .action_context_v2 import (  # noqa: F401
     build_action_context_v2,
     canonicalize_action_context_v2,
 )
+from .remediation_v1 import (  # noqa: F401
+    REMEDIATION_PLAN_V1_SCHEMA,
+    REMEDIATION_RETRY_V1_SCHEMA,
+    RemediationV1ValidationError,
+    build_remediation_plan_v1,
+    build_remediation_retry_v1,
+    canonicalize_remediation_plan_v1,
+    remediation_plan_v1_hash,
+    remediation_retry_v1_hash,
+)
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .otel_mirror import (  # noqa: F401
     correlate_strict_runtime_checkpoint_v2_1_to_otel,
@@ -232,6 +242,14 @@ __all__ = [
     "action_target_hash",
     "build_action_context_v2",
     "canonicalize_action_context_v2",
+    "REMEDIATION_PLAN_V1_SCHEMA",
+    "REMEDIATION_RETRY_V1_SCHEMA",
+    "RemediationV1ValidationError",
+    "build_remediation_plan_v1",
+    "build_remediation_retry_v1",
+    "canonicalize_remediation_plan_v1",
+    "remediation_plan_v1_hash",
+    "remediation_retry_v1_hash",
     "integration_bindings",
     "required_binding_failures",
     "assert_required_bindings",

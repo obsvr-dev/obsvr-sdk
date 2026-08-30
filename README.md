@@ -256,6 +256,20 @@ Raw targets are replaced by a domain-separated hash. Unknown fields and
 unbounded enum values are rejected, and existing v2 inputs produce exactly the
 same canonical bytes as before.
 
+### Deterministic remediation and retry
+
+`buildRemediationPlanV1()` / `build_remediation_plan_v1()` turns `MODIFY`,
+`STEP_UP`, or `DEFER` into a closed list of machine-readable requirements. A
+requirement names its kind, stable code, evidence key, optional expected-value
+hash, and bounded human guidance. It never contains a rewritten raw payload.
+
+A retry is a new attempt, not continuation by implication. The retry document
+must provide an evidence hash for every requirement and binds the new attempt
+to the original attempt, original receipt, and remediation-plan hash. Put its
+hash in the next `ActionContextV2.current_action.remediation_retry_hash` with
+the parent and new attempt ids; the resulting context hash then travels into
+the strict decision receipt.
+
 ## Policy engine
 
 Obsvr uses deterministic code in the decision path—never a second LLM. Rules cover keywords, bounded regex, topic allow/deny, model and environment gates, namespace and tenant isolation, destructive operations, source grounding, quotas, action gates, and parsed protocol facets.

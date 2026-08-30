@@ -26,6 +26,9 @@ export interface StrictDecisionActionV21Input {
     name: string;
     arguments_hash: string;
     target_hash: string;
+    attempt_id?: string;
+    parent_attempt_id?: string;
+    remediation_retry_hash?: string;
     data_classifications: string[];
     requested_scopes: string[];
   };
