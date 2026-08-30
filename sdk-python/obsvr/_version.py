@@ -6,4 +6,4 @@ pyproject.toml (setuptools dynamic version). Kept as a leaf module with
 no imports so neither consumer can create a cycle.
 """
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
