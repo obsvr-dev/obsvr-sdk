@@ -616,9 +616,11 @@ The combined list for both, with the scope marked on each entry, is in the
 6. **Startup interception is exact and order-dependent.** Supported OpenAI root
    and documented subpath exports, Anthropic roots, Google roots, MCP Client
    exports, and the OpenAI Agents Agent export construct governed objects after
-   the preload runs. Objects or callables captured earlier, arbitrary subpaths,
-   custom transports, function tools added after Agent construction, and hosted
-   tool runners remain bypasses. An escaped call records nothing rather than
+   the preload runs. Intercepted Agents also keep later supported concrete-model
+   assignments and local function-tool/handoff list mutations on their pre-call
+   gates. Objects or callables captured earlier, arbitrary subpaths, custom
+   transports, unsupported collection replacement shapes, and hosted tool
+   runners remain bypasses. An escaped call records nothing rather than
    something false.
    [Detail](#one-step-startup-auto-governance).
 

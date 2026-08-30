@@ -267,7 +267,7 @@ A session-taint latch can mark a session after a detected injection or canary le
 
 Destructive capabilities should sit behind MCP, a framework-native pre-invocation guardrail, or `obsvrGovernTool` / `govern_tool`. Tracing callbacks alone cannot stop execution. Configuration and exact boundaries live in the [TypeScript SDK](sdk-typescript/README.md), [Python SDK](sdk-python/README.md), and [`SECURITY.md`](SECURITY.md#enforcement-semantics-what-blocking-means).
 
-Startup auto-governance installs these same enforcing gates where construction or a process-global hook is safely interceptable. It does not upgrade a tracing callback into enforcement: LangChain remains an explicit callback binding, Python MCP remains an explicit governed session, hosted tools stay provider-side, and tools added after an intercepted Agent is constructed need an explicit gate.
+Startup auto-governance installs these same enforcing gates where construction or a process-global hook is safely interceptable. It does not upgrade a tracing callback into enforcement: LangChain remains an explicit callback binding, hosted tools stay provider-side, and LlamaIndex agent tools still need an explicit gate. Documented Python MCP sessions are intercepted at future construction, while intercepted OpenAI Agents keep later supported model assignments and local tool/handoff list mutations on their pre-call gates.
 
 ## Identity, attribution, and budgets
 
