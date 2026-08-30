@@ -42,6 +42,17 @@ from .workload_registry_v1 import (  # noqa: F401
     verify_workload_registration_v1,
     workload_registration_v1_hash,
 )
+from .policy_template_v1 import (  # noqa: F401
+    POLICY_TEMPLATE_V1_SCHEMA,
+    RENDERED_POLICY_ENVELOPE_V1_SCHEMA,
+    RENDERED_POLICY_V1_SCHEMA,
+    PolicyTemplateV1ValidationError,
+    build_policy_template_v1,
+    policy_template_v1_hash,
+    render_policy_template_v1,
+    sign_rendered_policy_v1,
+    verify_rendered_policy_v1,
+)
 from .reason_codes import (  # noqa: F401
     REASON_CODES,
     RULE_TYPE_TO_REASON_CODE,
@@ -303,6 +314,15 @@ __all__ = [
     "sign_workload_registration_v1",
     "verify_workload_registration_v1",
     "workload_registration_v1_hash",
+    "POLICY_TEMPLATE_V1_SCHEMA",
+    "RENDERED_POLICY_ENVELOPE_V1_SCHEMA",
+    "RENDERED_POLICY_V1_SCHEMA",
+    "PolicyTemplateV1ValidationError",
+    "build_policy_template_v1",
+    "policy_template_v1_hash",
+    "render_policy_template_v1",
+    "sign_rendered_policy_v1",
+    "verify_rendered_policy_v1",
     "get_config",
     "is_initialized",
     "try_get_config",

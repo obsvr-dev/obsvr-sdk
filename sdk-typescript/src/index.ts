@@ -369,6 +369,18 @@ export {
   verifyWorkloadRegistrationV1,
 } from "./governance/workload-registry-v1.js";
 export type { WorkloadRegistrationV1Input } from "./governance/workload-registry-v1.js";
+export {
+  POLICY_TEMPLATE_V1_SCHEMA,
+  RENDERED_POLICY_V1_SCHEMA,
+  RENDERED_POLICY_ENVELOPE_V1_SCHEMA,
+  PolicyTemplateV1ValidationError,
+  buildPolicyTemplateV1,
+  policyTemplateV1Hash,
+  renderPolicyTemplateV1,
+  signRenderedPolicyV1,
+  verifyRenderedPolicyV1,
+} from "./governance/policy-template-v1.js";
+export type { PolicyTemplateV1Input, TemplateParameterV1 } from "./governance/policy-template-v1.js";
 export type {
   PolicyCandidateV1Input,
   PolicyReplayCaseV1,
