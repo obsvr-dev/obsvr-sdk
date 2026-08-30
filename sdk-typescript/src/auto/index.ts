@@ -1,16 +1,18 @@
 /**
- * Auto-Instrumentation (module-level interception, no monkey patching)
+ * Auto-Instrumentation (startup module interception)
  *
  * obsvr never mutates provider SDK prototypes, classes, or module objects.
- * Global coverage is delivered by a Node module hook:
+ * Provider-construction coverage is delivered by Node ESM and CommonJS module
+ * hooks:
  *
  *     node --import @obsvr/sdk/register app.js
  *
- * The hook (see loader-hooks.ts) swaps the provider's exported class for a
- * construct-trap Proxy built here. Every `new OpenAI()` anywhere in the
- * process then returns a governed instance. The real class, its prototype,
- * and the underlying instance stay untouched, so APM, tracing, and other
- * instrumentation that patches the same SDKs keeps working underneath.
+ * The ESM hook (see loader-hooks.ts) swaps documented exported classes for
+ * construct-trap Proxy objects built here. The CommonJS hook chains Node's
+ * module loader for documented provider specifiers. That loader chaining is
+ * monkey-patching; provider classes, prototypes, module objects, and the
+ * underlying instances remain untouched so other instrumentation can operate
+ * underneath.
  *
  * Instances constructed before `obsvr.init()` pass calls through to the raw
  * client and pick up governance automatically on the first call after init.
@@ -23,12 +25,91 @@
 import type { ResolvedConfig } from '../proxy/types.js';
 import { wrap } from '../proxy/wrapper.js';
 import { isInitialized, getConfig, markWrapped } from '../proxy/config.js';
+import { recordBinding } from '../binding-report.js';
+import {
+  _MCP_GOVERNED_SYMBOL,
+  obsvrGovernMCP,
+} from '../integrations/mcp.js';
+import {
+  attachToolGate,
+  governModel,
+} from '../integrations/openai-agents.js';
 
 /** Providers the module interceptor knows how to govern. */
 export type InterceptedProvider = 'openai' | 'anthropic' | 'google';
 
-/** Set once the loader hook has substituted at least one provider class. */
+export type InterceptorKind = 'esm' | 'cjs';
+
+/** Hooks installed before application modules load. */
+const installedInterceptors = new Set<InterceptorKind>();
+const boundProviders = new Set<InterceptedProvider>();
+const boundStartupSurfaces = new Set<string>();
+
+const AUTO_STARTUP_SURFACES = [
+  'openai.client',
+  'anthropic.client',
+  'google.client',
+  'mcp.client',
+  'openai_agents.tools',
+  'openai_agents.model',
+] as const;
+
+const EXPLICIT_STARTUP_SURFACES = {
+  'langchain.models': 'LangChain exposes callbacks per model or invocation, not a process-global pre-call registration point',
+  'llamaindex.models': 'TypeScript LlamaIndex tracing is observe-only',
+  'llamaindex.tools': 'TypeScript LlamaIndex agent tools require an explicit pre-invocation wrapper',
+} as const;
+
+/** Set once an installed hook has substituted at least one provider class. */
 let interceptionActive = false;
+
+/** Record that a startup hook is ready to intercept future provider loads. */
+export function markInterceptorInstalled(kind: InterceptorKind): void {
+  installedInterceptors.add(kind);
+}
+
+/** True when at least one supported startup hook is armed. */
+export function isInterceptorInstalled(kind?: InterceptorKind): boolean {
+  return kind ? installedInterceptors.has(kind) : installedInterceptors.size > 0;
+}
+
+export interface AutoGovernanceStatus {
+  interceptors: Record<InterceptorKind, boolean>;
+  boundProviders: InterceptedProvider[];
+  bindings: Record<
+    string,
+    { state: 'armed' | 'bound' | 'not-applicable'; detail?: string }
+  >;
+  active: boolean;
+}
+
+/** Distinguish startup hooks that are armed from providers actually resolved. */
+export function autoGovernanceStatus(): AutoGovernanceStatus {
+  const armed = installedInterceptors.size > 0;
+  const bindings: AutoGovernanceStatus['bindings'] = {};
+  for (const surface of AUTO_STARTUP_SURFACES) {
+    bindings[surface] = boundStartupSurfaces.has(surface)
+      ? { state: 'bound' }
+      : armed
+        ? { state: 'armed' }
+        : {
+            state: 'not-applicable',
+            detail: 'startup module interception is not installed',
+          };
+  }
+  for (const [surface, detail] of Object.entries(EXPLICIT_STARTUP_SURFACES)) {
+    bindings[surface] = { state: 'not-applicable', detail };
+  }
+  return {
+    interceptors: {
+      esm: installedInterceptors.has('esm'),
+      cjs: installedInterceptors.has('cjs'),
+    },
+    boundProviders: [...boundProviders].sort(),
+    bindings,
+    active: interceptionActive,
+  };
+}
 
 /** True when `--import @obsvr/sdk/register` substituted a provider class. */
 export function isInterceptionActive(): boolean {
@@ -38,6 +119,9 @@ export function isInterceptionActive(): boolean {
 /** Test hook. */
 export function _resetInterception(): void {
   interceptionActive = false;
+  installedInterceptors.clear();
+  boundProviders.clear();
+  boundStartupSurfaces.clear();
 }
 
 /**
@@ -145,6 +229,12 @@ function interceptGoogleClient<T extends object>(client: T): T {
 export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T): T {
   if (typeof cls !== 'function') return cls;
   interceptionActive = true;
+  boundProviders.add(provider);
+  boundStartupSurfaces.add(`${provider}.client`);
+  recordBinding(
+    `${provider}.client`,
+    `${provider}.${(cls as Function).name || 'client'}`,
+  );
 
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {
@@ -160,6 +250,291 @@ export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T)
 }
 
 /**
+ * Intercept client constructors exposed as properties of a namespace object.
+ *
+ * Some CommonJS-compatible subpaths expose an object such as
+ * `{ OpenAI }` as their default export. Wrapping only the ESM named export
+ * would leave `default.OpenAI` raw, so the loader uses this helper for that
+ * shape. The namespace and its properties are not mutated.
+ */
+export function interceptProviderNamespace<T>(
+  provider: InterceptedProvider,
+  namespace: T,
+  clientExports: readonly string[],
+): T {
+  if ((typeof namespace !== 'object' || namespace === null) && typeof namespace !== 'function') {
+    return namespace;
+  }
+  const cache = new Map<PropertyKey, unknown>();
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && clientExports.includes(prop)) {
+        if (cache.has(prop)) return cache.get(prop);
+        const original = Reflect.get(target, prop, receiver);
+        const intercepted = interceptProviderClass(provider, original);
+        cache.set(prop, intercepted);
+        return intercepted;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as T;
+}
+
+/**
+ * Lazily govern an MCP Client constructed through the startup module hook.
+ * The instance may be created before explicit init when callers use the
+ * register-only preload, so governance materializes on first access after init
+ * just like direct-provider interception. The raw Client and its prototype are
+ * never mutated.
+ */
+function lazyGovernMcp<T extends object>(instance: T): T {
+  let governed: T | null = null;
+  let passthroughForever = false;
+
+  const materialize = (): T | null => {
+    if (governed) return governed;
+    if (passthroughForever || !isInitialized()) return null;
+    const config = getConfig();
+    if (config.disabled) {
+      passthroughForever = true;
+      return null;
+    }
+    governed = obsvrGovernMCP(instance, config);
+    return governed;
+  };
+
+  return new Proxy(instance, {
+    get(target, prop, _receiver) {
+      if (prop === _MCP_GOVERNED_SYMBOL) return true;
+      const active = materialize();
+      if (active) return Reflect.get(active, prop, active);
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    set(target, prop, value) {
+      return Reflect.set(target, prop, value, target);
+    },
+    has(target, prop) {
+      return prop === _MCP_GOVERNED_SYMBOL || Reflect.has(target, prop);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      return Reflect.getOwnPropertyDescriptor(target, prop);
+    },
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+    getPrototypeOf(target) {
+      return Reflect.getPrototypeOf(target);
+    },
+  }) as T;
+}
+
+/** Replace only construction of the documented MCP Client export. */
+export function interceptMcpClientClass<T>(cls: T): T {
+  if (typeof cls !== 'function') return cls;
+  interceptionActive = true;
+  boundStartupSurfaces.add('mcp.client');
+  recordBinding('mcp.client', '@modelcontextprotocol/sdk/client.Client');
+  return new Proxy(cls as object, {
+    construct(target, args, newTarget) {
+      const instance = Reflect.construct(
+        target as new (...a: unknown[]) => object,
+        args,
+        newTarget,
+      );
+      return lazyGovernMcp(instance);
+    },
+  }) as T;
+}
+
+/** Intercept Client on a CommonJS MCP namespace without mutating that object. */
+export function interceptMcpNamespace<T>(namespace: T): T {
+  if ((typeof namespace !== 'object' || namespace === null) && typeof namespace !== 'function') {
+    return namespace;
+  }
+  let interceptedClient: unknown;
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (prop !== 'Client') return Reflect.get(target, prop, receiver);
+      if (interceptedClient) return interceptedClient;
+      interceptedClient = interceptMcpClientClass(Reflect.get(target, prop, receiver));
+      return interceptedClient;
+    },
+  }) as T;
+}
+
+/**
+ * Attach obsvr's real pre-execution tool guardrail to each newly constructed
+ * OpenAI Agents Agent. The guardrail reads policy at execution time, so this is
+ * safe even when construction happens before explicit init under register-only
+ * startup. Hosted tools remain outside the client-side boundary.
+ */
+export function interceptOpenAIAgentClass<T>(cls: T): T {
+  if (typeof cls !== 'function') return cls;
+  interceptionActive = true;
+  boundStartupSurfaces.add('openai_agents.tools');
+  boundStartupSurfaces.add('openai_agents.model');
+  recordBinding('openai_agents.tools', '@openai/agents.Agent.tools');
+  recordBinding('openai_agents.model', '@openai/agents.Agent.model');
+
+  const governModelValue = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object') return value;
+    const candidate = value as Record<string, unknown>;
+    if (
+      typeof candidate.getResponse !== 'function' ||
+      typeof candidate.getStreamedResponse !== 'function'
+    ) {
+      return value;
+    }
+    return governModel(value as Parameters<typeof governModel>[0]);
+  };
+
+  const listMutators = new Set<PropertyKey>([
+    'copyWithin',
+    'fill',
+    'pop',
+    'push',
+    'reverse',
+    'shift',
+    'sort',
+    'splice',
+    'unshift',
+  ]);
+
+  const guardAgent = (agent: Record<string, unknown>): Record<string, unknown> => {
+    let proxy: Record<string, unknown>;
+    const refreshToolGate = (): void => {
+      attachToolGate(proxy);
+    };
+    const guardedList = (values: unknown[]): unknown[] => {
+      const target = values;
+      const rollback = (snapshot: unknown[]): void => {
+        target.splice(0, target.length, ...snapshot);
+      };
+      return new Proxy(target, {
+        get(list, property, receiver) {
+          const value = Reflect.get(list, property, receiver);
+          if (!listMutators.has(property) || typeof value !== 'function') return value;
+          return (...args: unknown[]) => {
+            const snapshot = list.slice();
+            try {
+              const result = Reflect.apply(value, list, args);
+              refreshToolGate();
+              return result;
+            } catch (error) {
+              rollback(snapshot);
+              throw error;
+            }
+          };
+        },
+        set(list, property, value) {
+          const snapshot = list.slice();
+          try {
+            const changed = Reflect.set(list, property, value, list);
+            refreshToolGate();
+            return changed;
+          } catch (error) {
+            rollback(snapshot);
+            throw error;
+          }
+        },
+        deleteProperty(list, property) {
+          const snapshot = list.slice();
+          try {
+            const changed = Reflect.deleteProperty(list, property);
+            refreshToolGate();
+            return changed;
+          } catch (error) {
+            rollback(snapshot);
+            throw error;
+          }
+        },
+      });
+    };
+
+    const rawTools = Array.isArray(agent.tools) ? agent.tools : [];
+    const rawHandoffs = Array.isArray(agent.handoffs) ? agent.handoffs : [];
+    agent.tools = guardedList(rawTools);
+    agent.handoffs = guardedList(rawHandoffs);
+    agent.model = governModelValue(agent.model);
+
+    proxy = new Proxy(agent, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property === 'clone' && typeof value === 'function') {
+          return (...args: unknown[]) => {
+            const cloned = Reflect.apply(value, target, args);
+            return cloned && typeof cloned === 'object'
+              ? guardAgent(cloned as Record<string, unknown>)
+              : cloned;
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+      set(target, property, value, receiver) {
+        if (property === 'model') {
+          return Reflect.set(target, property, governModelValue(value), receiver);
+        }
+        if ((property === 'tools' || property === 'handoffs') && Array.isArray(value)) {
+          const previous = Reflect.get(target, property, receiver);
+          const governed = guardedList(value);
+          try {
+            const changed = Reflect.set(target, property, governed, receiver);
+            refreshToolGate();
+            return changed;
+          } catch (error) {
+            Reflect.set(target, property, previous, receiver);
+            throw error;
+          }
+        }
+        return Reflect.set(target, property, value, receiver);
+      },
+    });
+    refreshToolGate();
+    return proxy;
+  };
+
+  return new Proxy(cls as object, {
+    construct(target, args, newTarget) {
+      const agent = Reflect.construct(
+        target as new (...a: unknown[]) => object,
+        args,
+        newTarget,
+      );
+      return guardAgent(agent as Record<string, unknown>);
+    },
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property === 'create' && typeof value === 'function') {
+        return (...args: unknown[]) => {
+          const agent = Reflect.apply(value, target, args);
+          return agent && typeof agent === 'object'
+            ? guardAgent(agent as Record<string, unknown>)
+            : agent;
+        };
+      }
+      return value;
+    },
+  }) as T;
+}
+
+/** Intercept Agent on the package namespace without mutating that namespace. */
+export function interceptOpenAIAgentsNamespace<T>(namespace: T): T {
+  if ((typeof namespace !== 'object' || namespace === null) && typeof namespace !== 'function') {
+    return namespace;
+  }
+  let interceptedAgent: unknown;
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (prop !== 'Agent') return Reflect.get(target, prop, receiver);
+      if (interceptedAgent) return interceptedAgent;
+      interceptedAgent = interceptOpenAIAgentClass(Reflect.get(target, prop, receiver));
+      return interceptedAgent;
+    },
+  }) as T;
+}
+
+/**
  * Called by `init()` after configuration is resolved.
  *
  * No patching happens here. Its only job is to tell the customer when their
@@ -170,11 +545,22 @@ export function autoInstrument(config: ResolvedConfig): void {
   if (config.disabled) return;
 
   const requested = config.providers ?? [];
-  if (requested.length > 0 && !interceptionActive) {
+  const productionAgentStartup =
+    config.environment === 'production' &&
+    (config.agentPolicy !== undefined || config.mcpToolPolicy !== undefined);
+  if (
+    (requested.length > 0 || productionAgentStartup) &&
+    !interceptionActive &&
+    !isInterceptorInstalled()
+  ) {
+    const scope = requested.length > 0
+      ? `config.providers lists [${requested.join(', ')}]`
+      : 'production agent or MCP policy is configured';
     console.warn(
-      `[obsvr] config.providers lists [${requested.join(', ')}] but the module ` +
+      `[obsvr] ${scope} but the startup module ` +
         'interceptor is not loaded, so those providers are not globally governed. ' +
-        'Start Node with "--import @obsvr/sdk/register" for zero-code coverage, ' +
+        'Only explicitly wrapped clients and bound gates enforce. Start Node with ' +
+        '"--import @obsvr/sdk/register" for automatic coverage, ' +
         'or wrap each client explicitly with obsvr.wrap().',
     );
   }

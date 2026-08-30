@@ -7,8 +7,8 @@
 Obsvr runs inside your application to enforce deterministic policy before supported AI calls execute, then signs the resulting decision record so it can be independently verified later.
 
 ![Status](https://img.shields.io/badge/status-beta-6d4aff)
-[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.12.0)
-[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.12.0/)
+[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.13.0)
+[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.13.0/)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-typescript%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
@@ -27,8 +27,8 @@ Obsvr runs inside your application to enforce deterministic policy before suppor
 
 | Package | Runtime | Version | Source |
 | --- | --- | ---: | --- |
-| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.12.0) | TypeScript / Node.js ≥ 22 | 0.12.0 | [`sdk-typescript/`](sdk-typescript/) |
-| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.12.0/) | Python ≥ 3.10 | 0.12.0 | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.13.0) | TypeScript / Node.js ≥ 22 | 0.13.0 | [`sdk-typescript/`](sdk-typescript/) |
+| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.13.0/) | Python ≥ 3.10 | 0.13.0 | [`sdk-python/`](sdk-python/) |
 
 ## Contents
 
@@ -65,9 +65,9 @@ This is **temporal provenance**: the action, decision, model, policy version, an
 Obsvr has two entry points, and the distinction is part of the security boundary:
 
 - **Explicit:** `obsvr.wrap(client)` governs the client instance you choose. It is dependency-light, works in both languages, and makes the interception point visible in code review.
-- **Automatic:** TypeScript starts with `--import @obsvr/sdk/register`; Python uses `obsvr.init(auto=True)` on supported packages. This reaches clients constructed inside libraries you do not control, but only through the documented package and method shapes.
+- **Automatic:** TypeScript starts with `--import @obsvr/sdk/initialize`; Python starts through `obsvr-run`. These startup entry points initialize obsvr before application imports and intercept documented future provider, MCP-client, or agent construction where the upstream package exposes a safe pre-execution boundary. `@obsvr/sdk/register` plus an explicit `obsvr.init()` remains available when configuration must stay in code.
 
-TypeScript uses a load-time module hook and construct-trap `Proxy`, so supported exported client classes produce governed instances without mutating the original prototype. Python uses native framework registration where available and transparent object wrappers elsewhere. Explicit wrapping also preserves the underlying real SDK client, keeping APM and OpenTelemetry integrations compatible with the same object.
+TypeScript uses an ESM load hook, a chained CommonJS loader hook, and construct-trap `Proxy` objects. Python rebinds supported provider and agent constructors and installs supported process-global framework gates before the application imports them. Neither runtime scans the heap or discovers clients that already exist. Explicit wrapping preserves the underlying real SDK client, keeping APM and OpenTelemetry integrations compatible with the same object.
 
 ```mermaid
 flowchart LR
@@ -79,7 +79,27 @@ flowchart LR
     decision --> evidence["signed decision event"]
 ```
 
-Coverage is intentionally described per integration rather than SDK-wide. A client imported through an unsupported TypeScript subpath, a CommonJS `require()`, a raw object retained before governance, or a framework callback delivered after execution may sit outside a given boundary. An escaped call records nothing rather than inventing an enforcement result. Use explicit wrapping or a pre-invocation tool gate when coverage must be unambiguous.
+Coverage is intentionally described per integration rather than SDK-wide. A client constructed before the startup preload, imported through an unlisted package path, reached through a saved raw reference, or invoked through a framework callback delivered after execution may sit outside a given boundary. An escaped call records nothing rather than inventing an enforcement result. Use required binding manifests, explicit wrapping, or a pre-invocation tool gate when coverage must be unambiguous.
+
+Production startup is not silent: TypeScript warns when agent or MCP policy is configured without the startup preload, and Python warns when automatic initialization begins after supported packages were already imported. In either runtime, exact `OBSVR_REQUIRED_BINDINGS` entries turn an expected automatic boundary into a startup requirement; Python applies the manifest to direct `init(auto=True)` as well as `obsvr-run`.
+
+Use the smallest manifest that represents the boundaries your application must
+have. These are exact surface keys, not product-wide claims:
+
+| Required key | Runtime | What a successful bind proves |
+| --- | --- | --- |
+| `openai.client` | TypeScript, Python | documented future OpenAI client construction is intercepted |
+| `anthropic.client` | TypeScript, Python | documented future Anthropic client construction is intercepted |
+| `google.client` | TypeScript | documented future current and legacy Gemini construction is intercepted |
+| `mcp.client` | TypeScript, Python | documented future MCP client/session construction receives the `tools/call` gate |
+| `openai_agents.model` | TypeScript, Python | intercepted Agents receive concrete-model pre-call governance |
+| `openai_agents.tools` | TypeScript, Python | intercepted Agents receive local function-tool and handoff gates, including supported later list mutations |
+| `llamaindex.models` | Python | the process-global LlamaIndex model-start gate is installed |
+| `crewai.tools` | Python | the supported CrewAI pre-tool hook is installed |
+| `autogen.tools` | Python | the supported AutoGen/ag2 tool-execution gate is installed |
+
+`openai_agents.model` and `openai_agents.tools` do not claim that Agents tracing,
+hosted tools, or every future Agents SDK surface is governed.
 
 ## Five-minute quickstart
 
@@ -113,13 +133,18 @@ await client.chat.completions.create({
 });
 ```
 
-**TypeScript needs the module interceptor** for zero-code provider interception:
+For one-step startup governance, provide configuration through the environment and preload `initialize` before application imports:
 
 ```bash
-node --import @obsvr/sdk/register app.js
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+OBSVR_AGENT_POLICY='{"deniedTools":["send_contract"]}' \
+OBSVR_MCP_TOOL_POLICY='{"deniedTools":["delete_record"]}' \
+OBSVR_REQUIRED_BINDINGS='openai.client,mcp.client,openai_agents.model,openai_agents.tools' \
+NODE_OPTIONS="--import @obsvr/sdk/initialize" node app.js
 ```
 
-`obsvr.init()` alone does not install TypeScript interception. The module hook covers supported ESM package specifiers; use `obsvr.wrap()` for explicit, auditable coverage.
+This covers documented ESM and CommonJS provider-construction entry points, MCP `Client` construction, and OpenAI Agents model and function-tool boundaries at `Agent` construction and later assignment or list mutation. `obsvr.init()` alone does not install interception in TypeScript. Use `@obsvr/sdk/register` with explicit initialization when configuration stays in code, or `obsvr.wrap()` for an explicit instance boundary.
 
 ### Python
 
@@ -150,7 +175,18 @@ client.chat.completions.create(
 )
 ```
 
-**Auto-governed by `init()` alone** — Python OpenAI and Anthropic clients can be instrumented with `obsvr.init(auto=True)`. Gemini uses an explicit wrapper.
+For initialization before application imports:
+
+```bash
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+OBSVR_AGENT_POLICY='{"denied_tools":["send_contract"]}' \
+OBSVR_MCP_TOOL_POLICY='{"denied_tools":["delete_record"]}' \
+OBSVR_REQUIRED_BINDINGS='openai.client,mcp.client,openai_agents.model,openai_agents.tools' \
+obsvr-run app.py
+```
+
+`obsvr-run -m package.module` is also supported. Python OpenAI and Anthropic constructors, future MCP `ClientSession` construction, supported CrewAI and AutoGen execution gates, Python LlamaIndex model-start callbacks, and future OpenAI Agents model and function-tool boundaries are auto-governed. OpenAI Agents model reassignment and later tool/handoff list mutations stay governed. Gemini, LangChain callbacks, LlamaIndex tool execution, hosted tools, and framework paths without a safe global pre-execution hook remain explicit. Applications that own import order can instead call `obsvr.init(auto=True)` before those packages are imported.
 
 See the [TypeScript](sdk-typescript/README.md) and [Python](sdk-python/README.md) package guides for every supported method and configuration option.
 
@@ -249,6 +285,8 @@ A session-taint latch can mark a session after a detected injection or canary le
 
 Destructive capabilities should sit behind MCP, a framework-native pre-invocation guardrail, or `obsvrGovernTool` / `govern_tool`. Tracing callbacks alone cannot stop execution. Configuration and exact boundaries live in the [TypeScript SDK](sdk-typescript/README.md), [Python SDK](sdk-python/README.md), and [`SECURITY.md`](SECURITY.md#enforcement-semantics-what-blocking-means).
 
+Startup auto-governance installs these same enforcing gates where construction or a process-global hook is safely interceptable. It does not upgrade a tracing callback into enforcement: LangChain remains an explicit callback binding, hosted tools stay provider-side, and LlamaIndex agent tools still need an explicit gate. Documented Python MCP sessions are intercepted at future construction, while intercepted OpenAI Agents keep later supported model assignments and local tool/handoff list mutations on their pre-call gates.
+
 ## Identity, attribution, and budgets
 
 A governed call resolves one principal. Resolved identity fields feed the selected quota scope, session-taint scope, approval matching, and signed attribution, so enforcement identity and audit identity cannot silently diverge.
@@ -308,6 +346,15 @@ Explicit `obsvr.wrap()` is the clearest coverage boundary. Automatic and framewo
 | MCP | ✅ | ✅ |
 
 A checkmark means an integration exists; it does not mean every callback can enforce. LangChain model-start callbacks enforce in both SDKs, and Python's LlamaIndex model-start callback enforces; because those callbacks cannot rewrite provider-bound input, a redaction request fails closed. TypeScript LlamaIndex tracing and OpenAI Agents tracing remain observe-only, with explicit model wrappers available for enforcement. Tool enforcement depends on a pre-invocation gate and differs by framework.
+
+| Startup attachment | TypeScript | Python |
+| --- | --- | --- |
+| Direct-provider construction | OpenAI, Anthropic, current/legacy Gemini | OpenAI, Anthropic |
+| MCP client construction | `Client` on documented MCP client exports | future `ClientSession` construction |
+| OpenAI Agents model + function tools | future `Agent` construction and later supported assignments/mutations | future `Agent` construction and later supported assignments/mutations |
+| CrewAI / AutoGen tool execution | no integration | process-global pre-execution gates on supported versions |
+| LlamaIndex model calls | explicit enforcing model wrapper | process-global model-start handler; redaction fails closed |
+| LangChain | explicit callback binding | explicit callback binding |
 
 ### Does a tool-policy block actually stop the tool?
 
@@ -482,9 +529,9 @@ Provider latency is excluded. Full distributions, payload scaling, stress tiers,
 
 ## Important limitations
 
-1. **TypeScript is ESM-only.** The module interceptor sees supported exact ESM package specifiers, not CommonJS `require()` or arbitrary subpath imports. Use `obsvr.wrap()` when coverage must be explicit.
+1. **Startup interception is not process-wide discovery.** The TypeScript package API is ESM-only, but its startup preload additionally intercepts documented CommonJS entry points. Both SDKs govern supported objects constructed after their startup hook runs; OpenAI Agents also keeps later supported model assignments and tool/handoff list mutations governed. Pre-existing objects, saved raw references, unlisted package paths, custom transports, replaced framework internals outside the intercepted setters, and hosted tool execution remain outside that guarantee. Use exact `OBSVR_REQUIRED_BINDINGS` keys and explicit wrapping or gates where coverage must be proven.
 2. **Some tracing callbacks still observe rather than govern.** TypeScript LlamaIndex tracing and OpenAI Agents tracing cannot block or rewrite an outbound provider call. Use `obsvrGovernLlamaIndexLLM` / `governModel` / `govern_model` (or their model-provider variants) when those model calls must enforce. LangChain model-start callbacks enforce in both SDKs; Python's LlamaIndex model-start callback enforces too.
-3. **Tool enforcement is binding-specific.** A framework may expose several invocation routes. Use the documented pre-invocation integration, MCP, or a governed tool for destructive capabilities.
+3. **Tool enforcement is binding-specific.** Automatic startup attachment uses the same documented pre-invocation gates as explicit integration. It does not make late callbacks blocking or cover hosted tools. A framework may expose several invocation routes; use the documented pre-invocation integration, MCP, or a governed tool for destructive capabilities.
 4. **Stream output is not withheld after dispatch.** Pre-call controls run before opening a supported stream, but post-call response scanning is audit-time and tokens reach the caller as they arrive.
 5. **Fail-open is the default.** Set `failMode: "closed"` when detector or hook failure must refuse the call. Policy floors, canary leaks, and failed redaction remain fail-closed in either mode.
 6. **Budgets are local unless coordinated externally.** In-process request and token budgets are per SDK instance, and token usage is known after the call; fleet-wide hard caps require service coordination or an upstream control.

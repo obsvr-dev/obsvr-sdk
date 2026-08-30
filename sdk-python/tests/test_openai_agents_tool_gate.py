@@ -179,6 +179,7 @@ def test_the_factory_refuses_loudly_without_the_framework(monkeypatch):
     """No silent no-op installs: a gate the caller believes in and does not
     have is the failure mode, not the missing framework."""
     monkeypatch.setitem(sys.modules, "agents", None)
+    monkeypatch.setitem(sys.modules, "agents.tool_guardrails", None)
     from obsvr.integrations.openai_agents import make_tool_gate_guardrail
 
     with pytest.raises(ImportError, match="govern_tool"):
@@ -224,6 +225,63 @@ class _Handoff:
 
     def __init__(self, agent):
         self._agent_ref = weakref.ref(agent)
+
+
+def test_init_auto_gates_future_agent_construction(monkeypatch, sent):
+    from obsvr import auto
+
+    _stub_agents(monkeypatch)
+    agents_mod = sys.modules["agents"]
+    agent_mod = types.ModuleType("agents.agent")
+    agents_mod.Agent = _Agent
+    agents_mod.agent = agent_mod
+    agent_mod.Agent = _Agent
+    monkeypatch.setitem(sys.modules, "agents.agent", agent_mod)
+    monkeypatch.setattr(auto, "_module_available", lambda name: name == "agents")
+    monkeypatch.setattr(auto, "_wire_providers", lambda: [])
+
+    obsvr.init(
+        api_key="test",
+        sample_rate=1,
+        agent_policy={"denied_tools": [TOOL]},
+        auto=True,
+    )
+    tool = _FunctionTool(TOOL)
+    agent = agents_mod.Agent(tools=[tool])
+    guardrail = tool.tool_input_guardrails[0]
+
+    executions = []
+    verdict = guardrail.guardrail_function(_guardrail_data())
+    if verdict.behavior["type"] == "allow":
+        executions.append(TOOL)
+
+    assert agents_mod.Agent is agent_mod.Agent
+    assert agents_mod.Agent is not _Agent
+    assert executions == [], "a denied auto-gated Agents tool entered its body"
+    assert any(
+        event["operation"] == "openai_agents.agent.policy.tool_blocked"
+        for event in sent
+    )
+
+
+def test_init_auto_does_not_replace_agent_when_dispatch_is_missing(monkeypatch):
+    from obsvr import auto
+
+    _stub_agents(monkeypatch, with_dispatch=False)
+    agents_mod = sys.modules["agents"]
+    agent_mod = types.ModuleType("agents.agent")
+    agents_mod.Agent = _Agent
+    agents_mod.agent = agent_mod
+    agent_mod.Agent = _Agent
+    monkeypatch.setitem(sys.modules, "agents.agent", agent_mod)
+    monkeypatch.setattr(auto, "_module_available", lambda name: name == "agents")
+    monkeypatch.setattr(auto, "_wire_providers", lambda: [])
+
+    report = auto.enable_auto_instrumentation()
+
+    assert agents_mod.Agent is _Agent
+    assert agent_mod.Agent is _Agent
+    assert "openai-agents:tool-gate" not in report["wired"]
 
 
 def test_attach_gates_tools_and_handoff_targets_and_detaches(monkeypatch, sent):

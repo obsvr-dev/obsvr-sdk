@@ -23,11 +23,27 @@ nothing is emitted anywhere. It is read on demand through
 ``obsvr.integration_bindings()``.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 #: integration name -> {symbol -> {"bound": bool, "error_type": str|None,
 #:                                 "error": str|None}}
 _BINDINGS: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+
+class RequiredBindingsError(RuntimeError):
+    """Raised when a deployment-declared integration is not completely bound."""
+
+    def __init__(self, failures: List[Dict[str, Any]]) -> None:
+        self.failures = [dict(failure) for failure in failures]
+        summary = ", ".join(
+            (
+                f"{failure['integration']} was never bound"
+                if failure["reason"] == "missing"
+                else f"{failure['integration']}:{failure['symbol']} is unbound"
+            )
+            for failure in failures
+        )
+        super().__init__(f"Required obsvr bindings are not active: {summary}")
 
 
 def record_binding(
@@ -88,6 +104,49 @@ def unbound_symbols() -> List[Dict[str, Any]]:
                     }
                 )
     return out
+
+
+def required_binding_failures(required: Iterable[str]) -> List[Dict[str, Any]]:
+    """Resolve requirements against binding paths that have actually run.
+
+    Call this after the application's client/tool factory installs its
+    integrations. A missing integration and a failed upstream symbol remain
+    distinguishable, while both fail a deployment requirement.
+    """
+    failures: List[Dict[str, Any]] = []
+    seen = set()
+    for integration in required:
+        if not isinstance(integration, str) or not integration.strip():
+            raise TypeError("required bindings must be non-empty integration names")
+        name = integration.strip()
+        if name in seen:
+            continue
+        seen.add(name)
+        symbols = _BINDINGS.get(name)
+        if not symbols:
+            failures.append(
+                {"integration": name, "symbol": "", "reason": "missing"}
+            )
+            continue
+        for symbol, entry in symbols.items():
+            if not entry.get("bound"):
+                failures.append(
+                    {
+                        "integration": name,
+                        "symbol": symbol,
+                        "reason": "unbound",
+                        "error_type": entry.get("error_type"),
+                        "error": entry.get("error"),
+                    }
+                )
+    return failures
+
+
+def assert_required_bindings(required: Iterable[str]) -> None:
+    """Refuse startup when a deployment-declared integration is not bound."""
+    failures = required_binding_failures(required)
+    if failures:
+        raise RequiredBindingsError(failures)
 
 
 def _reset_bindings() -> None:

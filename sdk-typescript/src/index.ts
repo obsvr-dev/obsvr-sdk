@@ -58,6 +58,8 @@ import { SDK_VERSION } from "./constants.js";
 
 // Re-export proxy types
 export type { LLMAuditInitConfig, ObsvrConfig, WrapOptions, AuditEvent, AuditFields, AgentPolicy } from "./proxy/types.js";
+export { autoGovernanceStatus } from "./auto/index.js";
+export type { AutoGovernanceStatus, InterceptorKind } from "./auto/index.js";
 export type { PolicyHook, PolicyDecision } from "./policy/hook.js";
 export type { PolicyRule, PolicyEvalContext } from "./policy/rules.js";
 
@@ -255,7 +257,18 @@ export { loadDeviceSigner } from "./proxy/device-identity.js";
 
 // Re-export MCP client governance (also available as `@obsvr/sdk/mcp`)
 export { patchMCP, obsvrGovernMCP } from "./integrations/mcp.js";
-export { integrationBindings, unboundSymbols } from "./binding-report.js";
+export {
+  RequiredBindingsError,
+  assertRequiredBindings,
+  integrationBindings,
+  requiredBindingFailures,
+  unboundSymbols,
+} from "./binding-report.js";
+export type {
+  BindingEntry,
+  RequiredBindingFailure,
+  UnboundSymbol,
+} from "./binding-report.js";
 
 // Framework-agnostic tool governance: wrap any framework's tool (Vercel AI,
 // LlamaIndex, LangChain, ...) so its execution is allow/deny-gated, PII-scanned,

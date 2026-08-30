@@ -26,6 +26,7 @@ import pytest
 
 import obsvr
 from obsvr.register import install, uninstall
+from obsvr.binding_report import integration_bindings
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +87,9 @@ def test_every_alias_of_a_client_class_is_intercepted(monkeypatch):
         assert type(client).__name__ == "_ObsvrProxy", (
             f"anthropic.{name}() escaped construct interception"
         )
+    report = integration_bindings()["anthropic"]
+    for name in ("Anthropic", "Client", "LegacyHandle"):
+        assert report[f"anthropic.{name}"]["bound"] is True
 
 
 def test_aliases_still_point_at_one_class_after_interception(monkeypatch):

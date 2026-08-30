@@ -145,9 +145,16 @@ from .device_identity import load_device_signer  # noqa: F401
 # Why an optional integration failed to bind, not merely that it did: an
 # absent package, a renamed upstream symbol and a broken transitive dependency
 # are three different problems that used to produce one identical silent flag.
-from .binding_report import integration_bindings, unbound_symbols  # noqa: F401
+from .binding_report import (  # noqa: F401
+    RequiredBindingsError,
+    assert_required_bindings,
+    integration_bindings,
+    required_binding_failures,
+    unbound_symbols,
+)
 
 from ._version import __version__  # noqa: F401  # single source: obsvr/_version.py
+from .auto import auto_governance_status  # noqa: F401
 
 __all__ = [
     "init",
@@ -199,6 +206,10 @@ __all__ = [
     "govern_tool",
     "govern_tools",
     "integration_bindings",
+    "required_binding_failures",
+    "assert_required_bindings",
+    "RequiredBindingsError",
+    "auto_governance_status",
     "unbound_symbols",
     "explain",
     "mint_canary",

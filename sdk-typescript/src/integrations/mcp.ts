@@ -80,6 +80,8 @@ export type { McpToolDescriptor, ToolPinningConfig } from "../policy/tool-pinnin
 
 const SOURCE = "mcp_sdk";
 const PATCHED_SYMBOL = Symbol("obsvr-mcp-patched");
+/** @internal Shared marker for explicit and startup-created MCP proxies. */
+export const _MCP_GOVERNED_SYMBOL = Symbol.for("@obsvr/sdk/mcp-governed/v1");
 
 /** JSON-RPC method that carries a tool invocation. */
 const CALL_TOOL_METHOD = "tools/call";
@@ -1366,6 +1368,7 @@ function governClientInstance<T extends object>(
   config: ResolvedConfig,
   opts: IntegrationOptions,
 ): T {
+  if (Reflect.get(client, _MCP_GOVERNED_SYMBOL, client) === true) return client;
   const c = client as unknown as Record<string, unknown>;
   const origCall =
     typeof c.callTool === "function"
@@ -1404,6 +1407,7 @@ function governClientInstance<T extends object>(
 
   const proxy: T = new Proxy(client, {
     get(target, prop) {
+      if (prop === _MCP_GOVERNED_SYMBOL) return true;
       if (prop === "callTool" && governedCall) return governedCall;
       if (prop === "listTools" && governedList) return governedList;
       if (prop === "request" && governedRequest) return governedRequest;

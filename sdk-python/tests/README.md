@@ -6,12 +6,12 @@ Read this before trusting a green run on an integration surface.
 
 | Package | In CI | Driven by |
 |---|---|---|
-| `mcp` | **yes** — declared in the `dev` extra | `test_mcp_real_package.py` stands up a real `FastMCP` server and a real `ClientSession` over the package's own in-memory transport |
+| `mcp` | **yes** — declared in the `dev` extra | `test_mcp_real_package.py` stands up a real `FastMCP` server and a future auto-governed `ClientSession` over the package's own in-memory transport; denial leaves the server tool at zero executions |
 | `langchain-core` | **yes** — declared in the `dev` extra | `test_langchain_real_package.py` drives the real model-start callback boundary |
 | `llama-index-core` | **yes** — declared in the `dev` extra | `test_llamaindex_real_package.py` drives the real callback payload shape |
 | `openai` | **yes** — isolated provider CI cell | `test_openai_text_routes_real_package.py` drives the official client with a local transport |
 | `anthropic` | **yes** — isolated provider CI cell | `test_provider_tool_runners_real_package.py` drives the official Messages runner and proves a later blocked turn makes no second request |
-| `openai-agents` | **yes** — isolated provider CI cell | `test_openai_agents_real_package.py` drives explicit model and model-provider enforcement |
+| `openai-agents` | **yes** — isolated provider CI cell | `test_openai_agents_real_package.py` drives explicit model/model-provider enforcement and automatic future-Agent model assignment plus late tool-list mutation through a real Runner; denied model and tool paths remain at zero executions |
 | `google-genai` | **yes** — dev extra and isolated provider CI cell | `test_google_genai_real_package.py` drives the real 2.x request models, streams, and chat resource shape |
 | `google-generativeai` | **yes** — isolated provider CI cell | `test_google_generativeai_real_package.py` drives official legacy model and chat objects |
 | `google-cloud-aiplatform` | **yes** — isolated provider CI cell | `test_vertex_real_package.py` drives official stable/preview model and chat objects |
@@ -29,6 +29,13 @@ the SDK and drives the official object shape with local transport. Isolation is
 load-bearing: current provider/framework extras can require incompatible MCP or
 OpenAI major lines, so one combined environment would either fail resolution or
 silently test a different dependency set.
+
+The default `.[dev]` run therefore reports skips for the six isolated provider
+files, the provider-alias checks that need OpenAI or Anthropic, and Haystack when
+that optional extra is absent. Those skips are expected only in the combined
+environment. The CI provider matrix installs each pinned official package and
+runs its corresponding file separately; a skipped isolated cell is a failed CI
+job rather than accepted coverage.
 
 It does not enter the blocking dependency audit. That job runs
 `pip-audit --strict .` over declared **runtime** dependencies, which are still

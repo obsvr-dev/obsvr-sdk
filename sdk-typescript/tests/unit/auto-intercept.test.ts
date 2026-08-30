@@ -11,6 +11,14 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import {
   interceptProviderClass,
   autoInstrument,
+  autoGovernanceStatus,
+  interceptProviderNamespace,
+  interceptMcpClientClass,
+  interceptMcpNamespace,
+  interceptOpenAIAgentClass,
+  interceptOpenAIAgentsNamespace,
+  isInterceptorInstalled,
+  markInterceptorInstalled,
   isInterceptionActive,
   _resetInterception,
 } from '../../src/auto/index';
@@ -65,6 +73,27 @@ class FakeMaintainedGoogleClient {
       text: `gemini says: ${req.contents}`,
     }),
   };
+}
+
+class FakeMcpClient {
+  calls: string[] = [];
+
+  async callTool(params: { name: string }): Promise<{ content: unknown[] }> {
+    this.calls.push(params.name);
+    return { content: [] };
+  }
+}
+
+class FakeAgent {
+  tools: unknown[];
+  handoffs: unknown[];
+  model: unknown;
+
+  constructor(config: { tools?: unknown[]; handoffs?: unknown[]; model?: unknown }) {
+    this.tools = config.tools ?? [];
+    this.handoffs = config.handoffs ?? [];
+    this.model = config.model ?? '';
+  }
 }
 
 const SSN_PROMPT = {
@@ -194,6 +223,18 @@ describe('auto/interceptProviderClass', () => {
     expect(interceptProviderClass('openai', notAClass)).toBe(notAClass);
     expect(isInterceptionActive()).toBe(false);
   });
+
+  test('namespace client exports are intercepted without mutating the namespace', () => {
+    const namespace = { OpenAI: FakeOpenAI, helper: 'unchanged' };
+    const governed = interceptProviderNamespace('openai', namespace, ['OpenAI']);
+
+    expect(governed).not.toBe(namespace);
+    expect(namespace.OpenAI).toBe(FakeOpenAI);
+    expect(governed.helper).toBe('unchanged');
+    expect(governed.OpenAI).not.toBe(FakeOpenAI);
+    expect(isInterceptionActive()).toBe(true);
+    expect(autoGovernanceStatus().boundProviders).toEqual(['openai']);
+  });
 });
 
 describe('auto/autoInstrument', () => {
@@ -226,6 +267,20 @@ describe('auto/autoInstrument', () => {
     expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(true);
   });
 
+  test('warns when production agent policy expects startup governance without the preload', () => {
+    const warns = captureWarns(() => {
+      init({
+        api_key: 'test',
+        environment: 'production',
+        agent_policy: { deniedTools: ['send_contract'] },
+      });
+      autoInstrument(getConfig());
+    });
+
+    expect(warns.some((w) => w.includes('Only explicitly wrapped clients'))).toBe(true);
+    expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(true);
+  });
+
   test('does not warn when the interceptor is active', () => {
     interceptProviderClass('openai', FakeOpenAI);
     const warns = captureWarns(() => {
@@ -234,5 +289,225 @@ describe('auto/autoInstrument', () => {
     });
 
     expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(false);
+  });
+
+  test('does not warn while a startup interceptor is armed before provider import', () => {
+    markInterceptorInstalled('esm');
+    const warns = captureWarns(() => {
+      init({ api_key: 'test', providers: ['openai'] });
+      autoInstrument(getConfig());
+    });
+
+    expect(isInterceptorInstalled('esm')).toBe(true);
+    expect(isInterceptionActive()).toBe(false);
+    expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(false);
+  });
+
+  test('status distinguishes armed hooks from bound providers', () => {
+    markInterceptorInstalled('cjs');
+    const armed = autoGovernanceStatus();
+    expect(armed.interceptors).toEqual({ esm: false, cjs: true });
+    expect(armed.boundProviders).toEqual([]);
+    expect(armed.bindings['openai.client']).toEqual({ state: 'armed' });
+    expect(armed.bindings['mcp.client']).toEqual({ state: 'armed' });
+    expect(armed.bindings['langchain.models'].state).toBe('not-applicable');
+    expect(armed.active).toBe(false);
+
+    interceptProviderClass('anthropic', FakeOpenAI);
+    const bound = autoGovernanceStatus();
+    expect(bound.interceptors).toEqual({ esm: false, cjs: true });
+    expect(bound.boundProviders).toEqual(['anthropic']);
+    expect(bound.bindings['anthropic.client']).toEqual({ state: 'bound' });
+    expect(bound.bindings['openai.client']).toEqual({ state: 'armed' });
+    expect(bound.active).toBe(true);
+  });
+
+  test('status reports MCP and both Agent boundaries independently', () => {
+    markInterceptorInstalled('esm');
+    interceptMcpClientClass(FakeMcpClient);
+    interceptOpenAIAgentClass(FakeAgent);
+
+    const status = autoGovernanceStatus();
+    expect(status.bindings['mcp.client']).toEqual({ state: 'bound' });
+    expect(status.bindings['openai_agents.tools']).toEqual({ state: 'bound' });
+    expect(status.bindings['openai_agents.model']).toEqual({ state: 'bound' });
+    expect(status.bindings['openai.client']).toEqual({ state: 'armed' });
+  });
+});
+
+describe('auto/MCP construction interception', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+    _resetInterception();
+  });
+
+  test('a denied tool never reaches a Client constructed after init', async () => {
+    const Intercepted = interceptMcpClientClass(FakeMcpClient);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      mcpToolPolicy: { deniedTools: ['send_contract'] },
+    });
+    const client = new Intercepted();
+
+    await expect(client.callTool({ name: 'send_contract' })).rejects.toThrow();
+    expect(client.calls).toEqual([]);
+  });
+
+  test('a Client constructed before init becomes governed after init', async () => {
+    const Intercepted = interceptMcpClientClass(FakeMcpClient);
+    const client = new Intercepted();
+
+    await client.callTool({ name: 'read_contract' });
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      mcpToolPolicy: { deniedTools: ['send_contract'] },
+    });
+    await expect(client.callTool({ name: 'send_contract' })).rejects.toThrow();
+
+    expect(client.calls).toEqual(['read_contract']);
+  });
+
+  test('the CommonJS namespace is proxied without mutation', () => {
+    const namespace = { Client: FakeMcpClient, helper: 'unchanged' };
+    const intercepted = interceptMcpNamespace(namespace);
+
+    expect(intercepted).not.toBe(namespace);
+    expect(namespace.Client).toBe(FakeMcpClient);
+    expect(intercepted.Client).not.toBe(FakeMcpClient);
+    expect(intercepted.helper).toBe('unchanged');
+  });
+});
+
+describe('auto/OpenAI Agents construction interception', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+    _resetInterception();
+  });
+
+  test('new Agents receive a pre-execution function-tool guardrail', async () => {
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      agent_policy: { deniedTools: ['send_contract'] },
+    } as any);
+    const tool = {
+      type: 'function',
+      name: 'send_contract',
+      inputGuardrails: [] as Array<{ name: string; run: (data: unknown) => Promise<any> }>,
+    };
+    const agent = new Intercepted({ tools: [tool] });
+
+    expect(tool.inputGuardrails.map((guardrail) => guardrail.name)).toContain(
+      'obsvr_tool_gate',
+    );
+    const verdict = await tool.inputGuardrails[0].run({
+      toolCall: { name: 'send_contract', callId: 'call-1' },
+    });
+    expect(verdict.behavior.type).toBe('rejectContent');
+    expect(agent.tools).toContain(tool);
+  });
+
+  test('a concrete Agent model is governed at construction', async () => {
+    let modelCalls = 0;
+    const rawModel = {
+      model: 'gpt-4o-mini',
+      async getResponse(_request: unknown) {
+        modelCalls += 1;
+        return { output: [] };
+      },
+      async *getStreamedResponse(_request: unknown) {
+        modelCalls += 1;
+      },
+    };
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    const agent = new Intercepted({ model: rawModel });
+
+    await expect((agent.model as any).getResponse({
+      input: 'SSN 123-45-6789',
+    })).rejects.toThrow();
+    expect(modelCalls).toBe(0);
+  });
+
+  test('function tools added after Agent construction receive the gate', async () => {
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      agent_policy: { deniedTools: ['send_contract'] },
+    } as any);
+    const agent = new Intercepted({ tools: [] });
+    const tool = {
+      type: 'function',
+      name: 'send_contract',
+      inputGuardrails: [] as Array<{ name: string; run: (data: unknown) => Promise<any> }>,
+    };
+
+    agent.tools.push(tool);
+
+    expect(tool.inputGuardrails.map((guardrail) => guardrail.name)).toContain(
+      'obsvr_tool_gate',
+    );
+    const verdict = await tool.inputGuardrails[0].run({
+      toolCall: { name: 'send_contract', callId: 'call-late' },
+    });
+    expect(verdict.behavior.type).toBe('rejectContent');
+  });
+
+  test('later model and tool-list replacement stay governed', async () => {
+    let modelCalls = 0;
+    const rawModel = {
+      model: 'gpt-4o-mini',
+      async getResponse(_request: unknown) {
+        modelCalls += 1;
+        return { output: [] };
+      },
+      async *getStreamedResponse(_request: unknown) {
+        modelCalls += 1;
+      },
+    };
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: 'block' } },
+      agent_policy: { deniedTools: ['send_contract'] },
+    } as any);
+    const agent = new Intercepted({ tools: [], model: '' });
+    const tool = {
+      type: 'function',
+      name: 'send_contract',
+      inputGuardrails: [] as Array<{ name: string; run: (data: unknown) => Promise<any> }>,
+    };
+
+    agent.model = rawModel;
+    agent.tools = [tool];
+
+    await expect((agent.model as any).getResponse({
+      input: 'SSN 123-45-6789',
+    })).rejects.toThrow();
+    expect(modelCalls).toBe(0);
+    expect(tool.inputGuardrails.map((guardrail) => guardrail.name)).toContain(
+      'obsvr_tool_gate',
+    );
+  });
+
+  test('the CommonJS package namespace is proxied without mutation', () => {
+    const namespace = { Agent: FakeAgent, helper: 'unchanged' };
+    const intercepted = interceptOpenAIAgentsNamespace(namespace);
+
+    expect(intercepted).not.toBe(namespace);
+    expect(namespace.Agent).toBe(FakeAgent);
+    expect(intercepted.Agent).not.toBe(FakeAgent);
+    expect(intercepted.helper).toBe('unchanged');
   });
 });

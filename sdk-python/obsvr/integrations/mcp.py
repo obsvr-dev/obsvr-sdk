@@ -1412,6 +1412,15 @@ class _GovernedMCPSession:
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(object.__getattribute__(self, "_obsvr_session"), name, value)
 
+    async def __aenter__(self) -> Any:
+        await object.__getattribute__(self, "_obsvr_session").__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        return await object.__getattribute__(self, "_obsvr_session").__aexit__(
+            exc_type, exc, tb
+        )
+
     async def call_tool(self, name: str, arguments: Optional[Dict[str, Any]] = None, **kw: Any) -> Any:
         return await self._obsvr_call_tool(self._obsvr_session, name, arguments, **kw)
 

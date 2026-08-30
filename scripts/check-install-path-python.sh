@@ -107,6 +107,7 @@ fi
 #    it can only reach by importing the package and running its own parser.
 echo "==> the packaged console script resolves"
 [ -x "$WORK/consumer/bin/obsvr-verify" ] || { echo "obsvr-verify was not installed" >&2; exit 1; }
+[ -x "$WORK/consumer/bin/obsvr-run" ] || { echo "obsvr-run was not installed" >&2; exit 1; }
 set +e
 CLI_OUT="$("$WORK/consumer/bin/obsvr-verify" 2>&1)"
 CLI_CODE=$?
@@ -115,6 +116,24 @@ if [ "$CLI_CODE" -ne 2 ] || ! printf '%s' "$CLI_OUT" | grep -q "Usage: obsvr-ver
   echo "obsvr-verify did not reach its own argument parser (exit $CLI_CODE): $CLI_OUT" >&2
   exit 1
 fi
+
+set +e
+RUN_OUT="$("$WORK/consumer/bin/obsvr-run" 2>&1)"
+RUN_CODE=$?
+set -e
+if [ "$RUN_CODE" -eq 0 ] || ! printf '%s' "$RUN_OUT" | grep -q "usage: obsvr-run"; then
+  echo "obsvr-run did not reach its own argument parser (exit $RUN_CODE): $RUN_OUT" >&2
+  exit 1
+fi
+
+cat > "$WORK/runner-smoke.py" <<'PY'
+import obsvr
+assert obsvr.is_initialized()
+print("obsvr-run initialized the installed wheel")
+PY
+OBSVR_API_KEY="install-path-check" OBSVR_POLICY_REFRESH_INTERVAL_S=0 \
+  "$WORK/consumer/bin/obsvr-run" "$WORK/runner-smoke.py" | \
+  grep -q "obsvr-run initialized the installed wheel"
 
 # 5) Run the consumer from OUTSIDE the repository. The script is copied so its
 #    own directory - which Python puts on sys.path - is the scratch directory

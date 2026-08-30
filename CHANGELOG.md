@@ -13,10 +13,39 @@ Entries link the implementing commit when a stable public hash is available.
 
 ## [Unreleased]
 
-Changes land here and are renamed at the next release cut.
+No changes yet.
+
+## [0.13.0] - 2026-08-30
 
 ### Added
 
+- Added one-step startup auto-governance through `@obsvr/sdk/initialize` and
+  `obsvr-run`. Automatic attachment is limited to real pre-call construction or
+  process-global hook points:
+
+  | Runtime | Automatically governed after startup |
+  | --- | --- |
+  | TypeScript | documented OpenAI, Anthropic, and Gemini construction; MCP clients; OpenAI Agents concrete models, local function tools, handoffs, and later supported mutations |
+  | Python | documented OpenAI and Anthropic construction; MCP sessions; OpenAI Agents concrete models, local function tools, handoffs, and later supported mutations; CrewAI tools; AutoGen tools; LlamaIndex model calls |
+
+- Added exact required-binding manifests and automatic-boundary status. A
+  required surface that does not bind fails startup; status reports `armed`,
+  `bound`, or `not-applicable`.
+- Kept structurally unsafe surfaces explicit rather than presenting telemetry as
+  enforcement:
+
+  | Explicit boundary | Reason |
+  | --- | --- |
+  | LangChain in both SDKs | no documented process-global custom pre-call registration point |
+  | TypeScript LlamaIndex | tracing is observe-only; model and tool governance use explicit pre-call wrappers |
+  | Python LlamaIndex agent tools | no safe process-global tool-construction gate |
+  | Python Gemini | constructor interception is not installed for either Gemini package |
+  | Hosted/provider-side tools | no local callback exists to gate |
+  | Pre-startup objects, saved raw aliases, custom transports, and unlisted import paths | outside the intercepted construction boundary |
+
+- Explicit wrappers can transactionally revoke governed methods on the exact raw
+  client through `sealRaw` / `seal_raw`, reducing accidental raw-handle bypasses
+  without freezing provider SDK internals.
 - Strict profile 2.1 now binds each successfully finalized action to a device-signed terminal execution outcome, persists durable execution journals, and leaves post-start finalization failures unresolved as `invocation_uncertain` rather than authorizing automatic replay.
 - Applications can explicitly submit signed terminal outcomes or recovered terminal journals to hosted strict ingest. Exact duplicates are idempotent, and only a matching rejection with `stored: false` is treated as definitive non-storage.
 - Interrupted `invocation_started` journals can be explicitly finalized as signed `uncertain/process_interrupted` outcomes without guessing whether the remote action succeeded.

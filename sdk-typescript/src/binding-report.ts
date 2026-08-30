@@ -35,6 +35,28 @@ export interface UnboundSymbol {
   error?: string;
 }
 
+export interface RequiredBindingFailure extends UnboundSymbol {
+  reason: "missing" | "unbound";
+}
+
+/** Raised when a deployment-declared integration is not completely bound. */
+export class RequiredBindingsError extends Error {
+  readonly failures: RequiredBindingFailure[];
+
+  constructor(failures: RequiredBindingFailure[]) {
+    const summary = failures
+      .map((failure) =>
+        failure.reason === "missing"
+          ? `${failure.integration} was never bound`
+          : `${failure.integration}:${failure.symbol} is unbound`,
+      )
+      .join(", ");
+    super(`Required obsvr bindings are not active: ${summary}`);
+    this.name = "RequiredBindingsError";
+    this.failures = failures.map((failure) => ({ ...failure }));
+  }
+}
+
 const bindings = new Map<string, Map<string, BindingEntry>>();
 
 /**
@@ -123,6 +145,49 @@ export function unboundSymbols(): UnboundSymbol[] {
     }
   }
   return out;
+}
+
+/**
+ * Resolve deployment requirements against binding paths that have actually run.
+ *
+ * A missing integration is different from an integration whose upstream symbol
+ * failed to resolve, but both are fatal when the caller declared that integration
+ * required. Call this after the application's client/tool factory has installed
+ * its integrations; startup auto-instrumentation uses the same primitive.
+ */
+export function requiredBindingFailures(
+  required: readonly string[],
+): RequiredBindingFailure[] {
+  const failures: RequiredBindingFailure[] = [];
+  for (const integration of new Set(required)) {
+    if (typeof integration !== "string" || integration.trim() === "") {
+      throw new TypeError("required bindings must be non-empty integration names");
+    }
+    const name = integration.trim();
+    const symbols = bindings.get(name);
+    if (!symbols || symbols.size === 0) {
+      failures.push({ integration: name, symbol: "", reason: "missing" });
+      continue;
+    }
+    for (const [symbol, entry] of symbols) {
+      if (!entry.bound) {
+        failures.push({
+          integration: name,
+          symbol,
+          reason: "unbound",
+          errorType: entry.errorType,
+          error: entry.error,
+        });
+      }
+    }
+  }
+  return failures;
+}
+
+/** Refuse startup when any deployment-declared integration is not fully bound. */
+export function assertRequiredBindings(required: readonly string[]): void {
+  const failures = requiredBindingFailures(required);
+  if (failures.length > 0) throw new RequiredBindingsError(failures);
 }
 
 /** Test seam. */

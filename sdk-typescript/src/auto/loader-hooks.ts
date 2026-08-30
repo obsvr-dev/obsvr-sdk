@@ -35,14 +35,26 @@ const INTERCEPT_PARAM = 'obsvr-intercept';
  */
 const PROVIDER_SPECIFIERS: Record<string, string> = {
   openai: 'openai',
+  'openai/index': 'openai',
+  'openai/index.mjs': 'openai',
+  'openai/client': 'openai-client',
+  'openai/client.mjs': 'openai-client',
+  'openai/client.js': 'openai-client-cjs',
+  'openai/azure': 'openai-azure',
   '@anthropic-ai/sdk': 'anthropic',
   '@google/generative-ai': 'google',
   '@google/genai': 'google-genai',
+  '@modelcontextprotocol/sdk/client': 'mcp-client',
+  '@modelcontextprotocol/sdk/client/index.js': 'mcp-client',
+  '@openai/agents': 'openai-agents',
 };
 
 /** Shim id -> canonical provider passed to the runtime interceptor. */
 const CANONICAL_PROVIDER: Record<string, string> = {
   openai: 'openai',
+  'openai-client': 'openai',
+  'openai-client-cjs': 'openai',
+  'openai-azure': 'openai',
   anthropic: 'anthropic',
   google: 'google',
   'google-genai': 'google',
@@ -166,6 +178,9 @@ export async function load(
  */
 const PROVIDER_CLIENT_EXPORTS: Record<string, readonly string[]> = {
   openai: ['OpenAI', 'AzureOpenAI', 'BedrockOpenAI'],
+  'openai-client': ['OpenAI'],
+  'openai-client-cjs': ['OpenAI'],
+  'openai-azure': ['AzureOpenAI'],
   anthropic: ['Anthropic'],
   google: ['GoogleGenerativeAI'],
   'google-genai': ['GoogleGenAI'],
@@ -185,29 +200,55 @@ const PROVIDER_CLIENT_EXPORTS: Record<string, readonly string[]> = {
 function buildShim(provider: string, originalUrl: string, runtimeUrl: string): string {
   const orig = JSON.stringify(originalUrl);
   const runtime = JSON.stringify(runtimeUrl);
+  if (provider === 'mcp-client') {
+    return [
+      `export * from ${orig};`,
+      `import { Client as $obsvrOriginalClient } from ${orig};`,
+      `import { interceptMcpClientClass as $obsvrInterceptMcp } from ${runtime};`,
+      `const $obsvrClient = $obsvrInterceptMcp($obsvrOriginalClient);`,
+      `export { $obsvrClient as Client };`,
+    ].join('\n');
+  }
+  if (provider === 'openai-agents') {
+    return [
+      `export * from ${orig};`,
+      `import { Agent as $obsvrOriginalAgent } from ${orig};`,
+      `import { interceptOpenAIAgentClass as $obsvrInterceptAgent } from ${runtime};`,
+      `const $obsvrAgent = $obsvrInterceptAgent($obsvrOriginalAgent);`,
+      `export { $obsvrAgent as Agent };`,
+    ].join('\n');
+  }
   const names = PROVIDER_CLIENT_EXPORTS[provider];
   if (!names) return `export * from ${orig};`;
 
   const lines = [
     `export * from ${orig};`,
-    `import { interceptProviderClass as $obsvrIntercept } from ${runtime};`,
+    `import { interceptProviderClass as $obsvrIntercept, interceptProviderNamespace as $obsvrInterceptNamespace } from ${runtime};`,
   ];
   // The default export is the primary client for openai and anthropic; google
   // has no default and is reached only through its named export.
   const canonicalProvider = CANONICAL_PROVIDER[provider] ?? provider;
-  const hasDefault = canonicalProvider !== 'google';
-  if (hasDefault) {
+  const interceptDefault = provider === 'openai' || provider === 'anthropic';
+  const passthroughNamespaceDefault = provider === 'openai-client-cjs';
+  const hasDefault = interceptDefault || passthroughNamespaceDefault;
+  if (interceptDefault) {
     lines.push(
       `import { default as $obsvrDefault } from ${orig};`,
       `const $obsvrPatchedDefault = $obsvrIntercept(${JSON.stringify(canonicalProvider)}, $obsvrDefault);`,
       `export default $obsvrPatchedDefault;`,
+    );
+  } else if (passthroughNamespaceDefault) {
+    lines.push(
+      `import { default as $obsvrDefaultNamespace } from ${orig};`,
+      `const $obsvrPatchedDefaultNamespace = $obsvrInterceptNamespace(${JSON.stringify(canonicalProvider)}, $obsvrDefaultNamespace, ${JSON.stringify(names)});`,
+      `export default $obsvrPatchedDefaultNamespace;`,
     );
   }
   names.forEach((name, index) => {
     // The first named export IS the default class on the packages that have a
     // default, so it reuses that Proxy and stays `===` to the default export —
     // callers compare them.
-    if (hasDefault && index === 0) {
+    if (interceptDefault && index === 0) {
       lines.push(`export { $obsvrPatchedDefault as ${name} };`);
       return;
     }

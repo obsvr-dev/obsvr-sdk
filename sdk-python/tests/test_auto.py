@@ -7,6 +7,7 @@ import sys
 import types
 
 import obsvr
+import pytest
 from obsvr import auto
 
 
@@ -30,6 +31,22 @@ def test_init_auto_false_is_respected():
     assert obsvr.is_initialized()
 
 
+def test_direct_auto_init_honors_required_bindings(monkeypatch):
+    monkeypatch.setenv("OBSVR_REQUIRED_BINDINGS", "missing.surface")
+    with pytest.raises(obsvr.RequiredBindingsError, match="missing.surface"):
+        obsvr.init(api_key="test", auto=True)
+
+
+def test_production_auto_init_warns_when_supported_package_loaded(caplog, monkeypatch):
+    fake_openai = types.ModuleType("openai")
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    with caplog.at_level("WARNING", logger="obsvr.auto"):
+        obsvr.init(api_key="test", environment="production", auto=True)
+    assert "already imported in production:" in caplog.text
+    assert "openai" in caplog.text
+    assert "obsvr-run" in caplog.text
+
+
 def test_openai_agents_is_wired_when_available(monkeypatch):
     auto._reset_auto()
     calls = []
@@ -50,8 +67,72 @@ def test_openai_agents_is_wired_when_available(monkeypatch):
     assert len(calls) == 1
 
 
-def test_manual_frameworks_reported(monkeypatch):
+def test_safe_global_tool_gates_are_wired_once(monkeypatch):
     auto._reset_auto()
-    monkeypatch.setattr(auto, "_module_available", lambda name: name == "crewai")
+    calls = []
+    monkeypatch.setattr(
+        auto,
+        "_module_available",
+        lambda name: name in {"crewai", "autogen"},
+    )
+    monkeypatch.setattr(
+        auto,
+        "_wire_crewai_tool_gate",
+        lambda: calls.append("crewai") or True,
+    )
+    monkeypatch.setattr(
+        auto,
+        "_wire_autogen_tool_gate",
+        lambda: calls.append("autogen") or True,
+    )
     report = auto.enable_auto_instrumentation()
-    assert any("CrewAI" in hint for hint in report["manual"])
+    assert "crewai:tool-gate" in report["wired"]
+    assert "autogen:tool-gate" in report["wired"]
+    assert calls == ["crewai", "autogen"]
+    assert any("CrewAI run/step audit" in hint for hint in report["manual"])
+    assert any("AutoGen message policy" in hint for hint in report["manual"])
+
+    report2 = auto.enable_auto_instrumentation()
+    assert "crewai:tool-gate" not in report2["wired"]
+    assert "autogen:tool-gate" not in report2["wired"]
+    assert calls == ["crewai", "autogen"]
+
+
+def test_reset_uninstalls_global_tool_gates(monkeypatch):
+    auto._reset_auto()
+    removed = []
+    auto._uninstallers.extend(
+        [lambda: removed.append("first"), lambda: removed.append("second")]
+    )
+    auto._wired.extend(["crewai_tool_gate", "autogen_tool_gate"])
+    auto._reset_auto()
+    assert removed == ["second", "first"]
+    assert auto._wired == []
+    assert auto._uninstallers == []
+
+
+def test_status_distinguishes_bound_and_explicit_surfaces(monkeypatch):
+    auto._reset_auto()
+    from obsvr import binding_report
+
+    saved = {name: dict(symbols) for name, symbols in binding_report._BINDINGS.items()}
+    binding_report._BINDINGS.clear()
+    try:
+        monkeypatch.setattr(
+            auto,
+            "_module_available",
+            lambda name: name in {"mcp", "langchain_core"},
+        )
+
+        armed = auto.auto_governance_status()
+        assert armed["enabled"] is False
+        assert armed["bindings"]["mcp.client"] == {"state": "armed"}
+        assert armed["bindings"]["langchain.models"]["state"] == "not-applicable"
+
+        binding_report.record_binding("mcp.client", "mcp.ClientSession")
+        bound = auto.auto_governance_status()
+        assert bound["bindings"]["mcp.client"] == {"state": "bound"}
+        assert obsvr.auto_governance_status is auto.auto_governance_status
+    finally:
+        binding_report._BINDINGS.clear()
+        binding_report._BINDINGS.update(saved)

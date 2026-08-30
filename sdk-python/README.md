@@ -52,6 +52,44 @@ pip install "obsvr-sdk[crypto-nacl]"      # PyNaCl (alternative)
 
 ## Quick Start
 
+To initialize before application imports, run the application through obsvr:
+
+```bash
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+OBSVR_AGENT_POLICY='{"denied_tools":["send_contract"]}' \
+OBSVR_MCP_TOOL_POLICY='{"denied_tools":["delete_record"]}' \
+OBSVR_REQUIRED_BINDINGS='openai.client,mcp.client,openai_agents.model,openai_agents.tools' \
+obsvr-run app.py
+# or: obsvr-run -m package.module
+```
+
+`obsvr-run` also reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`,
+`OBSVR_ENFORCEMENT_MODE`, `OBSVR_FAIL_MODE`, `OBSVR_AGENT_POLICY`,
+`OBSVR_MCP_TOOL_POLICY`, and `OBSVR_POLICY_REFRESH_INTERVAL_S`.
+
+Set `OBSVR_REQUIRED_BINDINGS` to the exact boundaries the process requires:
+
+| Key | Successful binding means |
+| --- | --- |
+| `openai.client` | documented future OpenAI construction is intercepted |
+| `anthropic.client` | documented future Anthropic construction is intercepted |
+| `mcp.client` | documented future MCP `ClientSession` construction receives the `tools/call` gate |
+| `openai_agents.model` | intercepted Agents receive concrete-model governance |
+| `openai_agents.tools` | intercepted Agents receive local function-tool and handoff gates, including supported later mutations |
+| `llamaindex.models` | the process-global LlamaIndex model-start gate is installed |
+| `crewai.tools` | the supported CrewAI pre-tool hook is installed |
+| `autogen.tools` | the supported AutoGen/ag2 tool-execution gate is installed |
+
+Startup fails before the target runs unless every listed boundary binds.
+`openai_agents.tools` does not include tracing or hosted tools.
+`auto_governance_status()` reports each boundary as `armed`, `bound`, or
+`not-applicable`.
+
+The same manifest is enforced by direct `obsvr.init(auto=True)`. Production
+direct-init also warns if a supported package was imported first, because a
+constructor or object reference copied before rebinding can remain raw.
+
 Wrap your existing LLM client. No other code changes.
 
 ```python
@@ -90,6 +128,24 @@ client = obsvr.wrap(GoogleGenAI())        # models.generate_content / aio.models
 Compatibility only means fixes, not features: the legacy adapter is kept working for existing deployments. The two distributions have different method and response shapes and use separate adapters.
 
 Both Gemini clients need an explicit `obsvr.wrap()` — unlike OpenAI and Anthropic, Python auto-registration does not intercept either package. The current adapter wraps `GoogleGenAI` and governs `models.generate_content`, `models.generate_content_stream`, and the corresponding `aio.models` methods. The legacy adapter wraps `GenerativeModel` and remains compatibility-only.
+
+`obsvr-run` is the safest automatic path because it installs constructor and
+supported process-global interception before the target imports. If the
+application controls import order, `obsvr.init(..., auto=True)` provides the
+same registration. Automatic startup currently covers OpenAI and Anthropic
+client construction, future MCP `ClientSession` construction, CrewAI's
+supported process-global pre-tool hook, AutoGen/ag2 0.x `ConversableAgent`
+execution, Python LlamaIndex model-start callbacks, and future OpenAI Agents
+`Agent` construction. Agents concrete model assignments and ordinary
+tool/handoff list mutations stay on their pre-call gates. This is not a heap
+scan. Existing instances, constructor references copied before init, unlisted
+import aliases, custom transports, hosted tools, LlamaIndex agent tools,
+Gemini, and LangChain callback configuration remain outside that automatic
+boundary.
+
+Explicit wrapping accepts `seal_raw=True` to revoke documented governed methods
+on the exact raw client after the proxy is ready. This does not freeze provider
+internals, revoke another instance, or invalidate a callable copied earlier.
 
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
 `messages.create` / `.parse`, their `with_raw_response` and
@@ -228,6 +284,13 @@ before dispatch; a requested redaction fails closed because callbacks cannot
 reliably rewrite provider-bound content. OpenAI Agents tracing remains
 observe-only, while `govern_model` and `govern_model_provider` enforce at the
 model interface. Tool gates are documented separately below.
+
+**Automatic startup attachment uses those same gates; it does not create a
+second enforcement mechanism.** `obsvr-run` / early `init(auto=True)` installs
+the supported CrewAI and AutoGen execution gates and attaches the OpenAI Agents
+input guardrail to function tools present on every later `Agent` construction.
+Use the explicit functions below for already-created objects, tools added later,
+LangChain callbacks, LlamaIndex agent tool assembly, and MCP sessions.
 **Whether a tool-policy block actually stops the tool
 is a per-integration property, not a property of the SDK** — it depends on
 whether the framework hands obsvr a hook that runs *before* the tool does, and
@@ -303,10 +366,11 @@ never executes:
 from obsvr.integrations.pydantic_ai import ObsvrToolset
 agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(my_toolset)])
 
-# OpenAI Agents — obsvr's guardrail on every function tool reachable from the
-# agent (handoff targets included); a denied tool never runs and the model
-# receives the block message as the tool result. govern_tool is the
-# alternative when a denial should ABORT the run instead.
+# OpenAI Agents — obsvr-run attaches this guardrail to function tools present
+# on future Agent construction. Call it explicitly for an existing Agent or
+# after adding tools. Handoff targets are included; a denied tool never runs
+# and the model receives the block message as the tool result. govern_tool is
+# the alternative when a denial should ABORT the run instead.
 from obsvr.integrations.openai_agents import attach_tool_gate
 detach = attach_tool_gate(agent)
 
@@ -517,9 +581,10 @@ The boundaries below are enforcement limits.
 ### Before you install: the five limits of the Python SDK
 
 **Scope: this list is the Python SDK only.** The two SDKs do not have the same
-limitations — the TypeScript SDK has two of its own that do not apply here (it
-is ESM-only, and its zero-code auto-register misses documented import and timing
-shapes), and one below does not apply to it. The combined list for both, with the scope marked on each entry, is in the
+limitations — the TypeScript SDK has an ESM-only public API while its startup
+preload additionally chains documented CommonJS provider construction. Both
+runtimes still have import-order and saved-reference limits, and one limit below
+does not apply to TypeScript. The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 **A limit measured on one SDK is a hypothesis about the other, not a fact about

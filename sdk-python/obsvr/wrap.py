@@ -260,6 +260,8 @@ _GOVERNED_METHODS = (
     | set(TOOL_RUNNER_METHODS)
 )
 
+_SEALED_METHODS_OPTION = "_obsvr_sealed_methods"
+
 #: Attribute names that may lead to an auditable method. Everything else is
 #: returned untouched, so we never wrap unrelated objects. "beta" earns its
 #: place here for the two beta paths above: without it ``client.beta`` is
@@ -2585,8 +2587,13 @@ class _ObsvrProxy:
         provider = state.provider
         options = state.options
 
-        value = getattr(target, name)
         method_path = ".".join(path + [name])
+        sealed_methods = options.get(_SEALED_METHODS_OPTION) or {}
+        value = (
+            sealed_methods[method_path]
+            if method_path in sealed_methods
+            else getattr(target, name)
+        )
         strict_capability = options.get("strict_receipt_v2_1")
 
         if (
@@ -2726,6 +2733,61 @@ def _resolves_to_callable(client: Any, path: str) -> bool:
             # never be the thing that breaks wrap().
             return False
     return callable(cur)
+
+
+def _seal_governed_methods(client: Any) -> Dict[str, Any]:
+    """Revoke governed methods on the exact raw client graph passed to wrap().
+
+    The returned proxy retains the original bound callables. Other instances
+    and references copied before wrap() are unchanged.
+    """
+    retained: Dict[str, Any] = {}
+    targets: Dict[tuple, tuple] = {}
+    for path in _GOVERNED_METHODS:
+        parts = path.split(".")
+        property_name = parts.pop()
+        receiver = client
+        try:
+            for segment in parts:
+                receiver = getattr(receiver, segment)
+            original = getattr(receiver, property_name)
+        except Exception:  # noqa: BLE001 - an unreadable path is not sealable
+            continue
+        if not callable(original):
+            continue
+        retained[path] = original
+        targets.setdefault((id(receiver), property_name), (receiver, property_name))
+
+    applied = []
+    try:
+        for receiver, property_name in targets.values():
+            namespace = getattr(receiver, "__dict__", None)
+            had_own = isinstance(namespace, dict) and property_name in namespace
+            old_own = namespace.get(property_name) if had_own else None
+
+            def blocked_raw_method(
+                *_args: Any, _property_name: str = property_name, **_kwargs: Any
+            ) -> Any:
+                raise RuntimeError(
+                    f"[obsvr] raw method {_property_name} is sealed; use the "
+                    "client returned by obsvr.wrap()"
+                )
+
+            setattr(receiver, property_name, blocked_raw_method)
+            if getattr(receiver, property_name) is not blocked_raw_method:
+                raise TypeError(f"{property_name} rejected replacement")
+            applied.append((receiver, property_name, had_own, old_own))
+    except Exception as error:
+        for receiver, property_name, had_own, old_own in reversed(applied):
+            if had_own:
+                setattr(receiver, property_name, old_own)
+            else:
+                delattr(receiver, property_name)
+        raise RuntimeError(
+            "[obsvr] seal_raw could not revoke every governed method: "
+            f"{error}"
+        ) from error
+    return retained
 
 
 # Clients already reported. Weak, so holding one here cannot keep it alive.
@@ -2884,6 +2946,8 @@ def wrap(client: Any, **options: Any) -> Any:
 
     recorded_provider, attribution = resolve_destination(client, provider)
     options = {**prior_options, **dict(options or {})}
+    if options.get("seal_raw") is True and not options.get(_SEALED_METHODS_OPTION):
+        options[_SEALED_METHODS_OPTION] = _seal_governed_methods(client)
     options["_obsvr_strict_root_client"] = client
     # Re-resolved from the client rather than carried over, so the reserved
     # destination keys can never be set by a caller passing them as options.

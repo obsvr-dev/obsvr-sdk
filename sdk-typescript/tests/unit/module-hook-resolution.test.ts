@@ -26,6 +26,7 @@ import * as path from 'path';
 
 const PKG = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
 const REGISTER = path.join(PKG, 'dist', 'register.js');
+const INITIALIZE = path.join(PKG, 'dist', 'initialize.js');
 
 /**
  * Run a script inside the package directory (so provider packages resolve) with
@@ -118,6 +119,404 @@ describe('the register hook actually substitutes a real provider class', () => {
       });
       const line = out.split('\n').find((l) => l.startsWith('RESULT_JSON:'))!;
       expect(JSON.parse(line.slice('RESULT_JSON:'.length)).interceptionActive).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('documented OpenAI ESM entry points enforce before transport', () => {
+  const subpaths = [
+    'openai/index',
+    'openai/index.mjs',
+    'openai/client',
+    'openai/client.mjs',
+    'openai/client.js',
+    'openai/azure',
+  ];
+
+  it.each(subpaths)('%s is governed by the preload', (specifier) => {
+    const source = `
+const provider = await import(${JSON.stringify(specifier)});
+const { obsvr } = await import(${JSON.stringify(PKG + '/dist/index.js')});
+obsvr.init({ apiKey: 'k', ingestUrl: 'http://127.0.0.1:1', piiPolicy: {}, policyRefreshIntervalMs: 0 });
+const Client = provider.OpenAI ?? provider.AzureOpenAI ?? provider.default?.OpenAI ?? provider.default;
+let transportCalls = 0;
+const options = ${JSON.stringify(specifier)} === 'openai/azure'
+  ? { apiKey: 'x', endpoint: 'https://example.openai.azure.com', apiVersion: '2024-01-01', fetch: async () => { transportCalls++; throw new Error('transport reached'); } }
+  : { apiKey: 'x', fetch: async () => { transportCalls++; throw new Error('transport reached'); } };
+const client = new Client(options);
+let blocked = false;
+try {
+  await client.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'SSN 123-45-6789' }] });
+} catch (error) {
+  blocked = error?.name === 'ObsvrPolicyError';
+}
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, transportCalls, wrapIsIdentity: obsvr.wrap(client) === client }));
+process.exit(0);
+`;
+    const result = runWithHook(source);
+    expect(result.blocked).toBe(true);
+    expect(result.transportCalls).toBe(0);
+    expect(result.wrapIsIdentity).toBe(true);
+  });
+});
+
+describe('CommonJS provider construction interception', () => {
+  it('governs require("openai") before transport', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'probe.cjs');
+    try {
+      writeFileSync(file, `
+(async () => {
+  const OpenAI = require('openai');
+  const { obsvr } = await import(${JSON.stringify(PKG + '/dist/index.js')});
+  obsvr.init({ apiKey: 'k', ingestUrl: 'http://127.0.0.1:1', piiPolicy: {}, policyRefreshIntervalMs: 0 });
+  let transportCalls = 0;
+  const client = new OpenAI({ apiKey: 'x', fetch: async () => { transportCalls++; throw new Error('transport reached'); } });
+  let blocked = false;
+  try {
+    await client.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'SSN 123-45-6789' }] });
+  } catch (error) {
+    blocked = error?.name === 'ObsvrPolicyError';
+  }
+  console.log('RESULT_JSON:' + JSON.stringify({ blocked, transportCalls, wrapIsIdentity: obsvr.wrap(client) === client }));
+  process.exit(0);
+})();
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', REGISTER, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result.blocked).toBe(true);
+      expect(result.transportCalls).toBe(0);
+      expect(result.wrapIsIdentity).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('governs a real CommonJS MCP Client before server execution', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'mcp-probe.cjs');
+    try {
+      writeFileSync(file, `
+(async () => {
+  const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+  const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+  const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
+  const executed = [];
+  const server = new McpServer({ name: 'server', version: '1.0.0' });
+  server.registerTool('send_contract', { description: 'Send a contract' }, async () => {
+    executed.push('send_contract');
+    return { content: [{ type: 'text', text: 'sent' }] };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'client', version: '1.0.0' }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  let blocked = false;
+  try {
+    await client.callTool({ name: 'send_contract', arguments: {} });
+  } catch (error) {
+    blocked = String(error).includes('[obsvr] MCP tool blocked by policy');
+  }
+  await client.close();
+  await server.close();
+  console.log('RESULT_JSON:' + JSON.stringify({ blocked, executed }));
+  process.exit(0);
+})();
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_MCP_TOOL_POLICY: '{"deniedTools":["send_contract"]}',
+          OBSVR_REQUIRED_BINDINGS: 'mcp.client',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result).toEqual({ blocked: true, executed: [] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('@obsvr/sdk/initialize one-step preload', () => {
+  it('initializes and blocks a real provider call before transport', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'probe.mjs');
+    try {
+      writeFileSync(file, `
+import OpenAI from 'openai';
+let transportCalls = 0;
+const client = new OpenAI({ apiKey: 'x', fetch: async () => { transportCalls++; throw new Error('transport reached'); } });
+let blocked = false;
+try {
+  await client.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'SSN 123-45-6789' }] });
+} catch (error) {
+  blocked = error?.name === 'ObsvrPolicyError';
+}
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, transportCalls }));
+process.exit(0);
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_PROVIDERS: 'openai',
+          OBSVR_PII_POLICY: '{}',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result.blocked).toBe(true);
+      expect(result.transportCalls).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails startup when its required API key is absent', () => {
+    expect(() => execFileSync(process.execPath, ['--import', INITIALIZE, '-e', '0'], {
+      cwd: PKG,
+      encoding: 'utf-8',
+      timeout: 60_000,
+      env: { ...process.env, OBSVR_API_KEY: '' },
+      stdio: 'pipe',
+    })).toThrow(/OBSVR_API_KEY is required/);
+  });
+
+  it('fails startup when a required binding is unsupported or absent', () => {
+    expect(() => execFileSync(process.execPath, ['--import', INITIALIZE, '-e', '0'], {
+      cwd: PKG,
+      encoding: 'utf-8',
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        OBSVR_API_KEY: 'k',
+        OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+        OBSVR_REQUIRED_BINDINGS: 'not-installed',
+      },
+      stdio: 'pipe',
+    })).toThrow(/not-installed was never bound/);
+  });
+
+  it('loads and verifies a required provider before application startup', () => {
+    const out = execFileSync(
+      process.execPath,
+      ['--import', INITIALIZE, '--input-type=module', '-e', `
+        import { autoGovernanceStatus } from ${JSON.stringify(PKG + '/dist/index.js')};
+        console.log('RESULT_JSON:' + JSON.stringify(autoGovernanceStatus()));
+        process.exit(0);
+      `],
+      {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_REQUIRED_BINDINGS: 'openai.client',
+        },
+      },
+    );
+    const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+    const status = JSON.parse(line.slice('RESULT_JSON:'.length));
+    expect(status.boundProviders).toContain('openai');
+    expect(status.active).toBe(true);
+  });
+
+  it('auto-governs a real MCP Client before the server executes a denied tool', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'mcp-probe.mjs');
+    try {
+      writeFileSync(file, `
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+
+const executed = [];
+const server = new McpServer({ name: 'server', version: '1.0.0' });
+server.registerTool('send_contract', { description: 'Send a contract' }, async () => {
+  executed.push('send_contract');
+  return { content: [{ type: 'text', text: 'sent' }] };
+});
+server.registerTool('read_contract', { description: 'Read a contract' }, async () => {
+  executed.push('read_contract');
+  return { content: [{ type: 'text', text: 'read' }] };
+});
+
+const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+const client = new Client({ name: 'client', version: '1.0.0' }, { capabilities: {} });
+await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+let blocked = false;
+try {
+  await client.callTool({ name: 'send_contract', arguments: {} });
+} catch (error) {
+  blocked = String(error).includes('[obsvr] MCP tool blocked by policy');
+}
+await client.callTool({ name: 'read_contract', arguments: {} });
+await client.close();
+await server.close();
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, executed }));
+process.exit(0);
+`, 'utf-8');
+
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_MCP_TOOL_POLICY: '{"deniedTools":["send_contract"]}',
+          OBSVR_REQUIRED_BINDINGS: 'mcp.client',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result.blocked).toBe(true);
+      expect(result.executed).toEqual(['read_contract']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-attaches the real OpenAI Agents pre-tool guardrail', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'agents-probe.mjs');
+    try {
+      writeFileSync(file, `
+import { Agent, Usage, run, setTracingDisabled, tool } from '@openai/agents';
+setTracingDisabled(true);
+
+const executed = [];
+const requests = [];
+let turn = 0;
+const model = {
+  async getResponse(request) {
+    requests.push(request);
+    turn += 1;
+    if (turn === 1) {
+      return {
+        usage: new Usage(),
+        output: [{
+          type: 'function_call', callId: 'call-1', name: 'send_contract',
+          arguments: '{}', status: 'completed',
+        }],
+      };
+    }
+    return {
+      usage: new Usage(),
+      output: [{
+        type: 'message', role: 'assistant', status: 'completed',
+        content: [{ type: 'output_text', text: 'done' }],
+      }],
+    };
+  },
+  async *getStreamedResponse() { throw new Error('not used'); },
+};
+const sendContract = tool({
+  name: 'send_contract',
+  description: 'Send a contract',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+  strict: true,
+  execute: async () => { executed.push('send_contract'); return 'sent'; },
+});
+const agent = new Agent({
+  name: 'agent', instructions: 'Use the tool.', model, tools: [],
+});
+agent.tools.push(sendContract);
+const result = await run(agent, 'send it');
+console.log('RESULT_JSON:' + JSON.stringify({
+  executed,
+  finalOutput: result.finalOutput,
+  refusalReturned: JSON.stringify(requests[1]?.input ?? '').includes('[obsvr]'),
+}));
+process.exit(0);
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_AGENT_POLICY: '{"deniedTools":["send_contract"]}',
+          OBSVR_REQUIRED_BINDINGS: 'openai_agents.tools',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result).toEqual({
+        executed: [],
+        finalOutput: 'done',
+        refusalReturned: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-governs a real OpenAI Agents model before provider dispatch', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'agents-model-probe.mjs');
+    try {
+      writeFileSync(file, `
+import { Agent, Usage, run, setTracingDisabled } from '@openai/agents';
+setTracingDisabled(true);
+
+let modelCalls = 0;
+const model = {
+  model: 'gpt-4o-mini',
+  async getResponse() {
+    modelCalls += 1;
+    return { usage: new Usage(), output: [] };
+  },
+  async *getStreamedResponse() { modelCalls += 1; },
+};
+const agent = new Agent({ name: 'agent', instructions: 'Answer.', model });
+let blocked = false;
+try {
+  await run(agent, 'SSN 123-45-6789');
+} catch (error) {
+  blocked = String(error).includes('obsvr');
+}
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, modelCalls }));
+process.exit(0);
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_PII_POLICY: '{"rules":{"ssn":"block"}}',
+          OBSVR_REQUIRED_BINDINGS: 'openai_agents.model',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result).toEqual({ blocked: true, modelCalls: 0 });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

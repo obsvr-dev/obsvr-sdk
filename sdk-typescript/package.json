@@ -1,7 +1,7 @@
 {
   "name": "@obsvr/sdk",
-  "version": "0.12.0",
-  "description": "Secure and prove AI agents and LLMs — enforce policy in real time, block sensitive data, and reconstruct exactly what governed it",
+  "version": "0.13.0",
+  "description": "Govern supported AI model, agent, and tool boundaries with deterministic pre-call policy and tamper-evident decision records",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,6 +17,12 @@
       "import": {
         "types": "./dist/register.d.ts",
         "default": "./dist/register.js"
+      }
+    },
+    "./initialize": {
+      "import": {
+        "types": "./dist/initialize.d.ts",
+        "default": "./dist/initialize.js"
       }
     },
     "./mcp": {
