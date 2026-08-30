@@ -307,23 +307,23 @@ The **OPA** endpoint is POSTed `{ "input": <decision document> }` and its `resul
 
 | Provider | Governed methods |
 | --- | --- |
-| OpenAI / Azure OpenAI (through `obsvr.wrap()`) | `chat.completions.create`, `chat.completions.parse`, `beta.chat.completions.create`, `beta.chat.completions.parse` |
-| OpenAI Responses API | `responses.create`, `responses.parse`, `beta.responses.create` |
+| OpenAI / Azure OpenAI (through `obsvr.wrap()`) | `chat.completions.create`, `chat.completions.parse`, `completions.create`, `beta.chat.completions.create`, `beta.chat.completions.parse` |
+| OpenAI Responses API | `responses.create`, `responses.parse`, `responses.compact`, `beta.responses.create`, `beta.responses.compact` |
 | Anthropic | `messages.create`, `messages.parse`, `beta.messages.create` |
-| Google Gemini (`@google/genai`) | `models.generateContent`, `models.generateContentStream` |
-| Google Gemini legacy (`@google/generative-ai`) | `generateContent` |
+| Google Gemini (`@google/genai`) | `models.generateContent`, `models.generateContentStream`, chat `sendMessage`, chat `sendMessageStream` |
+| Google Gemini legacy (`@google/generative-ai`) | `generateContent`, chat `sendMessage`, chat `sendMessageStream` |
 
 Beta namespaces are listed one by one rather than matched by stripping a leading `beta.`, so a provider shipping a new beta namespace never widens governance without review.
 
 Three different things sit outside that table, and only the first is a policy decision:
 
 - **Excluded — no chat text to govern.** `embeddings.create`, `images.generate`, `audio.*`, `files.*`, `fine_tuning.*` and the moderation/model-listing surfaces pass through **ungoverned and unaudited**. They carry no chat-shaped prompt/response text for the policy engine to evaluate.
-- **Text-bearing but not covered yet.** The batch surfaces (`messages.batches.create`) carry many prompts per call against a one-prompt event schema; token-counting methods return no response text; legacy Gemini's `startChat()` calls an internal function rather than a method on the model; and current Gemini chat sessions, Live API, Interactions, and batches are outside the table.
-- **Governed, but not through that table.** The `.stream()` helpers (`messages.stream`, `chat.completions.stream`, `responses.stream`) and the tool runners (`chat.completions.runTools`, `beta.messages.toolRunner`) return their runner object synchronously, so they cannot go through the async method wrapper. They are governed by a deferred runner that returns the runner immediately and reaches the provider only once governance has resolved — so a blocked call never leaves the process. A stream helper emits one event when the stream ends. A tool runner emits the run as a sequence instead: one event per model call, one per tool call, and a run-level start/finish pair sharing an `agent_run_id`, with the tool events carrying `content_provenance: "tool_result"`. **The model calls a tool runner makes after the first are audited but not individually gated** — the runner holds the provider client internally, so per-turn enforcement would need its own mechanism.
+- **Text-bearing but not covered yet.** Batch surfaces such as `messages.batches.create` carry many prompts per call against a one-prompt event schema; token-counting methods return no response text; Gemini Live API and Interactions remain outside the table.
+- **Governed, but not through that table.** The `.stream()` helpers (`messages.stream`, `chat.completions.stream`, `responses.stream`), chat factories, and tool runners (`chat.completions.runTools`, `beta.messages.toolRunner`) need return-shape-specific wrappers. Chat sessions retain governed history. Tool runners check every supported local model turn before its provider request and govern every local callback before execution.
 
 **The named compatibility wrappers share that table.** `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` delegate to the same generic governed-path resolver and enforcement pipeline as `obsvr.wrap()`. Their difference is attribution: they supply a destination fallback and per-endpoint source label when the client exposes no readable base URL. `wrapWorkersAI` is separate: it proxies `run` on a Workers AI binding and applies the pre-call policy and outbound redaction directly. The generic table still has documented exclusions below; a named wrapper does not make an unsupported OpenAI surface governed.
 
-**The framework integrations are not that table either.** LangChain, LlamaIndex and the OpenAI Agents tracing processor call `applyObservePolicy` on their model-call paths, which is the PII scan and the stored redacted copy — not `applyPreCallPolicy`. Measured layer by layer: `policyRules`, `policyFloor`, the `onPreCall` hook, outbound redaction, the kill-switch integrity gate, the response-side scan and PII **blocking** do not run there, and metering is opt-in. A `pii_policy` of `{ssn: "block"}` blocks through `obsvr.wrap()`, Bedrock, Vertex, Vercel AI and MCP, and does not block through any of those three — the call goes out and the event records `action_taken: "not_evaluated"` plus stored-copy provenance under `metadata.obsvr_telemetry`. Treat those paths as observability with a PII scan; their tool gates are graded separately below.
+**Framework model coverage depends on the interception point.** LangChain awaits its model-start callback, so `ObsvrCallbackHandler` runs the full pre-call policy and a block stops dispatch; because the callback cannot rewrite the provider request, requested redaction fails closed. LlamaIndex event tracing remains observe-only, while `obsvrGovernLlamaIndexLLM` owns `chat` and `complete` and enforces block/redaction before delegation. OpenAI Agents tracing remains observe-only, while `governModel` and `governModelProvider` own the model interface and enforce. Metering for framework events is opt-in.
 
 **"Metering is opt-in" means the default is OFF, and that is a decision.** ``meterIntegrationEvents`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
 
@@ -401,9 +401,9 @@ captured audit event.
 | MCP | **enforces** — the gate binds `request`, above the `callTool` convenience. Driven against a real server on `callTool`, a hand-built `tools/call` frame, the task API's `callToolStream`, and a task facade retained before governance: denied tool at ZERO executions with its result absent, allow control at one. An already-issued task facade is rebound in place. A raw `request` / `requestStream` function explicitly bound and retained before governance cannot be revoked by a later Proxy. `listTools` is bound separately for discovery-time poisoning defense |
 | `obsvrGovernTool` | **enforces** — wraps the tool's own execute and gates before delegating |
 | LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError`. Both pre-tool callbacks reach one gate and the discount for a duplicate delivery is credited per call, not per handler: as a per-handler flag, one dispatch of the legacy `handleAgentAction` left every later `handleToolStart` returning before the gate, and `copy()` hands the same instance to every child manager. Driven against a real LangGraph agent |
-| LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |
+| LlamaIndex, Vercel AI SDK | no tool gate of their own; govern individual tools with `obsvrGovernTool` |
 | OpenAI Agents SDK | **enforces** via `attachToolGate` and/or `obsvrGovernTool` — see below |
-| `chat.completions.runTools`, `beta.messages.toolRunner` | **enforces on the tools, not on the turns** — see below |
+| `chat.completions.runTools`, `beta.messages.toolRunner` | **enforces on supported local model turns and tools** — see below |
 
 **OpenAI Agents SDK: enforces, through two independent pre-execution
 mechanisms.** Driven live at `@openai/agents` 0.13.0, 0.13.4 and 0.14.2 with a
@@ -435,39 +435,18 @@ installed a denied tool records `action_taken: "not_evaluated"` with the reason
 in `metadata.obsvr_telemetry.policy_not_evaluated`; beside a real gate it
 defers, so no `not_evaluated` appears next to the gate's own verdict.
 
-**Provider tool runners: the tools are gated, the intermediate turns are not.**
-A runner invokes its tools itself and holds the raw provider client, so obsvr
-used to be off that boundary entirely — measured, a session obsvr had already
-marked tainted executed a tool named in `destructiveTools`. obsvr now gates each
-tool's callback through `obsvrGovernTool` before the runner is constructed, which
-is the only point either runner will accept a substitution: both snapshot their
-tool set when the method is applied.
+**Provider tool runners gate supported local turns and tools.** A runner owns
+its loop and snapshots its tools, so obsvr substitutes a governed request
+transport and wraps each local callback before construction. Every later model
+request is checked against the current prompt plus retained messages, and every
+local callback enters `obsvrGovernTool` before its body runs.
 
-What that reaches, and what it does not:
-
-- **Tool execution is gated.** Denied tools, allowlists and the tainted-session
-  destructive-capability set all apply, and a refused tool's callback does not
-  run. Verified live on both runners, each against a policy-off control.
-- **The refusal shape differs by provider, because the runners differ.**
-  `beta.messages.toolRunner` invokes its tools inside a `try`/`catch`, so a
-  refusal comes back to the model as an error tool result and the loop continues
-  — in a live run the model went on to explain that the capability was blocked.
-  `chat.completions.runTools` does not guard its tool call, so a refusal
-  propagates and the run ends with the refusal error. Both fail closed; only one
-  lets the run survive.
-- **The model calls on turns 2..N are still audited and not gated.** Reaching
-  those means substituting the runner's own client, and a refusal arriving on
-  turn 3 would land after earlier tools had already had real side effects. That
-  needs a stated position before it ships.
-- **A hosted tool the provider executes on its own infrastructure carries no
-  local callback**, so there is nothing to gate. Those are named individually in
-  `tool_gate_ungated_tools` on the run's start event rather than counted.
-
-The runner's own per-tool event records `not_evaluated` either way, and its
-`policy_not_evaluated.gate` says which absence it is: `runner_observation` when
-the gate ran and the verdict is on that tool's own `tool.call` event, or
-`tool_gate` when no gate reached the call. `metadata.tool_gate` carries the same
-answer as `callback` or `absent`.
+Two boundaries remain. A hosted tool executed on provider infrastructure has no
+local callback to wrap and is named in `tool_gate_ungated_tools`. A block on a
+later model turn prevents that request, but it cannot undo a local tool side
+effect that completed on an earlier allowed turn. Provider refusal behavior also
+differs: Anthropic can return a local-tool refusal to the model as an error tool
+result, while OpenAI propagates it and ends the run.
 
 **Do not read Python's grades across, or vice versa.** The two SDKs have separate
 tool-gate implementations and they do not cover the same surfaces: Python ships
@@ -561,13 +540,12 @@ The combined list for both, with the scope marked on each entry, is in the
    behavior is endpoint attribution, not a narrower policy engine.
    [Detail](#what-gets-governed).
 
-4. **LangChain, LlamaIndex and the OpenAI Agents tracing processor observe rather
-   than govern.** On those model-call paths the PII scan runs over what the event
-   will store, and nothing else runs — so the provider receives the raw prompt
-   while the stored copy reads redacted. A `piiPolicy` of `{ssn: "block"}` blocks
-   through `obsvr.wrap()` and does not block there. The event reports
-   `action_taken: "not_evaluated"` and records the stored-copy action separately
-   under `metadata.obsvr_telemetry`.
+4. **Tracing is not always an enforcement point.** LlamaIndex event tracing and
+   the OpenAI Agents tracing processor protect the stored copy but cannot stop
+   or rewrite provider dispatch. Use `obsvrGovernLlamaIndexLLM`, `governModel`,
+   or `governModelProvider` for model enforcement. LangChain model-start
+   callbacks do enforce; because they cannot rewrite the provider request, a
+   redaction verdict fails closed.
 
 5. **The OpenAI Agents tracing surface cannot refuse a tool, structurally —
    the gates on that framework live elsewhere.** The framework dispatches
@@ -590,10 +568,10 @@ The combined list for both, with the scope marked on each entry, is in the
    [Detail](#zero-code-global-coverage-no-monkey-patching).
 
 7. **Current Gemini coverage is method-bounded.** `@google/genai` 2.x is
-   governed on `models.generateContent` and `models.generateContentStream`,
-   through explicit wrapping or the module interceptor. Chat sessions, Live
-   API, Interactions, batches, token counting, and binary/multimodal payload
-   contents remain outside this wrapper.
+   governed on unary and streaming generation plus retained chat sessions,
+   through explicit wrapping or the module interceptor. Live API, Interactions,
+   batches, token counting, and opaque binary payload contents remain outside
+   this wrapper.
 
 ### Streaming calls
 
@@ -620,9 +598,9 @@ On direct wrapper paths, policy decisions scan all provider-bound text carried b
 system, user, assistant, and tool-result roles. A block stops the request and a
 redaction rewrites the affected role while preserving the message structure.
 The centralized stored-content pass separately scans the final prompt and
-response for every emitted event. Observe-only LangChain, LlamaIndex, and OpenAI
-Agents tracing callbacks do not control provider-bound content; their stored
-redaction is labeled `not_evaluated`. Types `name`, `address`, `person`,
+response for every emitted event. Observe-only LlamaIndex and OpenAI Agents
+tracing callbacks do not control provider-bound content; their stored redaction
+is labeled `not_evaluated`. Types `name`, `address`, `person`,
 `location`, `medical`, and `national_id` require Presidio.
 
 ### Unicode normalization (matching-time only)

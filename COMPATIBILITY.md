@@ -7,18 +7,18 @@ Which versions of each package the obsvr SDK works with.
 | Package                   | Declared                              | Observed                                            | Range evidence |
 | ------------------------- | ------------------------------------- | --------------------------------------------------- | -------------- |
 | `ag2`                     | `>=0.3.2,<1.0`                        | `0.3.2`, `0.9.9`                                     | **matrix**     |
-| `anthropic`               | `>=0.16.0,<1.0.0`                     | `0.8.0` – `0.120.2`                                  | floor located  |
+| `anthropic`               | `>=0.16.0,<1.0.0`                     | `0.8.0` – `0.125.0`                                  | floor located  |
 | `boto3`                   | `>=1.34.0,<2.0.0`                     | —                                                    | declared       |
 | `crewai`                  | `>=1.0.0,<2.0.0; python_version < '3.14'` | `1.0.0`, `1.8.0`, `1.15.2`, `1.15.3`, `1.15.10` | **matrix**     |
 | `cryptography`            | `>=41.0.0`                            | —                                                    | declared       |
-| `google-cloud-aiplatform` | `>=1.38.0,<2.0.0`                     | —                                                    | declared       |
-| `google-genai`             | `>=2.0.0,<3.0.0`                     | `2.17.0`                                             | declared       |
+| `google-cloud-aiplatform` | `>=1.38.0,<2.0.0`                     | `1.38.0`, `1.165.1`                                 | declared       |
+| `google-genai`             | `>=2.0.0,<3.0.0`                     | `2.20.0`                                             | declared       |
 | `google-generativeai`      | `>=0.3.0,<1.0.0`                     | `0.3.0`, `0.8.6`                                     | **matrix**     |
 | `haystack-ai`             | `>=2.0.0,<4.0.0`                      | `2.0.0`, `3.0.0`                                     | **matrix**     |
 | `langchain-core`          | `>=1.0.0,<2.0.0`                      | `1.0.0`, `1.5.3`                                     | **matrix**     |
 | `llama-index-core`        | `>=0.14.5,<0.15.0`                    | `0.14.5`, `0.14.23`                                  | **matrix**     |
 | `mcp`                     | `>=2.0.0,<3.0.0`                      | `1.29.0`, `2.0.0`                                    | **matrix**     |
-| `openai`                  | `>=1.66.0,<3.0.0`                     | `1.0.0` – `2.50.0`                                   | floor located  |
+| `openai`                  | `>=1.66.0,<3.0.0`                     | `1.0.0` – `2.54.0`                                   | floor located  |
 | `openai-agents`           | `>=0.19.0,<1.0.0`                     | `0.19.0`, `0.19.2`                                   | floor located  |
 | `opentelemetry-api`       | `>=1.20.0,<2.0.0`                     | —                                                    | declared       |
 | `pydantic-ai-slim`        | `>=2.0.0,<3.0.0`                      | `2.0.0`, `2.22.0`                                    | **matrix**     |
@@ -27,7 +27,7 @@ Which versions of each package the obsvr SDK works with.
 `google-generativeai` is the legacy line, end-of-life 2025-08. Its real
 `GenerativeModel` and `ChatSession` boundaries are package-tested at the first
 supported release and the final legacy release. The maintained `google-genai`
-adapter was package-tested at 2.17.0; its row is still declared because
+adapter was package-tested at 2.20.0; its row is still declared because
 releases below that point were not walked to locate a floor.
 `cryptography` and `PyNaCl` are the two interchangeable Ed25519 backends behind
 the `crypto` / `crypto-nacl` extras — install one, not both.
@@ -41,7 +41,8 @@ where that is said, per row.
 - **matrix** — the declared range is stood up by a per-version matrix: one
   environment per listed version, the gate driven through each release's own
   dispatch, and a denied tool's side effect measured at zero against a paired
-  allow control that reaches exactly one. Seven rows earn it, and what supplies
+  allow control that reaches exactly one. Rows earn it only when this evidence
+  exists, and what supplies
   the "real" half differs by surface. `crewai` and `pydantic-ai-slim` drive
   their range boundaries against a real provider, because on those surfaces
   nothing is proven until a model has CHOSEN to call the tool: crewai's
@@ -52,7 +53,7 @@ where that is said, per row.
   directly and every client route into `tools/call` is driven rather than
   waited for. Its listed versions span both protocol majors.
 
-  Four more rows earn it in the same terms. `langchain-core` lists `1.0.0` and
+  Further rows earn it in the same terms. `langchain-core` lists `1.0.0` and
   `1.5.3`, each driven on BOTH runtimes — the graph runtime and the classic
   executor, which deliver different pre-tool callbacks — with a denied tool at
   zero executions, a paired allow control at three, and a step budget of two
@@ -72,6 +73,10 @@ where that is said, per row.
   and `0.14.23`, `govern_agent` driven on the plain, ReAct, tool-retriever and
   multi-agent-handoff routes with the denied tool's payload asserted absent
   from the `ToolCallResult` the caller received.
+  `google-cloud-aiplatform` lists `1.38.0` and `1.165.1`; both construct official
+  model/chat objects and drive block/redaction across stable and preview chat
+  sessions, including retained history and stream entry, with provider dispatch
+  replaced by a zero-network side-effect counter.
 - **floor located** — the FLOOR is an adjacent tested pair established live
   (at the release below, the audited path is absent; at the floor, it is
   audited on a real call), with the reasoning recorded per extra in
@@ -135,7 +140,7 @@ provider, described below the table, but they do not establish the full range.
 
 | Package                           | Declared                        | Observed              | Range evidence |
 | --------------------------------- | ------------------------------- | --------------------- | -------------- |
-| `@anthropic-ai/sdk`               | `>=0.20.0 <1.0.0`               | `0.20.0` – `0.115.0`  | declared       |
+| `@anthropic-ai/sdk`               | `>=0.20.0 <1.0.0`               | `0.20.0` – `0.122.0`  | declared       |
 | `@aws-sdk/client-bedrock-runtime` | `>=3.587.0 <4.0.0`              | `3.1096.0`            | declared       |
 | `@google-cloud/vertexai`          | `>=1.0.0 <2.0.0`                | `1.0.0` – `1.12.0`    | declared       |
 | `@google/genai`                   | `>=2.0.0 <3.0.0`                | `2.16.0`              | declared       |
@@ -182,6 +187,27 @@ floor was driven — the label is about locating an edge, and that edge has not
 been walked.
 
 **Module format: ESM only.** `@obsvr/sdk` declares `"type": "module"` and every export condition is `import`, so a CommonJS consumer cannot `require()` it at any version. Independently of loading, the zero-code `--import` interception path does not reach `require()` — `module.register()` hooks do not intercept it — so a CJS entrypoint is ungoverned on that path even where the packages above are dual-format. `obsvr.wrap()` and the named compatibility wrappers are unaffected. See the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only) for why dual-publishing is scoped as future work rather than a quick fix.
+
+## Ordinary enforcement boundary
+
+The ordinary wrappers are broader than strict profile 2.1. On every method
+listed below, `block` stops transport and `redact` rewrites provider-bound text
+or fails closed when the SDK cannot prove the rewrite was applied.
+
+| Surface | TypeScript | Python |
+| --- | --- | --- |
+| OpenAI | chat create/parse, legacy text completions, Responses create/parse/compact, listed beta/raw-response paths, stream helpers, `runTools` turns/tools | chat create/parse, legacy text completions, Responses create/parse/compact, listed beta/raw/streaming-response paths |
+| Anthropic | Messages create/parse, listed beta paths, stream helpers, `toolRunner` turns/tools | Messages create/parse, listed raw/stream helpers, supported Messages/session runner turns and local tools |
+| Gemini, legacy and maintained | unary/stream generation and retained chat sessions | sync/async unary/stream generation and retained chat sessions |
+| Vertex AI | model unary/stream generation and retained chat sessions through `wrapVertexAI` | sync/async model generation and retained chat sessions through `wrap_vertex` |
+| LangChain model callbacks | enforcing model-start boundary; redaction fails closed because callbacks cannot rewrite requests | same |
+| LlamaIndex model callbacks | tracing is observe-only; `obsvrGovernLlamaIndexLLM` enforces `chat`/`complete` | enforcing model-start boundary; redaction fails closed |
+| OpenAI Agents model callbacks | tracing is observe-only; `governModel` / `governModelProvider` enforce | tracing is observe-only; `govern_model` / `govern_model_provider` enforce |
+
+Batch APIs, opaque provider-hosted tools, and methods not named by the SDK's
+coverage tables remain outside this ordinary boundary. A later runner turn can
+be blocked before its request, but an earlier allowed tool side effect cannot be
+rolled back.
 
 ## Strict profile 2.1 direct-provider boundary
 

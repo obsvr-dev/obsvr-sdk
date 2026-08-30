@@ -4,7 +4,7 @@ Read this before trusting a green run on an integration surface.
 
 ## Which upstream packages are real in CI
 
-`devDependencies` carries five real provider/framework packages, and `npm ci`
+`devDependencies` carries real provider/framework packages, and `npm ci`
 installs them, so a test may import any of them:
 
 | Package | Driven by a test |
@@ -14,14 +14,16 @@ installs them, so a test may import any of them:
 | `@google/generative-ai` | **yes** — `tests/integration/google-genai-real-package.test.ts` drives a real `GenerativeModel`, splitting provider traffic from sender traffic by host |
 | `@google/genai` | **yes** — `tests/integration/google-genai-maintained-real-package.test.ts` drives a real 2.x client through unary, streaming, block, redact, structured-output, and module-interceptor paths with provider transport mocked |
 | `@openai/agents` | **yes** — `tests/integration/openai-agents-real-package.test.ts` runs a real `Agent` with real `tool()` objects and only the model stubbed; a denied tool's body never runs and the block message reaches the model's next turn |
+| `@anthropic-ai/sdk` | **yes** — `tests/integration/anthropic-real-package.test.ts` drives the real tool runner and proves a blocked later turn makes no second provider request |
+| `@google-cloud/vertexai` | **yes** — `tests/integration/vertex-real-package.test.ts` drives official stable and preview model/chat objects with provider dispatch replaced locally |
+| `@langchain/core` | **yes** — `tests/integration/langchain-real-package.test.ts` drives the real awaited model-start callback boundary |
 
-Every other integration — `langchain`, `llamaindex`, `vercel-ai`, `bedrock`,
-`vertex`, `together`, `azure-openai`, `cloudflare`, `openai-compat` — is tested
-against hand-written fakes. `@langchain/core`, `llamaindex`, `ai`, the AWS and
-Google client libraries and `@anthropic-ai/sdk` are **not** devDependencies and
-are not installed when this suite runs.
+The remaining integration surfaces — `llamaindex`, `vercel-ai`, `bedrock`,
+`together`, `azure-openai`, `cloudflare`, and `openai-compat` — still include
+hand-written shape tests. Their package ranges and stronger evidence, where
+available, are recorded in `COMPATIBILITY.md`.
 
-All five real-package suites follow the same non-vacuity convention: every
+Real-package suites follow the same non-vacuity convention: every
 deny leg is paired with an allow CONTROL that must reach exactly one side
 effect, so a suite that stopped exercising the gate goes red rather than
 quietly green.

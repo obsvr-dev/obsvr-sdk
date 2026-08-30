@@ -2,30 +2,33 @@
 
 Read this before trusting a green run on an integration surface.
 
-## Two upstream integration packages are real in CI. The rest are fakes.
+## Which upstream packages are real in CI
 
 | Package | In CI | Driven by |
 |---|---|---|
 | `mcp` | **yes** — declared in the `dev` extra | `test_mcp_real_package.py` stands up a real `FastMCP` server and a real `ClientSession` over the package's own in-memory transport |
-| `google-genai` | **yes** — declared in the `dev` extra | `test_google_genai_real_package.py` drives the real 2.x request models and client resource shape with provider transport mocked |
+| `langchain-core` | **yes** — declared in the `dev` extra | `test_langchain_real_package.py` drives the real model-start callback boundary |
+| `llama-index-core` | **yes** — declared in the `dev` extra | `test_llamaindex_real_package.py` drives the real callback payload shape |
+| `openai` | **yes** — isolated provider CI cell | `test_openai_text_routes_real_package.py` drives the official client with a local transport |
+| `anthropic` | **yes** — isolated provider CI cell | `test_provider_tool_runners_real_package.py` drives the official Messages runner and proves a later blocked turn makes no second request |
+| `openai-agents` | **yes** — isolated provider CI cell | `test_openai_agents_real_package.py` drives explicit model and model-provider enforcement |
+| `google-genai` | **yes** — dev extra and isolated provider CI cell | `test_google_genai_real_package.py` drives the real 2.x request models, streams, and chat resource shape |
+| `google-generativeai` | **yes** — isolated provider CI cell | `test_google_generativeai_real_package.py` drives official legacy model and chat objects |
+| `google-cloud-aiplatform` | **yes** — isolated provider CI cell | `test_vertex_real_package.py` drives official stable/preview model and chat objects |
 | everything else | no | hand-written fakes that duck-type the shape each integration reads |
 
-`langchain`, `llamaindex`, `crewai`, `autogen`, `haystack`, `pydantic_ai`,
-`bedrock`, `vertex` and `openai_agents` are each declared as an optional extra
-for callers, and **none of them is installed when this suite runs.** Their
-tests construct objects that look like the framework's, so they
-pin the SDK's own logic and its assumptions about a shape — not that the shape
-is still the framework's.
+`crewai`, `autogen`, `haystack`, `pydantic_ai`, and `bedrock` still rely on
+fake-driven default-suite coverage or external version harnesses. Their tests
+pin the SDK's own logic and its assumptions about a shape; the compatibility
+table names the stronger point or range evidence where it exists.
 
-## Why these packages are exceptions
+## Why provider packages use isolated cells
 
-`SECURITY.md` names the MCP tool gate as the surface to put a destructive
-capability behind. It is therefore the one surface where a test that restates
-the gate instead of driving it is most expensive, and the one where the cost of
-a real dependency is most clearly worth paying.
-
-Each version is constrained by the same major-bounded specifier its optional
-extra declares, so CI exercises a resolver-admitted package line.
+Each provider cell installs one exact resolver-admitted package version beside
+the SDK and drives the official object shape with local transport. Isolation is
+load-bearing: current provider/framework extras can require incompatible MCP or
+OpenAI major lines, so one combined environment would either fail resolution or
+silently test a different dependency set.
 
 It does not enter the blocking dependency audit. That job runs
 `pip-audit --strict .` over declared **runtime** dependencies, which are still
