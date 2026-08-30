@@ -95,6 +95,47 @@ jobs:
           python -m build
         working-directory: sdk-python
 
+  python-provider-packages:
+    name: Python provider package (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: OpenAI 2.54.0
+            package: openai==2.54.0
+            tests: tests/test_openai_text_routes_real_package.py
+          - name: Anthropic 0.125.0
+            package: anthropic==0.125.0
+            tests: tests/test_provider_tool_runners_real_package.py
+          - name: OpenAI Agents 0.19.2
+            package: openai-agents==0.19.2
+            tests: tests/test_openai_agents_real_package.py
+          - name: Google Gen AI 2.20.0
+            package: google-genai==2.20.0
+            tests: tests/test_google_genai_real_package.py
+          - name: Google Generative AI 0.8.6
+            package: google-generativeai==0.8.6
+            tests: tests/test_google_generativeai_real_package.py
+          - name: Vertex AI 1.165.1
+            package: google-cloud-aiplatform==1.165.1
+            tests: tests/test_vertex_real_package.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK and official provider package
+        run: pip install -e . pytest httpx "${{ matrix.package }}"
+        working-directory: sdk-python
+
+      - name: Run official-package enforcement tests
+        run: python -m pytest -q ${{ matrix.tests }}
+        working-directory: sdk-python
+
   # WHAT THIS CATCHES THAT NOTHING ELSE HERE DOES.
   #
   # Every other Python job installs the SDK editable and imports it out of the
@@ -578,6 +619,7 @@ jobs:
       [
         ts-test,
         py-test,
+        python-provider-packages,
         install-path-python,
         install-path-npm,
         conformance,
