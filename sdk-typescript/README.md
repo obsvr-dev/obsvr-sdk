@@ -401,7 +401,7 @@ captured audit event.
 | MCP | **enforces** — the gate binds `request`, above the `callTool` convenience. Driven against a real server on `callTool`, a hand-built `tools/call` frame, the task API's `callToolStream`, and a task facade retained before governance: denied tool at ZERO executions with its result absent, allow control at one. An already-issued task facade is rebound in place. A raw `request` / `requestStream` function explicitly bound and retained before governance cannot be revoked by a later Proxy. `listTools` is bound separately for discovery-time poisoning defense |
 | `obsvrGovernTool` | **enforces** — wraps the tool's own execute and gates before delegating |
 | LangChain (`ObsvrCallbackHandler`) | **enforces** — `handleToolStart` plus `awaitHandlers`/`raiseError`. Both pre-tool callbacks reach one gate and the discount for a duplicate delivery is credited per call, not per handler: as a per-handler flag, one dispatch of the legacy `handleAgentAction` left every later `handleToolStart` returning before the gate, and `copy()` hands the same instance to every child manager. Driven against a real LangGraph agent |
-| LlamaIndex, Vercel AI SDK | no tool gate of their own; govern individual tools with `obsvrGovernTool` |
+| LlamaIndex, Vercel AI SDK | no gate of their own; govern individual tools with `obsvrGovernTool` |
 | OpenAI Agents SDK | **enforces** via `attachToolGate` and/or `obsvrGovernTool` — see below |
 | `chat.completions.runTools`, `beta.messages.toolRunner` | **enforces on supported local model turns and tools** — see below |
 

@@ -379,11 +379,12 @@ describe('the table covers every tool gate in the tree', () => {
   // pass vacuously under a different working directory.
   const SRC = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '../..');
 
-  /** A file ships a tool gate if it reads the deny list. */
+  /** A file ships a tool gate if it reads the deny list or delegates to the shared governor. */
   function shipsAToolGate(rel: string): boolean {
     const full = path.join(SRC, rel);
     if (!fs.existsSync(full)) return false;
-    return fs.readFileSync(full, 'utf8').includes('deniedTools');
+    const source = fs.readFileSync(full, 'utf8');
+    return source.includes('deniedTools') || source.includes('obsvrGovernTool(');
   }
 
   function candidateFiles(): string[] {

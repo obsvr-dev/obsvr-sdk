@@ -11,8 +11,8 @@
  *
  * WHAT THIS CHECKS, AND WHAT IT CANNOT. It grades the ROW against the SOURCE
  * PREDICATE, using the same one the invariant's coverage tests use: a file
- * ships a tool gate if it reads the deny list. That is a structural claim — the
- * gate is there, or it is not — and it is exactly the claim a row makes when it
+ * ships a tool gate if it reads the deny list or delegates to the shared tool
+ * governor. That is a structural claim — the gate is there, or it is not — and it is exactly the claim a row makes when it
  * says *no integration* or "no gate of their own". It cannot check the adverbs:
  * "driven live at 0.13.4", "ZERO executions", "allow control at exactly one"
  * rest on the live artifacts behind them, as they did before. What this closes
@@ -62,7 +62,8 @@ function gradingTable(markdown: string, heading: string): string[][] {
 function shipsAToolGate(rel: string): boolean {
   const full = join(process.cwd(), rel);
   if (!existsSync(full)) return false;
-  return readFileSync(full, "utf-8").includes("deniedTools");
+  const source = readFileSync(full, "utf-8");
+  return source.includes("deniedTools") || source.includes("obsvrGovernTool(");
 }
 
 type Grade = "enforces" | "records only" | "governed per tool" | "no integration";

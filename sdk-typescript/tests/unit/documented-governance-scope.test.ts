@@ -106,15 +106,19 @@ describe('documented governance scope: the named compatibility wrappers', () => 
     });
   }
 
-  it('does not infer coverage for legacy completions.create', async () => {
+  it('governs legacy completions.create through the shared path table', async () => {
     init({ api_key: 'k', ingest_url: 'https://x', pii_policy: PII_POLICY });
     const seen: string[] = [];
     const c = wrapOpenAICompatible(client(seen) as any, {
       provider: 'together',
       source: 'together_js',
     }) as any;
-    await c.completions.create({ model: 'm', prompt: `ssn ${SSN}` });
-    expect(seen).toEqual(['completions.create']);
+    await expect(
+      c.completions.create({ model: 'm', prompt: `ssn ${SSN}` }),
+    ).rejects.toThrow();
+    expect(seen).toEqual([]);
+    await settle();
+    expect(sentEvents.some((e) => e.action_taken === 'blocked')).toBe(true);
   });
 
   it('obsvr.wrap() DOES govern the same paths on the same client', async () => {
