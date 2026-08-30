@@ -192,6 +192,9 @@ class ResolvedConfig:
     api_key: str
     environment: str = "development"
     ingest_url: str = DEFAULT_INGEST_URL
+    # Optional disk-backed outbox for signed audit events. The sender writes
+    # atomically before enqueue returns and replays pending records on restart.
+    durable_delivery: Optional[Dict[str, Any]] = None
     # Emission rate for ALLOWED-call audit events (0-1). Gates audit EMISSION
     # only, never enforcement: PII/policy/hook/kill-switch checks run on every
     # call regardless, and blocked/redacted/error events are always emitted.
@@ -362,6 +365,7 @@ def init(
     api_key: Optional[str] = None,
     *,
     ingest_url: Optional[str] = None,
+    durable_delivery: Optional[Dict[str, Any]] = None,
     environment: Optional[str] = None,
     sample_rate: Optional[float] = None,
     max_payload_chars: Optional[int] = None,
@@ -422,6 +426,33 @@ def init(
             'obsvr.init(): enforcement_mode must be "enforce" or "monitor", got '
             f"{enforcement_mode!r}"
         )
+    if durable_delivery is not None:
+        if not isinstance(durable_delivery, dict):
+            raise ValueError("obsvr.init(): durable_delivery must be a dict")
+        directory = durable_delivery.get("directory")
+        if not isinstance(directory, str) or not directory.strip():
+            raise ValueError(
+                'obsvr.init(): durable_delivery["directory"] must be a non-empty string'
+            )
+        max_bytes = durable_delivery.get("max_bytes", 64 * 1024 * 1024)
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1024 * 1024:
+            raise ValueError(
+                'obsvr.init(): durable_delivery["max_bytes"] must be an integer >= 1048576'
+            )
+        fsync = durable_delivery.get("fsync", True)
+        if not isinstance(fsync, bool):
+            raise ValueError('obsvr.init(): durable_delivery["fsync"] must be a boolean')
+        failure = durable_delivery.get("failure_mode", "error")
+        if failure not in ("error", "warn"):
+            raise ValueError(
+                'obsvr.init(): durable_delivery["failure_mode"] must be "error" or "warn"'
+            )
+        durable_delivery = {
+            "directory": directory.strip(),
+            "max_bytes": max_bytes,
+            "fsync": fsync,
+            "failure_mode": failure,
+        }
     # The environment is an ENUM at ingest, and the SDK used to accept any
     # string for it. A value outside the set is rejected there with a 400 on
     # EVERY event, so a single typo costs the entire audit trail of the run
@@ -633,6 +664,7 @@ def init(
         api_key=api_key.strip(),
         environment=environment or "development",
         ingest_url=url,
+        durable_delivery=durable_delivery,
         sample_rate=rate,
         max_payload_chars=(
             max_payload_chars
@@ -727,9 +759,10 @@ def init(
     # installed on the sender so every signed event also carries the device
     # seal. Cleared when the config carries no key, so a re-init without one
     # stops sealing rather than inheriting the previous identity.
-    from .sender import configure_device_signer
+    from .sender import configure_device_signer, configure_durable_delivery
 
     configure_device_signer(_device_signer)
+    configure_durable_delivery(_state["config"])
 
     # Remote policy sync: fetch server rules + approval grants, detect the
     # dashboard kill switch, and (with fail_mode="closed") enforce staleness.

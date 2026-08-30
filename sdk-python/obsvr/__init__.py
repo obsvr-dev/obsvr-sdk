@@ -92,7 +92,7 @@ from .agent_policy import (  # noqa: F401
     create_loop_detector,
     has_circular_delegation,
 )
-from .sender import flush  # noqa: F401
+from .sender import flush, get_delivery_status  # noqa: F401
 from .span import current_span_id, span, with_span  # noqa: F401
 # Ambient per-request subject: bind an end-user identity for a scope instead
 # of threading user_id through every call. Twin of the TypeScript
@@ -223,11 +223,18 @@ from .coverage_attestation import (  # noqa: F401
     COVERAGE_ATTESTATION_ENVELOPE_SCHEMA,
     COVERAGE_ATTESTATION_SCHEMA,
     CoverageAttestationValidationError,
+    CoverageRequirementsError,
+    assert_coverage_requirements,
     build_coverage_attestation_body,
     canonicalize_coverage_attestation_body,
     coverage_attestation_body_hash,
+    coverage_requirement_failures,
     sign_coverage_attestation,
     verify_coverage_attestation,
+)
+from .enforcement_smoke import (  # noqa: F401
+    assert_enforcement_boundary,
+    assert_enforcement_boundary_async,
 )
 
 from ._version import __version__  # noqa: F401  # single source: obsvr/_version.py
@@ -306,11 +313,16 @@ __all__ = [
     "COVERAGE_ATTESTATION_ENVELOPE_SCHEMA",
     "COVERAGE_ATTESTATION_SCHEMA",
     "CoverageAttestationValidationError",
+    "CoverageRequirementsError",
+    "assert_coverage_requirements",
     "build_coverage_attestation_body",
     "canonicalize_coverage_attestation_body",
     "coverage_attestation_body_hash",
+    "coverage_requirement_failures",
     "sign_coverage_attestation",
     "verify_coverage_attestation",
+    "assert_enforcement_boundary",
+    "assert_enforcement_boundary_async",
     "unbound_symbols",
     "explain",
     "mint_canary",
@@ -357,6 +369,7 @@ __all__ = [
     "is_initialized",
     "try_get_config",
     "flush",
+    "get_delivery_status",
     "span",
     "with_span",
     "current_span_id",

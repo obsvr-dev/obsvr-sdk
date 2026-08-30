@@ -39,6 +39,18 @@ import {
   API_KEY_HEADER,
   SDK_VERSION,
 } from "../../constants.js";
+import {
+  acknowledgeDurableEvent,
+  configureDurableOutbox,
+  deadLetterDurableEvent,
+  durableFailureMode,
+  durableOutboxEnabled,
+  getDurableOutboxStatus,
+  markDurableRecordsReplayed,
+  pendingDurableRecords,
+  persistDurableEvent,
+  resetDurableOutbox,
+} from './durable-outbox.js';
 
 /** Delivery verdict per request (failure taxonomy, E31): retrying a
  * permanent failure only burns quota and hides the bug. */
@@ -68,6 +80,8 @@ const senderStats = {
   gap_markers: 0,
   /** Dropped events those markers have put on the record. */
   gap_events_declared: 0,
+  durable_write_failures: 0,
+  durable_deferred: 0,
 };
 
 /** Snapshot of delivery counters (enqueued/sent/retries/drops). */
@@ -178,6 +192,8 @@ const backoffState: BackoffState = {
  * Pending queue
  */
 const pendingQueue: QueueItem[] = [];
+/** Outbox records already represented in the in-memory queue. */
+const queuedOutboxIds = new Set<string>();
 
 /** Invalidates asynchronous queue work when test-only sender state is reset. */
 let senderGeneration = 0;
@@ -502,6 +518,10 @@ function requeueFront(config: ResolvedConfig, items: QueueItem[]): QueueItem[] {
         `Audit event dropped after ${item.retries} retries: ${item.event.request_id} (total dropped: ${droppedCount})`
       );
       warnEventsLost(1, "retry budget exhausted");
+      if (item.outboxId) {
+        deadLetterDurableEvent(item.outboxId, AUDIT_GAP_REASON_RETRY_EXHAUSTED);
+        queuedOutboxIds.delete(item.outboxId);
+      }
     }
   }
   return exhausted;
@@ -523,6 +543,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
   const generation = senderGeneration;
 
   try {
+    refillDurableQueue();
     while (pendingQueue.length > 0) {
       if (generation !== senderGeneration) return;
       if (isInBackoff()) {
@@ -542,6 +563,9 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
       let batchBytes = 0;
       while (items.length < SEND_BATCH_SIZE && pendingQueue.length > 0) {
         const next = pendingQueue[0];
+        // Durable records use one request each so an accepted/rejected verdict
+        // can acknowledge or dead-letter the exact on-disk record.
+        if (items.length > 0 && (next.outboxId || items[0].outboxId)) break;
         const nextIsGapMarker = readAuditGapClaim(next.event) !== null;
         // A marker is its own delivery unit. That makes a refusal attributable
         // to the marker itself, which is what lets the terminal-loss guard stop
@@ -581,6 +605,15 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
             AUDIT_GAP_REASON_INGEST_REJECTED,
           );
         }
+        for (const item of items) {
+          if (!item.outboxId) continue;
+          if (rejected > 0) {
+            deadLetterDurableEvent(item.outboxId, AUDIT_GAP_REASON_INGEST_REJECTED);
+          } else {
+            acknowledgeDurableEvent(item.outboxId);
+          }
+          queuedOutboxIds.delete(item.outboxId);
+        }
       } else if (verdict === "rejected") {
         // The server saw the request and refused it outright. Final, so never
         // retried — and never counted as sent, because nothing was stored at
@@ -599,6 +632,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           items.length,
           AUDIT_GAP_REASON_INGEST_REJECTED,
         );
+        deadLetterItems(items, AUDIT_GAP_REASON_INGEST_REJECTED);
       } else if (verdict === "permanent") {
         // The same bytes will always fail (bad key, malformed event, body
         // too large): discard and count now instead of burning retries.
@@ -616,6 +650,7 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           items.length,
           AUDIT_GAP_REASON_PERMANENT_FAILURE,
         );
+        deadLetterItems(items, AUDIT_GAP_REASON_PERMANENT_FAILURE);
       } else {
         const exhausted = requeueFront(config, items);
         if (exhausted.length > 0) {
@@ -627,10 +662,55 @@ async function processQueue(config: ResolvedConfig): Promise<void> {
           );
         }
       }
+      refillDurableQueue();
     }
   } finally {
     if (generation === senderGeneration) isProcessing = false;
   }
+}
+
+function deadLetterItems(items: QueueItem[], reason: string): void {
+  for (const item of items) {
+    if (!item.outboxId) continue;
+    deadLetterDurableEvent(item.outboxId, reason);
+    queuedOutboxIds.delete(item.outboxId);
+  }
+}
+
+/** Fill free memory slots from atomically persisted records, oldest first. */
+function refillDurableQueue(): void {
+  if (!durableOutboxEnabled() || pendingQueue.length >= MAX_QUEUE_SIZE) return;
+  let replayed = 0;
+  for (const record of pendingDurableRecords()) {
+    if (pendingQueue.length >= MAX_QUEUE_SIZE) break;
+    if (queuedOutboxIds.has(record.id)) continue;
+    pendingQueue.push({
+      event: record.event,
+      timestamp: record.created_at_ms,
+      retries: 0,
+      outboxId: record.id,
+    });
+    queuedOutboxIds.add(record.id);
+    replayed++;
+  }
+  if (replayed > 0) markDurableRecordsReplayed(replayed);
+}
+
+/** Configure and immediately replay the optional durable outbox. */
+export function configureDurableDelivery(config: ResolvedConfig): void {
+  configureDurableOutbox(config.durable_delivery);
+  refillDurableQueue();
+  if (pendingQueue.length > 0) {
+    void processQueue(config).catch((error) => {
+      debugLog(config, 'error', 'Durable outbox replay failed:', error);
+    });
+  }
+}
+
+export function getDeliveryStatus(): ReturnType<typeof getSenderStats> & {
+  outbox: ReturnType<typeof getDurableOutboxStatus>;
+} {
+  return { ...getSenderStats(), outbox: getDurableOutboxStatus() };
 }
 
 /**
@@ -921,6 +1001,8 @@ function signAndEnqueue(
   event: AuditEvent,
   enqueueBeforeMirror: boolean = false,
 ): void {
+  const previousSeq = seqNo;
+  const previousSig = lastSig;
   // Reconcile the event's wire shape with the ingest schema before signing.
   normalizeWireShape(event);
 
@@ -958,7 +1040,7 @@ function signAndEnqueue(
     // set. Signed LAST in the build, after every layer that can still change a
     // verdict has run — signing an interim decision would seal a value the
     // event does not carry.
-    decisionFieldsOf(event as unknown as Record<string, unknown>)
+    decisionFieldsOf(event as unknown as Record<string, unknown>, CHAIN_FORMAT_CURRENT)
   );
   event.sdk_sig = createHmac("sha256", key)
     .update(sigPayload)
@@ -980,12 +1062,36 @@ function signAndEnqueue(
   // Update chain state for the next event
   lastSig = event.sdk_sig;
 
+  let outboxId: string | undefined;
+  try {
+    outboxId = persistDurableEvent(event);
+  } catch (error) {
+    senderStats.durable_write_failures++;
+    if (durableFailureMode() === 'error') {
+      seqNo = previousSeq;
+      lastSig = previousSig;
+      throw new Error(
+        `[obsvr] durable audit persistence failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    console.warn(
+      `[obsvr] durable audit persistence failed; using memory-only delivery: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
   const queueSignedEvent = (): void => {
+    if (outboxId && pendingQueue.length >= MAX_QUEUE_SIZE) {
+      senderStats.durable_deferred++;
+      void processQueue(config);
+      return;
+    }
     pendingQueue.push({
       event,
       timestamp: Date.now(),
       retries: 0,
+      ...(outboxId ? { outboxId } : {}),
     });
+    if (outboxId) queuedOutboxIds.add(outboxId);
     senderStats.enqueued++;
     processQueue(config).catch((error) => {
       debugLog(
@@ -1070,25 +1176,27 @@ export async function flushQueue(
   // burst still leaves the loss on the record. Forced: the queue is about to
   // drain, and a marker that misses this flush may never be written at all.
   declarePendingGap(config, true);
+  refillDurableQueue();
 
   // Deliberately REF'd timers: an explicit flush is a request to keep the
   // process alive until the queue drains (or the timeout hits). Unref'd
   // timers here let Node exit mid-flush with events still queued.
   while (
-    (pendingQueue.length > 0 || isProcessing) &&
+    (pendingQueue.length > 0 || isProcessing || getDurableOutboxStatus().pending > 0) &&
     Date.now() - startTime < timeoutMs
   ) {
     await processQueue(config);
+    refillDurableQueue();
     if (pendingQueue.length > 0 || isProcessing) {
       await new Promise<void>((resolve) => setTimeout(resolve, 50));
     }
   }
 
-  if (pendingQueue.length > 0) {
+  if (pendingQueue.length > 0 || getDurableOutboxStatus().pending > 0) {
     debugLog(
       config,
       "warn",
-      `Flush timeout: ${pendingQueue.length} events remaining`
+      `Flush timeout: ${Math.max(pendingQueue.length, getDurableOutboxStatus().pending)} events remaining`
     );
   }
 }
@@ -1131,7 +1239,10 @@ export function setupExitHandlers(config: ResolvedConfig): void {
 
   if (typeof process !== "undefined" && process.on) {
     beforeExitHandler = () => {
-      if (exitFlushStarted || pendingQueue.length === 0) return;
+      if (
+        exitFlushStarted ||
+        (pendingQueue.length === 0 && getDurableOutboxStatus().pending === 0)
+      ) return;
       exitFlushStarted = true;
       flushQueue(config, 2000)
         .catch(() => { /* swallow errors during shutdown */ })
@@ -1190,6 +1301,8 @@ export function _resetSender(): void {
   sigtermHandler = null;
   sigintHandler = null;
   pendingQueue.length = 0;
+  queuedOutboxIds.clear();
+  resetDurableOutbox();
   backoffState.until = 0;
   backoffState.multiplier = 1;
   isProcessing = false;

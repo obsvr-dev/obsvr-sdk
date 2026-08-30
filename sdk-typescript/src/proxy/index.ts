@@ -20,5 +20,5 @@ export type {
 } from "./types.js";
 
 // Utilities for advanced usage
-export { shouldSample, flushQueue, getQueueSize, getDroppedCount } from "./sender/index.js";
+export { shouldSample, flushQueue, getQueueSize, getDroppedCount, getDeliveryStatus } from "./sender/index.js";
 export { filterArgs, hasAuditFields, getAuditFieldNames } from "./filters/index.js";

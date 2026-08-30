@@ -276,6 +276,39 @@ function coverageFailures(
   ));
 }
 
+/** Raised when the current process does not meet its exact coverage contract. */
+export class CoverageRequirementsError extends Error {
+  readonly failures: CoverageFailure[];
+
+  constructor(failures: CoverageFailure[]) {
+    super(
+      `Required obsvr coverage is not active: ${failures.map((failure) =>
+        `${failure.integration}:${failure.symbol || '*'} ${failure.reason} ` +
+        `(required ${failure.required_depth}, actual ${failure.actual_depth})`,
+      ).join(', ')}`,
+    );
+    this.name = 'CoverageRequirementsError';
+    this.failures = failures.map((failure) => ({ ...failure }));
+  }
+}
+
+/** Resolve exact symbol and enforcement-depth requirements against live bindings. */
+export function coverageRequirementFailures(
+  required: CoverageRequirementInput[],
+  snapshot = integrationBindings(),
+): CoverageFailure[] {
+  return coverageFailures(normalizedRequirements(required), flattenBindings(snapshot));
+}
+
+/** Refuse startup when a required path is absent, unbound, or too shallow. */
+export function assertCoverageRequirements(
+  required: CoverageRequirementInput[],
+  snapshot = integrationBindings(),
+): void {
+  const failures = coverageRequirementFailures(required, snapshot);
+  if (failures.length > 0) throw new CoverageRequirementsError(failures);
+}
+
 export function buildCoverageAttestationBody(
   input: CoverageAttestationInput,
   snapshot = integrationBindings(),

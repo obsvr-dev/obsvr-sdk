@@ -47,6 +47,20 @@ class CoverageAttestationValidationError(ValueError):
     """The value cannot produce one canonical coverage attestation."""
 
 
+class CoverageRequirementsError(RuntimeError):
+    """The current process does not meet its exact coverage contract."""
+
+    def __init__(self, failures: List[Dict[str, Any]]) -> None:
+        self.failures = [dict(failure) for failure in failures]
+        summary = ", ".join(
+            f"{failure['integration']}:{failure['symbol'] or '*'} "
+            f"{failure['reason']} (required {failure['required_depth']}, "
+            f"actual {failure['actual_depth']})"
+            for failure in failures
+        )
+        super().__init__(f"Required obsvr coverage is not active: {summary}")
+
+
 def _fail(message: str) -> None:
     raise CoverageAttestationValidationError(message)
 
@@ -216,6 +230,28 @@ def _coverage_failures(
             for char in f"{item['integration']}\x00{item['symbol']}\x00{item['reason']}"
         ),
     )
+
+
+def coverage_requirement_failures(
+    required: List[Dict[str, Any]],
+    snapshot: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+) -> List[Dict[str, Any]]:
+    """Resolve exact symbol/depth requirements against current bindings."""
+    normalized = _requirements(required)
+    bindings = _flatten_bindings(
+        snapshot if snapshot is not None else integration_bindings()
+    )
+    return _coverage_failures(normalized, bindings)
+
+
+def assert_coverage_requirements(
+    required: List[Dict[str, Any]],
+    snapshot: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+) -> None:
+    """Refuse startup when a path is absent, unbound, or too shallow."""
+    failures = coverage_requirement_failures(required, snapshot)
+    if failures:
+        raise CoverageRequirementsError(failures)
 
 
 def build_coverage_attestation_body(
