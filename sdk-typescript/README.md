@@ -113,6 +113,10 @@ bind. `autoGovernanceStatus()` reports each automatic boundary as `armed`,
 `bound`, or `not-applicable`; `integrationBindings()` reports every recorded
 symbol bind.
 
+In production, configuring agent or MCP policy without the startup preload logs
+a warning that only explicitly bound surfaces enforce. Use exact required keys
+when a missing automatic boundary must stop startup rather than warn.
+
 For code-owned configuration, preload `@obsvr/sdk/register` and call
 `obsvr.init()` before importing providers. `register` arms interception but does
 not initialize policy by itself.

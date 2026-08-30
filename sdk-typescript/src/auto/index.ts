@@ -545,11 +545,22 @@ export function autoInstrument(config: ResolvedConfig): void {
   if (config.disabled) return;
 
   const requested = config.providers ?? [];
-  if (requested.length > 0 && !interceptionActive && !isInterceptorInstalled()) {
+  const productionAgentStartup =
+    config.environment === 'production' &&
+    (config.agentPolicy !== undefined || config.mcpToolPolicy !== undefined);
+  if (
+    (requested.length > 0 || productionAgentStartup) &&
+    !interceptionActive &&
+    !isInterceptorInstalled()
+  ) {
+    const scope = requested.length > 0
+      ? `config.providers lists [${requested.join(', ')}]`
+      : 'production agent or MCP policy is configured';
     console.warn(
-      `[obsvr] config.providers lists [${requested.join(', ')}] but the module ` +
+      `[obsvr] ${scope} but the startup module ` +
         'interceptor is not loaded, so those providers are not globally governed. ' +
-        'Start Node with "--import @obsvr/sdk/register" for zero-code coverage, ' +
+        'Only explicitly wrapped clients and bound gates enforce. Start Node with ' +
+        '"--import @obsvr/sdk/register" for automatic coverage, ' +
         'or wrap each client explicitly with obsvr.wrap().',
     );
   }

@@ -7,6 +7,7 @@ import sys
 import types
 
 import obsvr
+import pytest
 from obsvr import auto
 
 
@@ -28,6 +29,22 @@ def test_init_auto_false_is_respected():
     auto._reset_auto()
     obsvr.init(api_key="test", auto=False)
     assert obsvr.is_initialized()
+
+
+def test_direct_auto_init_honors_required_bindings(monkeypatch):
+    monkeypatch.setenv("OBSVR_REQUIRED_BINDINGS", "missing.surface")
+    with pytest.raises(obsvr.RequiredBindingsError, match="missing.surface"):
+        obsvr.init(api_key="test", auto=True)
+
+
+def test_production_auto_init_warns_when_supported_package_loaded(caplog, monkeypatch):
+    fake_openai = types.ModuleType("openai")
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    with caplog.at_level("WARNING", logger="obsvr.auto"):
+        obsvr.init(api_key="test", environment="production", auto=True)
+    assert "already imported in production:" in caplog.text
+    assert "openai" in caplog.text
+    assert "obsvr-run" in caplog.text
 
 
 def test_openai_agents_is_wired_when_available(monkeypatch):

@@ -81,6 +81,12 @@ Python exposes `auto_governance_status()` with the same distinction. Each SDK's
 binding report covers framework and MCP symbols. These prove startup
 attachment, not that every future call used the attached boundary.
 
+TypeScript warns in production when agent or MCP policy is configured without
+the startup interceptor. Python warns when automatic initialization begins
+after a supported package is already imported, because a constructor or object
+reference copied before rebinding may survive. Warnings describe uncertainty;
+an exact required-binding manifest is the fail-startup control.
+
 Explicit wrapping may request `sealRaw: true` in TypeScript or `seal_raw=True`
 in Python. Sealing revokes documented governed methods on the exact raw object
 after the proxy is ready. It is transactional and does not freeze the provider

@@ -67,6 +67,38 @@ _EXPLICIT_SURFACES = {
 }
 
 
+def _warn_late_production_startup() -> None:
+    """Say when automatic interception begins after supported packages loaded."""
+    try:
+        from .config import get_config
+
+        if get_config().environment != "production":
+            return
+    except Exception:
+        return
+    loaded = sorted(
+        package
+        for package in {
+            "openai",
+            "anthropic",
+            "mcp",
+            "agents",
+            "llama_index",
+            "crewai",
+            "autogen",
+        }
+        if package in sys.modules
+    )
+    if loaded:
+        logger.warning(
+            "obsvr automatic governance started after supported packages were "
+            "already imported in production: %s. Public aliases are rebound where "
+            "supported, but constructor or object references copied before init may "
+            "bypass. Start through obsvr-run or initialize before those imports.",
+            ", ".join(loaded),
+        )
+
+
 def _module_available(name: str) -> bool:
     import importlib.util
 
@@ -417,7 +449,7 @@ _MANUAL_HINTS = {
     "langchain_core": "LangChain: pass obsvr.integrations.langchain.ObsvrCallbackHandler() in callbacks=[...]",
     "crewai": "CrewAI run/step audit: wire obsvr.integrations.crewai.make_crew_callbacks(...) on your Crew; the pre-tool gate is automatic where supported",
     "autogen": "AutoGen message policy: call obsvr.integrations.autogen.register_obsvr(agent); the tool-execution gate is automatic on supported ag2 0.x",
-    "agents": "OpenAI Agents model policy still requires govern_model()/govern_model_provider(); hosted and dynamically converted MCP tools must be governed at their execution boundary",
+    "agents": "OpenAI Agents tracing remains observe-only; future intercepted Agents govern concrete models and local function tools, while hosted and dynamically converted MCP tools must be governed at their execution boundary",
 }
 
 
@@ -427,6 +459,7 @@ def enable_auto_instrumentation() -> Dict[str, Any]:
     global _auto_enabled
     _auto_enabled = True
     report: Dict[str, Any] = {"wired": [], "manual": []}
+    _warn_late_production_startup()
 
     if "providers" not in _wired:
         installed = _wire_providers()

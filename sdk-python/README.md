@@ -74,6 +74,10 @@ startup fails before the target runs unless those installed boundaries actually
 bind. `auto_governance_status()` reports each boundary as `armed`, `bound`, or
 `not-applicable`.
 
+The same manifest is enforced by direct `obsvr.init(auto=True)`. Production
+direct-init also warns if a supported package was imported first, because a
+constructor or object reference copied before rebinding can remain raw.
+
 Wrap your existing LLM client. No other code changes.
 
 ```python

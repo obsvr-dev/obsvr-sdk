@@ -81,6 +81,8 @@ flowchart LR
 
 Coverage is intentionally described per integration rather than SDK-wide. A client constructed before the startup preload, imported through an unlisted package path, reached through a saved raw reference, or invoked through a framework callback delivered after execution may sit outside a given boundary. An escaped call records nothing rather than inventing an enforcement result. Use required binding manifests, explicit wrapping, or a pre-invocation tool gate when coverage must be unambiguous.
 
+Production startup is not silent: TypeScript warns when agent or MCP policy is configured without the startup preload, and Python warns when automatic initialization begins after supported packages were already imported. In either runtime, exact `OBSVR_REQUIRED_BINDINGS` entries turn an expected automatic boundary into a startup requirement; Python applies the manifest to direct `init(auto=True)` as well as `obsvr-run`.
+
 ## Five-minute quickstart
 
 ### TypeScript

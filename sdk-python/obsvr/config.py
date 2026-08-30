@@ -753,12 +753,22 @@ def init(
     # Auto-instrumentation: wire frameworks with clean global registration
     # (providers, openai-agents, llamaindex). On by default; opt out with
     # init(auto=False). Best-effort and non-throwing — never blocks init.
-    if auto is not False and not cfg.disabled:
-        try:
-            from .auto import enable_auto_instrumentation
-            enable_auto_instrumentation()
-        except Exception:  # pragma: no cover - defensive; auto must never break init
-            pass
+    if auto is not False:
+        if not cfg.disabled:
+            try:
+                from .auto import enable_auto_instrumentation
+                enable_auto_instrumentation()
+            except Exception:  # pragma: no cover - defensive; optional binds are isolated
+                pass
+        required = [
+            value.strip()
+            for value in os.environ.get("OBSVR_REQUIRED_BINDINGS", "").split(",")
+            if value.strip()
+        ]
+        if required:
+            from .binding_report import assert_required_bindings
+
+            assert_required_bindings(required)
 
 
 def get_config() -> ResolvedConfig:

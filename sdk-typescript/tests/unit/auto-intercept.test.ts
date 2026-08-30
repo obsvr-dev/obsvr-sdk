@@ -267,6 +267,20 @@ describe('auto/autoInstrument', () => {
     expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(true);
   });
 
+  test('warns when production agent policy expects startup governance without the preload', () => {
+    const warns = captureWarns(() => {
+      init({
+        api_key: 'test',
+        environment: 'production',
+        agent_policy: { deniedTools: ['send_contract'] },
+      });
+      autoInstrument(getConfig());
+    });
+
+    expect(warns.some((w) => w.includes('Only explicitly wrapped clients'))).toBe(true);
+    expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(true);
+  });
+
   test('does not warn when the interceptor is active', () => {
     interceptProviderClass('openai', FakeOpenAI);
     const warns = captureWarns(() => {
