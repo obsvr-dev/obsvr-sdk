@@ -15,6 +15,8 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+## [0.15.0] - 2026-08-31
+
 ### Added
 
 - Added an opt-in atomic disk outbox in both SDKs. Signed events persist before
@@ -31,6 +33,9 @@ Changes land here and are renamed at the next release cut.
 - New events use chain format 4, which seals `operation`, `source`, and
   `event_type` in addition to the format-3 decision fields. Verifiers retain
   backward support for formats 1–3.
+- Durable replay now reserves records atomically with persistence so a
+  concurrent flush cannot enqueue one record twice. Outbox directories are
+  owner-only and reject symlinked paths and records.
 
 ## [0.14.0] - 2026-08-31
 

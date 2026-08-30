@@ -1,6 +1,6 @@
 {
   "name": "@obsvr/sdk",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Govern supported AI model, agent, and tool boundaries with deterministic pre-call policy and tamper-evident decision records",
   "main": "dist/index.js",
   "module": "dist/index.js",
