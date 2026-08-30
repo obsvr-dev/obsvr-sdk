@@ -77,7 +77,7 @@ Issues = "https://github.com/obsvr-dev/obsvr-sdk/issues"
 # on which the responses paths do work. One hole is upstream and left
 # unexcluded: 1.99.0 ships a broken openai.types.responses, so both responses
 # paths read absent there and are present again in 1.99.1 the next day.
-openai = ["openai>=1.66.0,<3.0.0"]
+openai = ["openai>=1.66.0,<4.0.0"]
 # 0.3.0 governed NOTHING, which is worse than thin. The 0.3.x client exposes
 # only completions.create — the superseded text-completion path, absent from
 # AUDITABLE_METHODS — so an operator who resolved the declared floor built a
