@@ -73,7 +73,7 @@ The content hash is UNCHANGED between formats 2 and 3: the content framing did
 not need fixing, and ``obsvr:content/2`` names the content-preimage version
 rather than the chain format.
 
-Formats 1 and 2 stay implemented here forever: chains signed before each change
+Formats 1 through 3 stay implemented here forever: chains signed before each change
 are existing evidence and must keep verifying - explicitly, as the format they
 were signed under, never silently under a newer rule.
 
@@ -94,9 +94,12 @@ __all__ = [
     "CHAIN_FORMAT_LEGACY",
     "CHAIN_FORMAT_CONTENT_ONLY",
     "CHAIN_FORMAT_CURRENT",
+    "CHAIN_FORMAT_DECISION_FIELDS",
     "CHAIN_FORMATS_SUPPORTED",
     "CONTENT_HASH_DOMAIN_TAG",
     "DECISION_HASH_DOMAIN_TAG",
+    "CLASSIFIED_DECISION_HASH_DOMAIN_TAG",
+    "DECISION_FIELD_ORDER_V3",
     "DECISION_FIELD_ORDER",
     "content_hash",
     "decision_hash",
@@ -108,19 +111,23 @@ __all__ = [
 CHAIN_FORMAT_LEGACY = 1
 #: Length-prefixed, domain-tagged content preimage. Content and order only.
 CHAIN_FORMAT_CONTENT_ONLY = 2
-#: Content, order AND the decision fields. What the SDK signs today.
-CHAIN_FORMAT_CURRENT = 3
+#: Content, order, and the original decision fields.
+CHAIN_FORMAT_DECISION_FIELDS = 3
+#: Decision fields plus operation/source/event_type classification.
+CHAIN_FORMAT_CURRENT = 4
 #: Every format this build can verify, oldest first.
-CHAIN_FORMATS_SUPPORTED = (1, 2, 3)
+CHAIN_FORMATS_SUPPORTED = (1, 2, 3, 4)
 #: Domain tag leading every format-2 content preimage.
 CONTENT_HASH_DOMAIN_TAG = b"obsvr:content/2"
 #: Domain tag leading every format-3 decision preimage.
 DECISION_HASH_DOMAIN_TAG = b"obsvr:decision/3"
+#: Domain tag for the format-4 classification-aware decision digest.
+CLASSIFIED_DECISION_HASH_DOMAIN_TAG = b"obsvr:decision/4"
 
 #: The decision/attribution fields format 3 signs, in the ONE order the digest
 #: is defined over. Both languages iterate this list; changing the order or the
 #: membership changes every format-3 signature and requires a new format.
-DECISION_FIELD_ORDER = (
+DECISION_FIELD_ORDER_V3 = (
     "action_taken",
     "action_reason",
     "reason_code",
@@ -129,6 +136,14 @@ DECISION_FIELD_ORDER = (
     "model",
     "provider",
     "user_id",
+)
+
+#: Format 4 seals the fields that classify the record itself. This prevents an
+#: ordinary event with marker-like content being relabelled as ``audit.gap``.
+DECISION_FIELD_ORDER = DECISION_FIELD_ORDER_V3 + (
+    "operation",
+    "source",
+    "event_type",
 )
 
 
@@ -157,7 +172,9 @@ def content_hash(fmt: int, prompt: str, response: str) -> str:
     return h.hexdigest()
 
 
-def decision_fields_of(event: Dict[str, Any]) -> Dict[str, Any]:
+def decision_fields_of(
+    event: Dict[str, Any], fmt: int = CHAIN_FORMAT_CURRENT
+) -> Dict[str, Any]:
     """Read the signed decision fields off an event.
 
     ONE reader, used by both the signer and the verifier. If they read the field
@@ -166,13 +183,16 @@ def decision_fields_of(event: Dict[str, Any]) -> Dict[str, Any]:
     is why this is not two functions.
     """
     out: Dict[str, Any] = {}
-    for key in DECISION_FIELD_ORDER:
+    order = DECISION_FIELD_ORDER if fmt >= CHAIN_FORMAT_CURRENT else DECISION_FIELD_ORDER_V3
+    for key in order:
         value = event.get(key)
         out[key] = None if value is None else str(value)
     return out
 
 
-def decision_hash(fields: Optional[Dict[str, Any]]) -> str:
+def decision_hash(
+    fields: Optional[Dict[str, Any]], fmt: int = CHAIN_FORMAT_CURRENT
+) -> str:
     """Digest over the decision/attribution fields. Format 3 and later only.
 
     Each field contributes a presence byte, a u64be byte-length, and its UTF-8
@@ -183,9 +203,14 @@ def decision_hash(fields: Optional[Dict[str, Any]]) -> str:
     """
     src = fields or {}
     h = hashlib.sha256()
-    h.update(DECISION_HASH_DOMAIN_TAG)
+    order = DECISION_FIELD_ORDER if fmt >= CHAIN_FORMAT_CURRENT else DECISION_FIELD_ORDER_V3
+    h.update(
+        CLASSIFIED_DECISION_HASH_DOMAIN_TAG
+        if fmt >= CHAIN_FORMAT_CURRENT
+        else DECISION_HASH_DOMAIN_TAG
+    )
     h.update(b"\x00")
-    for key in DECISION_FIELD_ORDER:
+    for key in order:
         value = src.get(key)
         present = value is not None
         h.update(b"\x01" if present else b"\x00")
@@ -221,8 +246,8 @@ def signature_payload(
         str(timestamp_sdk),
         content_hash(fmt, prompt, response),
     ]
-    if fmt >= CHAIN_FORMAT_CURRENT:
-        fields.append(decision_hash(decision))
+    if fmt >= CHAIN_FORMAT_DECISION_FIELDS:
+        fields.append(decision_hash(decision, fmt))
     fields.append(prev_sig or "")
     if fmt != CHAIN_FORMAT_LEGACY:
         fields.insert(0, str(fmt))

@@ -328,7 +328,7 @@ export function verifyAuditChain(
       event.prompt ?? '',
       event.response ?? '',
       event.prev_sig ?? null,
-      decisionFieldsOf(event as unknown as Record<string, unknown>)
+      decisionFieldsOf(event as unknown as Record<string, unknown>, format)
     );
 
     if (signingKey !== null) {

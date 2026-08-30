@@ -21,8 +21,8 @@ function deriveKey(apiKey: string): Buffer {
   return createHmac("sha256", "obsvr-sdk-signing-v1").update(apiKey).digest();
 }
 
-/** A valid format-3 chain of n events, signed the way the sender signs. */
-function signedChain(n: number, prompts?: string[]): AuditEvent[] {
+/** A valid current-format chain of n events, signed the way the sender signs. */
+function signedChain(n: number, prompts?: string[], operations?: Array<string | undefined>): AuditEvent[] {
   const key = deriveKey(API_KEY);
   const events: AuditEvent[] = [];
   let prev: string | null = null;
@@ -35,6 +35,7 @@ function signedChain(n: number, prompts?: string[]): AuditEvent[] {
       response: `response-${i}`,
       chain_format: CHAIN_FORMAT_CURRENT,
     };
+    if (operations?.[i]) event.operation = operations[i];
     if (prev) event.prev_sig = prev;
     const payload = signaturePayload(
       CHAIN_FORMAT_CURRENT,
@@ -127,14 +128,15 @@ describe("every break reported", () => {
   });
 
   test("gap tally still covers only the prefix before the first break", () => {
-    const events = signedChain(3, [
-      "prompt-0",
-      "prompt-1",
-      "obsvr:audit-gap/1 dropped=7 reason=queue_overflow",
-    ]);
-    // `operation` is outside the signature preimage, so stamping it after
-    // signing leaves a marker whose own signature verifies.
-    (events[2] as unknown as Record<string, unknown>).operation = AUDIT_GAP_OPERATION;
+    const events = signedChain(
+      3,
+      [
+        "prompt-0",
+        "prompt-1",
+        "obsvr:audit-gap/1 dropped=7 reason=queue_overflow",
+      ],
+      [undefined, undefined, AUDIT_GAP_OPERATION],
+    );
     expect(verifyAuditChain(events, API_KEY).eventsDeclaredLost).toBe(7);
 
     events[0].prompt = "tampered";

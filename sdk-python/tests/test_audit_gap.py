@@ -196,6 +196,20 @@ def test_editing_the_declared_count_breaks_verification():
     assert result.reason == f"Signature mismatch at event {at}"
 
 
+def test_reclassifying_an_ordinary_record_as_a_gap_breaks_verification():
+    config = _config()
+    sender.send_audit_async(config, _event("ordinary"))
+    chain = _drain()
+
+    chain[0]["operation"] = "audit.gap"
+    chain[0]["source"] = "obsvr_sdk"
+    chain[0]["event_type"] = "policy_flag"
+
+    result = verify_chain(chain, API_KEY)
+    assert result.valid is False
+    assert result.reason == "Signature mismatch at event 0"
+
+
 def test_flush_declares_an_outstanding_gap_rather_than_losing_it_with_the_process():
     config = _config()
     dropped = _saturate(config, 7)

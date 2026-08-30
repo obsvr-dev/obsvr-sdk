@@ -378,7 +378,7 @@ def verify_chain(
             # through the SAME reader the signer used - two readers that
             # disagree about an absent field would make every event look
             # tampered with.
-            decision_fields_of(event),
+            decision_fields_of(event, chain_format),
         )
 
         if signing_key is not None:

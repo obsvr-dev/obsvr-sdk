@@ -201,6 +201,21 @@ describe('audit gap markers', () => {
     expect(result.reason).toBe(`Signature mismatch at event ${at}`);
   });
 
+  it('breaks verification if an ordinary record is reclassified as an audit gap', async () => {
+    const cfg = config();
+    releaseDelivery();
+    enqueueAuditEvent(cfg, auditEvent('ordinary'));
+    await flushQueue(cfg, 2000);
+
+    delivered[0].operation = 'audit.gap';
+    delivered[0].source = 'obsvr_sdk';
+    delivered[0].event_type = 'policy_flag';
+
+    const result = verifyAuditChain(delivered, API_KEY);
+    expect(result.valid).toBe(false);
+    expect(result.reason).toBe('Signature mismatch at event 0');
+  });
+
   it('flushes an outstanding gap at shutdown rather than losing it with the process', async () => {
     const cfg = config();
     const dropped = saturate(cfg, 7);
