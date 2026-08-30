@@ -364,6 +364,15 @@ class TestRegistryGate:
         # returns rather than an exception it raises. Same exemption reason as
         # cost.py and tool_content_hash.py.
         "token_usage.py",
+        # Signed coverage statement and verifier. It reports whether required
+        # enforcement surfaces are present; it does not evaluate a live call.
+        "coverage_attestation.py",
+        # Public callable adapter over the existing tool-policy kernel. The
+        # detector dispositions belong to that kernel, not this adapter.
+        "govern_fn.py",
+        # Closed remediation/retry document canonicalizer. It validates and
+        # hashes evidence references but never decides whether an action runs.
+        "remediation_v1.py",
         "verify_chain.py",
         "wrap.py",
     }

@@ -110,13 +110,20 @@ def _module_available(name: str) -> bool:
 
 def _wire_providers() -> List[str]:
     try:
-        from .register import install
+        from .register import install, originals
 
         installed = install()  # governs openai/anthropic client construction
         from .binding_report import record_binding
 
+        # Importing obsvr.register performs the first install. The explicit
+        # idempotent call above can therefore return no newly installed labels
+        # even though the provider constructors are already intercepted. Use
+        # the retained originals as the authoritative installed-label set so a
+        # required automatic surface is not reported missing between init and
+        # the application's first provider construction.
+        active_labels = set(installed) | set(originals)
         for provider in ("openai", "anthropic"):
-            if any(label.startswith(provider + ".") for label in installed):
+            if any(label.startswith(provider + ".") for label in active_labels):
                 record_binding(
                     f"{provider}.client",
                     f"{provider}.public_client_constructors",
