@@ -57,7 +57,6 @@ const vectors = JSON.parse(
 function deriveKey(apiKey: string): Buffer {
   // Independent protocol-vector verification over a synthetic test API key;
   // this is not password storage or a password-based KDF.
-  // codeql[js/insufficient-password-hash]
   return createHmac("sha256", "obsvr-sdk-signing-v1").update(apiKey).digest();
 }
 

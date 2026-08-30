@@ -172,7 +172,6 @@ export function persistDurableEvent(event: AuditEvent): string | undefined {
       // This is the intentional durable audit outbox sink. The path is an
       // absolute, non-symlink, owner-only directory; the filename is an SDK
       // generated UUID; and openSync uses exclusive creation with mode 0600.
-      // codeql[js/http-to-file-access]
       writeFileSync(fd, bytes);
       if (config.fsync) fsyncSync(fd);
     } finally {
