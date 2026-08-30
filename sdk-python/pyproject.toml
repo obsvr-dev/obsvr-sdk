@@ -98,7 +98,7 @@ openai = ["openai>=1.66.0,<3.0.0"]
 # shows beta gone ('Anthropic' object has no attribute 'beta'), which is
 # upstream history (the namespace was removed when that API graduated, and
 # beta.messages returned at 0.36.0), not an obsvr regression.
-anthropic = ["anthropic>=0.16.0,<1.0.0"]
+anthropic = ["anthropic>=0.16.0,<2.0.0"]
 # The floor is where the framework RUNS under the current openai client, not
 # where obsvr's symbols first appear. add_trace_processor reaches back to
 # 0.0.2 and the tool-guardrail surface attach_tool_gate binds arrives at
