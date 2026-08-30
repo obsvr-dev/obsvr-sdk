@@ -155,6 +155,7 @@ AUDITABLE_METHODS = {
     "aio.models.generate_content_stream",  # Google Gemini async iterator
     "send_message",              # Google Gemini ChatSession sync
     "send_message_async",        # Google Gemini ChatSession async
+    "send_message_stream",       # Google Gemini chat stream
     "beta.messages.create",      # Anthropic beta
     "beta.messages.parse",       # Anthropic beta structured outputs / tool runner
     "beta.messages.with_raw_response.create",  # Anthropic beta raw response
@@ -191,6 +192,7 @@ _STRICT_V2_1_DIRECT_METHODS = {
 _DIRECT_STREAM_METHODS = {
     "models.generate_content_stream",
     "aio.models.generate_content_stream",
+    "send_message_stream",
 }
 
 #: The ``.stream()`` helpers, which are the same request as ``create`` and
@@ -233,6 +235,8 @@ DEFERRED_RESPONSE_METHODS = {
 #: behind the proxy so the later request cannot escape through a raw object.
 GOVERNED_FACTORY_METHODS = {
     "start_chat",
+    "chats.create",
+    "aio.chats.create",
 }
 
 #: Provider-managed loops that snapshot local tool callbacks at construction.
@@ -262,7 +266,7 @@ _GOVERNED_METHODS = (
 #: returned raw and every path beneath it is unreachable, which would leave
 #: those entries as dead code.
 _TRAVERSABLE = {
-    "aio", "beta", "chat", "completions", "events", "messages", "models",
+    "aio", "beta", "chat", "chats", "completions", "events", "messages", "models",
     "responses", "sessions",
     "with_raw_response", "with_streaming_response",
 }
@@ -417,6 +421,11 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
         text = _google_content_text(contents)
         if text:
             parts.append(text)
+    message = kwargs.get("message")
+    if message is not None:
+        text = _google_content_text(message)
+        if text:
+            parts.append(text)
     if provider == "google":
         system_instruction = _google_config_system_instruction(kwargs.get("config"))
         if system_instruction is not None:
@@ -425,6 +434,75 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
                 parts.append(text)
 
     return "\n".join(parts)
+
+
+def _google_chat_context_text(target: Any) -> str:
+    """Text retained by a chat object and sent with the next message."""
+    parts: List[str] = []
+    seen = set()
+    for name in ("history", "_history", "_curated_history"):
+        value = getattr(target, name, None)
+        if value is not None and id(value) not in seen:
+            seen.add(id(value))
+            text = _google_content_text(value)
+            if text:
+                parts.append(text)
+    for name in ("config", "_config", "params"):
+        value = getattr(target, name, None)
+        if value is None or id(value) in seen:
+            continue
+        seen.add(id(value))
+        system = _google_config_system_instruction(value)
+        if system is not None:
+            text = _google_content_text(system)
+            if text:
+                parts.append(text)
+        history = (
+            value.get("history")
+            if isinstance(value, dict)
+            else getattr(value, "history", None)
+        )
+        if history is not None and id(history) not in seen:
+            seen.add(id(history))
+            text = _google_content_text(history)
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _redact_google_chat_context(target: Any, redact_fn: Callable[[str], str]) -> None:
+    """Redact chat-owned context without mutating the factory arguments."""
+    for name in ("history", "_history", "_curated_history", "_comprehensive_history"):
+        value = getattr(target, name, None)
+        if value is not None:
+            setattr(target, name, _redact_google_content(value, redact_fn))
+    for name in ("config", "_config"):
+        value = getattr(target, name, None)
+        if value is not None:
+            setattr(target, name, _redact_google_config(value, redact_fn))
+    params = getattr(target, "params", None)
+    if isinstance(params, dict):
+        setattr(
+            target,
+            "params",
+            {
+                **params,
+                **(
+                    {
+                        "systemInstruction": _redact_google_content(
+                            params["systemInstruction"], redact_fn
+                        )
+                    }
+                    if "systemInstruction" in params
+                    else {}
+                ),
+                **(
+                    {"history": _redact_google_content(params["history"], redact_fn)}
+                    if "history" in params
+                    else {}
+                ),
+            },
+        )
 
 
 def _last_user_message(kwargs: dict) -> Optional[str]:
@@ -774,6 +852,7 @@ def _extract_model(provider: str, target: Any, kwargs: dict) -> str:
         return str(
             getattr(target, "model_name", None)
             or getattr(target, "_model_name", None)
+            or getattr(target, "_model", None)
             or getattr(model_target, "model_name", None)
             or getattr(model_target, "_model_name", None)
             or "gemini"
@@ -1941,7 +2020,9 @@ def _build_direct_call_pre_call_plan(
     config = get_config()
 
     metadata = _collect_metadata(options, kwargs)
-    prompt_text = _extract_prompt_text(provider, args, kwargs)
+    request_text = _extract_prompt_text(provider, args, kwargs)
+    retained_text = _google_chat_context_text(target) if provider == "google" else ""
+    prompt_text = "\n".join(part for part in (retained_text, request_text) if part)
     model = _extract_model(provider, target, kwargs)
 
     policy = apply_pre_call_policy(
@@ -2036,8 +2117,16 @@ def _build_direct_call_pre_call_plan(
             nonlocal _redacted_args
             _redact_messages_in_place(provider, kwargs, _redactor)
             _redacted_args = _redact_positional_inputs(args, _redactor)
+            if provider == "google":
+                _redact_google_chat_context(target, _redactor)
+            redacted_request = _extract_prompt_text(provider, _redacted_args, kwargs)
+            redacted_retained = (
+                _google_chat_context_text(target) if provider == "google" else ""
+            )
             assert_redaction_applied(
-                _extract_prompt_text(provider, _redacted_args, kwargs),
+                "\n".join(
+                    part for part in (redacted_retained, redacted_request) if part
+                ),
                 compliance,
             )
 

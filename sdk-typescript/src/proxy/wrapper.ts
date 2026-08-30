@@ -262,6 +262,8 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["generateContent", "gemini-generate"], // Google Gemini
   ["models.generateContent", "gemini-generate"], // Maintained @google/genai
   ["models.generateContentStream", "gemini-generate"], // Maintained @google/genai
+  ["sendMessage", "gemini-generate"], // Gemini chat session
+  ["sendMessageStream", "gemini-generate"], // Gemini chat session stream
   ["responses.create", "openai-responses"], // OpenAI Responses API
   ["responses.parse", "openai-responses"], // OpenAI Responses structured outputs
   ["responses.compact", "openai-responses"], // OpenAI Responses compaction
@@ -337,6 +339,12 @@ const TOOL_RUNNER_METHODS = new Map<
     "beta.messages.toolRunner",
     { shape: "anthropic-messages", dialect: "anthropic-messages", thenable: true },
   ],
+]);
+
+/** Factories whose returned object contains provider calls. */
+const GOVERNED_FACTORY_METHODS = new Set([
+  "startChat", // Legacy @google/generative-ai
+  "chats.create", // Maintained @google/genai
 ]);
 
 /**
@@ -616,7 +624,7 @@ function appendContentText(value: unknown, parts: string[]): void {
   }
   if (!value || typeof value !== "object") return;
   const record = value as Record<string, unknown>;
-  for (const key of ["text", "content", "input", "output"] as const) {
+  for (const key of ["text", "content", "input", "output", "parts"] as const) {
     if (key in record) appendContentText(record[key], parts);
   }
 }
@@ -657,6 +665,10 @@ function extractPromptTextFromArgs(args: unknown): string {
     if (geminiPrompt) parts.push(geminiPrompt);
   }
 
+  if ("message" in req) {
+    appendContentText(req.message, parts);
+  }
+
   // OpenAI Responses API: instructions (system) + input (string or item list)
   if (typeof req.instructions === "string") {
     parts.push(req.instructions);
@@ -689,6 +701,12 @@ function extractLastUserMessageText(args: unknown): string {
   if (typeof args === "string") return args;
   if (!args || typeof args !== "object") return "";
   const req = args as Record<string, unknown>;
+
+  if ("message" in req) {
+    const parts: string[] = [];
+    appendContentText(req.message, parts);
+    if (parts.length > 0) return parts.join(" ");
+  }
 
   // OpenAI / Anthropic: scan messages array in reverse for last user turn
   if (Array.isArray(req.messages)) {
@@ -847,6 +865,9 @@ function redactMessagesInPlace(args: unknown): void {
   if ("contents" in req) {
     req.contents = redactGeminiContent(req.contents);
   }
+  if ("message" in req) {
+    req.message = redactGeminiContent(req.message);
+  }
   if ("systemInstruction" in req) {
     req.systemInstruction = redactGeminiContent(req.systemInstruction);
   }
@@ -868,6 +889,69 @@ function redactMessagesInPlace(args: unknown): void {
     req.input = redactBuiltinPii(req.input);
   } else if (Array.isArray(req.input)) {
     req.input = (req.input as unknown[]).map(redactContentCarrier);
+  }
+}
+
+/** Text retained by a provider chat object and sent on its next turn. */
+function extractGoogleChatContextText(target: object): string {
+  const record = target as Record<string, unknown>;
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+
+  for (const key of ["history", "_history"] as const) {
+    const value = record[key];
+    if (value !== undefined && !seen.has(value)) {
+      seen.add(value);
+      appendContentText(value, parts);
+    }
+  }
+
+  for (const key of ["config", "params"] as const) {
+    const value = record[key];
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
+    seen.add(value);
+    const config = value as Record<string, unknown>;
+    if ("systemInstruction" in config) appendContentText(config.systemInstruction, parts);
+    if ("history" in config && !seen.has(config.history)) {
+      seen.add(config.history);
+      appendContentText(config.history, parts);
+    }
+  }
+
+  return parts.join(" ");
+}
+
+/** Redact chat-owned history/config without mutating factory arguments. */
+function redactGoogleChatContextInPlace(target: object): void {
+  const record = target as Record<string, unknown>;
+  const redactContent = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactContent);
+    if (!value || typeof value !== "object") return value;
+    const item = value as Record<string, unknown>;
+    if (typeof item.text === "string") {
+      return { ...item, text: redactBuiltinPii(item.text) };
+    }
+    if (Array.isArray(item.parts)) {
+      return { ...item, parts: item.parts.map(redactContent) };
+    }
+    return value;
+  };
+
+  for (const key of ["history", "_history"] as const) {
+    if (record[key] !== undefined) record[key] = redactContent(record[key]);
+  }
+  for (const key of ["config", "params"] as const) {
+    const value = record[key];
+    if (!value || typeof value !== "object") continue;
+    const config = value as Record<string, unknown>;
+    record[key] = {
+      ...config,
+      ...(config.systemInstruction !== undefined
+        ? { systemInstruction: redactContent(config.systemInstruction) }
+        : {}),
+      ...(config.history !== undefined ? { history: redactContent(config.history) } : {}),
+    };
   }
 }
 
@@ -896,6 +980,7 @@ function buildAuditEvent(
   errorStatusCode?: number,
   modelHint?: string,
   compliance: ComplianceCtx = DEFAULT_COMPLIANCE,
+  promptOverride?: string,
 ): AuditEvent {
   const { config, options } = ctx;
 
@@ -966,6 +1051,8 @@ function buildAuditEvent(
       ? extractOpenAITokenUsage(response as any)
       : undefined;
   }
+
+  if (promptOverride !== undefined) prompt = promptOverride;
 
   // Provider-RESOLVED model snapshot from the response body (temporal
   // provenance): OpenAI/Anthropic put it in `model`, Gemini in `modelVersion`.
@@ -1255,6 +1342,7 @@ function wrapStreamingIterator(
   startTime: number,
   modelHint?: string,
   compliance: ComplianceCtx = DEFAULT_COMPLIANCE,
+  promptOverride?: string,
 ): AsyncGenerator<unknown, void, unknown> {
   if (compliance === DEFAULT_COMPLIANCE) {
     compliance = {
@@ -1345,7 +1433,9 @@ function wrapStreamingIterator(
         const operation = ctx.path.join(".");
 
         let promptText: string;
-        if (provider === "anthropic") {
+        if (promptOverride !== undefined) {
+          promptText = promptOverride;
+        } else if (provider === "anthropic") {
           promptText = extractAnthropicPrompt(
             request as AnthropicMessagesRequest,
           );
@@ -1631,8 +1721,13 @@ export async function _buildDirectCallPreCallPlan(
     let decisionTextMemo: string | undefined;
     const lastUserText = (): string =>
       (lastUserTextMemo ??= extractLastUserMessageText(cleaned_args[0]) ?? "");
-    const decisionText = (): string =>
-      (decisionTextMemo ??= extractPromptTextFromArgs(cleaned_args[0]) ?? "");
+    const decisionText = (): string => {
+      if (decisionTextMemo !== undefined) return decisionTextMemo;
+      const requestText = extractPromptTextFromArgs(cleaned_args[0]) ?? "";
+      const retainedText = provider === "google" ? extractGoogleChatContextText(target) : "";
+      decisionTextMemo = [retainedText, requestText].filter(Boolean).join(" ");
+      return decisionTextMemo;
+    };
     const invalidatePromptText = (): void => {
       lastUserTextMemo = undefined;
       decisionTextMemo = undefined;
@@ -1985,7 +2080,12 @@ export async function _buildDirectCallPreCallPlan(
                 }
               }
 
-              const outboundText = extractPromptTextFromArgs(cleaned_args[0]);
+              if (provider === "google") redactGoogleChatContextInPlace(target);
+
+              const outboundText = [
+                provider === "google" ? extractGoogleChatContextText(target) : "",
+                extractPromptTextFromArgs(cleaned_args[0]),
+              ].filter(Boolean).join(" ");
               assertRedactionApplied(outboundText, {
                 redacted_types: resolved.redactedTypes,
               });
@@ -2730,7 +2830,7 @@ export async function _buildDirectCallPreCallPlan(
       const redactedPrompt = canaryFloor
         ? CANARY_REDACTION_PLACEHOLDER
         : actionReason === "pii_detected"
-          ? redactForStorage(extractPromptTextFromArgs(cleaned_args[0]), piiScanVia)
+          ? redactForStorage(decisionText(), piiScanVia)
           : "[BLOCKED_BY_POLICY]";
 
       const blockedEvent: AuditEvent = {
@@ -2887,6 +2987,12 @@ function createAuditedMethod(
     const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint,
       detectedClassifications } =
       await governCall(args, target, ctx, provider, methodPath);
+    const promptOverride = provider === "google"
+      ? [
+          extractGoogleChatContextText(target),
+          extractPromptTextFromArgs(cleaned_args[0]),
+        ].filter(Boolean).join(" ")
+      : undefined;
 
 
     // Check for streaming - compliance boundary has already run above.
@@ -2935,6 +3041,7 @@ function createAuditedMethod(
             statusCode,
             modelHint,
             compliance,
+            promptOverride,
           );
           sendAuditAsync(config, auditEvent);
           debugLog(
@@ -2960,6 +3067,7 @@ function createAuditedMethod(
               streamStart,
               modelHint,
               compliance,
+              promptOverride,
             )
           : streamResp;
       }
@@ -2978,6 +3086,7 @@ function createAuditedMethod(
           undefined,
           modelHint,
           compliance,
+          promptOverride,
         );
         await applyPostCallGovernance(auditEvent, config);
         sendAuditAsync(config, auditEvent);
@@ -3061,6 +3170,7 @@ function createAuditedMethod(
           statusCode,
           modelHint,
           compliance,
+          promptOverride,
         );
 
         sendAuditAsync(config, auditEvent);
@@ -3097,6 +3207,7 @@ function createAuditedMethod(
           startTime,
           modelHint,
           compliance,
+          promptOverride,
         );
       }
       debugLog(
@@ -3121,6 +3232,7 @@ function createAuditedMethod(
         undefined,
         modelHint,
         compliance,
+        promptOverride,
       );
 
       await applyPostCallGovernance(auditEvent, config);
@@ -3488,6 +3600,7 @@ function governedMethodPaths(): string[] {
     ...AUDITABLE_METHODS.keys(),
     ...STREAM_RUNNER_METHODS.keys(),
     ...TOOL_RUNNER_METHODS.keys(),
+    ...GOVERNED_FACTORY_METHODS,
   ];
 }
 
@@ -3631,6 +3744,14 @@ function createRecursiveProxy<T extends object>(
           && !STRICT_V21_DIRECT_METHODS.has(newPath.join("."))) {
           return function strictUnsupportedSurface(): never {
             return strictProviderSurfaceUnsupportedV21();
+          };
+        }
+        if (GOVERNED_FACTORY_METHODS.has(newPath.join("."))) {
+          return function governedFactory(...args: unknown[]): unknown {
+            const result = value.apply(obj, args);
+            return result && typeof result === "object"
+              ? createRecursiveProxy(result as object, atPath(ctx, []))
+              : result;
           };
         }
         // Provider tool runners: same synchronous-return mechanism as the

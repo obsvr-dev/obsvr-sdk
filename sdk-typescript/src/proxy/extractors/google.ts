@@ -41,7 +41,9 @@ export interface GeminiContent {
 export interface GeminiRequestObject {
   /** Maintained SDK carries the model per call; legacy stores it on the model. */
   model?: string;
-  contents: string | GeminiPart | GeminiContent | Array<string | GeminiPart | GeminiContent>;
+  contents?: string | GeminiPart | GeminiContent | Array<string | GeminiPart | GeminiContent>;
+  /** Chat session methods carry the newest turn under `message`. */
+  message?: string | GeminiPart | GeminiContent | Array<string | GeminiPart | GeminiContent>;
   systemInstruction?: string | GeminiPart | GeminiContent;
   config?: {
     systemInstruction?: string | GeminiPart | GeminiContent;
@@ -125,6 +127,7 @@ function contentText(value: unknown): string {
 /** Newest user turn, including the maintained SDK's string/part shorthand. */
 export function extractLastUserText(request: GeminiRequest): string {
   if (typeof request === "string") return request;
+  if (request?.message !== undefined) return contentText(request.message);
   const contents = request?.contents;
   if (!Array.isArray(contents)) return contentText(contents);
   for (let i = contents.length - 1; i >= 0; i--) {
@@ -165,6 +168,9 @@ export function extractPrompt(request: GeminiRequest): string {
     request.systemInstruction ?? request.config?.systemInstruction,
   );
   if (systemText) parts.push(`system: ${systemText}`);
+
+  const messageText = contentText(request.message);
+  if (messageText) parts.push(messageText);
 
   if (Array.isArray(request.contents)) {
     for (const content of request.contents) {

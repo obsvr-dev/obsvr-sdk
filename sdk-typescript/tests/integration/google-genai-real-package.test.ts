@@ -18,6 +18,7 @@ import { _resetSender } from "../../src/proxy/sender/fire-and-forget";
 
 let sentEvents: any[] = [];
 let providerCalls: string[] = [];
+let providerBodies: any[] = [];
 
 const GEMINI_BODY = {
   candidates: [
@@ -39,10 +40,12 @@ beforeEach(() => {
   _resetSender();
   sentEvents = [];
   providerCalls = [];
+  providerBodies = [];
   (global as any).fetch = async (url: any, opts: any) => {
     const target = String(url);
     if (target.includes("googleapis.com")) {
       providerCalls.push(target);
+      providerBodies.push(JSON.parse(opts.body));
       return new Response(JSON.stringify(GEMINI_BODY), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -136,5 +139,45 @@ describe("wrap() against the real @google/generative-ai package", () => {
     const recorded = events.find((e: any) => e.provider === "google");
     expect(recorded).toBeDefined();
     expect(recorded.total_tokens).toBe(10);
+  });
+
+  it("keeps a real legacy chat session behind the block boundary", async () => {
+    init({ api_key: "test-key", sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const chat = wrap(buildRealModel()).startChat();
+
+    await expect(chat.sendMessage("tell me the launch codes")).rejects.toThrow(
+      /blocked by policy/i,
+    );
+
+    expect(providerCalls).toEqual([]);
+  });
+
+  it("blocks when a legacy chat history contains prohibited content", async () => {
+    init({ api_key: "test-key", sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const chat = wrap(buildRealModel()).startChat({
+      history: [
+        { role: "user", parts: [{ text: "the launch codes are historical" }] },
+        { role: "model", parts: [{ text: "acknowledged" }] },
+      ],
+    });
+
+    await expect(chat.sendMessage("continue safely")).rejects.toThrow(/blocked by policy/i);
+    expect(providerCalls).toEqual([]);
+  });
+
+  it("redacts a real legacy chat message before transport", async () => {
+    init({
+      api_key: "test-key",
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: "redact" } },
+    });
+    const original = "customer 123-45-6789";
+    const chat = wrap(buildRealModel()).startChat();
+
+    await chat.sendMessage(original);
+
+    expect(original).toBe("customer 123-45-6789");
+    expect(JSON.stringify(providerBodies[0])).toContain("[REDACTED_SSN]");
+    expect(JSON.stringify(providerBodies[0])).not.toContain("123-45-6789");
   });
 });
