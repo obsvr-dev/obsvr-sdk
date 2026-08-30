@@ -22,6 +22,7 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     beta.chat.completions.create  openai 1.92.0   chat beta namespace
     beta.responses.create         openai 2.45.0   ABOVE the declared floor
     beta.messages.create          anthropic 0.8.0 (see note)
+    beta.messages.parse           anthropic 0.68.0  tool-runner model turns
     messages.create               anthropic 0.16.0  the anthropic extra's floor
     messages.parse                anthropic 0.77.0  structured outputs
     *.with_raw_response.*         openai / anthropic (see note)
@@ -130,10 +131,8 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 #:
 #: The ``.stream()`` helpers are governed, in their own table below, because
 #: they return a manager rather than a response and so cannot share this one.
-#: The provider TOOL RUNNERS remain out of reach on this side: this SDK has no
-#: equivalent of the TypeScript runner gate, and ``beta.messages.tool_runner``
-#: is ungoverned here. That is a coverage AND enforcement gap, stated in the
-#: README rather than only here.
+#: Provider tool runners use their own interception table below because they
+#: snapshot callbacks and retain a client for later model turns.
 #:
 #: The beta namespaces are enumerated rather than matched by stripping a
 #: leading ``beta.`` segment, so a provider shipping a new beta namespace does
@@ -155,6 +154,7 @@ AUDITABLE_METHODS = {
     "send_message",              # Google Gemini ChatSession sync
     "send_message_async",        # Google Gemini ChatSession async
     "beta.messages.create",      # Anthropic beta
+    "beta.messages.parse",       # Anthropic beta structured outputs / tool runner
     "beta.messages.with_raw_response.create",  # Anthropic beta raw response
     "beta.responses.create",     # OpenAI Responses beta
     "beta.responses.with_raw_response.create",  # OpenAI beta raw response
@@ -321,6 +321,27 @@ def _redact_string_leaves(value: Any, redact_fn: Callable[[str], str]) -> Any:
         }
     return value
 
+
+def _append_content_text(value: Any, parts: List[str]) -> None:
+    """Collect text-bearing content fields without treating schema labels as prompt."""
+    if isinstance(value, str):
+        parts.append(value)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _append_content_text(item, parts)
+        return
+    keys = ("text", "content", "input", "output")
+    if isinstance(value, dict):
+        for key in keys:
+            if key in value:
+                _append_content_text(value[key], parts)
+        return
+    for key in keys:
+        item = getattr(value, key, None)
+        if item is not None:
+            _append_content_text(item, parts)
+
 def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     """Pull all visible prompt text for PII/policy scanning."""
     parts: List[str] = []
@@ -347,9 +368,7 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
         parts.append(system)
     elif isinstance(system, (list, tuple)):
         for block in system:
-            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
+            _append_content_text(block, parts)
 
     messages = kwargs.get("messages")
     if isinstance(messages, list):
@@ -358,9 +377,7 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
             if isinstance(content, str):
                 parts.append(content)
             elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        parts.append(block["text"])
+                _append_content_text(content, parts)
 
     # OpenAI Responses API: instructions + input (bare string or message list)
     instructions = kwargs.get("instructions")
@@ -409,6 +426,10 @@ def _last_user_message(kwargs: dict) -> Optional[str]:
                 content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
                 if isinstance(content, str):
                     return content
+                if isinstance(content, list):
+                    text: List[str] = []
+                    _append_content_text(content, text)
+                    return " ".join(text)
     # Responses API bare-string input IS the user message.
     if isinstance(kwargs.get("input"), str):
         return kwargs["input"]
@@ -447,10 +468,9 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
                 if isinstance(content, str):
                     return content
                 if isinstance(content, list):
-                    return " ".join(
-                        b["text"] for b in content
-                        if isinstance(b, dict) and isinstance(b.get("text"), str)
-                    )
+                    text: List[str] = []
+                    _append_content_text(content, text)
+                    return " ".join(text)
 
     # Responses API bare-string input: the whole input is the user turn.
     if isinstance(kwargs.get("input"), str):
@@ -471,15 +491,31 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
 
 
 def _redact_text_blocks(blocks: list, redact_fn: Callable[[str], str]) -> list:
-    """Redact {"text": ...} content blocks (Anthropic / Responses) into a NEW
-    list of NEW dicts. See _redact_messages_in_place for why nothing here is
-    written through: these blocks belong to the caller."""
+    """Redact text, tool input, and tool result content into NEW blocks."""
     out = []
     for block in blocks:
-        if isinstance(block, dict) and isinstance(block.get("text"), str):
-            out.append({**block, "text": redact_fn(block["text"])})
-        else:
+        keys = ("text", "content", "input", "output")
+        if isinstance(block, dict):
+            updates = {
+                key: _redact_string_leaves(block[key], redact_fn)
+                for key in keys if key in block
+            }
+            out.append({**block, **updates} if updates else block)
+            continue
+        updates = {
+            key: _redact_string_leaves(getattr(block, key), redact_fn)
+            for key in keys if getattr(block, key, None) is not None
+        }
+        if not updates:
             out.append(block)
+            continue
+        try:
+            clone = _copy.copy(block)
+            for key, value in updates.items():
+                setattr(clone, key, value)
+            out.append(clone)
+        except Exception as err:
+            raise TypeError("content block could not be copied for outbound redaction") from err
     return out
 
 
@@ -1704,6 +1740,8 @@ def _governed_tool_runner(
     """Govern a provider runner before it snapshots prompts or tools."""
     from .integrations.provider_tool_runners import govern_runner_tools
 
+    original = _runner_method_with_governed_client(original, target, options)
+
     call_kwargs = dict(kwargs)
     if "tools" in call_kwargs:
         call_kwargs["tools"] = list(call_kwargs["tools"])
@@ -1745,6 +1783,40 @@ def _governed_tool_runner(
         )
 
     return _GovernedToolRunner(runner, provider, _emit)
+
+
+class _RunnerResourceReceiver:
+    """Provider resource receiver that replaces only its retained client."""
+
+    __slots__ = ("_target", "_governed_client")
+
+    def __init__(self, target: Any, governed_client: Any):
+        object.__setattr__(self, "_target", target)
+        object.__setattr__(self, "_governed_client", governed_client)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "_client":
+            return object.__getattribute__(self, "_governed_client")
+        if name in {"_target", "_governed_client"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_target"), name)
+
+
+def _runner_method_with_governed_client(
+    original: Callable, target: Any, options: Dict[str, Any]
+) -> Callable:
+    """Rebind a provider runner method so every retained model turn is governed."""
+    try:
+        raw_client = getattr(target, "_client")
+    except Exception:  # noqa: BLE001 - test doubles and older resources omit it
+        return original
+
+    function = getattr(original, "__func__", None)
+    if raw_client is None or function is None:
+        return original
+
+    receiver = _RunnerResourceReceiver(target, wrap(raw_client, **options))
+    return function.__get__(receiver, type(target))
 
 
 class _PreCall:

@@ -408,6 +408,33 @@ function atPath(ctx: PathContext, path: string[]): PathContext {
   return child;
 }
 
+/**
+ * Give a provider tool runner a governed client for every model turn it makes.
+ *
+ * OpenAI and Anthropic resource objects pass their own `_client` into the
+ * runner. Calling the method on the raw resource therefore governs only the
+ * outer runner invocation; turns produced after local tools run bypass the
+ * proxy. A transparent receiver proxy replaces only that one read while
+ * preserving the provider resource and its synchronous return contract.
+ */
+function runnerTargetWithGovernedClient(target: object, ctx: PathContext): object {
+  let runnerClient: unknown;
+  try {
+    runnerClient = Reflect.get(target, "_client");
+  } catch {
+    return target;
+  }
+  if (runnerClient !== ctx.rootClient) return target;
+
+  const governedClient = createRecursiveProxy(ctx.rootClient, atPath(ctx, []));
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (prop === "_client") return governedClient;
+      return Reflect.get(obj, prop, receiver);
+    },
+  });
+}
+
 export type PathContext = {
   path: string[];
   options: WrapOptions;
@@ -574,6 +601,22 @@ function appendStringLeaves(value: unknown, parts: string[]): void {
   }
 }
 
+function appendContentText(value: unknown, parts: string[]): void {
+  if (typeof value === "string") {
+    parts.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) appendContentText(item, parts);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  for (const key of ["text", "content", "input", "output"] as const) {
+    if (key in record) appendContentText(record[key], parts);
+  }
+}
+
 function extractPromptTextFromArgs(args: unknown): string {
   // Gemini accepts a plain string: generateContent('text')
   if (typeof args === "string") return args;
@@ -584,9 +627,7 @@ function extractPromptTextFromArgs(args: unknown): string {
   if (typeof req.system === "string") {
     parts.push(req.system);
   } else if (Array.isArray(req.system)) {
-    for (const block of req.system as Record<string, unknown>[]) {
-      if (block && typeof block.text === "string") parts.push(block.text);
-    }
+    appendContentText(req.system, parts);
   }
 
   if (Array.isArray(req.messages)) {
@@ -594,10 +635,7 @@ function extractPromptTextFromArgs(args: unknown): string {
       if (typeof msg.content === "string") {
         parts.push(msg.content);
       } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") parts.push(p.text);
-        }
+        appendContentText(msg.content, parts);
       }
     }
   }
@@ -647,9 +685,9 @@ function extractLastUserMessageText(args: unknown): string {
       if (msg.role === "user") {
         if (typeof msg.content === "string") return msg.content;
         if (Array.isArray(msg.content)) {
-          return (msg.content as Record<string, unknown>[])
-            .map((p) => (typeof p.text === "string" ? p.text : ""))
-            .join(" ");
+          const parts: string[] = [];
+          appendContentText(msg.content, parts);
+          return parts.join(" ");
         }
       }
     }
@@ -717,8 +755,11 @@ function redactMessagesInPlace(args: unknown): void {
     parts.map((part) => {
       if (!part || typeof part !== "object") return part;
       const p = part as Record<string, unknown>;
-      if (typeof p.text !== "string") return part;
-      return { ...p, text: redactBuiltinPii(p.text) };
+      const updates: Record<string, unknown> = {};
+      for (const key of ["text", "content", "input", "output"] as const) {
+        if (key in p) updates[key] = redactStringLeaves(p[key]);
+      }
+      return Object.keys(updates).length > 0 ? { ...p, ...updates } : part;
     });
 
   /** Redact string leaves in provider-bound structured tool output. */
@@ -3353,7 +3394,8 @@ function createAuditedToolRunnerMethod(
         return gate.args;
       },
       start: (cleanedArgs) => {
-        const runner = originalMethod.apply(target, cleanedArgs) as RunnerLike;
+        const runnerTarget = runnerTargetWithGovernedClient(target, ctx);
+        const runner = originalMethod.apply(runnerTarget, cleanedArgs) as RunnerLike;
         if (!anthropic) observeOpenAIToolRun(runner, sink);
         return runner;
       },

@@ -111,7 +111,11 @@ describe('extractPrompt', () => {
         {
           role: 'user',
           content: [
-            { type: 'tool_result', tool_use_id: 'tool_abc' },
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool_abc',
+              content: [{ type: 'text', text: 'result payload' }],
+            },
           ],
         },
       ],
@@ -119,6 +123,7 @@ describe('extractPrompt', () => {
 
     const result = extractPrompt(request);
     expect(result).toContain('[tool_result: tool_abc]');
+    expect(result).toContain('result payload');
   });
 
   it('should handle empty messages array', () => {

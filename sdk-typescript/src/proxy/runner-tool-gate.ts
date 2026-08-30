@@ -21,12 +21,9 @@
  * not happen, because the two would drift and only one of them would be the one
  * anybody tested.
  *
- * WHAT THIS DOES NOT REACH. The model calls the loop makes on turns 2..N. Those
- * stay observed and audited but ungated: reaching them means substituting the
- * runner's own client, and a refusal arriving on turn 3 aborts a loop that has
- * already executed tools with real side effects. A block that lands after money
- * moved is not a block, so that needs a stated position before it ships and does
- * not ship here.
+ * Model turns are handled separately by the provider-runner receiver in
+ * `wrapper.ts`, which substitutes the runner's raw client with the same
+ * governance proxy. This file owns only the local callback boundary.
  */
 
 import { obsvrGovernTool } from "../integrations/tools.js";

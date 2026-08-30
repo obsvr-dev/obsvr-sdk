@@ -885,6 +885,49 @@ class TestWireRedactionShapes:
         sent = raw.messages.calls[0]
         assert sent["system"][0]["text"] == "Contact [REDACTED_EMAIL]"
 
+    def test_anthropic_tool_result_blocks_before_execution(self, monkeypatch):
+        _init(pii_policy={"rules": {"ssn": "block"}})
+        _captured_events(monkeypatch)
+        raw = FakeAnthropic()
+
+        with pytest.raises(RuntimeError, match="blocked by policy"):
+            obsvr.wrap(raw).messages.create(
+                model="claude-sonnet-5",
+                max_tokens=64,
+                messages=[{
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": "SSN 123-45-6789",
+                    }],
+                }],
+            )
+
+        assert raw.messages.calls == []
+
+    def test_anthropic_tool_result_redacts_without_mutating_caller(self, monkeypatch):
+        _init(pii_policy={"rules": {"email": "redact"}})
+        _captured_events(monkeypatch)
+        raw = FakeAnthropic()
+        messages = [{
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": [{"type": "text", "text": "Contact secret@example.com"}],
+            }],
+        }]
+
+        obsvr.wrap(raw).messages.create(
+            model="claude-sonnet-5", max_tokens=64, messages=messages
+        )
+
+        sent = raw.messages.calls[0]
+        assert "secret@example.com" not in str(sent)
+        assert "[REDACTED_EMAIL]" in str(sent)
+        assert "secret@example.com" in str(messages)
+
     def test_gemini_contents_kwargs_redacted_outbound(self, monkeypatch):
         _init(pii_policy={"rules": {"email": "redact"}})
         _captured_events(monkeypatch)

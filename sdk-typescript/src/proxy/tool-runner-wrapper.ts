@@ -33,17 +33,13 @@
  *     The only remaining seam is to OWN the iteration, which is what the
  *     `complete` hook exists for.
  *
- * WHAT IS AND IS NOT GOVERNED, STATED PLAINLY. Pre-call governance runs once,
- * on the invocation, before the runner is constructed — so a refused run never
- * reaches the provider at all. The model calls the loop makes AFTER that are
- * observed and audited but NOT individually gated: the runner holds the raw
- * provider client internally, so obsvr's proxy is not in the path of turns 2..N.
- * Tool results therefore re-enter the model without a pre-call scan, which is
- * why every tool event below carries `content_provenance: "tool_result"` —
- * the evidence records where that text came from even though the gate does not
- * yet act on it. Per-turn enforcement is a separate change with its own
- * behavioural consequences (a run could be blocked halfway through, after side
- * effects have already fired) and is deliberately not made here.
+ * WHAT IS GOVERNED. Pre-call governance runs on the invocation before the
+ * runner is constructed. The wrapper also substitutes the raw client the
+ * provider runner would retain, so every later model turn returns through the
+ * same provider boundary after tool results are appended. Local callbacks are
+ * separately wrapped by `runner-tool-gate.ts`. A refusal on a later turn aborts
+ * the run before that turn reaches the provider, even though earlier tools may
+ * already have produced side effects.
  *
  * @packageDocumentation
  */

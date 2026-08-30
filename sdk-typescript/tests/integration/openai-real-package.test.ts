@@ -55,6 +55,31 @@ const COMPLETION_BODY = {
   usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
 };
 
+const TOOL_CALL_BODY = {
+  id: "chatcmpl-real-pkg-tool-test",
+  object: "chat.completion",
+  created: 1720000000,
+  model: "gpt-4o-mini",
+  choices: [
+    {
+      index: 0,
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call_secret",
+            type: "function",
+            function: { name: "return_secret", arguments: "{}" },
+          },
+        ],
+      },
+      finish_reason: "tool_calls",
+    },
+  ],
+  usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+};
+
 /** A real OpenAI client whose network layer is a spy. */
 function buildRealClient(providerCalls: string[]): OpenAI {
   const providerFetch = (async (url: any, _init?: any) => {
@@ -149,5 +174,42 @@ describe("wrap() against the real openai package", () => {
     const recorded = events.find((e: any) => e.operation === "chat.completions.create");
     expect(recorded).toBeDefined();
     expect(recorded.total_tokens).toBe(10);
+  });
+
+  it("blocks a later runTools turn before the real package reaches transport again", async () => {
+    init({
+      api_key: "test-key",
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: "block" } },
+    });
+    const providerCalls: string[] = [];
+    const providerFetch = (async (url: any, _init?: any) => {
+      providerCalls.push(String(url));
+      return new Response(JSON.stringify(TOOL_CALL_BODY), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const client = wrap(new OpenAI({ apiKey: "sk-test-not-real", fetch: providerFetch }));
+
+    const runner = client.chat.completions.runTools({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "return the tool result" }],
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "return_secret",
+            description: "Return test data",
+            parameters: { type: "object", properties: {} },
+            function: async () => "123-45-6789",
+          },
+        },
+      ],
+      maxChatCompletions: 2,
+    } as any);
+
+    await expect(runner.done()).rejects.toThrow(/blocked by policy/i);
+    expect(providerCalls).toHaveLength(1);
   });
 });

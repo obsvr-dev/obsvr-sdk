@@ -417,6 +417,62 @@ describe('wrap with auditable method', () => {
     expect(outbound.system[0].text).not.toContain('secret@example.com');
   });
 
+  it('blocks Anthropic tool-result content before provider execution', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    const create = jest.fn(async (_request: any) => ({
+      content: [{ type: 'text', text: 'ok' }],
+    }));
+    const client = wrap({ messages: { create } });
+
+    await expect(
+      client.messages.create({
+        model: 'claude-test',
+        max_tokens: 32,
+        messages: [{
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_1',
+            content: 'SSN 123-45-6789',
+          }],
+        }],
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('redacts nested Anthropic tool-result content without mutating the caller', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x',
+      pii_policy: { rules: { email: 'redact' } },
+    });
+    let outbound: any;
+    const create = jest.fn(async (request: any) => {
+      outbound = request;
+      return { content: [{ type: 'text', text: 'ok' }] };
+    });
+    const client = wrap({ messages: { create } });
+    const messages = [{
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'toolu_1',
+        content: [{ type: 'text', text: 'Contact secret@example.com' }],
+      }],
+    }];
+
+    await client.messages.create({ model: 'claude-test', max_tokens: 32, messages });
+
+    expect(JSON.stringify(outbound)).toContain('[REDACTED_EMAIL]');
+    expect(JSON.stringify(outbound)).not.toContain('secret@example.com');
+    expect(JSON.stringify(messages)).toContain('secret@example.com');
+  });
+
   it('blocks Responses function output before provider execution', async () => {
     init({
       api_key: 'test',

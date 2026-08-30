@@ -191,6 +191,56 @@ def test_runner_redacts_prompt_and_emits_after_completion(events):
     assert events[-1]["response"] == "runner complete"
 
 
+def test_every_internal_model_turn_uses_the_governed_client(events):
+    _init(pii_policy={"rules": {"ssn": "block"}})
+
+    class _LoopRunner:
+        def __init__(self, client):
+            self.client = client
+
+        def until_done(self):
+            self.client.beta.messages.create(
+                model="anthropic-test",
+                max_tokens=16,
+                messages=[{"role": "user", "content": "clean first turn"}],
+            )
+            self.client.beta.messages.create(
+                model="anthropic-test",
+                max_tokens=16,
+                messages=[
+                    {"role": "user", "content": "clean first turn"},
+                    {"role": "user", "content": "tool returned 123-45-6789"},
+                ],
+            )
+            return _Response()
+
+    class _LoopResource(_RunnerResource):
+        def __init__(self):
+            super().__init__()
+            self._client = None
+            self.provider_calls = 0
+
+        def create(self, **_kwargs):
+            self.provider_calls += 1
+            return _Response()
+
+        def tool_runner(self, **kwargs):
+            self.calls.append(kwargs)
+            return _LoopRunner(self._client)
+
+    raw = _Client()
+    resource = _LoopResource()
+    raw.messages = resource
+    raw.beta.messages = resource
+    resource._client = raw
+
+    runner = _runner(obsvr.wrap(raw), _SyncTool())
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        runner.until_done()
+
+    assert resource.provider_calls == 1
+
+
 def test_denied_sync_runner_tool_never_enters_body(events):
     _init(agent_policy={"denied_tools": ["write_file"]})
     raw = _Client()
