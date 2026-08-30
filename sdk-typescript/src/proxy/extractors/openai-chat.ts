@@ -75,11 +75,14 @@ function formatMessage(message: OpenAIChatMessage): string {
  * Formats all messages into a readable prompt string
  */
 export function extractPrompt(request: OpenAIChatRequest): string {
-  if (!request.messages || !Array.isArray(request.messages)) {
-    return "";
+  if (request.messages && Array.isArray(request.messages)) {
+    return request.messages.map(formatMessage).join("\n");
   }
-
-  return request.messages.map(formatMessage).join("\n");
+  if (typeof request.prompt === "string") return request.prompt;
+  if (Array.isArray(request.prompt)) {
+    return request.prompt.filter((item): item is string => typeof item === "string").join("\n");
+  }
+  return "";
 }
 
 /**
@@ -93,9 +96,12 @@ export function extractResponse(response: OpenAIChatResponse): string {
   }
 
   const firstChoice = response.choices[0];
-  if (!firstChoice || !firstChoice.message) {
+  if (!firstChoice) {
     return "";
   }
+
+  if (typeof firstChoice.text === "string") return firstChoice.text;
+  if (!firstChoice.message) return "";
 
   const message = firstChoice.message;
   const content = extractMessageContent(message.content);
@@ -174,8 +180,11 @@ export function accumulateOpenAIStream(chunks: unknown[]): {
       model = chunk.model;
     }
     const delta = chunk.choices?.[0]?.delta?.content;
+    const legacyText = chunk.choices?.[0]?.text;
     if (typeof delta === "string") {
       text += delta;
+    } else if (typeof legacyText === "string") {
+      text += legacyText;
     }
     // Usage present in final chunk when stream_options.include_usage is true
     if (chunk.usage) {

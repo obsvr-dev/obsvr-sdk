@@ -256,6 +256,7 @@ type ApiShape =
 const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["chat.completions.create", "openai-chat"], // OpenAI / Azure OpenAI
   ["chat.completions.parse", "openai-chat"], // OpenAI structured outputs
+  ["completions.create", "openai-chat"], // OpenAI legacy text completions
   ["messages.create", "anthropic-messages"], // Anthropic
   ["messages.parse", "anthropic-messages"], // Anthropic structured outputs
   ["generateContent", "gemini-generate"], // Google Gemini
@@ -263,6 +264,7 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["models.generateContentStream", "gemini-generate"], // Maintained @google/genai
   ["responses.create", "openai-responses"], // OpenAI Responses API
   ["responses.parse", "openai-responses"], // OpenAI Responses structured outputs
+  ["responses.compact", "openai-responses"], // OpenAI Responses compaction
   // The beta namespaces carry exactly the payload their GA twin carries, so
   // they are governed identically. They are enumerated rather than matched by
   // stripping a leading "beta." segment: a strip rule would auto-govern every
@@ -271,6 +273,7 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   // text-bearing gaps listed in half 2.
   ["beta.messages.create", "anthropic-messages"], // Anthropic beta
   ["beta.responses.create", "openai-responses"], // OpenAI Responses beta
+  ["beta.responses.compact", "openai-responses"], // OpenAI Responses beta compaction
   ["beta.chat.completions.create", "openai-chat"], // OpenAI chat beta
   ["beta.chat.completions.parse", "openai-chat"], // OpenAI chat beta
 ]);
@@ -625,6 +628,14 @@ function extractPromptTextFromArgs(args: unknown): string {
   const req = args as Record<string, unknown>;
   const parts: string[] = [];
 
+  if (typeof req.prompt === "string") {
+    parts.push(req.prompt);
+  } else if (Array.isArray(req.prompt)) {
+    for (const item of req.prompt) {
+      if (typeof item === "string") parts.push(item);
+    }
+  }
+
   if (typeof req.system === "string") {
     parts.push(req.system);
   } else if (Array.isArray(req.system)) {
@@ -750,6 +761,14 @@ function extractLastUserMessageText(args: unknown): string {
 function redactMessagesInPlace(args: unknown): void {
   if (!args || typeof args !== "object") return;
   const req = args as Record<string, unknown>;
+
+  if (typeof req.prompt === "string") {
+    req.prompt = redactBuiltinPii(req.prompt);
+  } else if (Array.isArray(req.prompt)) {
+    req.prompt = req.prompt.map((item) =>
+      typeof item === "string" ? redactBuiltinPii(item) : item,
+    );
+  }
 
   /** Redact a `{text}` part list into a NEW array of NEW parts. */
   const redactTextParts = (parts: unknown[]): unknown[] =>

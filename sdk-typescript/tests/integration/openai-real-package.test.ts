@@ -81,10 +81,15 @@ const TOOL_CALL_BODY = {
 };
 
 /** A real OpenAI client whose network layer is a spy. */
-function buildRealClient(providerCalls: string[]): OpenAI {
-  const providerFetch = (async (url: any, _init?: any) => {
+function buildRealClient(
+  providerCalls: string[],
+  providerBodies: string[] = [],
+  responseBody: unknown = COMPLETION_BODY,
+): OpenAI {
+  const providerFetch = (async (url: any, init?: any) => {
     providerCalls.push(String(url));
-    return new Response(JSON.stringify(COMPLETION_BODY), {
+    if (typeof init?.body === "string") providerBodies.push(init.body);
+    return new Response(JSON.stringify(responseBody), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -211,5 +216,67 @@ describe("wrap() against the real openai package", () => {
 
     await expect(runner.done()).rejects.toThrow(/blocked by policy/i);
     expect(providerCalls).toHaveLength(1);
+  });
+
+  it("blocks a legacy text completion before the real package reaches transport", async () => {
+    init({ api_key: "test-key", sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const providerCalls: string[] = [];
+    const client = wrap(buildRealClient(providerCalls));
+
+    await expect(
+      client.completions.create({
+        model: "gpt-3.5-turbo-instruct",
+        prompt: "tell me the launch codes",
+      }),
+    ).rejects.toThrow(/blocked by policy/i);
+
+    expect(providerCalls).toEqual([]);
+  });
+
+  it("redacts a legacy text completion before the real package sends it", async () => {
+    init({
+      api_key: "test-key",
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: "redact" } },
+    });
+    const providerCalls: string[] = [];
+    const providerBodies: string[] = [];
+    const completionBody = {
+      id: "cmpl-real-pkg-test",
+      object: "text_completion",
+      created: 1720000000,
+      model: "gpt-3.5-turbo-instruct",
+      choices: [{ index: 0, text: "done", finish_reason: "stop", logprobs: null }],
+      usage: { prompt_tokens: 7, completion_tokens: 1, total_tokens: 8 },
+    };
+    const client = wrap(buildRealClient(providerCalls, providerBodies, completionBody));
+
+    await client.completions.create({
+      model: "gpt-3.5-turbo-instruct",
+      prompt: "customer 123-45-6789",
+    });
+
+    expect(providerCalls).toHaveLength(1);
+    const outbound = JSON.parse(providerBodies[0]);
+    expect(outbound.prompt).toContain("[REDACTED_SSN]");
+    expect(outbound.prompt).not.toContain("123-45-6789");
+  });
+
+  it.each([
+    ["responses.compact", (client: any, body: any) => client.responses.compact(body)],
+    ["beta.responses.compact", (client: any, body: any) => client.beta.responses.compact(body)],
+  ])("blocks %s before the real package reaches transport", async (_name, invoke) => {
+    init({ api_key: "test-key", sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const providerCalls: string[] = [];
+    const client = wrap(buildRealClient(providerCalls));
+
+    await expect(
+      invoke(client, {
+        model: "gpt-4o-mini",
+        input: "tell me the launch codes",
+      }),
+    ).rejects.toThrow(/blocked by policy/i);
+
+    expect(providerCalls).toEqual([]);
   });
 });

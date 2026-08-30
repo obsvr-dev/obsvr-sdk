@@ -127,7 +127,7 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 #: carries the full statement of what is excluded because it bears no chat text
 #: (embeddings, images, audio, files, fine-tuning) versus what is text-bearing
 #: but genuinely out of reach of a method-path table (batch surfaces,
-#: ``count_tokens``, and legacy completion methods).
+#: ``count_tokens`` and batch surfaces).
 #:
 #: The ``.stream()`` helpers are governed, in their own table below, because
 #: they return a manager rather than a response and so cannot share this one.
@@ -140,8 +140,10 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 AUDITABLE_METHODS = {
     "chat.completions.create",   # OpenAI / Azure OpenAI
     "chat.completions.parse",    # OpenAI structured outputs
+    "completions.create",        # OpenAI legacy text completions
     "responses.create",          # OpenAI Responses API
     "responses.parse",           # OpenAI Responses structured outputs
+    "responses.compact",         # OpenAI Responses compaction
     "messages.create",           # Anthropic
     "messages.parse",            # Anthropic structured outputs
     "messages.with_raw_response.create",  # Anthropic raw response
@@ -157,6 +159,7 @@ AUDITABLE_METHODS = {
     "beta.messages.parse",       # Anthropic beta structured outputs / tool runner
     "beta.messages.with_raw_response.create",  # Anthropic beta raw response
     "beta.responses.create",     # OpenAI Responses beta
+    "beta.responses.compact",    # OpenAI Responses beta compaction
     "beta.responses.with_raw_response.create",  # OpenAI beta raw response
     "beta.chat.completions.create",  # OpenAI chat beta
     "beta.chat.completions.parse",   # OpenAI chat beta
@@ -164,8 +167,11 @@ AUDITABLE_METHODS = {
     "beta.chat.completions.with_raw_response.parse",  # OpenAI beta raw parse
     "chat.completions.with_raw_response.create",  # OpenAI raw response
     "chat.completions.with_raw_response.parse",  # OpenAI raw structured output
+    "completions.with_raw_response.create",  # OpenAI raw text completion
     "responses.with_raw_response.create",  # OpenAI Responses raw response
     "responses.with_raw_response.parse",  # OpenAI Responses raw structured output
+    "responses.with_raw_response.compact",  # OpenAI Responses raw compaction
+    "beta.responses.with_raw_response.compact",  # OpenAI beta raw compaction
 }
 
 _STRICT_V2_1_DIRECT_METHODS = {
@@ -217,6 +223,7 @@ DEFERRED_RESPONSE_METHODS = {
     "beta.chat.completions.with_streaming_response.parse",
     "chat.completions.with_streaming_response.create",
     "chat.completions.with_streaming_response.parse",
+    "completions.with_streaming_response.create",
     "responses.with_streaming_response.create",
     "responses.with_streaming_response.parse",
 }
@@ -345,6 +352,12 @@ def _append_content_text(value: Any, parts: List[str]) -> None:
 def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     """Pull all visible prompt text for PII/policy scanning."""
     parts: List[str] = []
+
+    prompt = kwargs.get("prompt")
+    if isinstance(prompt, str):
+        parts.append(prompt)
+    elif isinstance(prompt, (list, tuple)):
+        parts.extend(item for item in prompt if isinstance(item, str))
 
     # Gemini accepts a positional string or list
     if provider == "google" and args:
@@ -660,6 +673,18 @@ def _redact_messages_in_place(
     corrupt. Copying redacts it successfully instead. Application failure still
     fails closed; what changed is what counts as one.
     """
+    prompt = kwargs.get("prompt")
+    if isinstance(prompt, str):
+        kwargs["prompt"] = redact_fn(prompt)
+    elif isinstance(prompt, list):
+        kwargs["prompt"] = [
+            redact_fn(item) if isinstance(item, str) else item for item in prompt
+        ]
+    elif isinstance(prompt, tuple):
+        kwargs["prompt"] = tuple(
+            redact_fn(item) if isinstance(item, str) else item for item in prompt
+        )
+
     messages = kwargs.get("messages")
     if isinstance(messages, list):
         rebuilt = []
@@ -784,6 +809,9 @@ def _extract_response_text(provider: str, result: Any) -> str:
             choices = getattr(result, "choices", None) or (result.get("choices") if isinstance(result, dict) else None)
             if choices:
                 first = choices[0]
+                text = getattr(first, "text", None) or (first.get("text") if isinstance(first, dict) else None)
+                if isinstance(text, str):
+                    return text
                 message = getattr(first, "message", None) or (first.get("message") if isinstance(first, dict) else None)
                 if message is not None:
                     content = getattr(message, "content", None) or (message.get("content") if isinstance(message, dict) else None)
@@ -994,6 +1022,9 @@ def _extract_chunk_text(provider: str, chunk: Any) -> str:
         if provider == "openai":
             choices = getattr(chunk, "choices", None) or []
             if choices:
+                legacy_text = getattr(choices[0], "text", None)
+                if isinstance(legacy_text, str):
+                    return legacy_text
                 delta = getattr(choices[0], "delta", None)
                 content = getattr(delta, "content", None) if delta else None
                 return content or ""
