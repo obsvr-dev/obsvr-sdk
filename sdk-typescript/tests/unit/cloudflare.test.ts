@@ -161,6 +161,78 @@ describe('wrapWorkersAI', () => {
     expect(sentEvents[0].event_type).toBe('blocked_call');
   });
 
+  it('blocks sensitive text in a system message before ai.run', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
+    let providerCalls = 0;
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => {
+        providerCalls += 1;
+        return { response: 'ok' };
+      },
+    });
+
+    await expect(
+      ai.run('@cf/model', {
+        messages: [
+          { role: 'system', content: 'Never expose 123-45-6789' },
+          { role: 'user', content: 'Summarize the instructions' },
+        ],
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+  });
+
+  it('blocks sensitive text in an earlier turn before ai.run', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
+    let providerCalls = 0;
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => {
+        providerCalls += 1;
+        return { response: 'ok' };
+      },
+    });
+
+    await expect(
+      ai.run('@cf/model', {
+        messages: [
+          { role: 'user', content: 'My SSN is 123-45-6789' },
+          { role: 'assistant', content: 'Understood' },
+          { role: 'user', content: 'What did I share?' },
+        ],
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+  });
+
+  it('blocks sensitive text nested in multipart content before ai.run', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
+    let providerCalls = 0;
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => {
+        providerCalls += 1;
+        return { response: 'ok' };
+      },
+    });
+
+    await expect(
+      ai.run('@cf/model', {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Public context' },
+              { type: 'text', text: 'Private SSN 123-45-6789' },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+  });
+
   it('redacts email in inputs before calling', async () => {
     init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
     let sentInputs: any = null;
@@ -175,6 +247,71 @@ describe('wrapWorkersAI', () => {
     expect(sentInputs.prompt).toContain('[REDACTED_EMAIL]');
     await waitForEvents(1);
     expect(sentEvents[0].action_taken).toBe('redacted');
+  });
+
+  it('redacts every nested outbound copy without mutating caller inputs', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
+    let sentInputs: any = null;
+    const ai = wrapWorkersAI({
+      run: async (_model: string, inputs: unknown) => {
+        sentInputs = inputs;
+        return { response: 'ok' };
+      },
+    });
+    const callerInputs = {
+      messages: [
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: 'Contact admin@example.com' },
+          ],
+        },
+        { role: 'user', content: 'Continue' },
+      ],
+      context: {
+        notes: ['Backup: owner@example.com'],
+      },
+    };
+    const originalSnapshot = JSON.parse(JSON.stringify(callerInputs));
+
+    await ai.run('@cf/model', callerInputs);
+
+    expect(sentInputs).not.toBe(callerInputs);
+    expect(sentInputs.messages).not.toBe(callerInputs.messages);
+    expect(sentInputs.messages[0].content[0].text).toContain('[REDACTED_EMAIL]');
+    expect(sentInputs.context.notes[0]).toContain('[REDACTED_EMAIL]');
+    expect(JSON.stringify(sentInputs)).not.toContain('admin@example.com');
+    expect(JSON.stringify(sentInputs)).not.toContain('owner@example.com');
+    expect(callerInputs).toEqual(originalSnapshot);
+  });
+
+  it('fails closed when sensitive provider-bound text cannot be safely rewritten', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
+    let providerCalls = 0;
+    class OpaqueProviderInput {
+      constructor(readonly text: string) {}
+    }
+    const ai = wrapWorkersAI({
+      run: async (_model: string, _inputs: unknown) => {
+        providerCalls += 1;
+        return { response: 'ok' };
+      },
+    });
+
+    await expect(
+      ai.run('@cf/model', {
+        context: new OpaqueProviderInput('Contact admin@example.com'),
+      }),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+    await waitForEvents(1);
+    expect(sentEvents[0]).toMatchObject({
+      event_type: 'blocked_call',
+      action_taken: 'blocked',
+      rule_id: 'sdk:detector_error',
+    });
+    expect(sentEvents[0].redacted_types).toEqual([]);
   });
 
   it('strips audit fields from inputs', async () => {

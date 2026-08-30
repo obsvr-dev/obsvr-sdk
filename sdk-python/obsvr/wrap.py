@@ -22,6 +22,7 @@ range. The extras floor at openai>=1.66.0 and anthropic>=0.16.0.
     beta.chat.completions.create  openai 1.92.0   chat beta namespace
     beta.responses.create         openai 2.45.0   ABOVE the declared floor
     beta.messages.create          anthropic 0.8.0 (see note)
+    beta.messages.parse           anthropic 0.68.0  tool-runner model turns
     messages.create               anthropic 0.16.0  the anthropic extra's floor
     messages.parse                anthropic 0.77.0  structured outputs
     *.with_raw_response.*         openai / anthropic (see note)
@@ -75,6 +76,7 @@ from .policy import (
     apply_post_call_policy,
     blocked_prompt_for_storage,
     apply_outbound_redaction,
+    assert_redaction_applied,
     outbound_redaction_blocked_compliance,
     outbound_redactor,
 )
@@ -125,14 +127,12 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 #: carries the full statement of what is excluded because it bears no chat text
 #: (embeddings, images, audio, files, fine-tuning) versus what is text-bearing
 #: but genuinely out of reach of a method-path table (batch surfaces,
-#: ``count_tokens``, and legacy completion methods).
+#: ``count_tokens`` and batch surfaces).
 #:
 #: The ``.stream()`` helpers are governed, in their own table below, because
 #: they return a manager rather than a response and so cannot share this one.
-#: The provider TOOL RUNNERS remain out of reach on this side: this SDK has no
-#: equivalent of the TypeScript runner gate, and ``beta.messages.tool_runner``
-#: is ungoverned here. That is a coverage AND enforcement gap, stated in the
-#: README rather than only here.
+#: Provider tool runners use their own interception table below because they
+#: snapshot callbacks and retain a client for later model turns.
 #:
 #: The beta namespaces are enumerated rather than matched by stripping a
 #: leading ``beta.`` segment, so a provider shipping a new beta namespace does
@@ -140,8 +140,10 @@ def _emit_audit(config: Any, event: Dict[str, Any], compliance: Dict[str, Any] =
 AUDITABLE_METHODS = {
     "chat.completions.create",   # OpenAI / Azure OpenAI
     "chat.completions.parse",    # OpenAI structured outputs
+    "completions.create",        # OpenAI legacy text completions
     "responses.create",          # OpenAI Responses API
     "responses.parse",           # OpenAI Responses structured outputs
+    "responses.compact",         # OpenAI Responses compaction
     "messages.create",           # Anthropic
     "messages.parse",            # Anthropic structured outputs
     "messages.with_raw_response.create",  # Anthropic raw response
@@ -153,9 +155,12 @@ AUDITABLE_METHODS = {
     "aio.models.generate_content_stream",  # Google Gemini async iterator
     "send_message",              # Google Gemini ChatSession sync
     "send_message_async",        # Google Gemini ChatSession async
+    "send_message_stream",       # Google Gemini chat stream
     "beta.messages.create",      # Anthropic beta
+    "beta.messages.parse",       # Anthropic beta structured outputs / tool runner
     "beta.messages.with_raw_response.create",  # Anthropic beta raw response
     "beta.responses.create",     # OpenAI Responses beta
+    "beta.responses.compact",    # OpenAI Responses beta compaction
     "beta.responses.with_raw_response.create",  # OpenAI beta raw response
     "beta.chat.completions.create",  # OpenAI chat beta
     "beta.chat.completions.parse",   # OpenAI chat beta
@@ -163,8 +168,11 @@ AUDITABLE_METHODS = {
     "beta.chat.completions.with_raw_response.parse",  # OpenAI beta raw parse
     "chat.completions.with_raw_response.create",  # OpenAI raw response
     "chat.completions.with_raw_response.parse",  # OpenAI raw structured output
+    "completions.with_raw_response.create",  # OpenAI raw text completion
     "responses.with_raw_response.create",  # OpenAI Responses raw response
     "responses.with_raw_response.parse",  # OpenAI Responses raw structured output
+    "responses.with_raw_response.compact",  # OpenAI Responses raw compaction
+    "beta.responses.with_raw_response.compact",  # OpenAI beta raw compaction
 }
 
 _STRICT_V2_1_DIRECT_METHODS = {
@@ -184,6 +192,7 @@ _STRICT_V2_1_DIRECT_METHODS = {
 _DIRECT_STREAM_METHODS = {
     "models.generate_content_stream",
     "aio.models.generate_content_stream",
+    "send_message_stream",
 }
 
 #: The ``.stream()`` helpers, which are the same request as ``create`` and
@@ -216,6 +225,7 @@ DEFERRED_RESPONSE_METHODS = {
     "beta.chat.completions.with_streaming_response.parse",
     "chat.completions.with_streaming_response.create",
     "chat.completions.with_streaming_response.parse",
+    "completions.with_streaming_response.create",
     "responses.with_streaming_response.create",
     "responses.with_streaming_response.parse",
 }
@@ -225,6 +235,8 @@ DEFERRED_RESPONSE_METHODS = {
 #: behind the proxy so the later request cannot escape through a raw object.
 GOVERNED_FACTORY_METHODS = {
     "start_chat",
+    "chats.create",
+    "aio.chats.create",
 }
 
 #: Provider-managed loops that snapshot local tool callbacks at construction.
@@ -254,7 +266,7 @@ _GOVERNED_METHODS = (
 #: returned raw and every path beneath it is unreachable, which would leave
 #: those entries as dead code.
 _TRAVERSABLE = {
-    "aio", "beta", "chat", "completions", "events", "messages", "models",
+    "aio", "beta", "chat", "chats", "completions", "events", "messages", "models",
     "responses", "sessions",
     "with_raw_response", "with_streaming_response",
 }
@@ -269,6 +281,8 @@ def _detect_provider(client: Any) -> str:
     if hasattr(client, "responses") and hasattr(getattr(client, "responses"), "create"):
         return "openai"
     if hasattr(client, "generate_content"):
+        return "google"
+    if hasattr(client, "send_message"):
         return "google"
     models = getattr(client, "models", None)
     if models is not None and hasattr(models, "generate_content"):
@@ -293,9 +307,63 @@ def _detect_provider(client: Any) -> str:
 
 # ── Prompt / response extractors ─────────────────────────────────────────────
 
+def _append_string_leaves(value: Any, parts: List[str]) -> None:
+    """Collect strings from a provider-bound structured content value."""
+    if isinstance(value, str):
+        parts.append(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _append_string_leaves(item, parts)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _append_string_leaves(item, parts)
+
+
+def _redact_string_leaves(value: Any, redact_fn: Callable[[str], str]) -> Any:
+    """Copy a structured content value while redacting every string leaf."""
+    if isinstance(value, str):
+        return redact_fn(value)
+    if isinstance(value, list):
+        return [_redact_string_leaves(item, redact_fn) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_string_leaves(item, redact_fn) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: _redact_string_leaves(item, redact_fn)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _append_content_text(value: Any, parts: List[str]) -> None:
+    """Collect text-bearing content fields without treating schema labels as prompt."""
+    if isinstance(value, str):
+        parts.append(value)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _append_content_text(item, parts)
+        return
+    keys = ("text", "content", "input", "output")
+    if isinstance(value, dict):
+        for key in keys:
+            if key in value:
+                _append_content_text(value[key], parts)
+        return
+    for key in keys:
+        item = getattr(value, key, None)
+        if item is not None:
+            _append_content_text(item, parts)
+
 def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     """Pull all visible prompt text for PII/policy scanning."""
     parts: List[str] = []
+
+    prompt = kwargs.get("prompt")
+    if isinstance(prompt, str):
+        parts.append(prompt)
+    elif isinstance(prompt, (list, tuple)):
+        parts.extend(item for item in prompt if isinstance(item, str))
 
     # Gemini accepts a positional string or list
     if provider == "google" and args:
@@ -317,6 +385,9 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     system = kwargs.get("system")
     if isinstance(system, str):
         parts.append(system)
+    elif isinstance(system, (list, tuple)):
+        for block in system:
+            _append_content_text(block, parts)
 
     messages = kwargs.get("messages")
     if isinstance(messages, list):
@@ -325,9 +396,7 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
             if isinstance(content, str):
                 parts.append(content)
             elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and isinstance(block.get("text"), str):
-                        parts.append(block["text"])
+                _append_content_text(content, parts)
 
     # OpenAI Responses API: instructions + input (bare string or message list)
     instructions = kwargs.get("instructions")
@@ -338,6 +407,9 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
         parts.append(input_val)
     elif isinstance(input_val, list):
         for item in input_val:
+            output = item.get("output") if isinstance(item, dict) else getattr(item, "output", None)
+            if output is not None:
+                _append_string_leaves(output, parts)
             content = item.get("content") if isinstance(item, dict) else getattr(item, "content", None)
             if isinstance(content, str):
                 parts.append(content)
@@ -351,6 +423,16 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
         text = _google_content_text(contents)
         if text:
             parts.append(text)
+    content = kwargs.get("content")
+    if provider == "google" and content is not None:
+        text = _google_content_text(content)
+        if text:
+            parts.append(text)
+    message = kwargs.get("message")
+    if message is not None:
+        text = _google_content_text(message)
+        if text:
+            parts.append(text)
     if provider == "google":
         system_instruction = _google_config_system_instruction(kwargs.get("config"))
         if system_instruction is not None:
@@ -359,6 +441,156 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
                 parts.append(text)
 
     return "\n".join(parts)
+
+
+def _google_context_carriers(target: Any) -> List[Any]:
+    carriers: List[Any] = []
+    for candidate in (
+        target,
+        getattr(target, "_model", None),
+        getattr(target, "model", None),
+    ):
+        if candidate is not None and all(candidate is not item for item in carriers):
+            carriers.append(candidate)
+    return carriers
+
+
+def _google_cached_context_text(target: Any) -> str:
+    for carrier in _google_context_carriers(target):
+        cached = getattr(carrier, "_cached_content", None)
+        if cached is None:
+            cached = getattr(carrier, "cached_content", None)
+        if cached is None:
+            continue
+        raw = getattr(cached, "_raw_cached_content", None) or cached
+        parts: List[str] = []
+        for attr in ("system_instruction", "systemInstruction", "contents"):
+            value = raw.get(attr) if isinstance(raw, dict) else getattr(raw, attr, None)
+            text = _google_content_text(value)
+            if text:
+                parts.append(text)
+        if parts:
+            return "\n".join(parts)
+        raise RuntimeError(
+            "[obsvr] Google cached context is opaque and cannot be verified"
+        )
+    return ""
+
+
+def _google_chat_context_text(target: Any) -> str:
+    """Text retained by a chat object and sent with the next message."""
+    parts: List[str] = []
+    seen = set()
+    for carrier in _google_context_carriers(target):
+        for name in (
+            "_history",
+            "_curated_history",
+            "_comprehensive_history",
+            "historyInternal",
+        ):
+            value = getattr(carrier, name, None)
+            if value is not None and id(value) not in seen:
+                seen.add(id(value))
+                text = _google_content_text(value)
+                if text:
+                    parts.append(text)
+        for name in ("_system_instruction", "system_instruction", "systemInstruction"):
+            value = getattr(carrier, name, None)
+            if value is not None and id(value) not in seen:
+                seen.add(id(value))
+                text = _google_content_text(value)
+                if text:
+                    parts.append(text)
+        for name in ("_tools", "tools"):
+            value = getattr(carrier, name, None)
+            if value is not None and id(value) not in seen:
+                seen.add(id(value))
+                leaves: List[str] = []
+                to_dict = getattr(value, "to_dict", None)
+                _append_string_leaves(to_dict() if callable(to_dict) else value, leaves)
+                parts.extend(leaves)
+        for name in ("config", "_config", "params"):
+            value = getattr(carrier, name, None)
+            if value is None or id(value) in seen:
+                continue
+            seen.add(id(value))
+            system = _google_config_system_instruction(value)
+            if system is not None:
+                text = _google_content_text(system)
+                if text:
+                    parts.append(text)
+            history = (
+                value.get("history")
+                if isinstance(value, dict)
+                else getattr(value, "history", None)
+            )
+            if history is not None and id(history) not in seen:
+                seen.add(id(history))
+                text = _google_content_text(history)
+                if text:
+                    parts.append(text)
+    cached = _google_cached_context_text(target)
+    if cached:
+        parts.append(cached)
+    return "\n".join(parts)
+
+
+def _redact_google_chat_context(target: Any, redact_fn: Callable[[str], str]) -> None:
+    """Redact chat-owned context without mutating the factory arguments."""
+    for carrier in _google_context_carriers(target):
+        if (
+            getattr(carrier, "_cached_content", None) is not None
+            or getattr(carrier, "cached_content", None) is not None
+        ):
+            raise TypeError("Google cached context cannot be redacted in place")
+        for name in (
+            "history",
+            "_history",
+            "_curated_history",
+            "_comprehensive_history",
+            "historyInternal",
+        ):
+            value = getattr(carrier, name, None)
+            if value is not None:
+                setattr(carrier, name, _redact_google_content(value, redact_fn))
+        if all(
+            getattr(carrier, name, None) is None
+            for name in ("_history", "_curated_history", "_comprehensive_history", "historyInternal")
+        ):
+            history = getattr(carrier, "history", None)
+            if history is not None:
+                setattr(carrier, "history", _redact_google_content(history, redact_fn))
+        for name in ("_system_instruction", "system_instruction", "systemInstruction"):
+            value = getattr(carrier, name, None)
+            if value is not None:
+                setattr(carrier, name, _redact_google_content(value, redact_fn))
+        for name in ("config", "_config"):
+            value = getattr(carrier, name, None)
+            if value is not None:
+                setattr(carrier, name, _redact_google_config(value, redact_fn))
+        params = getattr(carrier, "params", None)
+        if isinstance(params, dict):
+            setattr(
+                carrier,
+                "params",
+                {
+                    **params,
+                    **(
+                        {
+                            "systemInstruction": _redact_google_content(
+                                params["systemInstruction"], redact_fn
+                            )
+                        }
+                        if "systemInstruction" in params
+                        else {}
+                    ),
+                    **(
+                        {"history": _redact_google_content(params["history"], redact_fn)}
+                        if "history" in params
+                        else {}
+                    ),
+                },
+            )
 
 
 def _last_user_message(kwargs: dict) -> Optional[str]:
@@ -373,11 +605,17 @@ def _last_user_message(kwargs: dict) -> Optional[str]:
                 content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
                 if isinstance(content, str):
                     return content
+                if isinstance(content, list):
+                    text: List[str] = []
+                    _append_content_text(content, text)
+                    return " ".join(text)
     # Responses API bare-string input IS the user message.
     if isinstance(kwargs.get("input"), str):
         return kwargs["input"]
     if kwargs.get("contents") is not None:
         return _google_content_text(kwargs["contents"]) or None
+    if kwargs.get("content") is not None:
+        return _google_content_text(kwargs["content"]) or None
     return None
 
 
@@ -411,10 +649,9 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
                 if isinstance(content, str):
                     return content
                 if isinstance(content, list):
-                    return " ".join(
-                        b["text"] for b in content
-                        if isinstance(b, dict) and isinstance(b.get("text"), str)
-                    )
+                    text: List[str] = []
+                    _append_content_text(content, text)
+                    return " ".join(text)
 
     # Responses API bare-string input: the whole input is the user turn.
     if isinstance(kwargs.get("input"), str):
@@ -430,20 +667,39 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
             if role == "user":
                 return _google_content_text(item)
 
+    if provider == "google" and kwargs.get("content") is not None:
+        return _google_content_text(kwargs["content"])
+
     # No identifiable user turn — fall back to the full prompt text.
     return _extract_prompt_text(provider, args, kwargs)
 
 
 def _redact_text_blocks(blocks: list, redact_fn: Callable[[str], str]) -> list:
-    """Redact {"text": ...} content blocks (Anthropic / Responses) into a NEW
-    list of NEW dicts. See _redact_messages_in_place for why nothing here is
-    written through: these blocks belong to the caller."""
+    """Redact text, tool input, and tool result content into NEW blocks."""
     out = []
     for block in blocks:
-        if isinstance(block, dict) and isinstance(block.get("text"), str):
-            out.append({**block, "text": redact_fn(block["text"])})
-        else:
+        keys = ("text", "content", "input", "output")
+        if isinstance(block, dict):
+            updates = {
+                key: _redact_string_leaves(block[key], redact_fn)
+                for key in keys if key in block
+            }
+            out.append({**block, **updates} if updates else block)
+            continue
+        updates = {
+            key: _redact_string_leaves(getattr(block, key), redact_fn)
+            for key in keys if getattr(block, key, None) is not None
+        }
+        if not updates:
             out.append(block)
+            continue
+        try:
+            clone = _copy.copy(block)
+            for key, value in updates.items():
+                setattr(clone, key, value)
+            out.append(clone)
+        except Exception as err:
+            raise TypeError("content block could not be copied for outbound redaction") from err
     return out
 
 
@@ -463,7 +719,21 @@ def _google_content_text(value: Any) -> str:
         if isinstance(text, str):
             return text
         parts = value.get("parts")
-        return _google_content_text(parts) if parts is not None else ""
+        if parts is not None:
+            return _google_content_text(parts)
+        out: List[str] = []
+        for key in ("function_response", "functionResponse"):
+            item = value.get(key)
+            if isinstance(item, dict):
+                _append_string_leaves(item.get("response"), out)
+        for key in ("function_call", "functionCall"):
+            item = value.get(key)
+            if isinstance(item, dict):
+                _append_string_leaves(item.get("args"), out)
+        return "\n".join(out)
+    serialized = _google_model_dict(value)
+    if serialized is not None:
+        return _google_content_text(serialized)
     text = getattr(value, "text", None)
     if isinstance(text, str):
         return text
@@ -492,6 +762,21 @@ def _rebuild_google_model(value: Any, updates: Dict[str, Any]) -> Any:
         raise TypeError("Gemini content could not be copied for outbound redaction") from err
 
 
+def _google_model_dict(value: Any) -> Optional[Dict[str, Any]]:
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    for attr in ("_raw_part", "_raw_content"):
+        raw = getattr(value, attr, None)
+        raw_to_dict = getattr(type(raw), "to_dict", None)
+        if raw is not None and callable(raw_to_dict):
+            return raw_to_dict(raw)
+    return None
+
+
 def _redact_google_content(value: Any, redact_fn: Callable[[str], str]) -> Any:
     """Redact every text-bearing google-genai/legacy contents shape into copies."""
     if isinstance(value, str):
@@ -508,7 +793,26 @@ def _redact_google_content(value: Any, redact_fn: Callable[[str], str]) -> Any:
                 **value,
                 "parts": _redact_google_content(value["parts"], redact_fn),
             }
-        return value
+        out = dict(value)
+        for key in ("function_response", "functionResponse"):
+            item = value.get(key)
+            if isinstance(item, dict) and "response" in item:
+                out[key] = {
+                    **item,
+                    "response": _redact_string_leaves(item["response"], redact_fn),
+                }
+        for key in ("function_call", "functionCall"):
+            item = value.get(key)
+            if isinstance(item, dict) and "args" in item:
+                out[key] = {
+                    **item,
+                    "args": _redact_string_leaves(item["args"], redact_fn),
+                }
+        return out
+    from_dict = getattr(value, "from_dict", None)
+    serialized = _google_model_dict(value)
+    if serialized is not None and callable(from_dict):
+        return from_dict(_redact_google_content(serialized, redact_fn))
     text = getattr(value, "text", None)
     if isinstance(text, str):
         return _rebuild_google_model(value, {"text": redact_fn(text)})
@@ -542,10 +846,9 @@ def _rebuild_message(msg: Any, new_content: Any) -> Any:
 
     A message OBJECT is copied with ``copy.copy`` so the provider's own type
     survives — substituting a dict would be rejected by a client that validates
-    its argument. If the copy or the assignment fails, the ORIGINAL is returned
-    untouched and this message goes out unredacted: the stored copy is still
-    scrubbed by the event-build net, and corrupting a caller's object is not an
-    acceptable price for redacting one field.
+    its argument. If the copy or assignment fails, redaction fails closed. The
+    original must never be forwarded under an event that claims its content was
+    removed.
     """
     if isinstance(msg, dict):
         return {**msg, "content": new_content}
@@ -553,8 +856,8 @@ def _rebuild_message(msg: Any, new_content: Any) -> Any:
         clone = _copy.copy(msg)
         setattr(clone, "content", new_content)
         return clone
-    except Exception:
-        return msg
+    except Exception as err:
+        raise TypeError("message could not be copied for outbound redaction") from err
 
 
 def _redact_messages_in_place(
@@ -589,6 +892,18 @@ def _redact_messages_in_place(
     corrupt. Copying redacts it successfully instead. Application failure still
     fails closed; what changed is what counts as one.
     """
+    prompt = kwargs.get("prompt")
+    if isinstance(prompt, str):
+        kwargs["prompt"] = redact_fn(prompt)
+    elif isinstance(prompt, list):
+        kwargs["prompt"] = [
+            redact_fn(item) if isinstance(item, str) else item for item in prompt
+        ]
+    elif isinstance(prompt, tuple):
+        kwargs["prompt"] = tuple(
+            redact_fn(item) if isinstance(item, str) else item for item in prompt
+        )
+
     messages = kwargs.get("messages")
     if isinstance(messages, list):
         rebuilt = []
@@ -603,6 +918,12 @@ def _redact_messages_in_place(
         kwargs["messages"] = rebuilt
     if isinstance(kwargs.get("system"), str):
         kwargs["system"] = redact_fn(kwargs["system"])
+    elif isinstance(kwargs.get("system"), list):
+        kwargs["system"] = _redact_text_blocks(kwargs["system"], redact_fn)
+    elif isinstance(kwargs.get("system"), tuple):
+        kwargs["system"] = tuple(
+            _redact_text_blocks(list(kwargs["system"]), redact_fn)
+        )
 
     # OpenAI Responses API: instructions + input (bare string or message list)
     if isinstance(kwargs.get("instructions"), str):
@@ -614,13 +935,27 @@ def _redact_messages_in_place(
         rebuilt_input = []
         for item in input_val:
             if isinstance(item, dict):
+                output = (
+                    _redact_string_leaves(item["output"], redact_fn)
+                    if "output" in item else None
+                )
                 content = item.get("content")
                 if isinstance(content, str):
-                    rebuilt_input.append({**item, "content": redact_fn(content)})
+                    rebuilt_input.append({
+                        **item,
+                        **({"output": output} if "output" in item else {}),
+                        "content": redact_fn(content),
+                    })
                 elif isinstance(content, list):
                     rebuilt_input.append(
-                        {**item, "content": _redact_text_blocks(content, redact_fn)}
+                        {
+                            **item,
+                            **({"output": output} if "output" in item else {}),
+                            "content": _redact_text_blocks(content, redact_fn),
+                        }
                     )
+                elif "output" in item:
+                    rebuilt_input.append({**item, "output": output})
                 else:
                     rebuilt_input.append(item)
             else:
@@ -631,6 +966,9 @@ def _redact_messages_in_place(
     contents = kwargs.get("contents")
     if contents is not None:
         kwargs["contents"] = _redact_google_content(contents, redact_fn)
+    content = kwargs.get("content")
+    if provider == "google" and content is not None:
+        kwargs["content"] = _redact_google_content(content, redact_fn)
     if provider == "google" and kwargs.get("config") is not None:
         kwargs["config"] = _redact_google_config(kwargs["config"], redact_fn)
 
@@ -658,6 +996,7 @@ def _extract_model(provider: str, target: Any, kwargs: dict) -> str:
         return str(
             getattr(target, "model_name", None)
             or getattr(target, "_model_name", None)
+            or getattr(target, "_model", None)
             or getattr(model_target, "model_name", None)
             or getattr(model_target, "_model_name", None)
             or "gemini"
@@ -693,6 +1032,9 @@ def _extract_response_text(provider: str, result: Any) -> str:
             choices = getattr(result, "choices", None) or (result.get("choices") if isinstance(result, dict) else None)
             if choices:
                 first = choices[0]
+                text = getattr(first, "text", None) or (first.get("text") if isinstance(first, dict) else None)
+                if isinstance(text, str):
+                    return text
                 message = getattr(first, "message", None) or (first.get("message") if isinstance(first, dict) else None)
                 if message is not None:
                     content = getattr(message, "content", None) or (message.get("content") if isinstance(message, dict) else None)
@@ -903,6 +1245,9 @@ def _extract_chunk_text(provider: str, chunk: Any) -> str:
         if provider == "openai":
             choices = getattr(chunk, "choices", None) or []
             if choices:
+                legacy_text = getattr(choices[0], "text", None)
+                if isinstance(legacy_text, str):
+                    return legacy_text
                 delta = getattr(choices[0], "delta", None)
                 content = getattr(delta, "content", None) if delta else None
                 return content or ""
@@ -1649,6 +1994,8 @@ def _governed_tool_runner(
     """Govern a provider runner before it snapshots prompts or tools."""
     from .integrations.provider_tool_runners import govern_runner_tools
 
+    original = _runner_method_with_governed_client(original, target, options)
+
     call_kwargs = dict(kwargs)
     if "tools" in call_kwargs:
         call_kwargs["tools"] = list(call_kwargs["tools"])
@@ -1690,6 +2037,40 @@ def _governed_tool_runner(
         )
 
     return _GovernedToolRunner(runner, provider, _emit)
+
+
+class _RunnerResourceReceiver:
+    """Provider resource receiver that replaces only its retained client."""
+
+    __slots__ = ("_target", "_governed_client")
+
+    def __init__(self, target: Any, governed_client: Any):
+        object.__setattr__(self, "_target", target)
+        object.__setattr__(self, "_governed_client", governed_client)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name == "_client":
+            return object.__getattribute__(self, "_governed_client")
+        if name in {"_target", "_governed_client"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_target"), name)
+
+
+def _runner_method_with_governed_client(
+    original: Callable, target: Any, options: Dict[str, Any]
+) -> Callable:
+    """Rebind a provider runner method so every retained model turn is governed."""
+    try:
+        raw_client = getattr(target, "_client")
+    except Exception:  # noqa: BLE001 - test doubles and older resources omit it
+        return original
+
+    function = getattr(original, "__func__", None)
+    if raw_client is None or function is None:
+        return original
+
+    receiver = _RunnerResourceReceiver(target, wrap(raw_client, **options))
+    return function.__get__(receiver, type(target))
 
 
 class _PreCall:
@@ -1783,7 +2164,9 @@ def _build_direct_call_pre_call_plan(
     config = get_config()
 
     metadata = _collect_metadata(options, kwargs)
-    prompt_text = _extract_prompt_text(provider, args, kwargs)
+    request_text = _extract_prompt_text(provider, args, kwargs)
+    retained_text = _google_chat_context_text(target) if provider == "google" else ""
+    prompt_text = "\n".join(part for part in (retained_text, request_text) if part)
     model = _extract_model(provider, target, kwargs)
 
     policy = apply_pre_call_policy(
@@ -1878,6 +2261,18 @@ def _build_direct_call_pre_call_plan(
             nonlocal _redacted_args
             _redact_messages_in_place(provider, kwargs, _redactor)
             _redacted_args = _redact_positional_inputs(args, _redactor)
+            if provider == "google":
+                _redact_google_chat_context(target, _redactor)
+            redacted_request = _extract_prompt_text(provider, _redacted_args, kwargs)
+            redacted_retained = (
+                _google_chat_context_text(target) if provider == "google" else ""
+            )
+            assert_redaction_applied(
+                "\n".join(
+                    part for part in (redacted_retained, redacted_request) if part
+                ),
+                compliance,
+            )
 
         _not_redacted = apply_outbound_redaction(_apply_redaction)
         if _not_redacted is not None:
@@ -2247,6 +2642,11 @@ class _ObsvrProxy:
                 return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
             def intercepted_factory(*args: Any, **kwargs: Any) -> Any:
                 result = value(*args, **kwargs)
+                if provider == "google" and getattr(result, "_responder", None) is not None:
+                    raise RuntimeError(
+                        "[obsvr] Google automatic responder sessions are not "
+                        "supported by this enforcement boundary"
+                    )
                 return _ObsvrProxy(result, [], provider, options)
             return intercepted_factory
 

@@ -45,6 +45,7 @@ export interface AnthropicContentBlock {
   input?: unknown;
   // tool_result fields
   tool_use_id?: string;
+  content?: string | AnthropicContentBlock[];
 }
 
 /**
@@ -121,7 +122,7 @@ function extractBlockText(block: AnthropicContentBlock): string {
     case "tool_use":
       return `[tool_use: ${block.name ?? "unknown"}(${JSON.stringify(block.input ?? {})})]`;
     case "tool_result":
-      return `[tool_result: ${block.tool_use_id ?? "unknown"}]`;
+      return `[tool_result: ${block.tool_use_id ?? "unknown"}] ${contentToText(block.content)}`.trim();
     default:
       return "";
   }

@@ -153,3 +153,151 @@ def test_real_async_resource_blocks_before_dispatch(monkeypatch, real_client):
 
     assert calls == []
     assert events[0]["event_type"] == "blocked_call"
+
+
+def test_real_sync_chat_blocks_before_dispatch(monkeypatch, real_client):
+    events = _init(monkeypatch, pii_policy={"rules": {"ssn": "block"}})
+    calls = []
+
+    def fake_generate(_resource, *, model, contents, config=None):
+        calls.append(contents)
+        return google_types.GenerateContentResponse(
+            candidates=[
+                google_types.Candidate(
+                    content=google_types.Content(
+                        role="model", parts=[google_types.Part(text="done")]
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(type(real_client.models), "generate_content", fake_generate)
+    chat = obsvr.wrap(real_client).chats.create(model="gemini-2.5-flash")
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        chat.send_message("ssn 123-45-6789")
+
+    assert calls == []
+    assert events[0]["operation"] == "send_message"
+
+
+def test_real_sync_chat_blocks_prohibited_history(monkeypatch, real_client):
+    _init(monkeypatch, pii_policy={"rules": {"ssn": "block"}})
+    calls = []
+
+    def fake_generate(_resource, *, model, contents, config=None):
+        calls.append(contents)
+        return _Response()
+
+    monkeypatch.setattr(type(real_client.models), "generate_content", fake_generate)
+    history = [
+        {"role": "user", "parts": [{"text": "old ssn 123-45-6789"}]},
+        {"role": "model", "parts": [{"text": "acknowledged"}]},
+    ]
+    chat = obsvr.wrap(real_client).chats.create(
+        model="gemini-2.5-flash", history=history
+    )
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        chat.send_message("continue safely")
+
+    assert calls == []
+
+
+def test_real_sync_chat_audits_history_with_current_message(monkeypatch, real_client):
+    events = _init(monkeypatch)
+
+    def fake_generate(_resource, *, model, contents, config=None):
+        return google_types.GenerateContentResponse(
+            candidates=[
+                google_types.Candidate(
+                    content=google_types.Content(
+                        role="model", parts=[google_types.Part(text="done")]
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(type(real_client.models), "generate_content", fake_generate)
+    history = [
+        {"role": "user", "parts": [{"text": "prior contract clause"}]},
+        {"role": "model", "parts": [{"text": "prior analysis"}]},
+    ]
+    chat = obsvr.wrap(real_client).chats.create(
+        model="gemini-2.5-flash", history=history
+    )
+
+    chat.send_message("review the next clause")
+
+    assert events[0]["operation"] == "send_message"
+    assert "prior contract clause" in events[0]["prompt"]
+    assert "prior analysis" in events[0]["prompt"]
+    assert "review the next clause" in events[0]["prompt"]
+
+
+def test_real_sync_chat_redacts_without_mutating_input(monkeypatch, real_client):
+    _init(monkeypatch, pii_policy={"rules": {"email": "redact"}})
+    calls = []
+
+    def fake_generate(_resource, *, model, contents, config=None):
+        calls.append(contents)
+        return google_types.GenerateContentResponse(
+            candidates=[
+                google_types.Candidate(
+                    content=google_types.Content(
+                        role="model", parts=[google_types.Part(text="done")]
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(type(real_client.models), "generate_content", fake_generate)
+    original = ["mail chat@example.com"]
+    chat = obsvr.wrap(real_client).chats.create(model="gemini-2.5-flash")
+
+    chat.send_message(original)
+
+    assert original == ["mail chat@example.com"]
+    assert "[REDACTED_EMAIL]" in str(calls[0])
+    assert "chat@example.com" not in str(calls[0])
+
+
+def test_real_sync_chat_stream_blocks_before_dispatch(monkeypatch, real_client):
+    _init(monkeypatch, pii_policy={"rules": {"ssn": "block"}})
+    calls = []
+
+    def fake_stream(_resource, *, model, contents, config=None):
+        calls.append(contents)
+        return iter((_Response("never"),))
+
+    monkeypatch.setattr(
+        type(real_client.models), "generate_content_stream", fake_stream
+    )
+    chat = obsvr.wrap(real_client).chats.create(model="gemini-2.5-flash")
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        chat.send_message_stream("ssn 123-45-6789")
+
+    assert calls == []
+
+
+def test_real_async_chat_blocks_before_dispatch(monkeypatch, real_client):
+    _init(monkeypatch, pii_policy={"rules": {"ssn": "block"}})
+    calls = []
+
+    async def fake_generate(_resource, *, model, contents, config=None):
+        calls.append(contents)
+        return _Response()
+
+    monkeypatch.setattr(
+        type(real_client.aio.models), "generate_content", fake_generate
+    )
+
+    async def run():
+        chat = obsvr.wrap(real_client).aio.chats.create(model="gemini-2.5-flash")
+        await chat.send_message("ssn 123-45-6789")
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        asyncio.run(run())
+
+    assert calls == []

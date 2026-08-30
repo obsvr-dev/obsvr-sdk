@@ -8,9 +8,10 @@ Parity with sdk-typescript/src/integrations/vertex.ts. Wraps a Vertex AI
 
 Real enforcement, both sides of the call:
 
-- PRE-call: the last user turn is scanned/rule-checked. A ``block`` verdict
-  raises *before* the model is ever called; a ``redact`` verdict rewrites the
-  request contents in place so the redacted prompt is what Vertex receives.
+- PRE-call: the complete provider-bound prompt is scanned/rule-checked. A
+  ``block`` verdict raises *before* the model is ever called; a ``redact``
+  verdict sends a redacted copy or fails closed when configured model state
+  cannot be rewritten safely.
 - POST-call: the model OUTPUT is run through the post-call policy; a redact
   verdict rewrites the returned candidates' text in place so the caller gets
   the governed output.
@@ -32,6 +33,7 @@ Usage::
 # generate_content methods run the obsvr pipeline, delegating every other
 # attribute to the real model.
 
+import copy
 import inspect
 import time
 from typing import Any, Dict, List, Optional
@@ -47,27 +49,43 @@ from ..policy import (
     blocked_prompt_for_storage,
     blocked_user_input_for_storage,
     apply_outbound_redaction,
+    assert_redaction_applied,
     outbound_redaction_blocked_compliance,
     redact_builtin_pii,
 )
 
 from ..binding_report import record_binding
 
-try:  # real binding when the Vertex SDK is installed; interception works regardless
+try:  # stable namespace in current google-cloud-aiplatform releases
     from vertexai.generative_models import (  # type: ignore  # noqa: F401
         GenerativeModel as _RealGenerativeModel,
     )
 
     record_binding("vertex", "vertexai.generative_models.GenerativeModel")
-except Exception as _bind_exc:  # pragma: no cover - vertex SDK not installed
-    _RealGenerativeModel = None  # type: ignore
-    record_binding("vertex", "vertexai.generative_models.GenerativeModel", _bind_exc)
+except Exception as _stable_bind_exc:  # pragma: no cover - version-dependent import
+    try:  # declared floor exposed the same model through the preview namespace
+        from vertexai.preview.generative_models import (  # type: ignore  # noqa: F401
+            GenerativeModel as _RealGenerativeModel,
+        )
+
+        record_binding("vertex", "vertexai.preview.generative_models.GenerativeModel")
+    except Exception:  # pragma: no cover - Vertex SDK not installed
+        _RealGenerativeModel = None  # type: ignore
+        record_binding(
+            "vertex", "vertexai.generative_models.GenerativeModel", _stable_bind_exc
+        )
 
 SOURCE = "vertex_py"
 PROVIDER = "vertex_ai"
 _WRAPPED_ATTR = "_obsvr_vertex_wrapped"
 
-_GOVERNED_METHODS = {"generate_content", "generate_content_async"}
+_GOVERNED_METHODS = {
+    "generate_content",
+    "generate_content_async",
+    "send_message",
+    "send_message_async",
+}
+_GOVERNED_FACTORIES = {"start_chat"}
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +106,53 @@ def _part_text(part: Any) -> str:
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
+    if isinstance(content, (list, tuple)):
+        return "\n".join(filter(None, (_content_text(item) for item in content)))
     if isinstance(content, dict):
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
         parts = content.get("parts")
+        if parts is not None:
+            return _content_text(parts)
+        structured: List[str] = []
+        for key in ("function_response", "functionResponse"):
+            value = content.get(key)
+            if isinstance(value, dict):
+                _append_string_leaves(value.get("response"), structured)
+        for key in ("function_call", "functionCall"):
+            value = content.get(key)
+            if isinstance(value, dict):
+                _append_string_leaves(value.get("args"), structured)
+        return "\n".join(structured)
     else:
+        serialized = _content_dict(content)
+        if serialized is not None:
+            return _content_text(serialized)
         parts = getattr(content, "parts", None)
     if isinstance(parts, list):
         return "\n".join(t for t in (_part_text(p) for p in parts) if t)
     return ""
+
+
+def _append_string_leaves(value: Any, out: List[str]) -> None:
+    if isinstance(value, str):
+        out.append(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _append_string_leaves(item, out)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _append_string_leaves(item, out)
+
+
+def _all_string_text(value: Any) -> str:
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        value = to_dict()
+    out: List[str] = []
+    _append_string_leaves(value, out)
+    return "\n".join(out)
 
 
 def _content_role(content: Any) -> str:
@@ -137,34 +195,173 @@ def _extract_last_user(request: Any) -> str:
     return ""
 
 
-def _redact_request_inplace(request: Any) -> Any:
-    """Redact the request contents in place; returns the possibly-new request
-    (a bare string can't be mutated, so a redacted copy is returned)."""
-    if isinstance(request, str):
-        return redact_builtin_pii(request)
-    contents = _normalize_contents(request)
-    for c in contents:
-        if isinstance(c, dict):
-            parts = c.get("parts")
-            if isinstance(parts, list):
-                for p in parts:
-                    if isinstance(p, dict) and isinstance(p.get("text"), str):
-                        p["text"] = redact_builtin_pii(p["text"])
-                    elif isinstance(getattr(p, "text", None), str):
-                        try:
-                            p.text = redact_builtin_pii(p.text)
-                        except Exception:
-                            pass
-        else:
-            parts = getattr(c, "parts", None)
-            if isinstance(parts, list):
-                for p in parts:
-                    if isinstance(getattr(p, "text", None), str):
-                        try:
-                            p.text = redact_builtin_pii(p.text)
-                        except Exception:
-                            pass
-    return request
+def _rebuild_content(value: Any, updates: Dict[str, Any]) -> Any:
+    model_copy = getattr(value, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update=updates)
+    try:
+        clone = copy.copy(value)
+        for key, replacement in updates.items():
+            setattr(clone, key, replacement)
+        return clone
+    except Exception as err:
+        raise TypeError("Vertex content could not be copied for outbound redaction") from err
+
+
+def _content_dict(value: Any) -> Optional[Dict[str, Any]]:
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    for attr in ("_raw_part", "_raw_content"):
+        raw = getattr(value, attr, None)
+        raw_to_dict = getattr(type(raw), "to_dict", None)
+        if raw is not None and callable(raw_to_dict):
+            return raw_to_dict(raw)
+    return None
+
+
+def _redact_content(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_builtin_pii(value)
+    if isinstance(value, list):
+        return [_redact_content(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_content(item) for item in value)
+    if isinstance(value, dict):
+        if isinstance(value.get("text"), str):
+            return {**value, "text": redact_builtin_pii(value["text"])}
+        if value.get("parts") is not None:
+            return {**value, "parts": _redact_content(value["parts"])}
+        out = dict(value)
+        for key in ("function_response", "functionResponse"):
+            item = value.get(key)
+            if isinstance(item, dict) and "response" in item:
+                out[key] = {
+                    **item,
+                    "response": _redact_string_leaves(item["response"]),
+                }
+        for key in ("function_call", "functionCall"):
+            item = value.get(key)
+            if isinstance(item, dict) and "args" in item:
+                out[key] = {**item, "args": _redact_string_leaves(item["args"])}
+        return out
+    from_dict = getattr(value, "from_dict", None)
+    serialized = _content_dict(value)
+    if serialized is not None and callable(from_dict):
+        return from_dict(_redact_content(serialized))
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return _rebuild_content(value, {"text": redact_builtin_pii(text)})
+    parts = getattr(value, "parts", None)
+    if parts is not None:
+        return _rebuild_content(value, {"parts": _redact_content(parts)})
+    return value
+
+
+def _redact_string_leaves(value: Any) -> Any:
+    if isinstance(value, str):
+        return redact_builtin_pii(value)
+    if isinstance(value, list):
+        return [_redact_string_leaves(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_string_leaves(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _redact_string_leaves(item) for key, item in value.items()}
+    return value
+
+
+def _redact_request(request: Any) -> Any:
+    """Return provider-compatible redacted copies without mutating caller input."""
+    return _redact_content(request)
+
+
+def _model_system_instruction(model: Any) -> Any:
+    for candidate in (model, getattr(model, "_model", None)):
+        if candidate is None:
+            continue
+        for attr in ("_system_instruction", "system_instruction"):
+            value = getattr(candidate, attr, None)
+            if value is not None:
+                return value
+    return None
+
+
+def _retained_history(model: Any) -> Any:
+    for attr in ("_history", "history"):
+        value = getattr(model, attr, None)
+        if value is not None:
+            return value
+    return None
+
+
+def _model_carriers(model: Any) -> List[Any]:
+    carriers: List[Any] = []
+    for candidate in (model, getattr(model, "_model", None)):
+        if candidate is not None and all(candidate is not item for item in carriers):
+            carriers.append(candidate)
+    return carriers
+
+
+def _cached_context_text(model: Any) -> str:
+    for carrier in _model_carriers(model):
+        cached = getattr(carrier, "_cached_content", None)
+        if cached is None:
+            cached = getattr(carrier, "cached_content", None)
+        if cached is None:
+            continue
+        raw = getattr(cached, "_raw_cached_content", None) or cached
+        parts: List[str] = []
+        for attr in ("system_instruction", "systemInstruction", "contents"):
+            value = raw.get(attr) if isinstance(raw, dict) else getattr(raw, attr, None)
+            text = _content_text(value)
+            if text:
+                parts.append(text)
+        if parts:
+            return "\n".join(parts)
+        raise RuntimeError(
+            "[obsvr] Vertex cached context is opaque and cannot be verified"
+        )
+    return ""
+
+
+def _tools_context_text(model: Any) -> str:
+    parts: List[str] = []
+    for carrier in _model_carriers(model):
+        for attr in ("_tools", "tools"):
+            value = getattr(carrier, attr, None)
+            if value is not None:
+                text = _all_string_text(value)
+                if text:
+                    parts.append(text)
+    return "\n".join(parts)
+
+
+def _redact_model_context(model: Any) -> None:
+    for carrier in _model_carriers(model):
+        if (
+            getattr(carrier, "_cached_content", None) is not None
+            or getattr(carrier, "cached_content", None) is not None
+        ):
+            raise TypeError("Vertex cached context cannot be redacted in place")
+        history = getattr(carrier, "_history", None)
+        if history is not None:
+            setattr(carrier, "_history", _redact_content(history))
+        for attr in ("_system_instruction", "system_instruction"):
+            value = getattr(carrier, attr, None)
+            if value is not None:
+                raise TypeError(
+                    "Vertex model system instructions cannot be redacted "
+                    "without mutation"
+                )
+        for attr in ("_tools", "tools"):
+            value = getattr(carrier, attr, None)
+            if value is not None:
+                raise TypeError(
+                    "Vertex model tools cannot be redacted without mutation"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -233,16 +430,32 @@ class _GovernedGenerativeModel:
 
     def __getattr__(self, name: str) -> Any:
         target = getattr(object.__getattribute__(self, "_model"), name)
+        if name in _GOVERNED_FACTORIES and callable(target):
+            def governed_factory(*args: Any, **kwargs: Any) -> Any:
+                result = target(*args, **kwargs)
+                if getattr(result, "_responder", None) is not None:
+                    raise RuntimeError(
+                        "[obsvr] Vertex automatic responder sessions are not "
+                        "supported by this enforcement boundary"
+                    )
+                return _GovernedGenerativeModel(
+                    result, object.__getattribute__(self, "_options")
+                )
+
+            return governed_factory
         if name not in _GOVERNED_METHODS or not callable(target):
             return target
         return self._make_governed(name, target)
 
     def _model_hint(self) -> str:
         m = object.__getattribute__(self, "_model")
-        for attr in ("_model_name", "model_name", "_model_id"):
-            v = getattr(m, attr, None)
-            if isinstance(v, str) and v:
-                return v.split("/")[-1]
+        for candidate in (m, getattr(m, "_model", None)):
+            if candidate is None:
+                continue
+            for attr in ("_model_name", "model_name", "_model_id"):
+                v = getattr(candidate, attr, None)
+                if isinstance(v, str) and v:
+                    return v.split("/")[-1]
         return "unknown"
 
     def _identity_meta(self) -> Optional[Dict[str, Any]]:
@@ -253,6 +466,26 @@ class _GovernedGenerativeModel:
         if opts.get("service_name") is not None:
             meta["service_name"] = opts["service_name"]
         return meta or None
+
+    def _complete_prompt(self, request: Any) -> str:
+        model = object.__getattribute__(self, "_model")
+        parts: List[str] = []
+        system_text = _content_text(_model_system_instruction(model))
+        if system_text:
+            parts.append(f"system: {system_text}")
+        history_text = _extract_prompt(_retained_history(model))
+        if history_text:
+            parts.append(history_text)
+        cached_text = _cached_context_text(model)
+        if cached_text:
+            parts.append(f"cached: {cached_text}")
+        tools_text = _tools_context_text(model)
+        if tools_text:
+            parts.append(f"tools: {tools_text}")
+        request_text = _extract_prompt(request)
+        if request_text:
+            parts.append(request_text)
+        return "\n".join(parts)
 
     def _make_governed(self, name: str, original: Any) -> Any:
         options = object.__getattribute__(self, "_options") or None
@@ -265,10 +498,11 @@ class _GovernedGenerativeModel:
             # sampling gates ONLY audit emission, never enforcement.
             should_audit = _sender.should_emit(cfg)
 
-            request = args[0] if args else kwargs.get("contents")
+            request_key = "content" if name.startswith("send_message") else "contents"
+            request = args[0] if args else kwargs.get(request_key)
             is_stream = bool(kwargs.get("stream"))
             model = self._model_hint()
-            prompt_text = _extract_prompt(request)
+            prompt_text = self._complete_prompt(request)
             user_text = _extract_last_user(request)
             identity_meta = self._identity_meta()
 
@@ -278,7 +512,7 @@ class _GovernedGenerativeModel:
                 provider=PROVIDER,
                 operation=operation,
                 model=model,
-                scan_text=user_text or prompt_text,
+                scan_text=prompt_text,
                 metadata=identity_meta,
             )
             compliance = policy["compliance"]
@@ -309,13 +543,17 @@ class _GovernedGenerativeModel:
                 # told to remove.
                 def _apply_redaction() -> None:
                     nonlocal args, request, prompt_text
-                    new_request = _redact_request_inplace(request)
+                    new_request = _redact_request(request)
                     if args:
                         args = (new_request,) + tuple(args[1:])
                     else:
-                        kwargs["contents"] = new_request
+                        kwargs[request_key] = new_request
+                    _redact_model_context(
+                        object.__getattribute__(self, "_model")
+                    )
                     request = new_request
-                    prompt_text = _extract_prompt(request)
+                    prompt_text = self._complete_prompt(request)
+                    assert_redaction_applied(prompt_text, compliance)
 
                 _not_redacted = apply_outbound_redaction(_apply_redaction)
                 if _not_redacted is not None:

@@ -14,8 +14,11 @@ the ones that refused to be corrupted.
 Twin: sdk-typescript/tests/unit/redaction-does-not-mutate-caller.test.ts.
 """
 
+import pytest
+
 import obsvr
 from obsvr.config import _reset
+from obsvr.errors import ObsvrPolicyError
 from obsvr.wrap import wrap
 
 SSN = "123-45-6789"
@@ -134,6 +137,26 @@ class TestRedactionLeavesCallerObjectsAlone:
         assert SSN not in sent
         assert "[REDACTED_SSN]" in sent
         assert msg["content"] == f"my ssn is {SSN}"
+
+    def test_an_uncopyable_message_blocks_before_the_provider_is_called(self):
+        class _UncopyableMessage:
+            role = "user"
+
+            def __init__(self, content):
+                self.content = content
+
+            def __copy__(self):
+                raise TypeError("message cannot be copied")
+
+        _init()
+        client = _FakeClient()
+        msg = _UncopyableMessage(f"my ssn is {SSN}")
+
+        with pytest.raises(ObsvrPolicyError):
+            wrap(client).chat.completions.create(model="gpt-4", messages=[msg])
+
+        assert client.seen is None, "redaction failure must stop the provider call"
+        assert msg.content == f"my ssn is {SSN}"
 
     def test_control_with_no_redacting_rule_the_ssn_goes_out_unchanged(self):
         # Without this row, "the caller's object is unchanged" would also be

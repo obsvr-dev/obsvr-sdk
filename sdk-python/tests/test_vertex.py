@@ -45,8 +45,14 @@ class FakeGenerationResponse:
 
 
 class FakeGenerativeModel:
-    def __init__(self, response_text="Hello from Gemini", model_name="gemini-1.5-pro"):
+    def __init__(
+        self,
+        response_text="Hello from Gemini",
+        model_name="gemini-1.5-pro",
+        system_instruction=None,
+    ):
         self._model_name = model_name
+        self._system_instruction = system_instruction
         self._response_text = response_text
         self.calls = []
         self.stream_calls = []
@@ -103,6 +109,29 @@ def test_pii_block_stops_execution(sent):
     assert sent[0]["event_type"] == "blocked_call"
 
 
+def test_model_system_instruction_block_stops_clean_request(sent):
+    _init(pii_policy={"rules": {"ssn": "block"}})
+    fake = FakeGenerativeModel(system_instruction=FakeContent("SSN 123-45-6789", "system"))
+    model = wrap_vertex(fake)
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        model.generate_content(_contents("safe request"))
+    assert fake.calls == []
+
+
+def test_sensitive_earlier_turn_block_stops_clean_final_request(sent):
+    _init(pii_policy={"rules": {"ssn": "block"}})
+    fake = FakeGenerativeModel()
+    model = wrap_vertex(fake)
+    request = [
+        {"role": "user", "parts": [{"text": "SSN 123-45-6789"}]},
+        {"role": "model", "parts": [{"text": "noted"}]},
+        {"role": "user", "parts": [{"text": "safe request"}]},
+    ]
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        model.generate_content(request)
+    assert fake.calls == []
+
+
 def test_pre_call_hook_block_stops_execution(sent):
     _init(on_pre_call=lambda e: "block")
     fake = FakeGenerativeModel()
@@ -120,6 +149,33 @@ def test_redacts_input_before_send(sent):
     sent_text = fake.calls[0][0]["parts"][0]["text"]
     assert "alice@example.com" not in sent_text
     assert "[REDACTED_EMAIL]" in sent_text
+
+
+def test_redacts_copy_without_mutating_caller_input(sent):
+    _init(pii_policy={"rules": {"email": "redact"}})
+    fake = FakeGenerativeModel()
+    model = wrap_vertex(fake)
+    request = _contents("mail me alice@example.com")
+
+    model.generate_content(request)
+
+    assert fake.calls[0][0]["parts"][0]["text"] == "mail me [REDACTED_EMAIL]"
+    assert request[0]["parts"][0]["text"] == "mail me alice@example.com"
+
+
+def test_unrewritable_model_system_redaction_fails_closed(sent):
+    _init(pii_policy={"rules": {"email": "redact"}})
+    fake = FakeGenerativeModel(
+        system_instruction=FakeContent("email system@example.com", "system")
+    )
+    model = wrap_vertex(fake)
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        model.generate_content(_contents("safe request"))
+
+    assert fake.calls == []
+    assert sent[0]["action_taken"] == "blocked"
+    assert sent[0]["redacted_types"] == []
 
 
 def test_post_call_redacts_output(sent):

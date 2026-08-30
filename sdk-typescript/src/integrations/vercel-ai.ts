@@ -50,6 +50,7 @@
 
 import {
   applyPreCallPolicy,
+  assertRedactionApplied,
   blockedCallError,
   blockedPromptForStorage,
   blockedUserInputForStorage,
@@ -64,6 +65,7 @@ import {
   type ComplianceInfo,
   type IntegrationOptions,
   type IntegrationProvider,
+  type PreCallPolicyResult,
   DEFAULT_COMPLIANCE,
   outboundRedactionBlockedCompliance,
 } from "./core.js";
@@ -76,6 +78,7 @@ import {
 const SOURCE = "vercel_ai";
 const OPERATION = "generate";
 const STREAM_OPERATION = "stream";
+const POLICY_REDACTION_PLACEHOLDER = "[REDACTED_BY_POLICY]";
 
 export interface ObsvrMiddlewareOptions extends IntegrationOptions {
   /** Middleware version flag expected by `wrapLanguageModel` (default "v1") */
@@ -101,13 +104,54 @@ const callState = new WeakMap<object, CallState>();
 // Prompt helpers (LanguageModelV1/V2 prompt: string | message array)
 // ---------------------------------------------------------------------------
 
+function stringLeaves(value: unknown, into: string[] = []): string[] {
+  if (typeof value === "string") {
+    into.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) stringLeaves(item, into);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      stringLeaves(item, into);
+    }
+  }
+  return into;
+}
+
 function partText(part: unknown): string {
   if (typeof part === "string") return part;
-  if (part && typeof part === "object") {
-    const p = part as Record<string, unknown>;
-    if (typeof p.text === "string") return p.text;
+  if (!part || typeof part !== "object") return "";
+
+  const p = part as Record<string, unknown>;
+  const text: string[] = [];
+  if (typeof p.text === "string") text.push(p.text);
+
+  // AI SDK generations have used `args` and `input` for tool calls, `result`
+  // for V1 tool results, and `output` for V2/V3 tool results. These values are
+  // provider-bound content just as much as a user text part is.
+  for (const field of ["args", "input", "result", "output"] as const) {
+    if (field in p) stringLeaves(p[field], text);
   }
-  return "";
+
+  // Inline text files are prompt content. Binary/base64 media is deliberately
+  // excluded: applying a text redactor to it would corrupt the payload.
+  const mediaType = p.mediaType ?? p.mimeType;
+  if (
+    p.type === "file" &&
+    typeof mediaType === "string" &&
+    mediaType.toLowerCase().startsWith("text/") &&
+    typeof p.data === "string"
+  ) {
+    text.push(p.data);
+  }
+  return text.join(" ");
+}
+
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map(partText).filter(Boolean).join(" ");
+  }
+  return partText(content);
 }
 
 function promptMessages(params: unknown): Record<string, unknown>[] {
@@ -119,22 +163,24 @@ function promptMessages(params: unknown): Record<string, unknown>[] {
 
 function extractParamsPrompt(params: unknown): string {
   if (!params || typeof params !== "object") return "";
-  const prompt = (params as Record<string, unknown>).prompt;
-  if (typeof prompt === "string") return prompt;
-  if (!Array.isArray(prompt)) return "";
-  return (prompt as Record<string, unknown>[])
-    .map((msg) => {
+  const value = params as Record<string, unknown>;
+  const lines: string[] = [];
+  const system = contentText(value.system);
+  if (system) lines.push(`system: ${system}`);
+
+  const prompt = value.prompt;
+  if (typeof prompt === "string") {
+    lines.push(`user: ${prompt}`);
+  } else if (Array.isArray(prompt)) {
+    for (const message of prompt) {
+      if (!message || typeof message !== "object") continue;
+      const msg = message as Record<string, unknown>;
       const role = typeof msg.role === "string" ? msg.role : "unknown";
-      const content = msg.content;
-      const text =
-        typeof content === "string"
-          ? content
-          : Array.isArray(content)
-            ? content.map(partText).filter((t) => t.length > 0).join(" ")
-            : "";
-      return `${role}: ${text}`;
-    })
-    .join("\n");
+      const text = contentText(msg.content);
+      if (text) lines.push(`${role}: ${text}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function extractParamsLastUser(params: unknown): string {
@@ -146,35 +192,114 @@ function extractParamsLastUser(params: unknown): string {
   const messages = promptMessages(params);
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].role === "user") {
-      const content = messages[i].content;
-      if (typeof content === "string") return content;
-      if (Array.isArray(content)) {
-        return content.map(partText).filter((t) => t.length > 0).join(" ");
-      }
+      return contentText(messages[i].content);
     }
   }
   return extractParamsPrompt(params);
 }
 
-function redactParamsInPlace(params: Record<string, unknown>): void {
-  if (typeof params.prompt === "string") {
-    params.prompt = redactBuiltinPii(params.prompt);
-    return;
+function redactStringLeaves(value: unknown): unknown {
+  if (typeof value === "string") return redactBuiltinPii(value);
+  if (Array.isArray(value)) return value.map(redactStringLeaves);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        redactStringLeaves(item),
+      ]),
+    );
   }
+  return value;
+}
+
+function redactPart(part: unknown): unknown {
+  if (typeof part === "string") return redactBuiltinPii(part);
+  if (!part || typeof part !== "object") return part;
+  const input = part as Record<string, unknown>;
+  const out = { ...input };
+  if (typeof input.text === "string") out.text = redactBuiltinPii(input.text);
+  for (const field of ["args", "input", "result", "output"] as const) {
+    if (field in input) out[field] = redactStringLeaves(input[field]);
+  }
+  const mediaType = input.mediaType ?? input.mimeType;
+  if (
+    input.type === "file" &&
+    typeof mediaType === "string" &&
+    mediaType.toLowerCase().startsWith("text/") &&
+    typeof input.data === "string"
+  ) {
+    out.data = redactBuiltinPii(input.data);
+  }
+  return out;
+}
+
+function redactMessage(message: unknown): unknown {
+  if (!message || typeof message !== "object") return message;
+  const input = message as Record<string, unknown>;
+  const content = input.content;
+  return {
+    ...input,
+    content:
+      typeof content === "string"
+        ? redactBuiltinPii(content)
+        : Array.isArray(content)
+          ? content.map(redactPart)
+          : redactPart(content),
+  };
+}
+
+function structuredRedactedParams(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const out = { ...params };
   if (typeof params.system === "string") {
-    params.system = redactBuiltinPii(params.system);
+    out.system = redactBuiltinPii(params.system);
+  } else if (params.system !== undefined) {
+    out.system = redactStringLeaves(params.system);
   }
-  for (const msg of promptMessages(params)) {
-    if (typeof msg.content === "string") {
-      msg.content = redactBuiltinPii(msg.content);
-    } else if (Array.isArray(msg.content)) {
-      for (const part of msg.content as Record<string, unknown>[]) {
-        if (typeof part.text === "string") {
-          part.text = redactBuiltinPii(part.text);
-        }
-      }
-    }
+  if (typeof params.prompt === "string") {
+    out.prompt = redactBuiltinPii(params.prompt);
+  } else if (Array.isArray(params.prompt)) {
+    out.prompt = params.prompt.map(redactMessage);
   }
+  return out;
+}
+
+function collapsedRedactedParams(
+  params: Record<string, unknown>,
+  safeText: string,
+): Record<string, unknown> {
+  const out = { ...params };
+  delete out.system;
+  out.prompt =
+    typeof params.prompt === "string"
+      ? safeText
+      : [{ role: "user", content: [{ type: "text", text: safeText }] }];
+  return out;
+}
+
+function redactParams(
+  params: Record<string, unknown>,
+  prompt: string,
+  policy: PreCallPolicyResult,
+): Record<string, unknown> {
+  const builtinWhole = redactBuiltinPii(prompt);
+  const hasNonBuiltinRewrite =
+    policy.redactedPrompt !== prompt && policy.redactedPrompt !== builtinWhole;
+  const requiresWholePromptRewrite =
+    policy.compliance.redacted_types.length === 0 || hasNonBuiltinRewrite;
+
+  const out = requiresWholePromptRewrite
+    ? collapsedRedactedParams(
+        params,
+        policy.redactedPrompt !== prompt
+          ? policy.redactedPrompt
+          : POLICY_REDACTION_PLACEHOLDER,
+      )
+    : structuredRedactedParams(params);
+
+  assertRedactionApplied(extractParamsPrompt(out), policy.compliance);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,8 +425,9 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
       const sampled = shouldSample(config.sample_rate);
 
       const { model, provider } = modelInfo(args.model);
+      const promptText = extractParamsPrompt(params);
       const userText = extractParamsLastUser(params);
-      const policy = await applyPreCallPolicy(userText, {
+      const policy = await applyPreCallPolicy(promptText, {
         config,
         provider,
         operation: args.type === "stream" ? STREAM_OPERATION : OPERATION,
@@ -319,7 +445,7 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
           operation: args.type === "stream" ? STREAM_OPERATION : OPERATION,
           source: opts.source ?? SOURCE,
           prompt: blockedPromptForStorage(
-            extractParamsPrompt(params),
+            promptText,
             policy.compliance,
             policy.securityNormalized,
           ),
@@ -335,11 +461,12 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
         });
         throw blockedCallError(policy.compliance);
       }
+      let outboundParams = params;
       if (policy.decision === "redact") {
         // Enforcement application: a redaction that cannot be carried out
         // blocks rather than forwarding the content it was told to remove.
         const notRedacted = applyOutboundRedaction(() => {
-          redactParamsInPlace(params);
+          outboundParams = redactParams(params, promptText, policy);
         });
         if (notRedacted) {
           const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
@@ -350,7 +477,7 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
             operation: args.type === "stream" ? STREAM_OPERATION : OPERATION,
             source: opts.source ?? SOURCE,
             prompt: blockedPromptForStorage(
-              extractParamsPrompt(params),
+              promptText,
               blocked,
               policy.securityNormalized,
             ),
@@ -370,12 +497,12 @@ export function obsvrMiddleware(opts: ObsvrMiddlewareOptions = {}) {
 
       // Enforce-mode allows are sampled. Monitor mode and redaction are
       // complete evidence and always recorded (a block already threw).
-      callState.set(params, {
+      callState.set(outboundParams, {
         compliance: policy.compliance,
         auditThisCall:
           monitorModeRequiresEvidence(config) || sampled || policy.decision !== "allow",
       });
-      return params;
+      return outboundParams;
     },
 
     async wrapGenerate(args: {

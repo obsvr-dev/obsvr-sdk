@@ -108,6 +108,58 @@ const completion = (text: string) => ({
 });
 
 describe('chat.completions.runTools', () => {
+  it('governs every internal model turn and blocks before the next transport', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+
+    let providerCalls = 0;
+    const root: Record<string, any> = {};
+    const completions: Record<string, any> = {
+      _client: root,
+      async create(_body: unknown) {
+        providerCalls += 1;
+        return completion('ok');
+      },
+      runTools: undefined,
+    };
+    // The resource reads its client through `this._client`; using the captured
+    // variable here would measure the test rather than the runner receiver.
+    completions.runTools = function runTools(this: { _client: Record<string, any> }) {
+      let run: Promise<void> | undefined;
+      return {
+        on() { return this; },
+        off() { return this; },
+        done: () => (run ??= (async () => {
+          await this._client.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: 'clean first turn' }],
+          });
+          await this._client.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'user', content: 'clean first turn' },
+              { role: 'tool', content: 'tool returned 123-45-6789' },
+            ],
+          });
+        })()),
+      };
+    };
+    root.chat = { completions };
+
+    const client = wrap(root);
+    const runner = client.chat.completions.runTools({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: 'clean first turn' }],
+      tools: [],
+    });
+
+    await expect(runner.done()).rejects.toThrow();
+    expect(providerCalls).toBe(1);
+  });
+
   it('emits one event per model call and per tool call, inside a run pair', async () => {
     init({ api_key: 'test', sample_rate: 1 });
     let reached = 0;
@@ -201,7 +253,7 @@ describe('chat.completions.runTools', () => {
         "this tool's callback is invoked by the provider's runner and obsvr is not on that boundary",
     });
     expect(meta.tool_gate).toBe('absent');
-    expect(meta.tool_gate_absent_reason).toBe('no_tool_control_configured');
+    expect(meta.tool_gate_absent_reason).toBe('no_tools_in_request');
     // The model-call events are NOT marked: those genuinely went through the
     // invocation's pre-call pipeline, so marking them would be the opposite
     // error.

@@ -307,7 +307,7 @@ Explicit `obsvr.wrap()` is the clearest coverage boundary. Automatic and framewo
 | CrewAI / AutoGen / Haystack / Pydantic-AI | — | ✅ |
 | MCP | ✅ | ✅ |
 
-A checkmark means an integration exists; it does not mean every callback can enforce. LangChain, LlamaIndex, and OpenAI Agents **model tracing callbacks are observe-only**: they protect the stored audit copy but cannot block or rewrite a provider request already in flight. Tool enforcement depends on a pre-invocation gate and differs by framework.
+A checkmark means an integration exists; it does not mean every callback can enforce. LangChain model-start callbacks enforce in both SDKs, and Python's LlamaIndex model-start callback enforces; because those callbacks cannot rewrite provider-bound input, a redaction request fails closed. TypeScript LlamaIndex tracing and OpenAI Agents tracing remain observe-only, with explicit model wrappers available for enforcement. Tool enforcement depends on a pre-invocation gate and differs by framework.
 
 ### Does a tool-policy block actually stop the tool?
 
@@ -325,7 +325,7 @@ This compact grade describes the supported enforcement mechanism. The [security 
 | CrewAI | *no integration* | **enforces** |
 | LlamaIndex | via `obsvrGovernTool` | **enforces** |
 | Vercel AI SDK | via `obsvrGovernTool` | *no integration* |
-| provider tool runners | **enforces** on local tools | **enforces** on supported local tools |
+| provider tool runners | **enforces** on supported local turns and tools | **enforces** on supported local turns and tools |
 
 Read [`COMPATIBILITY.md`](COMPATIBILITY.md) for tested versions and evidence quality, and [the enforcement boundary inventory](SECURITY.md#enforcement-semantics-what-blocking-means) before placing a destructive capability behind a framework integration.
 
@@ -483,7 +483,7 @@ Provider latency is excluded. Full distributions, payload scaling, stress tiers,
 ## Important limitations
 
 1. **TypeScript is ESM-only.** The module interceptor sees supported exact ESM package specifiers, not CommonJS `require()` or arbitrary subpath imports. Use `obsvr.wrap()` when coverage must be explicit.
-2. **Some model callbacks observe rather than govern.** LangChain, LlamaIndex, and OpenAI Agents tracing callbacks cannot block or redact the outbound provider call; they record `not_evaluated` and protect only the stored copy.
+2. **Some tracing callbacks still observe rather than govern.** TypeScript LlamaIndex tracing and OpenAI Agents tracing cannot block or rewrite an outbound provider call. Use `obsvrGovernLlamaIndexLLM` / `governModel` / `govern_model` (or their model-provider variants) when those model calls must enforce. LangChain model-start callbacks enforce in both SDKs; Python's LlamaIndex model-start callback enforces too.
 3. **Tool enforcement is binding-specific.** A framework may expose several invocation routes. Use the documented pre-invocation integration, MCP, or a governed tool for destructive capabilities.
 4. **Stream output is not withheld after dispatch.** Pre-call controls run before opening a supported stream, but post-call response scanning is audit-time and tokens reach the caller as they arrive.
 5. **Fail-open is the default.** Set `failMode: "closed"` when detector or hook failure must refuse the call. Policy floors, canary leaks, and failed redaction remain fail-closed in either mode.

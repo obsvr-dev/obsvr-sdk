@@ -121,12 +121,98 @@ def _read_body_bytes(body: Any) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+def _append_string_leaves(value: Any, into: List[str]) -> None:
+    if isinstance(value, str):
+        into.append(value)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _append_string_leaves(item, into)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _append_string_leaves(item, into)
+
+
+def _redact_string_leaves_inplace(value: Any) -> None:
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            if isinstance(item, str):
+                value[index] = redact_builtin_pii(item)
+            else:
+                _redact_string_leaves_inplace(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, str):
+                value[key] = redact_builtin_pii(item)
+            else:
+                _redact_string_leaves_inplace(item)
+
+
+def _converse_block_text(block: Any) -> str:
+    if not isinstance(block, dict):
+        return ""
+    parts: List[str] = []
+    if isinstance(block.get("text"), str):
+        parts.append(block["text"])
+    tool_use = block.get("toolUse")
+    if isinstance(tool_use, dict) and tool_use.get("input") is not None:
+        _append_string_leaves(tool_use["input"], parts)
+    tool_result = block.get("toolResult")
+    if isinstance(tool_result, dict) and isinstance(tool_result.get("content"), list):
+        for result in tool_result["content"]:
+            if not isinstance(result, dict):
+                continue
+            if isinstance(result.get("text"), str):
+                parts.append(result["text"])
+            if result.get("json") is not None:
+                _append_string_leaves(result["json"], parts)
+    guard_content = block.get("guardContent")
+    if isinstance(guard_content, dict):
+        guard_text = guard_content.get("text")
+        if isinstance(guard_text, dict) and isinstance(guard_text.get("text"), str):
+            parts.append(guard_text["text"])
+    reasoning_content = block.get("reasoningContent")
+    if isinstance(reasoning_content, dict):
+        reasoning_text = reasoning_content.get("reasoningText")
+        if isinstance(reasoning_text, dict) and isinstance(reasoning_text.get("text"), str):
+            parts.append(reasoning_text["text"])
+    return "\n".join(parts)
+
+
+def _redact_converse_block_inplace(block: Any) -> None:
+    if not isinstance(block, dict):
+        return
+    if isinstance(block.get("text"), str):
+        block["text"] = redact_builtin_pii(block["text"])
+    tool_use = block.get("toolUse")
+    if isinstance(tool_use, dict) and tool_use.get("input") is not None:
+        _redact_string_leaves_inplace(tool_use["input"])
+    tool_result = block.get("toolResult")
+    if isinstance(tool_result, dict) and isinstance(tool_result.get("content"), list):
+        for result in tool_result["content"]:
+            if not isinstance(result, dict):
+                continue
+            if isinstance(result.get("text"), str):
+                result["text"] = redact_builtin_pii(result["text"])
+            if result.get("json") is not None:
+                _redact_string_leaves_inplace(result["json"])
+    guard_content = block.get("guardContent")
+    if isinstance(guard_content, dict):
+        guard_text = guard_content.get("text")
+        if isinstance(guard_text, dict) and isinstance(guard_text.get("text"), str):
+            guard_text["text"] = redact_builtin_pii(guard_text["text"])
+    reasoning_content = block.get("reasoningContent")
+    if isinstance(reasoning_content, dict):
+        reasoning_text = reasoning_content.get("reasoningText")
+        if isinstance(reasoning_text, dict) and isinstance(reasoning_text.get("text"), str):
+            reasoning_text["text"] = redact_builtin_pii(reasoning_text["text"])
+
+
 def _converse_content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
         return ""
-    parts = [b.get("text", "") for b in content if isinstance(b, dict) and isinstance(b.get("text"), str)]
+    parts = [_converse_block_text(block) for block in content]
     return "\n".join(p for p in parts if p)
 
 
@@ -171,9 +257,8 @@ def _redact_converse_inplace(kwargs: Dict[str, Any]) -> None:
             if isinstance(content, str):
                 msg["content"] = redact_builtin_pii(content)
             elif isinstance(content, list):
-                for b in content:
-                    if isinstance(b, dict) and isinstance(b.get("text"), str):
-                        b["text"] = redact_builtin_pii(b["text"])
+                for block in content:
+                    _redact_converse_block_inplace(block)
 
 
 def _decode_body(body: Any) -> Optional[Dict[str, Any]]:
@@ -203,9 +288,7 @@ def _extract_invoke_prompt(body: Optional[Dict[str, Any]]) -> str:
             if isinstance(content, str):
                 text = content
             elif isinstance(content, list):
-                text = "\n".join(
-                    p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)
-                )
+                text = _converse_content_text(content)
             parts.append(f"{msg.get('role', 'user')}: {text}")
     if isinstance(body.get("inputText"), str):
         parts.append(body["inputText"])
@@ -225,9 +308,7 @@ def _extract_invoke_last_user(body: Optional[Dict[str, Any]]) -> str:
                 if isinstance(content, str):
                     return content
                 if isinstance(content, list):
-                    return " ".join(
-                        p.get("text", "") for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)
-                    )
+                    return _converse_content_text(content)
     if isinstance(body.get("inputText"), str):
         return body["inputText"]
     if isinstance(body.get("prompt"), str):
@@ -247,9 +328,8 @@ def _redact_invoke_body_inplace(body: Dict[str, Any]) -> None:
             if isinstance(content, str):
                 msg["content"] = redact_builtin_pii(content)
             elif isinstance(content, list):
-                for p in content:
-                    if isinstance(p, dict) and isinstance(p.get("text"), str):
-                        p["text"] = redact_builtin_pii(p["text"])
+                for block in content:
+                    _redact_converse_block_inplace(block)
     if isinstance(body.get("inputText"), str):
         body["inputText"] = redact_builtin_pii(body["inputText"])
     if isinstance(body.get("prompt"), str):
@@ -383,7 +463,7 @@ class _GovernedBedrockClient:
                 provider=PROVIDER,
                 operation=operation,
                 model=model,
-                scan_text=user_text or prompt_text,
+                scan_text=prompt_text,
                 metadata=identity_meta,
             )
             compliance = policy["compliance"]

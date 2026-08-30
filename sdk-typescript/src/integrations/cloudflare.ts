@@ -40,19 +40,16 @@ import {
   buildIntegrationEvent,
   debugLog,
   emitIntegrationEvent,
-  extractAllPromptText,
-  extractLastUserText,
   getConfig,
   isAsyncIterable,
   monitorModeRequiresEvidence,
   redactBuiltinPii,
-  redactForStorage,
-  redactRequestMessagesInPlace,
   setupExitHandlers,
   shouldSample,
   type IntegrationEventParams,
   type IntegrationOptions,
   outboundRedactionBlockedCompliance,
+  assertRedactionApplied,
 } from "./core.js";
 import { applyOutboundRedaction } from "../policy/detector-guard.js";
 
@@ -80,6 +77,40 @@ interface WorkersAIRunInputs {
   [key: string]: unknown;
 }
 
+function collectWorkersText(
+  value: unknown,
+  out: string[],
+  seen: WeakSet<object>,
+): void {
+  if (typeof value === "string") {
+    out.push(value);
+    return;
+  }
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+
+  seen.add(value);
+  for (const item of Object.values(value)) {
+    collectWorkersText(item, out, seen);
+  }
+}
+
+/**
+ * Extract every string value that the Workers AI binding will receive.
+ *
+ * Workers AI models accept more than the OpenAI-style `messages` shape. Text
+ * can also live in `prompt`, multipart message content, or model-specific
+ * nested input objects. The pre-call boundary therefore evaluates the complete
+ * provider-bound value tree rather than only the last user message.
+ */
+function extractWorkersProviderText(
+  inputs: WorkersAIRunInputs | undefined,
+): string {
+  if (!inputs) return "";
+  const text: string[] = [];
+  collectWorkersText(inputs, text, new WeakSet<object>());
+  return text.join("\n");
+}
+
 /**
  * Extract prompt text from Workers AI inputs (messages or prompt).
  */
@@ -101,17 +132,60 @@ function extractWorkersPrompt(inputs: WorkersAIRunInputs | undefined): string {
 function extractWorkersLastUser(inputs: WorkersAIRunInputs | undefined): string {
   if (!inputs) return "";
   if (Array.isArray(inputs.messages)) {
-    return extractLastUserText(inputs);
+    for (let i = inputs.messages.length - 1; i >= 0; i -= 1) {
+      const message = inputs.messages[i];
+      if (message?.role !== "user") continue;
+      const text: string[] = [];
+      collectWorkersText(message.content, text, new WeakSet<object>());
+      return text.join(" ");
+    }
   }
   if (typeof inputs.prompt === "string") return inputs.prompt;
   return "";
 }
 
-function redactWorkersInputsInPlace(inputs: WorkersAIRunInputs): void {
-  if (typeof inputs.prompt === "string") {
-    inputs.prompt = redactBuiltinPii(inputs.prompt);
+function isPlainRecord(value: object): value is Record<string, unknown> {
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function redactWorkersValue(
+  value: unknown,
+  seen: WeakMap<object, unknown>,
+): unknown {
+  if (typeof value === "string") return redactBuiltinPii(value);
+  if (value === null || typeof value !== "object") return value;
+
+  const existing = seen.get(value);
+  if (existing !== undefined) return existing;
+
+  if (Array.isArray(value)) {
+    const copy: unknown[] = [];
+    seen.set(value, copy);
+    for (const item of value) copy.push(redactWorkersValue(item, seen));
+    return copy;
   }
-  redactRequestMessagesInPlace(inputs);
+
+  // Workers AI request bodies are JSON-like. Preserve non-record values (for
+  // example typed arrays used by multimodal models) byte-for-byte; the outcome
+  // verification below fails closed if one of them exposes sensitive text that
+  // this safe copier cannot rewrite.
+  if (!isPlainRecord(value)) return value;
+
+  const copy: Record<string, unknown> = Object.create(Object.getPrototypeOf(value));
+  seen.set(value, copy);
+  for (const [key, item] of Object.entries(value)) {
+    copy[key] = redactWorkersValue(item, seen);
+  }
+  return copy;
+}
+
+/** Build a redacted outbound copy without writing through caller-owned input. */
+function redactWorkersInputs(inputs: WorkersAIRunInputs): WorkersAIRunInputs {
+  return redactWorkersValue(
+    inputs,
+    new WeakMap<object, unknown>(),
+  ) as WorkersAIRunInputs;
 }
 
 /**
@@ -252,7 +326,7 @@ function createAuditedRun(
     const { cleaned_args, audit_fields } = filterArgs(
       rawInputs !== undefined ? [rawInputs] : [],
     );
-    const inputs = cleaned_args[0] as WorkersAIRunInputs | undefined;
+    let inputs = cleaned_args[0] as WorkersAIRunInputs | undefined;
     const callArgs = [...args];
     if (rawInputs !== undefined) callArgs[1] = inputs;
 
@@ -273,8 +347,9 @@ function createAuditedRun(
       metadata: audit_fields.metadata ?? opts.metadata,
     };
 
-    const userText = extractWorkersLastUser(inputs);
-    const policy = await applyPreCallPolicy(userText, {
+    let promptText = extractWorkersProviderText(inputs);
+    let userText = extractWorkersLastUser(inputs);
+    const policy = await applyPreCallPolicy(promptText, {
       config,
       provider: PROVIDER,
       operation: OPERATION,
@@ -293,7 +368,7 @@ function createAuditedRun(
           operation: OPERATION,
           source: opts.source ?? "cloudflare",
           prompt: blockedPromptForStorage(
-            extractAllPromptText(inputs) || extractWorkersPrompt(inputs),
+            promptText,
             policy.compliance,
             policy.securityNormalized,
           ),
@@ -331,7 +406,11 @@ function createAuditedRun(
             "redaction could not be applied: the request carried no inputs to rewrite",
           );
         }
-        redactWorkersInputsInPlace(inputs);
+        inputs = redactWorkersInputs(inputs);
+        promptText = extractWorkersProviderText(inputs);
+        userText = extractWorkersLastUser(inputs);
+        assertRedactionApplied(promptText, policy.compliance);
+        callArgs[1] = inputs;
       });
       if (notRedacted) {
         const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
@@ -343,7 +422,7 @@ function createAuditedRun(
             operation: OPERATION,
             source: opts.source ?? "cloudflare",
             prompt: blockedPromptForStorage(
-              extractAllPromptText(inputs) || extractWorkersPrompt(inputs),
+              promptText,
               blocked,
               policy.securityNormalized,
             ),

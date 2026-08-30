@@ -28,7 +28,7 @@ const SERIALIZED_OPENAI = {
 };
 
 describe('ObsvrCallbackHandler', () => {
-  it('samples out a clean observe-only call at sample_rate 0 in enforce mode', async () => {
+  it('samples out a clean governed call at sample_rate 0 in enforce mode', async () => {
     init({ api_key: 'test', sample_rate: 0 });
     const handler = new ObsvrCallbackHandler();
 
@@ -47,7 +47,7 @@ describe('ObsvrCallbackHandler', () => {
     await handler.handleLLMEnd({ generations: [[{ text: 'ok' }]] }, 'run-monitor');
 
     await waitForEvents(1);
-    expect(sentEvents[0]).toMatchObject({ action_taken: 'not_evaluated', response: 'ok' });
+    expect(sentEvents[0]).toMatchObject({ action_taken: 'allowed', response: 'ok' });
   });
 
   it('pairs handleLLMStart -> handleLLMEnd by runId', async () => {
@@ -139,35 +139,25 @@ describe('ObsvrCallbackHandler', () => {
     expect(sentEvents[0].error_message).toBe('connection reset');
   });
 
-  it('separates stored-copy redaction from the unmodified provider call', async () => {
+  it('blocks PII at model start and emits no false redaction claim', async () => {
     init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
     const handler = new ObsvrCallbackHandler();
 
-    await handler.handleLLMStart(
-      SERIALIZED_OPENAI,
-      ['my ssn is 123-45-6789'],
-      'run-4',
-    );
-    await handler.handleLLMEnd(
-      { generations: [[{ text: 'noted' }]] },
-      'run-4',
-    );
+    await expect(
+      handler.handleLLMStart(
+        SERIALIZED_OPENAI,
+        ['my ssn is 123-45-6789'],
+        'run-4',
+      ),
+    ).rejects.toThrow(/Request blocked by policy/);
 
     await waitForEvents(1);
     const e = sentEvents[0];
-    // The callback ran after provider dispatch, so it cannot claim the call was
-    // redacted even though it scrubs the event copy.
-    expect(e.event_type).toBe('llm_call');
-    expect(e.action_taken).toBe('not_evaluated');
+    expect(e.event_type).toBe('blocked_call');
+    expect(e.action_taken).toBe('blocked');
     expect(e.action_reason).toBe('pii_detected');
     expect(e.prompt).toContain('[REDACTED_SSN]');
     expect(e.prompt).not.toContain('123-45-6789');
-    expect(e.metadata.obsvr_telemetry).toMatchObject({
-      stored_redaction_scope: 'observe_only',
-      stored_redaction_types: ['ssn'],
-      stored_redaction_outbound_unmodified: true,
-      stored_redaction_requested_action: 'block',
-    });
   });
 
   it('ignores ends with no matching start', async () => {

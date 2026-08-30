@@ -24,6 +24,7 @@ from typing import Any, Dict, List
 
 import obsvr
 from obsvr import config as _config
+from obsvr.errors import ObsvrPolicyError
 from obsvr.integrations.langchain import ObsvrCallbackHandler
 
 SSN = "123-45-6789"
@@ -63,18 +64,24 @@ def _drive(monkeypatch: Any, sample_rate: float, text: str) -> Dict[str, Any]:
 
     handler = ObsvrCallbackHandler()
     run_id = uuid.uuid4()
-    handler.on_chat_model_start(
-        {"id": ["langchain", "chat_models", "openai", "ChatOpenAI"]},
-        [[{"role": "user", "content": text}]],
-        run_id=run_id,
-        invocation_params={"model": "gpt-4o-mini"},
-    )
-    handler.on_llm_end(_FakeLLMResult("assistant reply"), run_id=run_id)
+    blocked = False
+    try:
+        handler.on_chat_model_start(
+            {"id": ["langchain", "chat_models", "openai", "ChatOpenAI"]},
+            [[{"role": "user", "content": text}]],
+            run_id=run_id,
+            invocation_params={"model": "gpt-4o-mini"},
+        )
+    except ObsvrPolicyError:
+        blocked = True
+    else:
+        handler.on_llm_end(_FakeLLMResult("assistant reply"), run_id=run_id)
 
     stored = " ".join(str(e.get("prompt", "")) for e in rec.events)
     return {
         "events": rec.events,
         "count": len(rec.events),
+        "blocked": blocked,
         "stored_has_raw_secret": SSN in stored,
         "actions": [e.get("action_taken") for e in rec.events],
     }
@@ -86,22 +93,24 @@ def _drive(monkeypatch: Any, sample_rate: float, text: str) -> Dict[str, Any]:
 
 def test_pii_scan_runs_at_sample_rate_zero(monkeypatch: Any) -> None:
     r = _drive(monkeypatch, 0.0, f"my ssn is {SSN}")
+    assert r["blocked"], "the callback allowed a provider-bound blocked prompt"
     assert r["count"] >= 1, "a governed call emitted nothing at sample_rate 0"
     assert not r["stored_has_raw_secret"], "the raw SSN was stored unredacted"
 
 
 def test_governed_event_is_never_sampled_out(monkeypatch: Any) -> None:
     r = _drive(monkeypatch, 0.0, f"my ssn is {SSN}")
-    assert any(a != "allowed" for a in r["actions"]), (
+    assert any(a == "blocked" for a in r["actions"]), (
         f"no governed verdict recorded at sample_rate 0: {r['actions']}"
     )
 
 
 def test_same_verdict_at_sample_rate_one(monkeypatch: Any) -> None:
     r = _drive(monkeypatch, 1.0, f"my ssn is {SSN}")
+    assert r["blocked"]
     assert r["count"] >= 1
     assert not r["stored_has_raw_secret"]
-    assert any(a != "allowed" for a in r["actions"])
+    assert any(a == "blocked" for a in r["actions"])
 
 
 # -- emission half: sampling still samples ----------------------------------
@@ -117,5 +126,6 @@ def test_clean_allowed_call_is_still_sampled_out(monkeypatch: Any) -> None:
 
 def test_clean_allowed_call_emits_at_sample_rate_one(monkeypatch: Any) -> None:
     r = _drive(monkeypatch, 1.0, "what is a good tomato variety for a cold climate")
+    assert not r["blocked"]
     assert r["count"] >= 1
-    assert all(a == "not_evaluated" for a in r["actions"])
+    assert all(a == "allowed" for a in r["actions"])

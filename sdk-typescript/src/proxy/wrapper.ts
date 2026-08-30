@@ -32,6 +32,7 @@ import {
   escalateViewOnlyAction,
   redactForStorage,
 } from "../policy/deobfuscate.js";
+import { assertRedactionApplied } from "../integrations/core.js";
 import type { DeobfuscationView } from "../policy/deobfuscate.js";
 import {
   scanForCanary,
@@ -255,13 +256,17 @@ type ApiShape =
 const AUDITABLE_METHODS = new Map<string, ApiShape>([
   ["chat.completions.create", "openai-chat"], // OpenAI / Azure OpenAI
   ["chat.completions.parse", "openai-chat"], // OpenAI structured outputs
+  ["completions.create", "openai-chat"], // OpenAI legacy text completions
   ["messages.create", "anthropic-messages"], // Anthropic
   ["messages.parse", "anthropic-messages"], // Anthropic structured outputs
   ["generateContent", "gemini-generate"], // Google Gemini
   ["models.generateContent", "gemini-generate"], // Maintained @google/genai
   ["models.generateContentStream", "gemini-generate"], // Maintained @google/genai
+  ["sendMessage", "gemini-generate"], // Gemini chat session
+  ["sendMessageStream", "gemini-generate"], // Gemini chat session stream
   ["responses.create", "openai-responses"], // OpenAI Responses API
   ["responses.parse", "openai-responses"], // OpenAI Responses structured outputs
+  ["responses.compact", "openai-responses"], // OpenAI Responses compaction
   // The beta namespaces carry exactly the payload their GA twin carries, so
   // they are governed identically. They are enumerated rather than matched by
   // stripping a leading "beta." segment: a strip rule would auto-govern every
@@ -270,6 +275,7 @@ const AUDITABLE_METHODS = new Map<string, ApiShape>([
   // text-bearing gaps listed in half 2.
   ["beta.messages.create", "anthropic-messages"], // Anthropic beta
   ["beta.responses.create", "openai-responses"], // OpenAI Responses beta
+  ["beta.responses.compact", "openai-responses"], // OpenAI Responses beta compaction
   ["beta.chat.completions.create", "openai-chat"], // OpenAI chat beta
   ["beta.chat.completions.parse", "openai-chat"], // OpenAI chat beta
 ]);
@@ -333,6 +339,12 @@ const TOOL_RUNNER_METHODS = new Map<
     "beta.messages.toolRunner",
     { shape: "anthropic-messages", dialect: "anthropic-messages", thenable: true },
   ],
+]);
+
+/** Factories whose returned object contains provider calls. */
+const GOVERNED_FACTORY_METHODS = new Set([
+  "startChat", // Legacy @google/generative-ai
+  "chats.create", // Maintained @google/genai
 ]);
 
 /**
@@ -406,6 +418,33 @@ function atPath(ctx: PathContext, path: string[]): PathContext {
   const child = Object.create(ctx) as PathContext;
   child.path = path;
   return child;
+}
+
+/**
+ * Give a provider tool runner a governed client for every model turn it makes.
+ *
+ * OpenAI and Anthropic resource objects pass their own `_client` into the
+ * runner. Calling the method on the raw resource therefore governs only the
+ * outer runner invocation; turns produced after local tools run bypass the
+ * proxy. A transparent receiver proxy replaces only that one read while
+ * preserving the provider resource and its synchronous return contract.
+ */
+function runnerTargetWithGovernedClient(target: object, ctx: PathContext): object {
+  let runnerClient: unknown;
+  try {
+    runnerClient = Reflect.get(target, "_client");
+  } catch {
+    return target;
+  }
+  if (runnerClient !== ctx.rootClient) return target;
+
+  const governedClient = createRecursiveProxy(ctx.rootClient, atPath(ctx, []));
+  return new Proxy(target, {
+    get(obj, prop, receiver) {
+      if (prop === "_client") return governedClient;
+      return Reflect.get(obj, prop, receiver);
+    },
+  });
 }
 
 export type PathContext = {
@@ -494,6 +533,9 @@ function detectProvider(
   if (typeof c.generateContent === "function") {
     return "google";
   }
+  if (typeof c.sendMessage === "function") {
+    return "google";
+  }
   const models = c.models as Record<string, unknown> | undefined;
   if (typeof models?.generateContent === "function") {
     return "google";
@@ -562,6 +604,44 @@ function classifyError(error: unknown): AuditEvent["error_type"] {
  * Extract all visible prompt text from request args for PII scanning.
  * Handles OpenAI (messages), Anthropic (messages + system), and Gemini (contents).
  */
+function appendStringLeaves(value: unknown, parts: string[]): void {
+  if (typeof value === "string") {
+    parts.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) appendStringLeaves(item, parts);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      appendStringLeaves(item, parts);
+    }
+  }
+}
+
+function appendContentText(value: unknown, parts: string[]): void {
+  if (typeof value === "string") {
+    parts.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) appendContentText(item, parts);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  for (const key of [
+    "text",
+    "content",
+    "input",
+    "output",
+    "parts",
+    "functionResponse",
+    "functionCall",
+    "response",
+    "args",
+  ] as const) {
+    if (key in record) appendContentText(record[key], parts);
+  }
+}
+
 function extractPromptTextFromArgs(args: unknown): string {
   // Gemini accepts a plain string: generateContent('text')
   if (typeof args === "string") return args;
@@ -569,8 +649,18 @@ function extractPromptTextFromArgs(args: unknown): string {
   const req = args as Record<string, unknown>;
   const parts: string[] = [];
 
+  if (typeof req.prompt === "string") {
+    parts.push(req.prompt);
+  } else if (Array.isArray(req.prompt)) {
+    for (const item of req.prompt) {
+      if (typeof item === "string") parts.push(item);
+    }
+  }
+
   if (typeof req.system === "string") {
     parts.push(req.system);
+  } else if (Array.isArray(req.system)) {
+    appendContentText(req.system, parts);
   }
 
   if (Array.isArray(req.messages)) {
@@ -578,10 +668,7 @@ function extractPromptTextFromArgs(args: unknown): string {
       if (typeof msg.content === "string") {
         parts.push(msg.content);
       } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content as Record<string, unknown>[]) {
-          const p = part as Record<string, unknown>;
-          if (typeof p.text === "string") parts.push(p.text);
-        }
+        appendContentText(msg.content, parts);
       }
     }
   }
@@ -589,6 +676,10 @@ function extractPromptTextFromArgs(args: unknown): string {
   if ("contents" in req) {
     const geminiPrompt = extractGeminiPrompt(req as unknown as GeminiRequest);
     if (geminiPrompt) parts.push(geminiPrompt);
+  }
+
+  if ("message" in req) {
+    appendContentText(req.message, parts);
   }
 
   // OpenAI Responses API: instructions (system) + input (string or item list)
@@ -599,6 +690,7 @@ function extractPromptTextFromArgs(args: unknown): string {
     parts.push(req.input);
   } else if (Array.isArray(req.input)) {
     for (const item of req.input as Record<string, unknown>[]) {
+      if ("output" in item) appendStringLeaves(item.output, parts);
       if (typeof item.content === "string") {
         parts.push(item.content);
       } else if (Array.isArray(item.content)) {
@@ -623,6 +715,12 @@ function extractLastUserMessageText(args: unknown): string {
   if (!args || typeof args !== "object") return "";
   const req = args as Record<string, unknown>;
 
+  if ("message" in req) {
+    const parts: string[] = [];
+    appendContentText(req.message, parts);
+    if (parts.length > 0) return parts.join(" ");
+  }
+
   // OpenAI / Anthropic: scan messages array in reverse for last user turn
   if (Array.isArray(req.messages)) {
     for (let i = (req.messages as unknown[]).length - 1; i >= 0; i--) {
@@ -630,9 +728,9 @@ function extractLastUserMessageText(args: unknown): string {
       if (msg.role === "user") {
         if (typeof msg.content === "string") return msg.content;
         if (Array.isArray(msg.content)) {
-          return (msg.content as Record<string, unknown>[])
-            .map((p) => (typeof p.text === "string" ? p.text : ""))
-            .join(" ");
+          const parts: string[] = [];
+          appendContentText(msg.content, parts);
+          return parts.join(" ");
         }
       }
     }
@@ -695,14 +793,40 @@ function redactMessagesInPlace(args: unknown): void {
   if (!args || typeof args !== "object") return;
   const req = args as Record<string, unknown>;
 
+  if (typeof req.prompt === "string") {
+    req.prompt = redactBuiltinPii(req.prompt);
+  } else if (Array.isArray(req.prompt)) {
+    req.prompt = req.prompt.map((item) =>
+      typeof item === "string" ? redactBuiltinPii(item) : item,
+    );
+  }
+
   /** Redact a `{text}` part list into a NEW array of NEW parts. */
   const redactTextParts = (parts: unknown[]): unknown[] =>
     parts.map((part) => {
       if (!part || typeof part !== "object") return part;
       const p = part as Record<string, unknown>;
-      if (typeof p.text !== "string") return part;
-      return { ...p, text: redactBuiltinPii(p.text) };
+      const updates: Record<string, unknown> = {};
+      for (const key of ["text", "content", "input", "output"] as const) {
+        if (key in p) updates[key] = redactStringLeaves(p[key]);
+      }
+      return Object.keys(updates).length > 0 ? { ...p, ...updates } : part;
     });
+
+  /** Redact string leaves in provider-bound structured tool output. */
+  const redactStringLeaves = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactStringLeaves);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+          key,
+          redactStringLeaves(item),
+        ]),
+      );
+    }
+    return value;
+  };
 
   /** Redact every text carrier in the maintained SDK's ContentListUnion. */
   const redactGeminiContent = (value: unknown): unknown => {
@@ -716,6 +840,23 @@ function redactMessagesInPlace(args: unknown): void {
     if (Array.isArray(item.parts)) {
       return { ...item, parts: item.parts.map(redactGeminiContent) };
     }
+    if (item.functionResponse && typeof item.functionResponse === "object") {
+      const response = item.functionResponse as Record<string, unknown>;
+      return {
+        ...item,
+        functionResponse: {
+          ...response,
+          response: redactStringLeaves(response.response),
+        },
+      };
+    }
+    if (item.functionCall && typeof item.functionCall === "object") {
+      const call = item.functionCall as Record<string, unknown>;
+      return {
+        ...item,
+        functionCall: { ...call, args: redactStringLeaves(call.args) },
+      };
+    }
     return value;
   };
 
@@ -723,17 +864,28 @@ function redactMessagesInPlace(args: unknown): void {
   const redactContentCarrier = (entry: unknown): unknown => {
     if (!entry || typeof entry !== "object") return entry;
     const e = entry as Record<string, unknown>;
+    const output = "output" in e ? redactStringLeaves(e.output) : undefined;
     if (typeof e.content === "string") {
-      return { ...e, content: redactBuiltinPii(e.content) };
+      return {
+        ...e,
+        ...(output !== undefined ? { output } : {}),
+        content: redactBuiltinPii(e.content),
+      };
     }
     if (Array.isArray(e.content)) {
-      return { ...e, content: redactTextParts(e.content) };
+      return {
+        ...e,
+        ...(output !== undefined ? { output } : {}),
+        content: redactTextParts(e.content),
+      };
     }
-    return entry;
+    return output !== undefined ? { ...e, output } : entry;
   };
 
   if (typeof req.system === "string") {
     req.system = redactBuiltinPii(req.system);
+  } else if (Array.isArray(req.system)) {
+    req.system = redactTextParts(req.system);
   }
 
   if (Array.isArray(req.messages)) {
@@ -742,6 +894,9 @@ function redactMessagesInPlace(args: unknown): void {
 
   if ("contents" in req) {
     req.contents = redactGeminiContent(req.contents);
+  }
+  if ("message" in req) {
+    req.message = redactGeminiContent(req.message);
   }
   if ("systemInstruction" in req) {
     req.systemInstruction = redactGeminiContent(req.systemInstruction);
@@ -764,6 +919,130 @@ function redactMessagesInPlace(args: unknown): void {
     req.input = redactBuiltinPii(req.input);
   } else if (Array.isArray(req.input)) {
     req.input = (req.input as unknown[]).map(redactContentCarrier);
+  }
+}
+
+/** Text retained by a provider chat object and sent on its next turn. */
+function extractGoogleChatContextText(target: object): string {
+  const parts: string[] = [];
+  const seen = new Set<unknown>();
+  const root = target as Record<string, unknown>;
+  const nested = root.model && typeof root.model === "object"
+    ? root.model as Record<string, unknown>
+    : undefined;
+  const carriers = nested ? [root, nested] : [root];
+
+  for (const record of carriers) {
+    for (const key of ["history", "_history", "historyInternal"] as const) {
+      const value = record[key];
+      if (value !== undefined && !seen.has(value)) {
+        seen.add(value);
+        appendContentText(value, parts);
+      }
+    }
+
+    if (record.systemInstruction !== undefined && !seen.has(record.systemInstruction)) {
+      seen.add(record.systemInstruction);
+      appendContentText(record.systemInstruction, parts);
+    }
+    if (record.tools !== undefined && !seen.has(record.tools)) {
+      seen.add(record.tools);
+      appendStringLeaves(record.tools, parts);
+    }
+
+    for (const key of ["config", "params"] as const) {
+      const value = record[key];
+      if (!value || typeof value !== "object" || seen.has(value)) continue;
+      seen.add(value);
+      const config = value as Record<string, unknown>;
+      if ("systemInstruction" in config) appendContentText(config.systemInstruction, parts);
+      if ("history" in config && !seen.has(config.history)) {
+        seen.add(config.history);
+        appendContentText(config.history, parts);
+      }
+    }
+
+    const cached = record.cachedContent;
+    if (cached !== undefined && cached !== null) {
+      if (typeof cached === "object") {
+        const item = cached as Record<string, unknown>;
+        const before = parts.length;
+        appendContentText(item.systemInstruction, parts);
+        appendContentText(item.contents, parts);
+        if (parts.length > before) continue;
+      }
+      throw new Error("[obsvr] Google cached context is opaque and cannot be verified");
+    }
+  }
+
+  return parts.join(" ");
+}
+
+/** Redact chat-owned history/config without mutating factory arguments. */
+function redactGoogleChatContextInPlace(target: object): void {
+  const root = target as Record<string, unknown>;
+  const nested = root.model && typeof root.model === "object"
+    ? root.model as Record<string, unknown>
+    : undefined;
+  const carriers = nested ? [root, nested] : [root];
+  const redactLeaves = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactLeaves);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        redactLeaves(item),
+      ]),
+    );
+  };
+  const redactContent = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactContent);
+    if (!value || typeof value !== "object") return value;
+    const item = value as Record<string, unknown>;
+    if (typeof item.text === "string") {
+      return { ...item, text: redactBuiltinPii(item.text) };
+    }
+    if (Array.isArray(item.parts)) {
+      return { ...item, parts: item.parts.map(redactContent) };
+    }
+    if (item.functionResponse && typeof item.functionResponse === "object") {
+      return { ...item, functionResponse: redactLeaves(item.functionResponse) };
+    }
+    if (item.functionCall && typeof item.functionCall === "object") {
+      return { ...item, functionCall: redactLeaves(item.functionCall) };
+    }
+    return value;
+  };
+
+  for (const record of carriers) {
+    if (record.cachedContent !== undefined && record.cachedContent !== null) {
+      throw new TypeError("Google cached context cannot be redacted in place");
+    }
+    for (const key of ["_history", "historyInternal"] as const) {
+      if (record[key] !== undefined) record[key] = redactContent(record[key]);
+    }
+    if (record._history === undefined && record.historyInternal === undefined
+      && record.history !== undefined) {
+      record.history = redactContent(record.history);
+    }
+    if (record.systemInstruction !== undefined) {
+      record.systemInstruction = redactContent(record.systemInstruction);
+    }
+    if (record.tools !== undefined) record.tools = redactLeaves(record.tools);
+    for (const key of ["config", "params"] as const) {
+      const value = record[key];
+      if (!value || typeof value !== "object") continue;
+      const config = value as Record<string, unknown>;
+      record[key] = {
+        ...config,
+        ...(config.systemInstruction !== undefined
+          ? { systemInstruction: redactContent(config.systemInstruction) }
+          : {}),
+        ...(config.history !== undefined ? { history: redactContent(config.history) } : {}),
+      };
+    }
   }
 }
 
@@ -792,6 +1071,7 @@ function buildAuditEvent(
   errorStatusCode?: number,
   modelHint?: string,
   compliance: ComplianceCtx = DEFAULT_COMPLIANCE,
+  promptOverride?: string,
 ): AuditEvent {
   const { config, options } = ctx;
 
@@ -862,6 +1142,8 @@ function buildAuditEvent(
       ? extractOpenAITokenUsage(response as any)
       : undefined;
   }
+
+  if (promptOverride !== undefined) prompt = promptOverride;
 
   // Provider-RESOLVED model snapshot from the response body (temporal
   // provenance): OpenAI/Anthropic put it in `model`, Gemini in `modelVersion`.
@@ -1151,6 +1433,7 @@ function wrapStreamingIterator(
   startTime: number,
   modelHint?: string,
   compliance: ComplianceCtx = DEFAULT_COMPLIANCE,
+  promptOverride?: string,
 ): AsyncGenerator<unknown, void, unknown> {
   if (compliance === DEFAULT_COMPLIANCE) {
     compliance = {
@@ -1241,7 +1524,9 @@ function wrapStreamingIterator(
         const operation = ctx.path.join(".");
 
         let promptText: string;
-        if (provider === "anthropic") {
+        if (promptOverride !== undefined) {
+          promptText = promptOverride;
+        } else if (provider === "anthropic") {
           promptText = extractAnthropicPrompt(
             request as AnthropicMessagesRequest,
           );
@@ -1527,8 +1812,13 @@ export async function _buildDirectCallPreCallPlan(
     let decisionTextMemo: string | undefined;
     const lastUserText = (): string =>
       (lastUserTextMemo ??= extractLastUserMessageText(cleaned_args[0]) ?? "");
-    const decisionText = (): string =>
-      (decisionTextMemo ??= extractPromptTextFromArgs(cleaned_args[0]) ?? "");
+    const decisionText = (): string => {
+      if (decisionTextMemo !== undefined) return decisionTextMemo;
+      const requestText = extractPromptTextFromArgs(cleaned_args[0]) ?? "";
+      const retainedText = provider === "google" ? extractGoogleChatContextText(target) : "";
+      decisionTextMemo = [retainedText, requestText].filter(Boolean).join(" ");
+      return decisionTextMemo;
+    };
     const invalidatePromptText = (): void => {
       lastUserTextMemo = undefined;
       decisionTextMemo = undefined;
@@ -1869,7 +2159,7 @@ export async function _buildDirectCallPreCallPlan(
                 }
               } else {
                 if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-                  await presidioRedactArgs(
+                  cleaned_args[0] = await presidioRedactArgs(
                     cleaned_args[0],
                     config.presidio_analyzer_url,
                     config.presidio_anonymizer_url,
@@ -1878,6 +2168,33 @@ export async function _buildDirectCallPreCallPlan(
                   );
                 } else {
                   redactMessagesInPlace(cleaned_args[0]);
+                }
+              }
+
+              if (provider === "google") redactGoogleChatContextInPlace(target);
+
+              const outboundText = [
+                provider === "google" ? extractGoogleChatContextText(target) : "",
+                extractPromptTextFromArgs(cleaned_args[0]),
+              ].filter(Boolean).join(" ");
+              assertRedactionApplied(outboundText, {
+                redacted_types: resolved.redactedTypes,
+              });
+              if (requiresNlpRedaction && config.presidio_analyzer_url) {
+                const verification = await presidioScan(
+                  outboundText,
+                  config.presidio_analyzer_url,
+                );
+                if (!verification.answered) {
+                  throw new Error("Presidio did not answer the post-redaction verification scan");
+                }
+                const remaining = resolved.redactedTypes.filter((type) =>
+                  verification.detected_types.includes(type),
+                );
+                if (remaining.length > 0) {
+                  throw new Error(
+                    `redaction did not remove ${remaining.sort().join(", ")}`,
+                  );
                 }
               }
             });
@@ -2604,7 +2921,7 @@ export async function _buildDirectCallPreCallPlan(
       const redactedPrompt = canaryFloor
         ? CANARY_REDACTION_PLACEHOLDER
         : actionReason === "pii_detected"
-          ? redactForStorage(extractPromptTextFromArgs(cleaned_args[0]), piiScanVia)
+          ? redactForStorage(decisionText(), piiScanVia)
           : "[BLOCKED_BY_POLICY]";
 
       const blockedEvent: AuditEvent = {
@@ -2761,6 +3078,12 @@ function createAuditedMethod(
     const { cleaned_args, audit_fields, auditThisCall, compliance, modelHint,
       detectedClassifications } =
       await governCall(args, target, ctx, provider, methodPath);
+    const promptOverride = provider === "google"
+      ? [
+          extractGoogleChatContextText(target),
+          extractPromptTextFromArgs(cleaned_args[0]),
+        ].filter(Boolean).join(" ")
+      : undefined;
 
 
     // Check for streaming - compliance boundary has already run above.
@@ -2809,6 +3132,7 @@ function createAuditedMethod(
             statusCode,
             modelHint,
             compliance,
+            promptOverride,
           );
           sendAuditAsync(config, auditEvent);
           debugLog(
@@ -2834,6 +3158,7 @@ function createAuditedMethod(
               streamStart,
               modelHint,
               compliance,
+              promptOverride,
             )
           : streamResp;
       }
@@ -2852,6 +3177,7 @@ function createAuditedMethod(
           undefined,
           modelHint,
           compliance,
+          promptOverride,
         );
         await applyPostCallGovernance(auditEvent, config);
         sendAuditAsync(config, auditEvent);
@@ -2935,6 +3261,7 @@ function createAuditedMethod(
           statusCode,
           modelHint,
           compliance,
+          promptOverride,
         );
 
         sendAuditAsync(config, auditEvent);
@@ -2971,6 +3298,7 @@ function createAuditedMethod(
           startTime,
           modelHint,
           compliance,
+          promptOverride,
         );
       }
       debugLog(
@@ -2995,6 +3323,7 @@ function createAuditedMethod(
         undefined,
         modelHint,
         compliance,
+        promptOverride,
       );
 
       await applyPostCallGovernance(auditEvent, config);
@@ -3310,7 +3639,8 @@ function createAuditedToolRunnerMethod(
         return gate.args;
       },
       start: (cleanedArgs) => {
-        const runner = originalMethod.apply(target, cleanedArgs) as RunnerLike;
+        const runnerTarget = runnerTargetWithGovernedClient(target, ctx);
+        const runner = originalMethod.apply(runnerTarget, cleanedArgs) as RunnerLike;
         if (!anthropic) observeOpenAIToolRun(runner, sink);
         return runner;
       },
@@ -3361,6 +3691,7 @@ function governedMethodPaths(): string[] {
     ...AUDITABLE_METHODS.keys(),
     ...STREAM_RUNNER_METHODS.keys(),
     ...TOOL_RUNNER_METHODS.keys(),
+    ...GOVERNED_FACTORY_METHODS,
   ];
 }
 
@@ -3504,6 +3835,14 @@ function createRecursiveProxy<T extends object>(
           && !STRICT_V21_DIRECT_METHODS.has(newPath.join("."))) {
           return function strictUnsupportedSurface(): never {
             return strictProviderSurfaceUnsupportedV21();
+          };
+        }
+        if (GOVERNED_FACTORY_METHODS.has(newPath.join("."))) {
+          return function governedFactory(...args: unknown[]): unknown {
+            const result = value.apply(obj, args);
+            return result && typeof result === "object"
+              ? createRecursiveProxy(result as object, atPath(ctx, []))
+              : result;
           };
         }
         // Provider tool runners: same synchronous-return mechanism as the

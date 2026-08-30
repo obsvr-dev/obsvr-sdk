@@ -227,23 +227,53 @@ describe('a tainted session under action: "flag"', () => {
   });
 });
 
+describe('the full tool policy pipeline', () => {
+  it('blocks PII before a provider runner enters the local callback', async () => {
+    const entered: unknown[] = [];
+    const config = configWith({ pii_policy: { rules: { ssn: 'block' } } });
+    const tool = {
+      name: 'save_contact',
+      run: (input: unknown) => {
+        entered.push(input);
+        return 'saved';
+      },
+    };
+
+    const result = gate(config, [tool]);
+    await expect(invoke(gatedTools(result)[0], { ssn: '123-45-6789' })).rejects.toThrow();
+    expect(entered).toEqual([]);
+  });
+
+  it('redacts PII before a provider runner enters the local callback', async () => {
+    const entered: unknown[] = [];
+    const config = configWith({ pii_policy: { rules: { ssn: 'redact' } } });
+    const tool = {
+      name: 'save_contact',
+      run: (input: unknown) => {
+        entered.push(input);
+        return 'saved';
+      },
+    };
+
+    const result = gate(config, [tool]);
+    await expect(invoke(gatedTools(result)[0], { ssn: '123-45-6789' })).resolves.toBe('saved');
+    expect(entered).toEqual([{ ssn: '[REDACTED_SSN]' }]);
+  });
+});
+
 // ── the report, and what it is for ──────────────────────────────────────────
 
 describe('the gate report', () => {
-  it('is not installed when no tool-level control is configured', async () => {
+  it('is installed even when local configuration has no explicit tool list', async () => {
     const config = cfg();
     const entered: string[] = [];
     const result = gate(config, [openaiRunnable('send_money', entered)]);
 
     expect(result.report).toEqual({
-      installed: false,
-      gated: [],
+      installed: true,
+      gated: ['send_money'],
       ungatable: [],
-      reason: 'no_tool_control_configured',
     });
-    // Untouched by identity: a deployment that configured nothing gets exactly
-    // the arguments it passed, and no per-tool event recording a verdict it
-    // never asked for.
     expect(await invoke(gatedTools(result)[0], {})).toContain('ran send_money');
     expect(entered).toEqual(['send_money']);
   });

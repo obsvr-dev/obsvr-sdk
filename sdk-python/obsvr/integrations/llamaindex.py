@@ -3,9 +3,12 @@
 Two independent pieces, and they sit at different boundaries:
 
 ``ObsvrLlamaIndexHandler`` pairs CBEventType.LLM on_event_start/on_event_end by
-event_id using EventPayload.PROMPT/MESSAGES/RESPONSE/COMPLETION payload keys. It
-OBSERVES: it audits LLM traffic and applies the stored-copy PII policy, and it
-refuses nothing.
+event_id using EventPayload.PROMPT/MESSAGES/RESPONSE/COMPLETION payload keys.
+The framework calls ``on_event_start`` before the decorated LLM method and does
+not swallow handler errors, so the handler applies the shared pre-call policy
+there. A block stops provider dispatch. Because the callback cannot reliably
+replace every provider-bound prompt shape, an unappliable redaction resolves
+closed rather than forwarding raw content.
 
 ``govern_agent(agent)`` is the tool gate, and it ENFORCES — a denied tool's body
 is never entered.
@@ -22,19 +25,13 @@ manually::
 
     Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler())
 
-THE HANDLER CARRIES NO TOOL POLICY, AND CANNOT. ``agent_policy`` has no effect on
-it: it refuses nothing and emits no policy event, so an operator must not read
-its events as evidence that a tool was permitted by a gate.
-
-That is not a design preference, it is the framework's shape. A callback fires
-around an operation rather than at its boundary, so a check hung off one arrives
-too late to prevent anything — and on this framework it does not arrive at all:
-``CBEventType.FUNCTION_CALL`` has ZERO dispatch sites at llama-index-core
-0.14.23 (the enum survives in ``callbacks/schema.py``; nothing raises it). The
-newer instrumentation system is no better as a gate: every handler exception is
-swallowed by ``Dispatcher`` (four ``except BaseException: pass`` blocks around
-``handle``, ``span_enter``, ``span_drop`` and ``span_exit``), so a refusal raised
-from a span handler is a no-op. Refusal has to live in the tool.
+THE HANDLER CARRIES NO TOOL POLICY. ``agent_policy`` has no effect on its model
+events; tool policy is enforced by ``govern_agent`` below. The LLM callback is
+a usable pre-model boundary, but the framework does not dispatch an equivalent
+pre-tool callback: ``CBEventType.FUNCTION_CALL`` has no dispatch sites in the
+supported core line. The newer instrumentation system is not a gate either,
+because ``Dispatcher`` swallows handler exceptions. Tool refusal therefore has
+to live in the tool callable itself.
 
 **So the gate is on the tools, and ``govern_agent`` is how it reaches all of
 them.** See that function for what it binds to and why the tool LIST is not
@@ -54,12 +51,17 @@ from typing import Any, Callable, Dict, List, Optional
 from .. import sender as _sender
 from ..binding_report import record_binding
 from ..config import try_get_config
-from ..events import emit_event, infer_provider_from_model
-from ..deobfuscate import redact_for_storage
-from ..policy import apply_observe_policy
+from ..events import blocked_call_error, emit_event, infer_provider_from_model
+from ..errors import ObsvrPolicyError
+from ..policy import (
+    apply_pre_call_policy,
+    blocked_prompt_for_storage,
+    blocked_user_input_for_storage,
+)
+from ..reason_codes import ReasonCode
 from ..token_usage import read_token_usage
 from ..dedupe import claim_emission
-from .tools import govern_tool
+from .tools import _identity_meta, govern_tool
 
 try:  # pragma: no cover - exercised only when llama-index-core is installed
     from llama_index.core.callbacks.base_handler import (  # type: ignore
@@ -246,15 +248,16 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
             config = try_get_config()
             if config is None:
                 return event_id
-            # Sampling gates the EMISSION of clean allowed events, never the PII
-            # scan. Returning here skipped apply_observe_policy below, so a
-            # sub-1.0 sample_rate silently dropped the scan and the redaction of
-            # the stored copy on a fraction of traffic. Carry the decision to the
-            # emit site, the same posture wrap.py ``_emit_audit`` already takes.
+            # Sampling gates only clean-event emission. The pre-call policy
+            # boundary still runs on every invocation.
             should_audit = _sender.should_emit(config)
 
             messages = _payload_get(payload, "messages")
-            prompt = _payload_get(payload, "prompt")
+            # EventPayload.PROMPT is named ``formatted_prompt`` on the wire;
+            # accept the plain-string spelling too for older/fake managers.
+            prompt = _payload_get(payload, "formatted_prompt")
+            if prompt is None:
+                prompt = _payload_get(payload, "prompt")
             user_text: Optional[str] = None
             if isinstance(prompt, str) and prompt:
                 prompt_text = prompt
@@ -265,27 +268,99 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
                 prompt_text = ""
 
             serialized = _payload_get(payload, "serialized")
-            model = _get(serialized, "model")
+            model = _get(serialized, "model") or _get(serialized, "model_name")
             if not isinstance(model, str) or not model:
                 model = "unknown"
 
-            observed = apply_observe_policy(prompt_text, config)
+            policy_metadata: Dict[str, Any] = {}
+            option_metadata = self._options.get("metadata")
+            if isinstance(option_metadata, dict):
+                policy_metadata.update(option_metadata)
+            identity_options = dict(self._options)
+            identity_options["metadata"] = policy_metadata
+            identity_meta = _identity_meta(identity_options)
+
+            provider = infer_provider_from_model(str(model))
+            policy = apply_pre_call_policy(
+                prompt_text,
+                config,
+                provider=provider,
+                operation="llamaindex.llm",
+                metadata=identity_meta,
+                model=str(model),
+                turn_text=user_text or prompt_text,
+            )
+            compliance = policy["compliance"]
+            if policy["decision"] == "redact":
+                compliance = dict(compliance)
+                compliance.update(
+                    {
+                        "event_type": "blocked_call",
+                        "action_taken": "blocked",
+                        "action_reason": "policy_violation",
+                        "reason_code": ReasonCode.POLICY_VIOLATION.value,
+                        "redacted_types": [],
+                        "blocked_types": list(
+                            dict.fromkeys(
+                                list(compliance.get("blocked_types") or [])
+                                + list(compliance.get("redacted_types") or [])
+                            )
+                        ),
+                        "rule_id": "sdk:outbound_redaction_unsupported",
+                        "policy_reason": (
+                            "LlamaIndex model callbacks cannot replace every "
+                            "provider-bound request; blocked instead of "
+                            "forwarding unredacted content"
+                        ),
+                    }
+                )
+
+            telemetry: Dict[str, Any] = {}
+            if policy.get("canary_telemetry") is not None:
+                telemetry.update(policy["canary_telemetry"])
+            if policy.get("floor_telemetry") is not None:
+                telemetry.update(policy["floor_telemetry"])
+            run_metadata = {"obsvr_telemetry": telemetry} if telemetry else None
+
+            if policy["decision"] == "block" or compliance["action_taken"] == "blocked":
+                emit_event(
+                    config,
+                    provider=provider,
+                    model=str(model),
+                    operation="llamaindex.llm",
+                    source=SOURCE,
+                    prompt=blocked_prompt_for_storage(
+                        prompt_text, compliance, policy.get("security_normalized")
+                    ),
+                    response="",
+                    user_input=blocked_user_input_for_storage(
+                        user_text or prompt_text, policy
+                    ),
+                    latency_ms=0,
+                    success=False,
+                    status_code=403,
+                    metadata=run_metadata,
+                    compliance=compliance,
+                    options=self._options or None,
+                )
+                raise blocked_call_error(compliance)
+
             self._runs[event_id or "default"] = {
                 "prompt": prompt_text,
                 "user_text": user_text,
                 "model": model,
                 "start_time": time.time(),
-                "compliance": observed["compliance"],
-                "redact": observed["should_redact_stored"],
-                # View-only hit: stored copies use a whole-text placeholder.
-                "redact_via": observed.get("stored_redaction_via"),
+                "compliance": compliance,
+                "metadata": run_metadata,
                 # Allowed: emit only when sampled in. Anything the scan acted on
                 # is enforcement evidence and is always recorded.
                 "audit_this_call": (
                     should_audit
-                    or observed["compliance"].get("action_reason", "none") != "none"
+                    or compliance.get("action_reason", "none") != "none"
                 ),
             }
+        except ObsvrPolicyError:
+            raise
         except Exception:
             pass
         return event_id
@@ -314,13 +389,6 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
             text = _extract_response_text(payload)
             prompt = state["prompt"]
             user_text = state["user_text"]
-            if state["redact"]:
-                via = state.get("redact_via")
-                prompt = redact_for_storage(prompt, via)
-                text = redact_for_storage(text, via)
-                if user_text is not None:
-                    user_text = redact_for_storage(user_text, via)
-
             # init() auto-wires a handler and a caller may register one too;
             # both then see this same event_id. Claiming it here records the
             # call exactly once however many handlers are attached — and,
@@ -355,7 +423,10 @@ class ObsvrLlamaIndexHandler(BaseCallbackHandler):
                 response=text,
                 user_input=user_text,
                 latency_ms=(time.time() - state["start_time"]) * 1000,
-                metadata={"model_alias_unavailable": True} if alias_unavailable else None,
+                metadata={
+                    **(state.get("metadata") or {}),
+                    **({"model_alias_unavailable": True} if alias_unavailable else {}),
+                } or None,
                 compliance=state["compliance"],
                 options=self._options or None,
             )

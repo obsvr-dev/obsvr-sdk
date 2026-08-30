@@ -116,6 +116,66 @@ describe('wrapVertexAI', () => {
     expect(sentEvents[0].status_code).toBe(403);
   });
 
+  it('blocks system instructions before a clean user request reaches Vertex', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { ssn: 'block' } } });
+    let providerCalls = 0;
+    const model = wrapVertexAI({
+      model: 'gemini-1.5-pro',
+      generateContent: async (_req: any) => {
+        providerCalls += 1;
+        return { response: GEMINI_RESPONSE };
+      },
+    });
+
+    await expect(model.generateContent({
+      systemInstruction: { parts: [{ text: 'SSN 123-45-6789' }] },
+      contents: [{ role: 'user', parts: [{ text: 'safe request' }] }],
+    })).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+  });
+
+  it('blocks model-configured system instructions before a clean request', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { ssn: 'block' } } });
+    let providerCalls = 0;
+    const model = wrapVertexAI({
+      model: 'gemini-1.5-pro',
+      systemInstruction: { role: 'system', parts: [{ text: 'SSN 123-45-6789' }] },
+      generateContent: async (_req: any) => {
+        providerCalls += 1;
+        return { response: GEMINI_RESPONSE };
+      },
+    });
+
+    await expect(model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: 'safe request' }] }],
+    })).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+  });
+
+  it('blocks sensitive earlier turns before a clean final user request', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { ssn: 'block' } } });
+    let providerCalls = 0;
+    const model = wrapVertexAI({
+      model: 'gemini-1.5-pro',
+      generateContent: async (_req: any) => {
+        providerCalls += 1;
+        return { response: GEMINI_RESPONSE };
+      },
+    });
+
+    await expect(model.generateContent({
+      contents: [
+        { role: 'user', parts: [{ text: 'SSN 123-45-6789' }] },
+        { role: 'model', parts: [{ text: 'noted' }] },
+        { role: 'user', parts: [{ text: 'safe request' }] },
+      ],
+    })).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+  });
+
   it('redacts string requests before sending', async () => {
     init({ api_key: 'test', sample_rate: 1, pii_policy: {} });
     let sentReq: any = null;
@@ -129,6 +189,49 @@ describe('wrapVertexAI', () => {
 
     await model.generateContent('email john@example.com please');
     expect(sentReq).toContain('[REDACTED_EMAIL]');
+  });
+
+  it('redacts configured system instructions without mutating caller input', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { email: 'redact' } } });
+    let sentReq: any = null;
+    const model = wrapVertexAI({
+      model: 'gemini-1.5-pro',
+      generateContent: async (req: any) => {
+        sentReq = req;
+        return { response: GEMINI_RESPONSE };
+      },
+    });
+    const request = {
+      contents: [{ role: 'user', parts: [{ text: 'safe request' }] }],
+      config: { systemInstruction: { parts: [{ text: 'email secret@example.com' }] } },
+    };
+
+    await model.generateContent(request);
+
+    expect(sentReq.config.systemInstruction.parts[0].text).toContain('[REDACTED_EMAIL]');
+    expect(request.config.systemInstruction.parts[0].text).toBe('email secret@example.com');
+  });
+
+  it('fails closed when model-configured system instructions require redaction', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { email: 'redact' } } });
+    let providerCalls = 0;
+    const model = wrapVertexAI({
+      model: 'gemini-1.5-pro',
+      systemInstruction: { role: 'system', parts: [{ text: 'email system@example.com' }] },
+      generateContent: async (_req: any) => {
+        providerCalls += 1;
+        return { response: GEMINI_RESPONSE };
+      },
+    });
+
+    await expect(model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: 'safe request' }] }],
+    })).rejects.toThrow('[obsvr] Request blocked by policy');
+
+    expect(providerCalls).toBe(0);
+    await waitForEvents(1);
+    expect(sentEvents[0].action_taken).toBe('blocked');
+    expect(sentEvents[0].redacted_types).toEqual([]);
   });
 
   it('audits monitor-mode streams via the aggregated response even when configured to skip', async () => {

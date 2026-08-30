@@ -167,6 +167,79 @@ describe('wrapBedrock — Converse', () => {
     await waitForEvents(1);
     expect(sentEvents[0].action_taken).toBe('redacted');
   });
+
+  it('blocks PII nested in Converse tool results before sending', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { ssn: 'block' } } });
+    let called = false;
+    const client = wrapBedrock({
+      send: async (_command: unknown) => {
+        called = true;
+        return {};
+      },
+    });
+
+    await expect(
+      client.send(new ConverseCommand({
+        modelId: 'm',
+        messages: [{
+          role: 'user',
+          content: [{
+            toolResult: {
+              toolUseId: 'tool-1',
+              content: [{ text: 'SSN 123-45-6789' }],
+            },
+          }],
+        }],
+      })),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(called).toBe(false);
+  });
+
+  it('redacts PII nested in Converse tool results before sending', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { email: 'redact' } } });
+    let sentInput: any;
+    const client = wrapBedrock({
+      send: async (command: any) => {
+        sentInput = command.input;
+        return { output: { message: { content: [{ text: 'ok' }] } } };
+      },
+    });
+
+    await client.send(new ConverseCommand({
+      modelId: 'm',
+      messages: [{
+        role: 'user',
+        content: [{
+          toolResult: {
+            toolUseId: 'tool-1',
+            content: [{ text: 'Contact secret@example.com' }],
+          },
+        }],
+      }],
+    }));
+
+    const wire = JSON.stringify(sentInput);
+    expect(wire).not.toContain('secret@example.com');
+    expect(wire).toContain('[REDACTED_EMAIL]');
+  });
+
+  it('blocks PII in the system prompt when the last user turn is clean', async () => {
+    init({ api_key: 'test', pii_policy: { rules: { ssn: 'block' } } });
+    let called = false;
+    const client = wrapBedrock({
+      send: async (_command: unknown) => {
+        called = true;
+        return {};
+      },
+    });
+
+    await expect(client.send(new ConverseCommand({
+      modelId: 'm',
+      system: [{ text: 'SSN 123-45-6789' }],
+      messages: [{ role: 'user', content: [{ text: 'safe request' }] }],
+    }))).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(called).toBe(false);
+  });
 });
 
 describe('wrapBedrock — InvokeModel', () => {

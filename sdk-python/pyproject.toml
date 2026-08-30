@@ -118,18 +118,17 @@ openai-agents = ["openai-agents>=0.19.0,<1.0.0"]
 # named the distribution — so `pip install "obsvr-sdk[gemini]"` failed on a
 # surface that works. This declares what already exists.
 #
-# DELIBERATELY UNBOUNDED, and that is the honest state rather than a cautious
-# one. There is exactly ONE live cell behind this row (0.8.6: a real call, a
-# captured event), and a single cell locates no edge — it shows that version
-# works and would not find a break above or below it. Every floor in this file
-# that was guessed rather than measured turned out to be wrong, so no number is
-# invented here; when a walk locates the boundary, this gets one.
+# The legacy GenerativeModel surface begins at 0.3.0. Releases 0.1.0 through
+# 0.2.2 expose no GenerativeModel at all, so they cannot provide the documented
+# generate_content or start_chat/send_message boundary. The exact floor and
+# final legacy release are package-tested through real model/chat objects with
+# provider dispatch replaced by a zero-network side-effect counter.
 #
 # Both Google distributions remain installable together. The legacy client
 # keeps its existing unbounded dependency; the maintained client is admitted on
 # the current major that this adapter drives through its real Client/resource
 # shape. Both require explicit obsvr.wrap().
-gemini = ["google-generativeai", "google-genai>=2.0.0,<3.0.0"]
+gemini = ["google-generativeai>=0.3.0,<1.0.0", "google-genai>=2.0.0,<3.0.0"]
 # The current major, bounded below the next. mcp 2.0.0 moved the protocol types
 # to a snake_case base model (alias_generator=to_camel), renaming the three
 # descriptor fields the integration reads — Tool.inputSchema -> input_schema,
@@ -244,7 +243,7 @@ crypto-nacl = ["PyNaCl>=1.0.0"]
 # It stays out of the blocking dependency audit by construction: that job runs
 # `pip-audit --strict .` over declared RUNTIME dependencies, which remain empty,
 # and the environment audit that would see these is report-only.
-dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=2.0.0,<3.0.0", "google-genai>=2.0.0,<3.0.0"]
+dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=2.0.0,<3.0.0", "google-genai>=2.0.0,<3.0.0", "langchain-core>=1.0.0,<2.0.0", "llama-index-core>=0.14.5,<0.15.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "obsvr._version.__version__" }

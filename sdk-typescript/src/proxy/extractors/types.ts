@@ -72,7 +72,8 @@ export interface OpenAIContentPart {
  */
 export interface OpenAIChatRequest {
   model: string;
-  messages: OpenAIChatMessage[];
+  messages?: OpenAIChatMessage[];
+  prompt?: string | string[] | number[] | number[][];
   stream?: boolean;
   [key: string]: unknown;
 }
@@ -87,7 +88,8 @@ export interface OpenAIChatResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: OpenAIChatMessage;
+    message?: OpenAIChatMessage;
+    text?: string;
     finish_reason: string | null;
   }>;
   usage?: {

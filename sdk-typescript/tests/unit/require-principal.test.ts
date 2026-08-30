@@ -169,6 +169,44 @@ describe('generic tool governor', () => {
     await expect(attributed.execute('2+2')).resolves.toBe('ok');
     expect(bodyRuns).toBe(1);
   });
+
+  it.each(['', '   '])('refuses a blank tool principal (%j)', async (userId) => {
+    init({ api_key: 'k', require_principal: true } as never);
+    let bodyRuns = 0;
+    const governed = obsvrGovernTool(
+      {
+        name: 'calculator',
+        execute: async () => {
+          bodyRuns += 1;
+          return 'ok';
+        },
+      },
+      { user_id: userId },
+    );
+
+    await expect(governed.execute()).rejects.toThrow(/principal/i);
+    expect(bodyRuns).toBe(0);
+  });
+
+  it('does not replace an explicit blank principal with an ambient identity', async () => {
+    init({ api_key: 'k', require_principal: true } as never);
+    let bodyRuns = 0;
+    const governed = obsvrGovernTool(
+      {
+        name: 'calculator',
+        execute: async () => {
+          bodyRuns += 1;
+          return 'ok';
+        },
+      },
+      { user_id: '   ' },
+    );
+
+    await expect(
+      useSubject('ambient-user', () => governed.execute()),
+    ).rejects.toThrow(/principal/i);
+    expect(bodyRuns).toBe(0);
+  });
 });
 
 describe('config surface', () => {

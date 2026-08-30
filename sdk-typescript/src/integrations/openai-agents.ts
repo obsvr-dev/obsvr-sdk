@@ -26,23 +26,42 @@
  * @packageDocumentation
  */
 
+// Model-call policy is enforced separately from tracing. Pass a Model through
+// governModel(), or a ModelProvider through governModelProvider(), before
+// giving it to the runner. Those wrappers gate getResponse/getStreamedResponse
+// before the underlying model is entered; the trace processor remains the
+// post-call observation rail.
+
 // Interception: OpenAI Agents SDK SpanProcessor interface (non-mutating).
 // Register via the SDK's tracing processor API - no internal SDK mutation.
 
 import {
+  RedactionNotApplied,
+  applyPreCallPolicy,
   applyLoopDetection,
   applyDelegationPolicy,
   applyObservePolicy,
+  assertRedactionApplied,
+  blockedCallError,
+  blockedPromptForStorage,
+  blockedUserInputForStorage,
   createLoopDetector,
   createDelegationTracker,
   emitIntegrationEvent,
+  inferProviderFromModel,
+  outboundRedactionBlockedCompliance,
+  redactArguments,
+  redactBuiltinPii,
   redactForStorage,
   setupExitHandlers,
   toolGateNotEvaluatedCompliance,
   tryGetConfig,
   type ComplianceInfo,
   type IntegrationOptions,
+  type IntegrationProvider,
 } from "./core.js";
+import { applyOutboundRedaction } from "../policy/detector-guard.js";
+import { NLP_ONLY_PII_TYPES } from "../policy/presidio.js";
 import type { ResolvedConfig } from "../proxy/types.js";
 import type { AgentPolicy } from "../proxy/types.js";
 import type { LoopDetector } from "../policy/industry/devops.js";
@@ -50,8 +69,241 @@ import type { DelegationTracker } from "../policy/industry/agentic.js";
 import { readTokenUsage } from "../proxy/extractors/token-usage.js";
 import { isToolGoverned, registerGovernedToolName } from "./tools.js";
 import { ReasonCode } from "../governance/reason-codes.js";
+import { safeStringify } from "../utils/truncate.js";
 
 const SOURCE = "openai_agents_js";
+
+// ---------------------------------------------------------------------------
+// Pre-execution model boundary
+// ---------------------------------------------------------------------------
+
+/** The stable request surface exposed by @openai/agents from 0.13 onward. */
+interface AgentsModelRequest {
+  systemInstructions?: string;
+  input: unknown;
+  prompt?: { variables?: unknown; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
+/** Duck-typed deliberately so @openai/agents remains an optional peer. */
+interface AgentsModel {
+  getResponse(request: AgentsModelRequest): Promise<any>;
+  getStreamedResponse(request: AgentsModelRequest): AsyncIterable<any>;
+}
+
+interface AgentsModelProvider {
+  getModel(modelName?: string): AgentsModel | Promise<AgentsModel>;
+}
+
+export interface GovernModelOptions extends IntegrationOptions {
+  /** Model name used for policy evaluation and provider attribution. */
+  model?: string;
+  /** Override when the model name alone cannot identify the provider. */
+  provider?: IntegrationProvider;
+}
+
+const GOVERNED_MODEL = Symbol.for("obsvr.openai_agents.governed_model");
+const GOVERNED_PROVIDER = Symbol.for("obsvr.openai_agents.governed_provider");
+
+function modelNameOf(model: AgentsModel, options: GovernModelOptions): string {
+  if (options.model) return options.model;
+  const candidate = Reflect.get(model, "model", model);
+  return typeof candidate === "string" && candidate.trim() ? candidate : "unknown";
+}
+
+function requestText(request: AgentsModelRequest): string {
+  const parts: string[] = [];
+  if (typeof request.systemInstructions === "string") {
+    parts.push(request.systemInstructions);
+  }
+  if (typeof request.input === "string") {
+    parts.push(request.input);
+  } else if (request.input !== undefined) {
+    parts.push(safeStringify(request.input));
+  }
+  const variables = request.prompt?.variables;
+  if (typeof variables === "string") {
+    parts.push(variables);
+  } else if (variables !== undefined) {
+    parts.push(safeStringify(variables));
+  }
+  return parts.filter(Boolean).join("\n");
+}
+
+function redactRequest(
+  request: AgentsModelRequest,
+  compliance: ComplianceInfo,
+): AgentsModelRequest {
+  const types = compliance.redacted_types ?? [];
+  // Rule/hook redactions may describe a non-locatable whole-request match.
+  // The Agents request is structured, so guessing which string to replace
+  // would create a false "redacted" claim. Refuse instead.
+  if (
+    types.length === 0 ||
+    types.includes("all") ||
+    (compliance.action_source !== "builtin" &&
+      compliance.action_source !== "builtin+presidio")
+  ) {
+    throw new RedactionNotApplied("the redaction verdict has no safely locatable span");
+  }
+
+  // The TypeScript SDK's local outbound redactor is the built-in structured
+  // PII tier. If an external analyzer alone located an entity, this boundary
+  // cannot synchronously rewrite it and therefore fails closed.
+  if (types.some((name) => NLP_ONLY_PII_TYPES.has(name))) {
+    throw new RedactionNotApplied("an external-only PII span cannot be rewritten here");
+  }
+
+  const rewritten: AgentsModelRequest = { ...request };
+  if (typeof request.systemInstructions === "string") {
+    rewritten.systemInstructions = redactBuiltinPii(request.systemInstructions);
+  }
+  rewritten.input = redactArguments(request.input, redactBuiltinPii);
+  if (request.prompt && request.prompt.variables !== undefined) {
+    rewritten.prompt = {
+      ...request.prompt,
+      variables: redactArguments(request.prompt.variables, redactBuiltinPii),
+    };
+  }
+
+  const before = requestText(request);
+  const after = requestText(rewritten);
+  if (before === after) {
+    throw new RedactionNotApplied("the provider-bound request was unchanged");
+  }
+  assertRedactionApplied(after, compliance);
+  return rewritten;
+}
+
+function emitModelBlock(
+  config: ResolvedConfig,
+  text: string,
+  policy: Awaited<ReturnType<typeof applyPreCallPolicy>>,
+  model: string,
+  provider: IntegrationProvider,
+  options: GovernModelOptions,
+): void {
+  emitIntegrationEvent({
+    config,
+    provider,
+    model,
+    operation: "openai_agents.model.request",
+    source: SOURCE,
+    prompt: blockedPromptForStorage(
+      text,
+      policy.compliance,
+      policy.securityNormalized,
+    ),
+    userInput: blockedUserInputForStorage(text, policy),
+    scannedText: text,
+    response: "",
+    success: false,
+    compliance: policy.compliance,
+    canaryTelemetry: policy.canaryTelemetry,
+    floorTelemetry: policy.floorTelemetry,
+    options,
+  });
+}
+
+async function governModelRequest(
+  request: AgentsModelRequest,
+  model: string,
+  options: GovernModelOptions,
+): Promise<AgentsModelRequest> {
+  const config = tryGetConfig();
+  if (!config || config.disabled) return request;
+  setupExitHandlers(config);
+
+  const provider = options.provider ?? inferProviderFromModel(model);
+  const text = requestText(request);
+  const policy = await applyPreCallPolicy(text, {
+    config,
+    provider,
+    operation: "openai_agents.model.request",
+    model: model === "unknown" ? undefined : model,
+    userId: options.user_id,
+    serviceName: options.service_name,
+    metadata: options.metadata,
+  });
+
+  if (policy.decision === "block") {
+    emitModelBlock(config, text, policy, model, provider, options);
+    throw blockedCallError(policy.compliance);
+  }
+  if (policy.decision !== "redact") return request;
+
+  let rewritten: AgentsModelRequest | undefined;
+  const failure = applyOutboundRedaction(() => {
+    rewritten = redactRequest(request, policy.compliance);
+  });
+  if (failure) {
+    const blocked = {
+      ...policy,
+      decision: "block" as const,
+      compliance: outboundRedactionBlockedCompliance(policy.compliance, failure),
+    };
+    emitModelBlock(config, text, blocked, model, provider, options);
+    throw blockedCallError(blocked.compliance);
+  }
+  return rewritten as AgentsModelRequest;
+}
+
+/**
+ * Enforce obsvr policy at the OpenAI Agents SDK's actual Model boundary.
+ *
+ * This is separate from tracing: the wrapper awaits policy before calling
+ * `getResponse` or starting `getStreamedResponse`, so a block cannot reach the
+ * provider and a redact verdict changes the request the provider receives.
+ */
+export function governModel<T extends AgentsModel>(
+  model: T,
+  options: GovernModelOptions = {},
+): T {
+  if (Reflect.get(model, GOVERNED_MODEL, model) === true) return model;
+  const modelName = modelNameOf(model, options);
+  return new Proxy(model, {
+    get(target, property) {
+      if (property === GOVERNED_MODEL) return true;
+      if (property === "getResponse") {
+        return async (request: AgentsModelRequest) =>
+          target.getResponse(await governModelRequest(request, modelName, options));
+      }
+      if (property === "getStreamedResponse") {
+        return async function* (request: AgentsModelRequest): AsyncIterable<unknown> {
+          const governed = await governModelRequest(request, modelName, options);
+          for await (const event of target.getStreamedResponse(governed)) {
+            yield event;
+          }
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/** Wrap every Model resolved by an OpenAI Agents ModelProvider. */
+export function governModelProvider<T extends AgentsModelProvider>(
+  provider: T,
+  options: GovernModelOptions = {},
+): T {
+  if (Reflect.get(provider, GOVERNED_PROVIDER, provider) === true) return provider;
+  return new Proxy(provider, {
+    get(target, property) {
+      if (property === GOVERNED_PROVIDER) return true;
+      if (property === "getModel") {
+        return (modelName?: string) => {
+          const resolved = target.getModel(modelName);
+          const wrap = (model: AgentsModel) =>
+            governModel(model, { ...options, model: modelName ?? options.model });
+          return resolved instanceof Promise ? resolved.then(wrap) : wrap(resolved);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 /**
  * Run the observe-only PII net over what an event is about to STORE.

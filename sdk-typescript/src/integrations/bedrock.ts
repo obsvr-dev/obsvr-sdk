@@ -51,12 +51,85 @@ const COMMAND_OPERATIONS: Record<string, string> = {
 // Request extraction
 // ---------------------------------------------------------------------------
 
-/** Join all text blocks from Converse-style content arrays */
+function appendStringLeaves(value: unknown, into: string[]): void {
+  if (typeof value === "string") {
+    into.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) appendStringLeaves(item, into);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value as AnyRecord)) {
+      appendStringLeaves(item, into);
+    }
+  }
+}
+
+function redactStringLeavesInPlace(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      if (typeof value[i] === "string") value[i] = redactBuiltinPii(value[i]);
+      else redactStringLeavesInPlace(value[i]);
+    }
+  } else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value as AnyRecord)) {
+      if (typeof item === "string") {
+        (value as AnyRecord)[key] = redactBuiltinPii(item);
+      } else {
+        redactStringLeavesInPlace(item);
+      }
+    }
+  }
+}
+
+function converseBlockText(block: unknown): string {
+  if (!block || typeof block !== "object") return "";
+  const value = block as AnyRecord;
+  const text: string[] = [];
+  if (typeof value.text === "string") text.push(value.text);
+  if (value.toolUse?.input !== undefined) appendStringLeaves(value.toolUse.input, text);
+  if (Array.isArray(value.toolResult?.content)) {
+    for (const result of value.toolResult.content as AnyRecord[]) {
+      if (typeof result?.text === "string") text.push(result.text);
+      if (result?.json !== undefined) appendStringLeaves(result.json, text);
+    }
+  }
+  if (typeof value.guardContent?.text?.text === "string") {
+    text.push(value.guardContent.text.text);
+  }
+  if (typeof value.reasoningContent?.reasoningText?.text === "string") {
+    text.push(value.reasoningContent.reasoningText.text);
+  }
+  return text.join("\n");
+}
+
+function redactConverseBlockInPlace(block: unknown): void {
+  if (!block || typeof block !== "object") return;
+  const value = block as AnyRecord;
+  if (typeof value.text === "string") value.text = redactBuiltinPii(value.text);
+  if (value.toolUse?.input !== undefined) {
+    redactStringLeavesInPlace(value.toolUse.input);
+  }
+  if (Array.isArray(value.toolResult?.content)) {
+    for (const result of value.toolResult.content as AnyRecord[]) {
+      if (typeof result?.text === "string") result.text = redactBuiltinPii(result.text);
+      if (result?.json !== undefined) redactStringLeavesInPlace(result.json);
+    }
+  }
+  if (typeof value.guardContent?.text?.text === "string") {
+    value.guardContent.text.text = redactBuiltinPii(value.guardContent.text.text);
+  }
+  if (typeof value.reasoningContent?.reasoningText?.text === "string") {
+    value.reasoningContent.reasoningText.text = redactBuiltinPii(
+      value.reasoningContent.reasoningText.text,
+    );
+  }
+}
+
+/** Join all provider-bound text from Converse-style content arrays */
 function converseContentText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
   return content
-    .map((b: AnyRecord) => (typeof b?.text === "string" ? b.text : ""))
+    .map(converseBlockText)
     .filter((t) => t.length > 0)
     .join("\n");
 }
@@ -102,9 +175,7 @@ function redactConverseInPlace(input: AnyRecord): void {
       if (typeof msg?.content === "string") {
         msg.content = redactBuiltinPii(msg.content);
       } else if (Array.isArray(msg?.content)) {
-        for (const b of msg.content as AnyRecord[]) {
-          if (typeof b?.text === "string") b.text = redactBuiltinPii(b.text);
-        }
+        for (const b of msg.content as AnyRecord[]) redactConverseBlockInPlace(b);
       }
     }
   }
@@ -143,10 +214,7 @@ function extractInvokeBodyPrompt(body: AnyRecord | null): string {
       if (typeof msg?.content === "string") {
         text = msg.content;
       } else if (Array.isArray(msg?.content)) {
-        text = (msg.content as AnyRecord[])
-          .map((p) => (typeof p?.text === "string" ? p.text : ""))
-          .filter((t) => t.length > 0)
-          .join("\n");
+        text = converseContentText(msg.content);
       }
       parts.push(`${msg?.role ?? "user"}: ${text}`);
     }
@@ -168,9 +236,7 @@ function extractInvokeBodyLastUser(body: AnyRecord | null): string {
       if (msg?.role === "user") {
         if (typeof msg.content === "string") return msg.content;
         if (Array.isArray(msg.content)) {
-          return (msg.content as AnyRecord[])
-            .map((p) => (typeof p?.text === "string" ? p.text : ""))
-            .join(" ");
+          return converseContentText(msg.content);
         }
       }
     }
@@ -188,9 +254,7 @@ function redactInvokeBodyInPlace(body: AnyRecord): void {
       if (typeof msg?.content === "string") {
         msg.content = redactBuiltinPii(msg.content);
       } else if (Array.isArray(msg?.content)) {
-        for (const p of msg.content as AnyRecord[]) {
-          if (typeof p?.text === "string") p.text = redactBuiltinPii(p.text);
-        }
+        for (const p of msg.content as AnyRecord[]) redactConverseBlockInPlace(p);
       }
     }
   }
@@ -411,7 +475,7 @@ function createAuditedSend(
     }
 
     // --- Pre-call policy ---
-    const policy = await applyPreCallPolicy(userText, {
+    const policy = await applyPreCallPolicy(promptText, {
       config,
       provider: PROVIDER,
       operation,

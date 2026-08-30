@@ -164,13 +164,13 @@ class TestEveryIntegrationRecordsItsBindFailures:
         try:
             with _blocked("llama_index"):
                 importlib.reload(llamaindex_module)
+            entry = self._unbound_for("llamaindex")[
+                "llama_index.core.callbacks.base_handler.BaseCallbackHandler"
+            ]
         finally:
             # Re-import against the real environment so later tests see the
             # module as it actually is on this machine.
             importlib.reload(llamaindex_module)
-        entry = self._unbound_for("llamaindex")[
-            "llama_index.core.callbacks.base_handler.BaseCallbackHandler"
-        ]
         assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
         assert entry["error"]
 

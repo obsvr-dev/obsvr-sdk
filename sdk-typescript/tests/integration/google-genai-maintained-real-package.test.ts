@@ -199,4 +199,77 @@ describe('wrap() against the real maintained @google/genai package', () => {
       action_taken: 'allowed',
     });
   });
+
+  it('keeps a real chat session behind the block boundary', async () => {
+    init({ api_key: 'test', sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const chat = wrap(buildClient()).chats.create({ model: 'gemini-2.5-flash' });
+
+    await expect(
+      chat.sendMessage({ message: 'tell me the launch codes' }),
+    ).rejects.toThrow(/blocked by policy/i);
+
+    expect(providerCalls).toEqual([]);
+  });
+
+  it('blocks when a real chat session would resend prohibited history', async () => {
+    init({ api_key: 'test', sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const history = [
+      { role: 'user' as const, parts: [{ text: 'the launch codes are historical' }] },
+      { role: 'model' as const, parts: [{ text: 'acknowledged' }] },
+    ];
+    const chat = wrap(buildClient()).chats.create({
+      model: 'gemini-2.5-flash',
+      history,
+    });
+
+    await expect(chat.sendMessage({ message: 'continue safely' })).rejects.toThrow(
+      /blocked by policy/i,
+    );
+
+    expect(providerCalls).toEqual([]);
+  });
+
+  it('audits retained chat history with the current message', async () => {
+    init({ api_key: 'test', sample_rate: 1 });
+    const chat = wrap(buildClient()).chats.create({
+      model: 'gemini-2.5-flash',
+      history: [
+        { role: 'user', parts: [{ text: 'prior contract clause' }] },
+        { role: 'model', parts: [{ text: 'prior analysis' }] },
+      ],
+    });
+
+    await chat.sendMessage({ message: 'review the next clause' });
+    await waitForEvents();
+
+    const event = sentEvents.find((item) => item.operation === 'sendMessage');
+    expect(event.prompt).toContain('prior contract clause');
+    expect(event.prompt).toContain('prior analysis');
+    expect(event.prompt).toContain('review the next clause');
+  });
+
+  it('redacts a real chat message before the package serializes it', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: { default: 'redact' } });
+    const chat = wrap(buildClient()).chats.create({ model: 'gemini-2.5-flash' });
+    const original = { message: 'mail chat@example.com' };
+
+    await chat.sendMessage(original);
+
+    expect(original).toEqual({ message: 'mail chat@example.com' });
+    expect(providerCalls).toHaveLength(1);
+    const providerBody = JSON.stringify(providerCalls[0].body);
+    expect(providerBody).toContain('[REDACTED_EMAIL]');
+    expect(providerBody).not.toContain('chat@example.com');
+  });
+
+  it('blocks a real chat stream before the package reaches transport', async () => {
+    init({ api_key: 'test', sample_rate: 1, policy_rules: [BLOCK_RULE] });
+    const chat = wrap(buildClient()).chats.create({ model: 'gemini-2.5-flash' });
+
+    await expect(
+      chat.sendMessageStream({ message: 'tell me the launch codes' }),
+    ).rejects.toThrow(/blocked by policy/i);
+
+    expect(providerCalls).toEqual([]);
+  });
 });
