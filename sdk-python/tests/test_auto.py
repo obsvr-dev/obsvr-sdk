@@ -96,23 +96,26 @@ def test_reset_uninstalls_global_tool_gates(monkeypatch):
 
 def test_status_distinguishes_bound_and_explicit_surfaces(monkeypatch):
     auto._reset_auto()
-    from obsvr.binding_report import _reset_bindings
+    from obsvr import binding_report
 
-    _reset_bindings()
-    monkeypatch.setattr(
-        auto,
-        "_module_available",
-        lambda name: name in {"mcp", "langchain_core"},
-    )
+    saved = {name: dict(symbols) for name, symbols in binding_report._BINDINGS.items()}
+    binding_report._BINDINGS.clear()
+    try:
+        monkeypatch.setattr(
+            auto,
+            "_module_available",
+            lambda name: name in {"mcp", "langchain_core"},
+        )
 
-    armed = auto.auto_governance_status()
-    assert armed["enabled"] is False
-    assert armed["bindings"]["mcp.client"] == {"state": "armed"}
-    assert armed["bindings"]["langchain.models"]["state"] == "not-applicable"
+        armed = auto.auto_governance_status()
+        assert armed["enabled"] is False
+        assert armed["bindings"]["mcp.client"] == {"state": "armed"}
+        assert armed["bindings"]["langchain.models"]["state"] == "not-applicable"
 
-    from obsvr.binding_report import record_binding
-
-    record_binding("mcp.client", "mcp.ClientSession")
-    bound = auto.auto_governance_status()
-    assert bound["bindings"]["mcp.client"] == {"state": "bound"}
-    assert obsvr.auto_governance_status is auto.auto_governance_status
+        binding_report.record_binding("mcp.client", "mcp.ClientSession")
+        bound = auto.auto_governance_status()
+        assert bound["bindings"]["mcp.client"] == {"state": "bound"}
+        assert obsvr.auto_governance_status is auto.auto_governance_status
+    finally:
+        binding_report._BINDINGS.clear()
+        binding_report._BINDINGS.update(saved)
