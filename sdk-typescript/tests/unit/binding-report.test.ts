@@ -31,7 +31,7 @@ describe("recording", () => {
   test("a successful bind records no reason", () => {
     recordBinding("demo", "pkg.Symbol");
     expect(integrationBindings()).toEqual({
-      demo: { "pkg.Symbol": { bound: true } },
+      demo: { "pkg.Symbol": { bound: true, enforcementDepth: "unknown" } },
     });
     expect(unboundSymbols()).toEqual([]);
   });

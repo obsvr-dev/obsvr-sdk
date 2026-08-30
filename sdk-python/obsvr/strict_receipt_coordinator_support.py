@@ -123,15 +123,23 @@ def trusted_approval_result(
 ) -> Dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError("approval verifier returned an invalid result")
-    allowed = {
+    required = {
         "request_id", "action_hash", "principal_id", "decision",
         "source_hash", "expires_at_ms",
     }
-    if set(value) != allowed:
+    allowed = required | {"principal_ref_hash"}
+    if not required.issubset(value) or not set(value).issubset(allowed):
         raise ValueError("approval verifier returned an invalid result")
     request_id = coordinator_text(value.get("request_id"), "trusted request_id")
     action_hash = coordinator_hash(value.get("action_hash"), "trusted action_hash")
     principal_id = coordinator_text(value.get("principal_id"), "trusted principal_id")
+    principal_ref_hash = (
+        None
+        if "principal_ref_hash" not in value
+        else coordinator_hash(
+            value.get("principal_ref_hash"), "trusted principal_ref_hash"
+        )
+    )
     source_hash = coordinator_hash(value.get("source_hash"), "trusted source_hash")
     expires_at = safe_integer(value.get("expires_at_ms"), "trusted expires_at_ms")
     if (
@@ -147,12 +155,15 @@ def trusted_approval_result(
         or expected["current_time_ms"] >= suspension_expiry
     ):
         raise ValueError("trusted approval is expired")
-    return {
+    result = {
         "request_id": request_id,
         "action_hash": action_hash,
         "principal_id": principal_id,
         "source_hash": source_hash,
     }
+    if principal_ref_hash is not None:
+        result["principal_ref_hash"] = principal_ref_hash
+    return result
 
 
 def _projection(context: Dict[str, Any]) -> Dict[str, Any]:

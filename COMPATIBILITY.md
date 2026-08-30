@@ -213,6 +213,59 @@ import paths remain explicit. OpenAI Agents tracing is still observe-only;
 automatic Agent interception separately governs concrete model calls and local
 tool execution at their pre-call boundaries.
 
+### Coverage attestation compatibility contract
+
+Python and TypeScript emit the same canonical
+`obsvr-coverage-attestation-v1` body and
+`obsvr-coverage-attestation-envelope-v1` envelope. Shared fixtures pin the body
+hash across both implementations.
+
+| Field | Compatibility rule |
+| --- | --- |
+| `required` | sorted integration requirements with `observe` or `enforce` minimum depth and optional exact symbols |
+| `bindings` | sorted process-reported symbols; legacy depth is `unknown` |
+| `policy_pack_hashes` | lowercase SHA-256 hashes, sorted and deduplicated |
+| `coverage_complete` / `failures` | derived, not caller-controlled; recomputed by verifiers |
+| signature | Ed25519 over the domain-separated canonical body, verified under an out-of-band pinned public key |
+
+The schema is closed: unknown body fields and noncanonical derived values are
+invalid. Adding fields or changing ordering, depth semantics, or signature
+bytes requires a new schema version and new shared fixtures.
+
+### Layered action-context contract
+
+`obsvr-action-context-v2` accepts optional `principal`, `execution`, and
+`governance` layers in both languages. The layers use closed fields and enums;
+coverage and policy evidence are represented by SHA-256 hashes rather than raw
+documents. Existing inputs that omit the layers retain their pinned canonical
+bytes and hash. The layered fixture separately pins ordering, deduplication,
+target tokenization, enum validation, and the new canonical hash.
+
+`obsvr-remediation-plan-v1` and `obsvr-remediation-retry-v1` are pinned
+cross-language. Plans accept only `MODIFY`, `STEP_UP`, and `DEFER`; requirements
+are sorted by code-bearing identity and retry evidence must cover every unique
+requirement exactly once. Action-context retry linkage is optional, but when a
+parent attempt is present the new attempt id and remediation retry hash are
+both required.
+
+### Strict approval lifecycle
+
+The profile 2.1 coordinator uses one exact approval lifecycle in both SDKs.
+
+| Property | Contract |
+| --- | --- |
+| Action binding | `approval_action_hash` and suspended receipt hash must match. |
+| Expiry | Verifier expiry cannot exceed suspension expiry; a grant is live at resolution time. |
+| Revalidation | The active policy and trusted evaluation evidence run again before authorization. |
+| Consumption | One suspended receipt has at most one committed resolution and one execution. |
+| Separation of duties | Optional `requester` or `requester_and_initiator`; requires a same-namespace `principal_ref_hash`. |
+
+Separation of duties defaults to `none` for source compatibility. The verifier
+result remains compatible without `principal_ref_hash` unless either strict
+mode is selected. The resolver hash in new receipts uses the supplied
+pseudonymous reference when present; otherwise it retains the legacy derived
+hash of `principal_id`.
+
 ## Ordinary enforcement boundary
 
 The ordinary wrappers are broader than strict profile 2.1. On every method
@@ -228,11 +281,31 @@ or fails closed when the SDK cannot prove the rewrite was applied.
 | LangChain model callbacks | enforcing model-start boundary; redaction fails closed because callbacks cannot rewrite requests | same |
 | LlamaIndex model callbacks | tracing is observe-only; `obsvrGovernLlamaIndexLLM` enforces `chat`/`complete` | enforcing model-start boundary; redaction fails closed |
 | OpenAI Agents model callbacks | tracing is observe-only; `governModel` / `governModelProvider` enforce | tracing is observe-only; `govern_model` / `govern_model_provider` enforce |
+| Application callable | `governFn`; async wrapper around sync or async callable | `govern_fn` / `@govern`; preserves sync or async shape |
 
 Batch APIs, opaque provider-hosted tools, and methods not named by the SDK's
 coverage tables remain outside this ordinary boundary. A later runner turn can
 be blocked before its request, but an earlier allowed tool side effect cannot be
 rolled back.
+
+The application-callable row reuses the ordinary tool-policy kernel. Policy
+block has zero calls to the wrapped function, and redaction reaches its actual
+arguments or fails closed. Only the returned wrapper is covered; raw aliases
+remain explicit exclusions.
+
+## Cross-language operator contracts
+
+| Contract | TypeScript | Python | Cross-language invariant |
+| --- | --- | --- | --- |
+| policy lifecycle v1 | `buildPolicyCandidateV1`, `replayPolicyCandidateV1`, `decidePolicyPromotionV1` | `build_policy_candidate_v1`, `replay_policy_candidate_v1`, `decide_policy_promotion_v1` | candidate hash, replay arithmetic, thresholds, rollback, reason codes |
+| workload registry v1 | `signWorkloadRegistrationV1`, `WorkloadRegistryV1` | `sign_workload_registration_v1`, `WorkloadRegistryV1` | canonical registration hash and Ed25519 verification |
+| policy template v1 | `renderPolicyTemplateV1`, `signRenderedPolicyV1` | `render_policy_template_v1`, `sign_rendered_policy_v1` | typed rendering and template, parameter, artifact, approval, activation hashes |
+| control analytics v1 | `buildControlAnalyticsReportV1` | `build_control_analytics_report_v1` | integer basis-point rates, nearest-rank percentiles, report hash |
+| signal interface v1 | `resolveSignalV1` and OTEL/OPA/Cedar projections | `resolve_signal_v1` and matching projections | resolution hash, failure constraint, `authoritative_allow: false` |
+
+The fixtures pin representative hashes in both SDK test suites. These contracts
+accept JSON-safe bounded values; they do not promise byte parity for values
+outside the validated schemas.
 
 ## Strict profile 2.1 direct-provider boundary
 

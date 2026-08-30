@@ -234,6 +234,16 @@ export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T)
   recordBinding(
     `${provider}.client`,
     `${provider}.${(cls as Function).name || 'client'}`,
+    undefined,
+    {
+      enforcementDepth: 'enforce',
+      initializedAtMs: Date.now(),
+      exclusions: [
+        'instances created through saved pre-interceptor constructors',
+        'unlisted provider methods',
+        'custom transports that bypass the intercepted client',
+      ],
+    },
   );
 
   return new Proxy(cls as object, {
@@ -334,7 +344,11 @@ export function interceptMcpClientClass<T>(cls: T): T {
   if (typeof cls !== 'function') return cls;
   interceptionActive = true;
   boundStartupSurfaces.add('mcp.client');
-  recordBinding('mcp.client', '@modelcontextprotocol/sdk/client.Client');
+  recordBinding('mcp.client', '@modelcontextprotocol/sdk/client.Client', undefined, {
+    enforcementDepth: 'enforce',
+    initializedAtMs: Date.now(),
+    exclusions: ['hosted or provider-side tools outside the client session'],
+  });
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {
       const instance = Reflect.construct(
@@ -374,8 +388,16 @@ export function interceptOpenAIAgentClass<T>(cls: T): T {
   interceptionActive = true;
   boundStartupSurfaces.add('openai_agents.tools');
   boundStartupSurfaces.add('openai_agents.model');
-  recordBinding('openai_agents.tools', '@openai/agents.Agent.tools');
-  recordBinding('openai_agents.model', '@openai/agents.Agent.model');
+  recordBinding('openai_agents.tools', '@openai/agents.Agent.tools', undefined, {
+    enforcementDepth: 'enforce',
+    initializedAtMs: Date.now(),
+    exclusions: ['hosted tools', 'tools executed outside the governed Agent boundary'],
+  });
+  recordBinding('openai_agents.model', '@openai/agents.Agent.model', undefined, {
+    enforcementDepth: 'enforce',
+    initializedAtMs: Date.now(),
+    exclusions: ['string model aliases resolved through an ungoverned provider client'],
+  });
 
   const governModelValue = (value: unknown): unknown => {
     if (!value || typeof value !== 'object') return value;

@@ -101,6 +101,26 @@ have. These are exact surface keys, not product-wide claims:
 `openai_agents.model` and `openai_agents.tools` do not claim that Agents tracing,
 hosted tools, or every future Agents SDK surface is governed.
 
+### Signed deployment coverage
+
+`signCoverageAttestation()` / `sign_coverage_attestation()` turns the current
+binding report into a bounded, Ed25519-signed deployment statement. The body
+records the workload, environment, SDK version, required integration symbols,
+minimum enforcement depth, active policy-pack hashes, integration versions,
+initialization times, and known exclusions.
+
+| Required depth | A binding satisfies it when |
+| --- | --- |
+| `observe` | the symbol is bound as `observe` or `enforce` |
+| `enforce` | the symbol is explicitly bound as `enforce` |
+| legacy or ungraded binding | never satisfies an `enforce` requirement; it is normalized to `unknown` |
+
+The signature proves the exact process-reported statement under an
+operator-pinned key. It does **not** prove process-wide or network-wide
+interception, discover calls through raw aliases, or turn a documented
+exclusion into coverage. Consumers should reject expired attestations and any
+statement with `coverage_complete: false`.
+
 ## Five-minute quickstart
 
 ### TypeScript
@@ -189,6 +209,96 @@ obsvr-run app.py
 `obsvr-run -m package.module` is also supported. Python OpenAI and Anthropic constructors, future MCP `ClientSession` construction, supported CrewAI and AutoGen execution gates, Python LlamaIndex model-start callbacks, and future OpenAI Agents model and function-tool boundaries are auto-governed. OpenAI Agents model reassignment and later tool/handoff list mutations stay governed. Gemini, LangChain callbacks, LlamaIndex tool execution, hosted tools, and framework paths without a safe global pre-execution hook remain explicit. Applications that own import order can instead call `obsvr.init(auto=True)` before those packages are imported.
 
 See the [TypeScript](sdk-typescript/README.md) and [Python](sdk-python/README.md) package guides for every supported method and configuration option.
+
+### Govern application actions
+
+Provider adapters cannot know about business actions such as sending a
+contract. `governFn` and Python `@govern` put the same pre-execution tool-policy
+kernel around any application callable:
+
+```typescript
+const sendContract = obsvr.governFn(rawSendContract, {
+  name: "contract.send",
+  consequence: "external_write",
+});
+
+await sendContract(contractId);
+```
+
+```python
+@obsvr.govern(name="contract.send", consequence="external_write")
+def send_contract(contract_id):
+    return raw_send_contract(contract_id)
+```
+
+| Verdict | Function behavior |
+| --- | --- |
+| allow | the original callable runs |
+| block | the callable is not entered |
+| redact | the callable receives rewritten arguments; an unprovable rewrite fails closed |
+
+TypeScript returns an async function because the shared policy pipeline may
+wait for approval or an external backend. Python preserves the original sync
+or async shape. A retained reference to the raw function remains a bypass and
+is listed in the `govern_fn` coverage binding.
+
+For strict decisions, `ActionContextV2` keeps context in bounded, closed
+layers rather than accepting one arbitrary payload:
+
+| Layer | Contents |
+| --- | --- |
+| agent and action | intent, scopes, classifications, argument hash, tokenized target |
+| principal | stable principal id, principal kind, roles, optional tenant hash |
+| execution | environment, autonomy level, consequence level |
+| governance | integration/version, coverage-claim hash, active policy-pack hashes, approval and quota state |
+
+Raw targets are replaced by a domain-separated hash. Unknown fields and
+unbounded enum values are rejected, and existing v2 inputs produce exactly the
+same canonical bytes as before.
+
+### Deterministic remediation and retry
+
+`buildRemediationPlanV1()` / `build_remediation_plan_v1()` turns `MODIFY`,
+`STEP_UP`, or `DEFER` into a closed list of machine-readable requirements. A
+requirement names its kind, stable code, evidence key, optional expected-value
+hash, and bounded human guidance. It never contains a rewritten raw payload.
+
+A retry is a new attempt, not continuation by implication. The retry document
+must provide an evidence hash for every requirement and binds the new attempt
+to the original attempt, original receipt, and remediation-plan hash. Put its
+hash in the next `ActionContextV2.current_action.remediation_retry_hash` with
+the parent and new attempt ids; the resulting context hash then travels into
+the strict decision receipt.
+
+### Operate policies across deployments
+
+The SDKs expose matching, content-addressed contracts for the policy lifecycle.
+They are building blocks for a deployment controller; they do not turn the SDK
+into a general CMDB, GRC suite, or remote policy service.
+
+| Contract | What it preserves | Safety boundary |
+| --- | --- | --- |
+| Policy lifecycle v1 | candidate artifact, replay impact, stable explanations, promotion thresholds, rollback target | a failed threshold returns the candidate to shadow; promotion never changes a live pack by itself |
+| Workload registration v1 | workload, environment, deployment, capabilities, approvals, effective pack hashes, coverage-attestation hash | signed runtime metadata only; raw prompts, arguments, and customer data are rejected |
+| Policy template v1 | template, typed parameters, rendered artifact, approval, activation, operator signature | whole-value placeholders only; no code execution or string interpolation |
+| Control analytics v1 | exact event window, outcome counts, shadow divergence, approval indicators, latency, coverage and evidence gaps | reports only supplied events and never infers missing-event completeness |
+
+### Use external evaluators as signals
+
+`resolveSignalV1()` / `resolve_signal_v1()` records whether an evaluator is
+deterministic or probabilistic, local or remote, plus its timeout, cache state,
+failure disposition, provenance, and latency. The result is a fact for the
+local deterministic kernel. It always carries `authoritative_allow: false`.
+
+| Failure disposition | Kernel constraint |
+| --- | --- |
+| `deny` | require `DENY` |
+| `defer` | require `DEFER` |
+| `ignore` | record the failure without creating an allow decision |
+
+OpenTelemetry, OPA, and Cedar helpers project the same bounded resolution for
+correlation or policy input. OpenTelemetry is not signed evidence, and an
+OPA/Cedar verdict still requires enforcement at an obsvr action boundary.
 
 ## Policy engine
 
@@ -443,6 +553,21 @@ flowchart LR
 - This profile is deliberately narrow: supported unary methods only. Python async-client paths, streams, helper managers, runners, and unsupported methods fail with `unsupported_surface`.
 
 The same protocol can guard a provider-neutral side effect through `createStrictActionBoundaryV21` / `create_strict_action_boundary_v2_1`: the caller declares the action, target, data classifications, and requested scopes, and supplies the function that may run only after admission. Approval resolution is also explicit. A signed `STEP_UP` receipt is resumed through a new signed resolution receipt; the original action executes at most once only when the resolved outcome is `ALLOW`, or `MODIFY` with trusted effective arguments, and every binding still matches.
+
+Strict profile 2.1 can also require approval separation of duties. Set
+`approval_separation_of_duties` to `requester` or
+`requester_and_initiator`; the trusted approval verifier must then return a
+`principal_ref_hash` in the same pseudonymous identity namespace used by the
+receipt. A self-approval fails before a resolution receipt can authorize the
+action. The default is `none` for compatibility.
+
+| Approval property | Strict profile 2.1 behavior |
+| --- | --- |
+| Exact action | Resolution must match the suspended receipt and `approval_action_hash`. |
+| Expiry | A grant cannot outlive the suspension and is checked at resolution time. |
+| Revalidation | Policy and trusted evaluation evidence are evaluated again. |
+| Consume once | A committed resolution cannot execute the original action again. |
+| Separation of duties | Optional pseudonymous requester and initiator checks reject self-approval. |
 
 `submitStrictExecutionOutcomeV21()` / `submit_strict_execution_outcome_v2_1()` sends the exact signed terminal envelope to hosted strict ingest using the same bounded, DNS-pinned, no-redirect transport posture as receipt admission. Upload is caller-initiated: terminal outcomes remain in the durable checkpoint until the application submits the outcome or terminal journal, including after restart. Exact duplicates are idempotent. Transport failure is returned separately and never changes a locally recorded execution result. Only an exact matching `400`, `401`, `403`, or `413` response with `stored: false` is definitive non-storage; conflicts and ambiguous responses remain uncertain. The terminal-journal helpers verify the saved receipt, start, outcome, and signer bindings before upload.
 

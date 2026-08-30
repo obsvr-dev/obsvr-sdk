@@ -78,6 +78,7 @@ function coordinator(params: {
   tenantId?: string;
   pid?: () => number;
   approvalVerifier?: StrictApprovalVerifier;
+  approvalSeparationOfDuties?: 'none' | 'requester' | 'requester_and_initiator';
 } = {}): StrictReceiptCoordinatorV21 {
   const deviceSigner = params.deviceSigner ?? signer();
   const base = params.base ?? { action_taken: 'allowed' };
@@ -91,6 +92,7 @@ function coordinator(params: {
       () => structuredClone(params.snapshot ?? evaluationSnapshot()),
     ),
     approval_verifier: params.approvalVerifier,
+    approval_separation_of_duties: params.approvalSeparationOfDuties,
     pid: params.pid ?? (() => 7), prepared_token_factory: () => 'prepared-token',
   });
 }
@@ -247,6 +249,57 @@ describe('strict receipt profile 2.1 coordinator', () => {
       suspended_receipt_hash: delegatedPending.receipt_hash,
       method: 'approval_granted', approval_evidence: {},
     })).toThrow('delegated authority');
+  });
+
+  test('enforces approval separation of duties with pseudonymous identities', () => {
+    const base = { action_taken: 'blocked', approval_required: true,
+      approval_request_id: 'approval-1', approval_action_hash: A,
+      approval_expires_at_ms: 1_500 } as const;
+    const makeVerifier = (principalRefHash?: string): StrictApprovalVerifier => (
+      _evidence, expected,
+    ) => ({
+      request_id: expected.request_id, action_hash: expected.action_hash,
+      principal_id: 'reviewer-1',
+      ...(principalRefHash === undefined ? {} : { principal_ref_hash: principalRefHash }),
+      decision: expected.decision, source_hash: D, expires_at_ms: 1_400,
+    });
+    const resolve = (subject: StrictReceiptCoordinatorV21) => {
+      const pending = subject.prepareDecision(action('approval-action'));
+      subject.commitPrepared(pending.token, pending.receipt_hash);
+      return () => subject.prepareApprovalResolution({
+        suspended_receipt_hash: pending.receipt_hash,
+        method: 'approval_granted', approval_evidence: {},
+      });
+    };
+
+    const missing = coordinator({ base, approvalVerifier: makeVerifier(),
+      approvalSeparationOfDuties: 'requester' });
+    expect(resolve(missing)).toThrow('requires principal_ref_hash');
+
+    const selfApproved = coordinator({ base, approvalVerifier: makeVerifier(B),
+      approvalSeparationOfDuties: 'requester_and_initiator' });
+    expect(resolve(selfApproved)).toThrow('differ from the requester');
+
+    const independent = coordinator({ base, approvalVerifier: makeVerifier(C),
+      approvalSeparationOfDuties: 'requester_and_initiator' });
+    const approved = resolve(independent)();
+    expect(approved.value.body.resolution?.resolver_ref_hash).toBe(C);
+
+    const delegatedInitiator = coordinator({ base, approvalVerifier: makeVerifier(B),
+      approvalSeparationOfDuties: 'requester_and_initiator',
+      identitySnapshot: (timestamp, deviceSigner) => ({
+        ...identity(timestamp, deviceSigner), relationship: 'delegated',
+        requester: { requester_ref_hash: C, principal_type: 'human',
+          role_ids: ['owner'], privilege_scopes: ['write'] },
+        delegation_chain: [{ hop: 0, delegation_id_hash: D,
+          delegator_ref_hash: C, delegatee_ref_hash: B, granted_scopes: ['write'],
+          issued_at_ms: 900, expires_at_ms: 1_600 }],
+      }) });
+    expect(resolve(delegatedInitiator)).toThrow('differ from the initiating agent');
+
+    expect(() => coordinator({
+      approvalSeparationOfDuties: 'invalid' as never,
+    })).toThrow('approval_separation_of_duties is unsupported');
   });
 
   test('advances only after commit, preserves exact retries, and rejects approval reuse', () => {

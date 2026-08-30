@@ -1,0 +1,90 @@
+{
+  "claimable": false,
+  "schema_version": 1,
+  "name": "remediation_v1",
+  "description": "Obsvr-authored compatibility fixture for deterministic remediation and linked retries. It is not an official AARM conformance vector and makes no certification or conformance claim.",
+  "plan": {
+    "plan_id": "plan-42",
+    "attempt_id": "attempt-1",
+    "receipt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "outcome": "STEP_UP",
+    "reason_code": "approval.required",
+    "requirements": [
+      {
+        "kind": "verification",
+        "code": "customer.confirmed",
+        "evidence_key": "customer_confirmation",
+        "guidance": "Confirm the destination with the customer."
+      },
+      {
+        "kind": "approval",
+        "code": "manager.approved",
+        "evidence_key": "manager_approval",
+        "expected_value_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "guidance": "Obtain manager approval before retrying."
+      }
+    ],
+    "created_at_ms": 1000,
+    "expires_at_ms": 5000
+  },
+  "retry": {
+    "retry_attempt_id": "attempt-2",
+    "satisfied_requirements": [
+      {
+        "code": "manager.approved",
+        "evidence_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      {
+        "code": "customer.confirmed",
+        "evidence_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    ]
+  },
+  "expect": {
+    "plan_document": {
+      "schema": "obsvr-remediation-plan-v1",
+      "plan_id": "plan-42",
+      "attempt_id": "attempt-1",
+      "receipt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "outcome": "STEP_UP",
+      "reason_code": "approval.required",
+      "requirements": [
+        {
+          "kind": "approval",
+          "code": "manager.approved",
+          "evidence_key": "manager_approval",
+          "expected_value_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "guidance": "Obtain manager approval before retrying."
+        },
+        {
+          "kind": "verification",
+          "code": "customer.confirmed",
+          "evidence_key": "customer_confirmation",
+          "guidance": "Confirm the destination with the customer."
+        }
+      ],
+      "created_at_ms": 1000,
+      "expires_at_ms": 5000
+    },
+    "plan_canonical": "{\"attempt_id\":\"attempt-1\",\"created_at_ms\":1000,\"expires_at_ms\":5000,\"outcome\":\"STEP_UP\",\"plan_id\":\"plan-42\",\"reason_code\":\"approval.required\",\"receipt_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"requirements\":[{\"code\":\"manager.approved\",\"evidence_key\":\"manager_approval\",\"expected_value_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"guidance\":\"Obtain manager approval before retrying.\",\"kind\":\"approval\"},{\"code\":\"customer.confirmed\",\"evidence_key\":\"customer_confirmation\",\"guidance\":\"Confirm the destination with the customer.\",\"kind\":\"verification\"}],\"schema\":\"obsvr-remediation-plan-v1\"}",
+    "plan_hash": "74294867bab7c6f7e01eee714347253f1bdbd4ed9f72287d91b3518ff063ef90",
+    "retry_document": {
+      "schema": "obsvr-remediation-retry-v1",
+      "retry_attempt_id": "attempt-2",
+      "parent_attempt_id": "attempt-1",
+      "parent_receipt_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "remediation_plan_hash": "74294867bab7c6f7e01eee714347253f1bdbd4ed9f72287d91b3518ff063ef90",
+      "satisfied_requirements": [
+        {
+          "code": "customer.confirmed",
+          "evidence_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        },
+        {
+          "code": "manager.approved",
+          "evidence_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    },
+    "retry_hash": "6898050bd0484ea66d826c871757efb0a2a886533ab59e48d1c5243667430a10"
+  }
+}

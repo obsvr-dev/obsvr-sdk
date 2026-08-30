@@ -50,6 +50,7 @@ class StrictReceiptCoordinatorV21:
         intent_decision_provider: Any,
         evaluation_evidence_provider: Any,
         approval_verifier: Optional[Callable[[Any, Dict[str, Any]], Dict[str, Any]]] = None,
+        approval_separation_of_duties: str = "none",
         pid: Callable[[], int] = os.getpid,
         prepared_token_factory: Callable[[], str] = lambda: str(uuid.uuid4()),
     ) -> None:
@@ -57,6 +58,12 @@ class StrictReceiptCoordinatorV21:
             raise StrictReceiptCoordinatorV21Error("sdk_language must be python")
         if not callable(clock):
             raise StrictReceiptCoordinatorV21Error("clock must be callable")
+        if approval_separation_of_duties not in {
+            "none", "requester", "requester_and_initiator"
+        }:
+            raise StrictReceiptCoordinatorV21Error(
+                "approval_separation_of_duties is unsupported"
+            )
         if not callable(identity_snapshot) or not callable(
             getattr(identity_authority, "issue", None)
         ):
@@ -77,6 +84,7 @@ class StrictReceiptCoordinatorV21:
         self._intent_decision_provider = intent_decision_provider
         self._evaluation_evidence_provider = evaluation_evidence_provider
         self._approval_verifier = approval_verifier
+        self._approval_separation_of_duties = approval_separation_of_duties
         self._pid_source = pid
         self._owner_pid = v21_integer(pid(), "pid")
         strict_receipt_v2_1_key_id(signer.raw_public_key)
@@ -197,6 +205,9 @@ class StrictReceiptCoordinatorV21:
                 options={
                     "signer": self._signer,
                     "approval_verifier": self._approval_verifier,
+                    "approval_separation_of_duties": (
+                        self._approval_separation_of_duties
+                    ),
                     "evaluation_evidence_provider": self._evaluation_evidence_provider,
                 },
                 policy=self._policy,

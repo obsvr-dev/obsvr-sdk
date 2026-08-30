@@ -82,7 +82,7 @@ The strict receipt tests drive the real TypeScript implementation rather than a 
 
 - `tests/unit/strict-provider-boundary-v2-1.test.ts` proves exact cleaned-argument binding, unique action ids, target re-reading, admission/commit/checkpoint ordering, provider-error preservation, and fail-closed unsupported surfaces. It also drives the installed maintained Gemini client with provider transport mocked.
 - `tests/unit/strict-execution-outcome-v2-1.test.ts` and terminal cases in the provider/runtime suites cover signed success/failure outcomes, post-start finalization failures, and unresolved `invocation_uncertain` state.
-- `tests/unit/strict-action-boundary-v2-1.test.ts` and approval cases in the strict runtime suite cover provider-neutral side effects and signed approval resolution with at-most-once execution.
+- `tests/unit/strict-action-boundary-v2-1.test.ts` and approval cases in the strict coordinator/runtime suites cover provider-neutral side effects, exact-action approval, expiry, revalidation, optional separation of duties, and at-most-once execution.
 - `tests/unit/strict-receipt-runtime-v2-1.test.ts` and `tests/unit/strict-receipt-recovery-v2-1.test.ts` cover durable phase ordering, ambiguous admission, checkpoint failure, freeze/reconcile behavior, and the no-automatic-retry boundary after invocation starts.
 - `tests/unit/strict-runtime-recovery-v2-1.test.ts`, `tests/unit/strict-policy-continuity-v2-1.test.ts`, and `tests/unit/strict-evidence-bundle-v2-1.test.ts` cover persisted-runtime recovery, policy-history reconstruction, and portable bundle verification.
 - `tests/unit/strict-otel-correlation-v2-1.test.ts` verifies content-free OpenTelemetry correlation after durable checkpoints without making telemetry authoritative.

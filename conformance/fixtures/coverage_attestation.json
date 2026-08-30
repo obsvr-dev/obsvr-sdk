@@ -1,0 +1,46 @@
+{
+  "input": {
+    "attestation_id": "attestation-1",
+    "workload_id": "contracts-worker",
+    "environment": "production",
+    "sdk_language": "typescript",
+    "sdk_version": "0.13.0",
+    "generated_at_ms": 1788111000000,
+    "valid_until_ms": 1788111060000,
+    "required": [
+      {
+        "integration": "action:contract.send",
+        "minimum_depth": "enforce",
+        "symbols": ["contract.send"]
+      },
+      {
+        "integration": "langchain.models",
+        "minimum_depth": "enforce",
+        "symbols": []
+      }
+    ],
+    "policy_pack_hashes": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ]
+  },
+  "bindings": [
+    {
+      "integration": "action:contract.send",
+      "symbol": "contract.send",
+      "bound": true,
+      "enforcement_depth": "enforce",
+      "integration_version": "1.0.0",
+      "initialized_at_ms": 1788110999000,
+      "exclusions": []
+    },
+    {
+      "integration": "langchain.models",
+      "symbol": "langchain.callbacks",
+      "bound": true,
+      "enforcement_depth": "observe",
+      "initialized_at_ms": 1788110998000,
+      "exclusions": ["tool execution"]
+    }
+  ],
+  "expected_body_hash": "02aef96e87d9a7e85c29f9885850e50bf1cb4db32cfe544469b39245c3f0e16a"
+}

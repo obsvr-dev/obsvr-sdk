@@ -94,6 +94,65 @@ SDK, revoke other instances, invalidate an earlier copied callable, or detect a
 call the SDK never observes. Required bindings, raw-handle sealing, framework
 facade binding, and pre-invocation tool gates are complementary controls.
 
+### Signed deployment coverage attestations
+
+The coverage-attestation API signs a canonical snapshot of the bindings that
+this process reports. It is intended for deployment admission and evidence
+bundles, not runtime call interception.
+
+| Attested | Not attested |
+| --- | --- |
+| required integration names and symbols | calls the SDK never observed |
+| declared `observe` or `enforce` depth | process-wide or network-wide completeness |
+| binding success or failure | absence of retained raw handles |
+| integration version and initialization time when reported | behavior of unlisted upstream methods |
+| known exclusions | provider-side hosted tool execution |
+| policy-pack hashes supplied by the caller | the policy pack contents unless verified separately |
+
+Unknown or legacy binding depth never satisfies an `enforce` requirement.
+Derived completeness and failure fields are recomputed during verification;
+extra fields, noncanonical bodies, rewritten results, hash mismatch, foreign
+keys, and invalid signatures fail verification. Validity windows are carried
+inside the signed body, but the verifier intentionally returns their exact
+values rather than consulting wall-clock time; the deployment controller owns
+its clock and expiry policy.
+
+`governFn` / `govern_fn` / `@govern` is an enforcing callable boundary backed
+by the existing tool-policy kernel. A deny has zero calls to the wrapped
+function, and a redact verdict changes the arguments that function receives or
+fails closed. It does not revoke any other reference to the original callable;
+coverage reports therefore record retained raw aliases as an exclusion.
+
+Optional `ActionContextV2` layers are closed and bounded. They carry only
+identity, execution, and governance facts needed for deterministic policy and
+receipt reconstruction. Raw action targets remain tokenized, policy packs and
+coverage statements travel by hash, and arbitrary prompt/output fields are
+rejected. Adding the layers is backward-compatible for callers that omit them:
+their canonical v2 bytes do not change.
+
+Remediation plans are nonexecuting structured instructions for `MODIFY`,
+`STEP_UP`, and `DEFER`; a terminal `DENY` cannot be converted into a retry plan.
+Every retry must use a new attempt id and supply one evidence hash for every
+plan requirement. The retry hash binds the original attempt, original receipt,
+plan, new attempt, and evidence set. These hashes prove linkage and integrity,
+not the truth of the external evidence itself; the policy or approval authority
+must still validate that evidence before allowing execution.
+
+### Operator contracts and external signals
+
+| Surface | Integrity property | Explicit limit |
+| --- | --- | --- |
+| policy lifecycle | replay report is candidate-bound; failed thresholds stay in shadow; non-shadow candidates carry rollback | the SDK returns a promotion document but does not mutate deployment state |
+| workload registry | registration is content-addressed and signed by the supplied operator key | it proves the signed declaration, not undiscovered processes or calls |
+| policy template | typed parameters and rendered artifact are separately hashed with approval and activation references | a template is not a compliance certification |
+| control analytics | report hash commits the stated input count, time window, metrics, and explicit gaps | missing events outside the input cannot be detected or inferred |
+| evaluator signal | provenance, latency, timeout, cache state, and failure disposition enter the resolution | remote and probabilistic signals always carry `authoritative_allow: false` |
+
+Signal exports are deliberately one-way projections. OpenTelemetry attributes
+support correlation only. OPA and Cedar projections supply facts to those
+engines, but neither projection executes an action or replaces obsvr's signed
+decision and outcome evidence.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.
@@ -122,6 +181,15 @@ An authorized action has two signed records with different meanings. The decisio
 The provider-neutral action boundary applies the same admit-commit-start-terminal sequence to an operator-declared side effect. Unlike the provider adapter, it does not invent a scope: the action supplies its explicit requested scopes, target, kind, name, and data classifications. The passed callable is the execution boundary. Any other reference to the underlying side effect remains a bypass.
 
 A `STEP_UP` decision can be resumed only through the strict approval-resolution path. The resolution must bind the suspended receipt, action, policy evidence, and approval evidence; a new signed resolution receipt is admitted before the original action can run. Duplicate, conflicting, expired, or already-consumed resolutions do not execute the action again.
+
+Strict profile 2.1 supports an opt-in separation-of-duties check through
+`approval_separation_of_duties`. A granted result must carry a trusted
+`principal_ref_hash`; `requester` rejects the original requester, while
+`requester_and_initiator` rejects both the requester and the initiating agent.
+The verifier must derive that hash in the same pseudonymous identity namespace
+as the receipt. The default is `none` so existing verifiers remain compatible.
+This check applies to grants, not denials. Ordinary policy-poll grants remain a
+separate compatibility path and do not gain this strict guarantee.
 
 ### Recovery, bundles, and telemetry
 

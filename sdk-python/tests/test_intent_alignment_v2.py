@@ -23,6 +23,14 @@ FIXTURE = json.loads(
         / "intent_alignment_v2.json"
     ).read_text(encoding="utf-8")
 )
+LAYERED = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "conformance"
+        / "fixtures"
+        / "action_context_layers_v2.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 def test_raw_policy_targets_normalize_to_hashes_only():
@@ -64,6 +72,20 @@ def test_canonical_context_and_policy_evaluate_identically():
     canonical = evaluate_intent_alignment_v2(
         context=build_action_context_v2(FIXTURE["base_context"]),
         policy=build_intent_policy_v2(FIXTURE["base_policy"]),
+        base_result={"action_taken": "allowed"},
+    )
+    assert canonical == raw
+
+
+def test_optional_layers_survive_canonical_context_revalidation():
+    raw = evaluate_intent_alignment_v2(
+        context=LAYERED["input"],
+        policy=FIXTURE["base_policy"],
+        base_result={"action_taken": "allowed"},
+    )
+    canonical = evaluate_intent_alignment_v2(
+        context=build_action_context_v2(LAYERED["input"]),
+        policy=FIXTURE["base_policy"],
         base_result={"action_taken": "allowed"},
     )
     assert canonical == raw

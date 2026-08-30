@@ -55,6 +55,7 @@ import {
   isGoverningInstance,
 } from "./proxy/instance-guard.js";
 import { SDK_VERSION } from "./constants.js";
+import { governFn as _governFn } from "./governance/govern-fn.js";
 
 // Re-export proxy types
 export type { LLMAuditInitConfig, ObsvrConfig, WrapOptions, AuditEvent, AuditFields, AgentPolicy } from "./proxy/types.js";
@@ -102,6 +103,41 @@ export type {
 export { useSubject, getCurrentSubject, parseSubject } from "./proxy/subject.js";
 export type { Subject } from "./proxy/subject.js";
 export { verifyAuditChain } from "./governance/verify-chain.js";
+export { governFn } from "./governance/govern-fn.js";
+export type { GovernedFunction, GovernFnOptions } from "./governance/govern-fn.js";
+export {
+  ACTION_CONTEXT_V2_SCHEMA,
+  ACTION_TARGET_HASH_DOMAIN,
+  buildActionContextV2,
+  canonicalizeActionContextV2,
+  actionContextV2Hash,
+  actionTargetHash,
+  ActionContextV2ValidationError,
+} from "./governance/action-context-v2.js";
+export {
+  REMEDIATION_PLAN_V1_SCHEMA,
+  REMEDIATION_RETRY_V1_SCHEMA,
+  REMEDIATION_PLAN_HASH_DOMAIN,
+  RemediationV1ValidationError,
+  buildRemediationPlanV1,
+  canonicalizeRemediationPlanV1,
+  remediationPlanV1Hash,
+  buildRemediationRetryV1,
+  remediationRetryV1Hash,
+} from "./governance/remediation-v1.js";
+export type {
+  RemediationRequirementV1Input,
+  RemediationPlanV1Input,
+  RemediationPlanV1Document,
+  SatisfiedRemediationRequirementV1Input,
+  RemediationRetryV1Input,
+  RemediationRetryV1Document,
+} from "./governance/remediation-v1.js";
+export type {
+  ActionContextV2Input,
+  ActionContextV2Document,
+  PriorActionV2Input,
+} from "./governance/action-context-v2.js";
 // Gap markers: a verified chain can still declare events the bounded sender
 // queue dropped. `verifyAuditChain` totals them; this identifies which events
 // carry the claim, for callers processing their own exports.
@@ -266,9 +302,31 @@ export {
 } from "./binding-report.js";
 export type {
   BindingEntry,
+  BindingMetadata,
+  EnforcementDepth,
   RequiredBindingFailure,
   UnboundSymbol,
 } from "./binding-report.js";
+export {
+  COVERAGE_ATTESTATION_ENVELOPE_SCHEMA,
+  COVERAGE_ATTESTATION_SCHEMA,
+  CoverageAttestationValidationError,
+  buildCoverageAttestationBody,
+  canonicalizeCoverageAttestationBody,
+  coverageAttestationBodyHash,
+  signCoverageAttestation,
+  verifyCoverageAttestation,
+} from "./governance/coverage-attestation.js";
+export type {
+  CoverageAttestationBody,
+  CoverageAttestationEnvelope,
+  CoverageAttestationInput,
+  CoverageAttestationVerification,
+  CoverageBinding,
+  CoverageFailure,
+  CoverageFailureReason,
+  CoverageRequirementInput,
+} from "./governance/coverage-attestation.js";
 
 // Framework-agnostic tool governance: wrap any framework's tool (Vercel AI,
 // LlamaIndex, LangChain, ...) so its execution is allow/deny-gated, PII-scanned,
@@ -290,6 +348,65 @@ export type { OpenAICompatConfig } from "./integrations/openai-compat.js";
 // a CRITICAL leak. Only the token HASH is ever stored or audited.
 export { mintCanary, scanForCanary, canaryCandidates } from "./policy/canary.js";
 export type { MintedCanary, CanaryHit, CanaryScanResult, CanaryCandidate } from "./policy/canary.js";
+export {
+  POLICY_CANDIDATE_V1_SCHEMA,
+  POLICY_REPLAY_REPORT_V1_SCHEMA,
+  POLICY_PROMOTION_V1_SCHEMA,
+  PolicyLifecycleV1ValidationError,
+  buildPolicyCandidateV1,
+  policyCandidateV1Hash,
+  replayPolicyCandidateV1,
+  decidePolicyPromotionV1,
+} from "./governance/policy-lifecycle-v1.js";
+export {
+  WORKLOAD_REGISTRATION_V1_SCHEMA,
+  WORKLOAD_REGISTRATION_ENVELOPE_V1_SCHEMA,
+  WorkloadRegistryV1ValidationError,
+  WorkloadRegistryV1,
+  buildWorkloadRegistrationV1,
+  workloadRegistrationV1Hash,
+  signWorkloadRegistrationV1,
+  verifyWorkloadRegistrationV1,
+} from "./governance/workload-registry-v1.js";
+export type { WorkloadRegistrationV1Input } from "./governance/workload-registry-v1.js";
+export {
+  POLICY_TEMPLATE_V1_SCHEMA,
+  RENDERED_POLICY_V1_SCHEMA,
+  RENDERED_POLICY_ENVELOPE_V1_SCHEMA,
+  PolicyTemplateV1ValidationError,
+  buildPolicyTemplateV1,
+  policyTemplateV1Hash,
+  renderPolicyTemplateV1,
+  signRenderedPolicyV1,
+  verifyRenderedPolicyV1,
+} from "./governance/policy-template-v1.js";
+export type { PolicyTemplateV1Input, TemplateParameterV1 } from "./governance/policy-template-v1.js";
+export {
+  CONTROL_ANALYTICS_REPORT_V1_SCHEMA,
+  ControlAnalyticsV1ValidationError,
+  buildControlAnalyticsReportV1,
+} from "./governance/control-analytics-v1.js";
+export type { ControlAnalyticsEventV1 } from "./governance/control-analytics-v1.js";
+export {
+  SIGNAL_DECLARATION_V1_SCHEMA,
+  SIGNAL_OBSERVATION_V1_SCHEMA,
+  SIGNAL_RESOLUTION_V1_SCHEMA,
+  SignalInterfaceV1ValidationError,
+  buildSignalDeclarationV1,
+  buildSignalObservationV1,
+  resolveSignalV1,
+  signalResolutionToOtelAttributesV1,
+  signalResolutionToOpaInputV1,
+  signalResolutionToCedarContextV1,
+} from "./governance/signal-interface-v1.js";
+export type { SignalDeclarationV1Input, SignalObservationV1Input } from "./governance/signal-interface-v1.js";
+export type {
+  PolicyCandidateV1Input,
+  PolicyReplayCaseV1,
+  PolicyPromotionThresholdsV1,
+  PolicyStageV1,
+  ReplayOutcomeV1,
+} from "./governance/policy-lifecycle-v1.js";
 
 // Resolved config accessor (needed by obsvrGovernMCP and custom integrations)
 export { getConfig } from "./proxy/index.js";
@@ -457,6 +574,9 @@ export const obsvr = {
     if (!isGoverningCopy()) return client;
     return wrap(client, options);
   },
+
+  /** Govern an application-owned action or workflow function. */
+  governFn: _governFn,
 
   /**
    * Run a function inside a named span scope. Governed calls made within it

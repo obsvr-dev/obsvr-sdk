@@ -1,0 +1,86 @@
+{
+  "claimable": false,
+  "schema_version": 2,
+  "name": "action_context_layers_v2",
+  "description": "Obsvr-authored compatibility fixture for optional identity, execution, and governance layers in the bounded action context. It is not an official AARM conformance vector and makes no certification or conformance claim.",
+  "input": {
+    "agent_id": "contract-agent",
+    "active_intents": ["review", "send"],
+    "current_action": {
+      "kind": "workflow_action",
+      "name": "contract.send",
+      "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "target": "tenant/acme/contract/42",
+      "data_classifications": ["commercial", "personal"],
+      "requested_scopes": ["contracts:send"]
+    },
+    "run_id": "run-42",
+    "prior_actions": [],
+    "principal": {
+      "principal_id": "user-7",
+      "kind": "human",
+      "tenant_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "roles": ["legal", "approver", "legal"]
+    },
+    "execution": {
+      "environment": "production",
+      "autonomy_level": "supervised",
+      "consequence_level": "external_write"
+    },
+    "governance": {
+      "integration_id": "govern_fn",
+      "integration_version": "0.13.0",
+      "coverage_claim_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "active_pack_hashes": [
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      ],
+      "approval_state": "approved",
+      "quota_state": "within_limit"
+    }
+  },
+  "expect": {
+    "document": {
+      "schema": "obsvr-action-context-v2",
+      "agent": {
+        "agent_id": "contract-agent",
+        "active_intents": ["review", "send"]
+      },
+      "action": {
+        "kind": "workflow_action",
+        "name": "contract.send",
+        "arguments_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "data_classifications": ["commercial", "personal"],
+        "requested_scopes": ["contracts:send"],
+        "target_hash": "bd739bf9e14eabfaa616fa2a677cc9d209df3edce47137e2318233168c2c5db3"
+      },
+      "run_id": "run-42",
+      "prior_actions": [],
+      "principal": {
+        "principal_id": "user-7",
+        "kind": "human",
+        "roles": ["approver", "legal"],
+        "tenant_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "execution": {
+        "environment": "production",
+        "autonomy_level": "supervised",
+        "consequence_level": "external_write"
+      },
+      "governance": {
+        "integration_id": "govern_fn",
+        "active_pack_hashes": [
+          "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        ],
+        "approval_state": "approved",
+        "quota_state": "within_limit",
+        "integration_version": "0.13.0",
+        "coverage_claim_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    "canonical": "{\"action\":{\"arguments_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"data_classifications\":[\"commercial\",\"personal\"],\"kind\":\"workflow_action\",\"name\":\"contract.send\",\"requested_scopes\":[\"contracts:send\"],\"target_hash\":\"bd739bf9e14eabfaa616fa2a677cc9d209df3edce47137e2318233168c2c5db3\"},\"agent\":{\"active_intents\":[\"review\",\"send\"],\"agent_id\":\"contract-agent\"},\"execution\":{\"autonomy_level\":\"supervised\",\"consequence_level\":\"external_write\",\"environment\":\"production\"},\"governance\":{\"active_pack_hashes\":[\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"],\"approval_state\":\"approved\",\"coverage_claim_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"integration_id\":\"govern_fn\",\"integration_version\":\"0.13.0\",\"quota_state\":\"within_limit\"},\"principal\":{\"kind\":\"human\",\"principal_id\":\"user-7\",\"roles\":[\"approver\",\"legal\"],\"tenant_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"prior_actions\":[],\"run_id\":\"run-42\",\"schema\":\"obsvr-action-context-v2\"}",
+    "hash": "6535e9e169ab49f7c67c9864d839629bfeca2b4f5a0461ed49903934f1619486"
+  }
+}

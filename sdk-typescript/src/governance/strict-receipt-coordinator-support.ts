@@ -31,6 +31,8 @@ export interface TrustedApprovalResult {
   request_id: string;
   action_hash: string;
   principal_id: string;
+  /** Pseudonymous stable identity used for separation-of-duties checks. */
+  principal_ref_hash?: string;
   decision: 'granted' | 'denied';
   source_hash: string;
   expires_at_ms: number;
@@ -303,22 +305,33 @@ export function trustedApprovalResult(
   value: unknown,
   expected: StrictApprovalExpectation,
   suspensionExpiry: number,
-): { requestId: string; actionHash: string; principalId: string; sourceHash: string } {
+): {
+  requestId: string;
+  actionHash: string;
+  principalId: string;
+  principalRefHash?: string;
+  sourceHash: string;
+} {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('approval verifier returned an invalid result');
   }
   const raw = value as Record<string, unknown>;
-  const allowed = new Set([
+  const required = new Set([
     'request_id', 'action_hash', 'principal_id', 'decision',
     'source_hash', 'expires_at_ms',
   ]);
+  const allowed = new Set([...required, 'principal_ref_hash']);
   const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
-  if (unknown.length > 0 || Object.keys(raw).length !== allowed.size) {
+  const missing = [...required].filter((key) => !Object.prototype.hasOwnProperty.call(raw, key));
+  if (unknown.length > 0 || missing.length > 0) {
     throw new Error('approval verifier returned an invalid result');
   }
   const requestId = coordinatorText(raw.request_id, 'trusted approval request_id');
   const actionHash = coordinatorHash(raw.action_hash, 'trusted approval action_hash');
   const principalId = coordinatorText(raw.principal_id, 'trusted approval principal_id');
+  const principalRefHash = raw.principal_ref_hash === undefined
+    ? undefined
+    : coordinatorHash(raw.principal_ref_hash, 'trusted approval principal_ref_hash');
   const sourceHash = coordinatorHash(raw.source_hash, 'trusted approval source_hash');
   const expiresAt = coordinatorSafeInteger(raw.expires_at_ms, 'trusted approval expires_at_ms');
   if (requestId !== expected.request_id || actionHash !== expected.action_hash
@@ -334,7 +347,9 @@ export function trustedApprovalResult(
     throw new Error('trusted approval is expired');
   }
   return {
-    requestId, actionHash, principalId, sourceHash,
+    requestId, actionHash, principalId,
+    ...(principalRefHash === undefined ? {} : { principalRefHash }),
+    sourceHash,
   };
 }
 

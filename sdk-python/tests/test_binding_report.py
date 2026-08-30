@@ -78,7 +78,11 @@ def isolated_registry():
 class TestRecording:
     def test_a_successful_bind_records_no_reason(self, isolated_registry):
         record_binding("demo", "pkg.Symbol")
-        assert integration_bindings() == {"demo": {"pkg.Symbol": {"bound": True}}}
+        assert integration_bindings() == {
+            "demo": {
+                "pkg.Symbol": {"bound": True, "enforcement_depth": "unknown"}
+            }
+        }
         assert unbound_symbols() == []
 
     def test_a_failed_bind_keeps_the_exception_type_and_message(self, isolated_registry):

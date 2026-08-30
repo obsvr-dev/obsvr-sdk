@@ -73,6 +73,25 @@ function assertAuthorityActive(pending: PendingApprovalV21, timestamp: number): 
   }
 }
 
+function assertApprovalSeparationOfDuties(
+  pending: PendingApprovalV21,
+  approverRefHash: string | undefined,
+  mode: NonNullable<StrictReceiptCoordinatorV21Options['approval_separation_of_duties']>,
+): void {
+  if (mode === 'none') return;
+  if (!approverRefHash) {
+    throw new Error('approval separation of duties requires principal_ref_hash');
+  }
+  const requester = pending.receipt.body.identity.requester.requester_ref_hash;
+  if (approverRefHash === requester) {
+    throw new Error('approver must differ from the requester');
+  }
+  if (mode === 'requester_and_initiator'
+    && approverRefHash === pending.receipt.body.identity.initiator.agent_ref_hash) {
+    throw new Error('approver must differ from the initiating agent');
+  }
+}
+
 export function signApprovalResolutionV21(params: {
   input: StrictApprovalResolutionV21Input;
   pending: PendingApprovalV21;
@@ -110,6 +129,13 @@ export function signApprovalResolutionV21(params: {
     expected,
     suspension.expires_at_ms,
   );
+  if (decision === 'granted') {
+    assertApprovalSeparationOfDuties(
+      params.pending,
+      trusted.principalRefHash,
+      params.options.approval_separation_of_duties ?? 'none',
+    );
+  }
   const evaluated = evaluateDecisionV21(
     params.pending.context,
     params.policy,
@@ -145,7 +171,7 @@ export function signApprovalResolutionV21(params: {
       resolves_receipt_hash: prior.receipt_hash,
       suspension_id: suspension.suspension_id,
       method: params.input.method,
-      resolver_ref_hash: canonicalHash({
+      resolver_ref_hash: trusted.principalRefHash ?? canonicalHash({
         schema: 'obsvr-strict-resolver-ref-v2-1',
         principal_id: v21Text(trusted.principalId, 'trusted principal_id'),
       }),

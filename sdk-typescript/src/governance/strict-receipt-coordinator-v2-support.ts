@@ -74,6 +74,9 @@ export function contextInputFromV2Document(
     ...(context.agent.privilege_scope === undefined ? {} : { privilege_scope: [...context.agent.privilege_scope] }),
     current_action: { ...context.action }, run_id: context.run_id,
     ...(context.thread_id === undefined ? {} : { thread_id: context.thread_id }),
+    ...(context.principal === undefined ? {} : { principal: { ...context.principal } }),
+    ...(context.execution === undefined ? {} : { execution: { ...context.execution } }),
+    ...(context.governance === undefined ? {} : { governance: { ...context.governance } }),
   };
 }
 

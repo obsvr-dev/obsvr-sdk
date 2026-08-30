@@ -132,18 +132,32 @@ def normalize_decision_action_v2_1(input_value: Any) -> Dict[str, Any]:
         allowed.add("thread_id")
     _exact(root, allowed, "decision request")
     action = _record(root["current_action"], "current_action")
-    _exact(
-        action,
-        {
-            "kind",
-            "name",
-            "arguments_hash",
-            "target_hash",
-            "data_classifications",
-            "requested_scopes",
-        },
-        "current_action",
-    )
+    action_fields = {
+        "kind",
+        "name",
+        "arguments_hash",
+        "target_hash",
+        "data_classifications",
+        "requested_scopes",
+    }
+    for optional_field in (
+        "attempt_id",
+        "parent_attempt_id",
+        "remediation_retry_hash",
+    ):
+        if optional_field in action:
+            action_fields.add(optional_field)
+    _exact(action, action_fields, "current_action")
+    has_parent = "parent_attempt_id" in action
+    has_retry_hash = "remediation_retry_hash" in action
+    if has_parent != has_retry_hash:
+        _fail(
+            "current_action parent_attempt_id and remediation_retry_hash must appear together"
+        )
+    if has_parent and "attempt_id" not in action:
+        _fail("current_action retry linkage requires attempt_id")
+    if has_parent and action["parent_attempt_id"] == action["attempt_id"]:
+        _fail("current_action retry must use a new attempt_id")
     normalized = {
         "action_id": v21_text(root["action_id"], "action_id"),
         "active_intents": _v21_set(root["active_intents"], "active_intents"),
@@ -162,6 +176,25 @@ def normalize_decision_action_v2_1(input_value: Any) -> Dict[str, Any]:
             ),
             "requested_scopes": _v21_set(
                 action["requested_scopes"], "current_action.requested_scopes"
+            ),
+            **(
+                {"attempt_id": v21_text(action["attempt_id"], "current_action.attempt_id")}
+                if "attempt_id" in action
+                else {}
+            ),
+            **(
+                {
+                    "parent_attempt_id": v21_text(
+                        action["parent_attempt_id"],
+                        "current_action.parent_attempt_id",
+                    ),
+                    "remediation_retry_hash": v21_hash(
+                        action["remediation_retry_hash"],
+                        "current_action.remediation_retry_hash",
+                    ),
+                }
+                if "parent_attempt_id" in action and "remediation_retry_hash" in action
+                else {}
             ),
         },
         "run_id": v21_text(root["run_id"], "run_id"),

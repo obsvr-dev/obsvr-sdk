@@ -233,6 +233,9 @@ function contextInput(value: ActionContextV2Document): ActionContextV2Input {
     ...(value.session_id === undefined ? {} : { session_id: value.session_id }),
     ...(value.thread_id === undefined ? {} : { thread_id: value.thread_id }),
     prior_actions: value.prior_actions,
+    ...(value.principal === undefined ? {} : { principal: value.principal }),
+    ...(value.execution === undefined ? {} : { execution: value.execution }),
+    ...(value.governance === undefined ? {} : { governance: value.governance }),
   };
 }
 function normalizedContext(

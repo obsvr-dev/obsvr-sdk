@@ -108,6 +108,9 @@ def context_input_from_v2_document(context: Dict[str, Any]) -> Dict[str, Any]:
         output["privilege_scope"] = list(context["agent"]["privilege_scope"])
     if "thread_id" in context:
         output["thread_id"] = context["thread_id"]
+    for layer in ("principal", "execution", "governance"):
+        if layer in context:
+            output[layer] = copy.deepcopy(context[layer])
     return output
 
 

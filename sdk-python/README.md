@@ -86,6 +86,37 @@ Startup fails before the target runs unless every listed boundary binds.
 `auto_governance_status()` reports each boundary as `armed`, `bound`, or
 `not-applicable`.
 
+For deployment admission, `sign_coverage_attestation()` signs that binding
+snapshot with an operator-held Ed25519 key. Requirements can demand `observe`
+or `enforce` depth for exact integration symbols; ungraded legacy records are
+`unknown` and cannot satisfy enforcement. The signed body also carries
+policy-pack hashes, versions, initialization times, and known exclusions.
+`verify_coverage_attestation()` rejects altered or noncanonical statements
+under the pinned public key. This proves the process-reported bindings, not
+calls made through a raw alias or outside a documented boundary.
+
+Govern an application-owned action without adapting it to a framework tool:
+
+```python
+@obsvr.govern(name="contract.send", consequence="external_write")
+def send_contract(contract_id):
+    return raw_send_contract(contract_id)
+```
+
+`govern_fn(function, ...)` is the equivalent direct wrapper. Python preserves
+the original sync or async shape. Block occurs before the function is entered;
+redaction changes the arguments it receives or fails closed. The returned
+wrapper is the boundary. A retained raw function alias is not governed and is
+reported as a coverage exclusion.
+
+`build_action_context_v2()` provides the bounded context for strict
+application actions. Optional principal, execution, and governance layers
+carry stable facts and hashes only; unknown fields and raw target storage are
+rejected.
+Structured remediation uses `build_remediation_plan_v1()` and
+`build_remediation_retry_v1()`: a retry is a new attempt linked to the original
+receipt and requires hashed evidence for every declared requirement.
+
 The same manifest is enforced by direct `obsvr.init(auto=True)`. Production
 direct-init also warns if a supported package was imported first, because a
 constructor or object reference copied before rebinding can remain raw.
@@ -212,6 +243,13 @@ delivery = submit_strict_runtime_terminal_journal_v2_1(
 This mode supports only synchronous unary `chat.completions.create` / `.parse`, `responses.create` / `.parse`, `messages.create` / `.parse`, legacy `generate_content`, and maintained `models.generate_content`. Async calls, streams, helper managers, runners, and other callables fail closed with `unsupported_surface`. Only an `ALLOW` outcome executes; `DENY`, `MODIFY`, `STEP_UP`, and `DEFER` do not contact the provider.
 
 For a side effect that is not a model call, use `create_strict_action_boundary_v2_1()` with an explicit action, target, data classifications, requested scopes, and invocation function. Suspended `STEP_UP` decisions can be resumed through the runtime's signed approval-resolution path; a valid `ALLOW`, or `MODIFY` with bound effective arguments, executes the original action at most once.
+
+To prevent self-approval, configure the coordinator with
+`approval_separation_of_duties="requester_and_initiator"`. Its trusted
+`approval_verifier` must return `principal_ref_hash` in the same pseudonymous
+identity namespace as the requester's and agent's receipt hashes. Use
+`"requester"` to check only the requester. The compatibility default is
+`"none"`.
 
 To correlate durable strict evidence with an existing OpenTelemetry trace, wrap the checkpoint store with `with_strict_otel_correlation_v2_1()`. It adds content-free `obsvr.strict.*` references only to the active recording span and only after `save()` succeeds. Telemetry errors are ignored and telemetry never authorizes an action. The cross-language keys are pinned by [`strict_otel_attributes_v2_1.json`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/conformance/fixtures/strict_otel_attributes_v2_1.json).
 
