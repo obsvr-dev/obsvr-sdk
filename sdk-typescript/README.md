@@ -123,6 +123,15 @@ include tracing or hosted tools. `autoGovernanceStatus()` reports each automatic
 boundary as `armed`, `bound`, or `not-applicable`; `integrationBindings()`
 reports every recorded symbol bind.
 
+For deployment admission, `signCoverageAttestation()` signs that binding
+snapshot with an operator-held Ed25519 key. Requirements can demand `observe`
+or `enforce` depth for exact integration symbols; ungraded legacy records are
+`unknown` and cannot satisfy enforcement. The signed body also carries
+policy-pack hashes, versions, initialization times, and known exclusions.
+`verifyCoverageAttestation()` rejects altered or noncanonical statements under
+the pinned public key. This proves the process-reported bindings, not calls
+made through a raw alias or outside a documented boundary.
+
 In production, configuring agent or MCP policy without the startup preload logs
 a warning that only explicitly bound surfaces enforce. Use exact required keys
 when a missing automatic boundary must stop startup rather than warn.

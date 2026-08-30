@@ -266,9 +266,31 @@ export {
 } from "./binding-report.js";
 export type {
   BindingEntry,
+  BindingMetadata,
+  EnforcementDepth,
   RequiredBindingFailure,
   UnboundSymbol,
 } from "./binding-report.js";
+export {
+  COVERAGE_ATTESTATION_ENVELOPE_SCHEMA,
+  COVERAGE_ATTESTATION_SCHEMA,
+  CoverageAttestationValidationError,
+  buildCoverageAttestationBody,
+  canonicalizeCoverageAttestationBody,
+  coverageAttestationBodyHash,
+  signCoverageAttestation,
+  verifyCoverageAttestation,
+} from "./governance/coverage-attestation.js";
+export type {
+  CoverageAttestationBody,
+  CoverageAttestationEnvelope,
+  CoverageAttestationInput,
+  CoverageAttestationVerification,
+  CoverageBinding,
+  CoverageFailure,
+  CoverageFailureReason,
+  CoverageRequirementInput,
+} from "./governance/coverage-attestation.js";
 
 // Framework-agnostic tool governance: wrap any framework's tool (Vercel AI,
 // LlamaIndex, LangChain, ...) so its execution is allow/deny-gated, PII-scanned,

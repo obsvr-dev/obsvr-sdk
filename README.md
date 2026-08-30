@@ -101,6 +101,26 @@ have. These are exact surface keys, not product-wide claims:
 `openai_agents.model` and `openai_agents.tools` do not claim that Agents tracing,
 hosted tools, or every future Agents SDK surface is governed.
 
+### Signed deployment coverage
+
+`signCoverageAttestation()` / `sign_coverage_attestation()` turns the current
+binding report into a bounded, Ed25519-signed deployment statement. The body
+records the workload, environment, SDK version, required integration symbols,
+minimum enforcement depth, active policy-pack hashes, integration versions,
+initialization times, and known exclusions.
+
+| Required depth | A binding satisfies it when |
+| --- | --- |
+| `observe` | the symbol is bound as `observe` or `enforce` |
+| `enforce` | the symbol is explicitly bound as `enforce` |
+| legacy or ungraded binding | never satisfies an `enforce` requirement; it is normalized to `unknown` |
+
+The signature proves the exact process-reported statement under an
+operator-pinned key. It does **not** prove process-wide or network-wide
+interception, discover calls through raw aliases, or turn a documented
+exclusion into coverage. Consumers should reject expired attestations and any
+statement with `coverage_complete: false`.
+
 ## Five-minute quickstart
 
 ### TypeScript

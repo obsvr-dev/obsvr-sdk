@@ -152,6 +152,16 @@ from .binding_report import (  # noqa: F401
     required_binding_failures,
     unbound_symbols,
 )
+from .coverage_attestation import (  # noqa: F401
+    COVERAGE_ATTESTATION_ENVELOPE_SCHEMA,
+    COVERAGE_ATTESTATION_SCHEMA,
+    CoverageAttestationValidationError,
+    build_coverage_attestation_body,
+    canonicalize_coverage_attestation_body,
+    coverage_attestation_body_hash,
+    sign_coverage_attestation,
+    verify_coverage_attestation,
+)
 
 from ._version import __version__  # noqa: F401  # single source: obsvr/_version.py
 from .auto import auto_governance_status  # noqa: F401
@@ -210,6 +220,14 @@ __all__ = [
     "assert_required_bindings",
     "RequiredBindingsError",
     "auto_governance_status",
+    "COVERAGE_ATTESTATION_ENVELOPE_SCHEMA",
+    "COVERAGE_ATTESTATION_SCHEMA",
+    "CoverageAttestationValidationError",
+    "build_coverage_attestation_body",
+    "canonicalize_coverage_attestation_body",
+    "coverage_attestation_body_hash",
+    "sign_coverage_attestation",
+    "verify_coverage_attestation",
     "unbound_symbols",
     "explain",
     "mint_canary",

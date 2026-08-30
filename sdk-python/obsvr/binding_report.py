@@ -50,6 +50,7 @@ def record_binding(
     integration: str,
     symbol: str,
     error: Optional[BaseException] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Record that ``symbol`` bound for ``integration``, or why it did not.
 
@@ -57,7 +58,31 @@ def record_binding(
     diagnostic. The message is truncated because an import error can carry a
     full path list and this is a summary, not a log.
     """
-    entry: Dict[str, Any] = {"bound": error is None}
+    metadata = metadata if isinstance(metadata, dict) else {}
+    depth = metadata.get("enforcement_depth")
+    entry: Dict[str, Any] = {
+        "bound": error is None,
+        "enforcement_depth": depth if depth in {"enforce", "observe"} else "unknown",
+    }
+    version = metadata.get("integration_version")
+    if isinstance(version, str) and version.strip():
+        entry["integration_version"] = version.strip()[:128]
+    initialized_at_ms = metadata.get("initialized_at_ms")
+    if (
+        isinstance(initialized_at_ms, int)
+        and not isinstance(initialized_at_ms, bool)
+        and 0 <= initialized_at_ms <= 9_007_199_254_740_991
+    ):
+        entry["initialized_at_ms"] = initialized_at_ms
+    exclusions = metadata.get("exclusions")
+    if isinstance(exclusions, (list, tuple)):
+        entry["exclusions"] = sorted(
+            {
+                value.strip()[:256]
+                for value in exclusions
+                if isinstance(value, str) and value.strip()
+            }
+        )
     if error is not None:
         # Each field is captured separately: an exception whose __str__ raises
         # must still be RECORDED as a failure. Losing the whole entry because
@@ -85,7 +110,20 @@ def integration_bindings() -> Dict[str, Dict[str, Dict[str, Any]]]:
     its framework) record when that call runs. An integration nobody touched
     has nothing to report and saying otherwise would be a guess.
     """
-    return {name: dict(symbols) for name, symbols in _BINDINGS.items()}
+    return {
+        name: {
+            symbol: {
+                **entry,
+                **(
+                    {"exclusions": list(entry["exclusions"])}
+                    if "exclusions" in entry
+                    else {}
+                ),
+            }
+            for symbol, entry in symbols.items()
+        }
+        for name, symbols in _BINDINGS.items()
+    }
 
 
 def unbound_symbols() -> List[Dict[str, Any]]:

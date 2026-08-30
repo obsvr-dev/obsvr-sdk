@@ -94,6 +94,29 @@ SDK, revoke other instances, invalidate an earlier copied callable, or detect a
 call the SDK never observes. Required bindings, raw-handle sealing, framework
 facade binding, and pre-invocation tool gates are complementary controls.
 
+### Signed deployment coverage attestations
+
+The coverage-attestation API signs a canonical snapshot of the bindings that
+this process reports. It is intended for deployment admission and evidence
+bundles, not runtime call interception.
+
+| Attested | Not attested |
+| --- | --- |
+| required integration names and symbols | calls the SDK never observed |
+| declared `observe` or `enforce` depth | process-wide or network-wide completeness |
+| binding success or failure | absence of retained raw handles |
+| integration version and initialization time when reported | behavior of unlisted upstream methods |
+| known exclusions | provider-side hosted tool execution |
+| policy-pack hashes supplied by the caller | the policy pack contents unless verified separately |
+
+Unknown or legacy binding depth never satisfies an `enforce` requirement.
+Derived completeness and failure fields are recomputed during verification;
+extra fields, noncanonical bodies, rewritten results, hash mismatch, foreign
+keys, and invalid signatures fail verification. Validity windows are carried
+inside the signed body, but the verifier intentionally returns their exact
+values rather than consulting wall-clock time; the deployment controller owns
+its clock and expiry policy.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.

@@ -213,6 +213,25 @@ import paths remain explicit. OpenAI Agents tracing is still observe-only;
 automatic Agent interception separately governs concrete model calls and local
 tool execution at their pre-call boundaries.
 
+### Coverage attestation compatibility contract
+
+Python and TypeScript emit the same canonical
+`obsvr-coverage-attestation-v1` body and
+`obsvr-coverage-attestation-envelope-v1` envelope. Shared fixtures pin the body
+hash across both implementations.
+
+| Field | Compatibility rule |
+| --- | --- |
+| `required` | sorted integration requirements with `observe` or `enforce` minimum depth and optional exact symbols |
+| `bindings` | sorted process-reported symbols; legacy depth is `unknown` |
+| `policy_pack_hashes` | lowercase SHA-256 hashes, sorted and deduplicated |
+| `coverage_complete` / `failures` | derived, not caller-controlled; recomputed by verifiers |
+| signature | Ed25519 over the domain-separated canonical body, verified under an out-of-band pinned public key |
+
+The schema is closed: unknown body fields and noncanonical derived values are
+invalid. Adding fields or changing ordering, depth semantics, or signature
+bytes requires a new schema version and new shared fixtures.
+
 ## Ordinary enforcement boundary
 
 The ordinary wrappers are broader than strict profile 2.1. On every method

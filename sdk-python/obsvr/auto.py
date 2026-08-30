@@ -310,8 +310,32 @@ def _wire_openai_agents_tool_gate() -> bool:
                     pass
 
         _uninstallers.append(_uninstall)
-        record_binding("openai_agents.tools", "agents.Agent.tools")
-        record_binding("openai_agents.model", "agents.Agent.model")
+        import time
+
+        initialized_at_ms = int(time.time() * 1000)
+        record_binding(
+            "openai_agents.tools",
+            "agents.Agent.tools",
+            metadata={
+                "enforcement_depth": "enforce",
+                "initialized_at_ms": initialized_at_ms,
+                "exclusions": [
+                    "hosted tools",
+                    "tools executed outside the governed Agent boundary",
+                ],
+            },
+        )
+        record_binding(
+            "openai_agents.model",
+            "agents.Agent.model",
+            metadata={
+                "enforcement_depth": "enforce",
+                "initialized_at_ms": initialized_at_ms,
+                "exclusions": [
+                    "string model aliases resolved through an ungoverned provider client"
+                ],
+            },
+        )
         return True
     except Exception as exc:
         try:
@@ -381,7 +405,19 @@ def _wire_mcp_client_gate() -> bool:
                     pass
 
         _uninstallers.append(_uninstall)
-        record_binding("mcp.client", "mcp.ClientSession")
+        import time
+
+        record_binding(
+            "mcp.client",
+            "mcp.ClientSession",
+            metadata={
+                "enforcement_depth": "enforce",
+                "initialized_at_ms": int(time.time() * 1000),
+                "exclusions": [
+                    "hosted or provider-side tools outside the client session"
+                ],
+            },
+        )
         return True
     except Exception as exc:
         try:
@@ -403,7 +439,17 @@ def _wire_mcp_client_gate() -> bool:
         Settings.callback_manager = cm
         from .binding_report import record_binding
 
-        record_binding("llamaindex.models", "llama_index.core.Settings.callback_manager")
+        import time
+
+        record_binding(
+            "llamaindex.models",
+            "llama_index.core.Settings.callback_manager",
+            metadata={
+                "enforcement_depth": "enforce",
+                "initialized_at_ms": int(time.time() * 1000),
+                "exclusions": ["LlamaIndex agent tools"],
+            },
+        )
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: llamaindex wiring skipped: %s", exc)
@@ -420,7 +466,17 @@ def _wire_crewai_tool_gate() -> bool:
         _uninstallers.append(install_tool_gate_hook())
         from .binding_report import record_binding
 
-        record_binding("crewai.tools", "crewai.before_tool_call")
+        import time
+
+        record_binding(
+            "crewai.tools",
+            "crewai.before_tool_call",
+            metadata={
+                "enforcement_depth": "enforce",
+                "initialized_at_ms": int(time.time() * 1000),
+                "exclusions": ["run and step telemetry callbacks"],
+            },
+        )
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: CrewAI tool gate skipped: %s", exc)
@@ -437,7 +493,17 @@ def _wire_autogen_tool_gate() -> bool:
         _uninstallers.append(install_tool_gate())
         from .binding_report import record_binding
 
-        record_binding("autogen.tools", "autogen.ConversableAgent.execute_function")
+        import time
+
+        record_binding(
+            "autogen.tools",
+            "autogen.ConversableAgent.execute_function",
+            metadata={
+                "enforcement_depth": "enforce",
+                "initialized_at_ms": int(time.time() * 1000),
+                "exclusions": ["message policy outside the tool execution boundary"],
+            },
+        )
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: AutoGen tool gate skipped: %s", exc)

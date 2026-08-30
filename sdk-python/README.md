@@ -86,6 +86,15 @@ Startup fails before the target runs unless every listed boundary binds.
 `auto_governance_status()` reports each boundary as `armed`, `bound`, or
 `not-applicable`.
 
+For deployment admission, `sign_coverage_attestation()` signs that binding
+snapshot with an operator-held Ed25519 key. Requirements can demand `observe`
+or `enforce` depth for exact integration symbols; ungraded legacy records are
+`unknown` and cannot satisfy enforcement. The signed body also carries
+policy-pack hashes, versions, initialization times, and known exclusions.
+`verify_coverage_attestation()` rejects altered or noncanonical statements
+under the pinned public key. This proves the process-reported bindings, not
+calls made through a raw alias or outside a documented boundary.
+
 The same manifest is enforced by direct `obsvr.init(auto=True)`. Production
 direct-init also warns if a supported package was imported first, because a
 constructor or object reference copied before rebinding can remain raw.

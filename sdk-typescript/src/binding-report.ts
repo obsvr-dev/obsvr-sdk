@@ -22,10 +22,24 @@
  * Twin: sdk-python/obsvr/binding_report.py (`obsvr.integration_bindings()`).
  */
 
+export type EnforcementDepth = "enforce" | "observe" | "unknown";
+
+export interface BindingMetadata {
+  enforcementDepth?: EnforcementDepth;
+  integrationVersion?: string;
+  initializedAtMs?: number;
+  exclusions?: readonly string[];
+}
+
 export interface BindingEntry {
   bound: boolean;
   errorType?: string;
   error?: string;
+  /** Absent on legacy/custom reporters and normalized to `unknown`. */
+  enforcementDepth?: EnforcementDepth;
+  integrationVersion?: string;
+  initializedAtMs?: number;
+  exclusions?: string[];
 }
 
 export interface UnboundSymbol {
@@ -71,9 +85,34 @@ export function recordBinding(
   integration: string,
   symbol: string,
   error?: unknown,
+  metadata: BindingMetadata = {},
 ): void {
   try {
-    const entry: BindingEntry = { bound: error === undefined };
+    const depth = metadata.enforcementDepth;
+    const entry: BindingEntry = {
+      bound: error === undefined,
+      enforcementDepth:
+        depth === "enforce" || depth === "observe" ? depth : "unknown",
+    };
+    if (
+      typeof metadata.integrationVersion === "string" &&
+      metadata.integrationVersion.trim() !== ""
+    ) {
+      entry.integrationVersion = metadata.integrationVersion.trim().slice(0, 128);
+    }
+    if (
+      typeof metadata.initializedAtMs === "number" &&
+      Number.isSafeInteger(metadata.initializedAtMs) &&
+      metadata.initializedAtMs >= 0
+    ) {
+      entry.initializedAtMs = metadata.initializedAtMs;
+    }
+    if (Array.isArray(metadata.exclusions)) {
+      entry.exclusions = [...new Set(metadata.exclusions)]
+        .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+        .map((value) => value.trim().slice(0, 256))
+        .sort();
+    }
     if (error !== undefined) {
       // Each field is captured separately: an error whose message getter
       // throws must still be RECORDED as a failure. Losing the whole entry
@@ -120,7 +159,10 @@ export function integrationBindings(): Record<
   for (const [integration, symbols] of bindings) {
     out[integration] = {};
     for (const [symbol, entry] of symbols) {
-      out[integration][symbol] = { ...entry };
+      out[integration][symbol] = {
+        ...entry,
+        ...(entry.exclusions ? { exclusions: [...entry.exclusions] } : {}),
+      };
     }
   }
   return out;
