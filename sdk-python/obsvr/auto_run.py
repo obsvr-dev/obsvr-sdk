@@ -19,6 +19,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from .config import init
+from .binding_report import assert_required_bindings
 
 
 def _json_object(name: str) -> Optional[Dict[str, Any]]:
@@ -63,6 +64,12 @@ def _initialize_from_environment() -> None:
         ),
         auto=True,
     )
+    required = [
+        value.strip()
+        for value in os.environ.get("OBSVR_REQUIRED_BINDINGS", "").split(",")
+        if value.strip()
+    ]
+    assert_required_bindings(required)
 
 
 def main(argv: Optional[List[str]] = None) -> None:

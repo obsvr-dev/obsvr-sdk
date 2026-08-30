@@ -11,6 +11,7 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import {
   interceptProviderClass,
   autoInstrument,
+  autoGovernanceStatus,
   interceptProviderNamespace,
   isInterceptorInstalled,
   markInterceptorInstalled,
@@ -207,6 +208,7 @@ describe('auto/interceptProviderClass', () => {
     expect(governed.helper).toBe('unchanged');
     expect(governed.OpenAI).not.toBe(FakeOpenAI);
     expect(isInterceptionActive()).toBe(true);
+    expect(autoGovernanceStatus().boundProviders).toEqual(['openai']);
   });
 });
 
@@ -260,5 +262,21 @@ describe('auto/autoInstrument', () => {
     expect(isInterceptorInstalled('esm')).toBe(true);
     expect(isInterceptionActive()).toBe(false);
     expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(false);
+  });
+
+  test('status distinguishes armed hooks from bound providers', () => {
+    markInterceptorInstalled('cjs');
+    expect(autoGovernanceStatus()).toEqual({
+      interceptors: { esm: false, cjs: true },
+      boundProviders: [],
+      active: false,
+    });
+
+    interceptProviderClass('anthropic', FakeOpenAI);
+    expect(autoGovernanceStatus()).toEqual({
+      interceptors: { esm: false, cjs: true },
+      boundProviders: ['anthropic'],
+      active: true,
+    });
   });
 });

@@ -58,6 +58,8 @@ import { SDK_VERSION } from "./constants.js";
 
 // Re-export proxy types
 export type { LLMAuditInitConfig, ObsvrConfig, WrapOptions, AuditEvent, AuditFields, AgentPolicy } from "./proxy/types.js";
+export { autoGovernanceStatus } from "./auto/index.js";
+export type { AutoGovernanceStatus, InterceptorKind } from "./auto/index.js";
 export type { PolicyHook, PolicyDecision } from "./policy/hook.js";
 export type { PolicyRule, PolicyEvalContext } from "./policy/rules.js";
 

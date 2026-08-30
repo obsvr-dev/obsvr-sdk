@@ -11,6 +11,7 @@
 import './register.js';
 import { obsvr } from './index.js';
 import type { ObsvrConfig } from './proxy/types.js';
+import { assertRequiredBindings, recordBinding } from './binding-report.js';
 
 const PROVIDERS = new Set(['openai', 'anthropic', 'google']);
 
@@ -71,3 +72,40 @@ function environmentConfig(): ObsvrConfig {
 }
 
 obsvr.init(environmentConfig());
+
+function requiredBindings(raw: string | undefined): string[] {
+  if (!raw?.trim()) return [];
+  return [...new Set(raw.split(',').map((value) => value.trim()).filter(Boolean))];
+}
+
+async function bindRequiredProvider(name: string): Promise<void> {
+  // Keep optional peers optional at build time. The runtime string still goes
+  // through the registered loader hook, which is the binding being verified.
+  const load = (specifier: string): Promise<unknown> => import(specifier);
+  try {
+    if (name === 'openai') {
+      await load('openai');
+      return;
+    }
+    if (name === 'anthropic') {
+      await load('@anthropic-ai/sdk');
+      return;
+    }
+    if (name === 'google') {
+      try {
+        await load('@google/genai');
+      } catch {
+        await load('@google/generative-ai');
+      }
+      return;
+    }
+  } catch (error) {
+    recordBinding(name, `${name}.provider-constructor`, error);
+  }
+}
+
+const required = requiredBindings(process.env.OBSVR_REQUIRED_BINDINGS);
+for (const name of required) {
+  await bindRequiredProvider(name);
+}
+assertRequiredBindings(required);

@@ -115,3 +115,24 @@ def test_runner_preserves_script_arguments(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert f"ARGS:{script}|one|two" in result.stdout
+
+
+def test_runner_refuses_an_unbound_required_integration(tmp_path):
+    script = tmp_path / "app.py"
+    script.write_text("raise AssertionError('application must not start')\n")
+    env = _runner_env()
+    env["OBSVR_REQUIRED_BINDINGS"] = "not-installed"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "obsvr.auto_run", str(script)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "not-installed was never bound" in result.stderr
+    assert "application must not start" not in result.stderr

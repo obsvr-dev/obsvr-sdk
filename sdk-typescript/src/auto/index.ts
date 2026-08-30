@@ -23,6 +23,7 @@
 import type { ResolvedConfig } from '../proxy/types.js';
 import { wrap } from '../proxy/wrapper.js';
 import { isInitialized, getConfig, markWrapped } from '../proxy/config.js';
+import { recordBinding } from '../binding-report.js';
 
 /** Providers the module interceptor knows how to govern. */
 export type InterceptedProvider = 'openai' | 'anthropic' | 'google';
@@ -31,6 +32,7 @@ export type InterceptorKind = 'esm' | 'cjs';
 
 /** Hooks installed before application modules load. */
 const installedInterceptors = new Set<InterceptorKind>();
+const boundProviders = new Set<InterceptedProvider>();
 
 /** Set once an installed hook has substituted at least one provider class. */
 let interceptionActive = false;
@@ -45,6 +47,24 @@ export function isInterceptorInstalled(kind?: InterceptorKind): boolean {
   return kind ? installedInterceptors.has(kind) : installedInterceptors.size > 0;
 }
 
+export interface AutoGovernanceStatus {
+  interceptors: Record<InterceptorKind, boolean>;
+  boundProviders: InterceptedProvider[];
+  active: boolean;
+}
+
+/** Distinguish startup hooks that are armed from providers actually resolved. */
+export function autoGovernanceStatus(): AutoGovernanceStatus {
+  return {
+    interceptors: {
+      esm: installedInterceptors.has('esm'),
+      cjs: installedInterceptors.has('cjs'),
+    },
+    boundProviders: [...boundProviders].sort(),
+    active: interceptionActive,
+  };
+}
+
 /** True when `--import @obsvr/sdk/register` substituted a provider class. */
 export function isInterceptionActive(): boolean {
   return interceptionActive;
@@ -54,6 +74,7 @@ export function isInterceptionActive(): boolean {
 export function _resetInterception(): void {
   interceptionActive = false;
   installedInterceptors.clear();
+  boundProviders.clear();
 }
 
 /**
@@ -161,6 +182,8 @@ function interceptGoogleClient<T extends object>(client: T): T {
 export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T): T {
   if (typeof cls !== 'function') return cls;
   interceptionActive = true;
+  boundProviders.add(provider);
+  recordBinding(provider, `${provider}.${(cls as Function).name || 'client'}`);
 
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {

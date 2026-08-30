@@ -248,6 +248,47 @@ process.exit(0);
       stdio: 'pipe',
     })).toThrow(/OBSVR_API_KEY is required/);
   });
+
+  it('fails startup when a required binding is unsupported or absent', () => {
+    expect(() => execFileSync(process.execPath, ['--import', INITIALIZE, '-e', '0'], {
+      cwd: PKG,
+      encoding: 'utf-8',
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        OBSVR_API_KEY: 'k',
+        OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+        OBSVR_REQUIRED_BINDINGS: 'not-installed',
+      },
+      stdio: 'pipe',
+    })).toThrow(/not-installed was never bound/);
+  });
+
+  it('loads and verifies a required provider before application startup', () => {
+    const out = execFileSync(
+      process.execPath,
+      ['--import', INITIALIZE, '--input-type=module', '-e', `
+        import { autoGovernanceStatus } from ${JSON.stringify(PKG + '/dist/index.js')};
+        console.log('RESULT_JSON:' + JSON.stringify(autoGovernanceStatus()));
+        process.exit(0);
+      `],
+      {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_REQUIRED_BINDINGS: 'openai',
+        },
+      },
+    );
+    const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+    const status = JSON.parse(line.slice('RESULT_JSON:'.length));
+    expect(status.boundProviders).toContain('openai');
+    expect(status.active).toBe(true);
+  });
 });
 
 describe('the load hook serves a shim only for specifiers resolve tagged', () => {

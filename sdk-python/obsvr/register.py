@@ -28,6 +28,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import is_initialized, try_get_config
 from .wrap import wrap
+from .binding_report import record_binding
 
 _installed: List[str] = []
 
@@ -191,9 +192,11 @@ def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
     """
     try:
         module = __import__(module_name)
-    except ImportError:
+    except ImportError as exc:
+        record_binding(module_name, f"{module_name}.provider_module", exc)
         return []
     except Exception as exc:  # noqa: BLE001 - a provider that fails to import
+        record_binding(module_name, f"{module_name}.provider_module", exc)
         logging.getLogger("obsvr").debug(
             "register: %s could not be imported: %s", module_name, exc
         )
@@ -201,7 +204,14 @@ def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
 
     done: List[str] = []
     governed_by_original: Dict[int, type] = {}
-    for cls, names in _client_classes_by_name(module, module_name, seeds):
+    groups = _client_classes_by_name(module, module_name, seeds)
+    if not groups:
+        record_binding(
+            module_name,
+            f"{module_name}.provider_client",
+            RuntimeError("provider exports no supported public client class"),
+        )
+    for cls, names in groups:
         pending = [n for n in names if f"{module_name}.{n}" not in _installed]
         if not pending:
             continue
@@ -214,6 +224,11 @@ def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
             except Exception:  # noqa: BLE001 - a module that vetoes the write
                 took = False
             if not took:
+                record_binding(
+                    module_name,
+                    label,
+                    RuntimeError("provider module refused constructor substitution"),
+                )
                 logging.getLogger("obsvr").warning(
                     "register: could not intercept %s - construction through that "
                     "name is NOT governed; use obsvr.wrap() on the client",
@@ -221,6 +236,7 @@ def _install_provider(module_name: str, seeds: Iterable[str]) -> List[str]:
                 )
                 continue
             originals[label] = cls
+            record_binding(module_name, label)
             _installed.append(label)
             done.append(label)
         governed_by_original[id(cls)] = governed
