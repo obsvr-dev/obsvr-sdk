@@ -26,6 +26,7 @@ import * as path from 'path';
 
 const PKG = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..');
 const REGISTER = path.join(PKG, 'dist', 'register.js');
+const INITIALIZE = path.join(PKG, 'dist', 'initialize.js');
 
 /**
  * Run a script inside the package directory (so provider packages resolve) with
@@ -121,6 +122,131 @@ describe('the register hook actually substitutes a real provider class', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('documented OpenAI ESM entry points enforce before transport', () => {
+  const subpaths = [
+    'openai/index',
+    'openai/index.mjs',
+    'openai/client',
+    'openai/client.mjs',
+    'openai/client.js',
+    'openai/azure',
+  ];
+
+  it.each(subpaths)('%s is governed by the preload', (specifier) => {
+    const source = `
+const provider = await import(${JSON.stringify(specifier)});
+const { obsvr } = await import(${JSON.stringify(PKG + '/dist/index.js')});
+obsvr.init({ apiKey: 'k', ingestUrl: 'http://127.0.0.1:1', piiPolicy: {}, policyRefreshIntervalMs: 0 });
+const Client = provider.OpenAI ?? provider.AzureOpenAI ?? provider.default?.OpenAI ?? provider.default;
+let transportCalls = 0;
+const options = ${JSON.stringify(specifier)} === 'openai/azure'
+  ? { apiKey: 'x', endpoint: 'https://example.openai.azure.com', apiVersion: '2024-01-01', fetch: async () => { transportCalls++; throw new Error('transport reached'); } }
+  : { apiKey: 'x', fetch: async () => { transportCalls++; throw new Error('transport reached'); } };
+const client = new Client(options);
+let blocked = false;
+try {
+  await client.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'SSN 123-45-6789' }] });
+} catch (error) {
+  blocked = error?.name === 'ObsvrPolicyError';
+}
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, transportCalls, wrapIsIdentity: obsvr.wrap(client) === client }));
+process.exit(0);
+`;
+    const result = runWithHook(source);
+    expect(result.blocked).toBe(true);
+    expect(result.transportCalls).toBe(0);
+    expect(result.wrapIsIdentity).toBe(true);
+  });
+});
+
+describe('CommonJS provider construction interception', () => {
+  it('governs require("openai") before transport', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'probe.cjs');
+    try {
+      writeFileSync(file, `
+(async () => {
+  const OpenAI = require('openai');
+  const { obsvr } = await import(${JSON.stringify(PKG + '/dist/index.js')});
+  obsvr.init({ apiKey: 'k', ingestUrl: 'http://127.0.0.1:1', piiPolicy: {}, policyRefreshIntervalMs: 0 });
+  let transportCalls = 0;
+  const client = new OpenAI({ apiKey: 'x', fetch: async () => { transportCalls++; throw new Error('transport reached'); } });
+  let blocked = false;
+  try {
+    await client.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'SSN 123-45-6789' }] });
+  } catch (error) {
+    blocked = error?.name === 'ObsvrPolicyError';
+  }
+  console.log('RESULT_JSON:' + JSON.stringify({ blocked, transportCalls, wrapIsIdentity: obsvr.wrap(client) === client }));
+  process.exit(0);
+})();
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', REGISTER, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result.blocked).toBe(true);
+      expect(result.transportCalls).toBe(0);
+      expect(result.wrapIsIdentity).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('@obsvr/sdk/initialize one-step preload', () => {
+  it('initializes and blocks a real provider call before transport', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'probe.mjs');
+    try {
+      writeFileSync(file, `
+import OpenAI from 'openai';
+let transportCalls = 0;
+const client = new OpenAI({ apiKey: 'x', fetch: async () => { transportCalls++; throw new Error('transport reached'); } });
+let blocked = false;
+try {
+  await client.chat.completions.create({ model: 'gpt-4o', messages: [{ role: 'user', content: 'SSN 123-45-6789' }] });
+} catch (error) {
+  blocked = error?.name === 'ObsvrPolicyError';
+}
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, transportCalls }));
+process.exit(0);
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_PROVIDERS: 'openai',
+          OBSVR_PII_POLICY: '{}',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result.blocked).toBe(true);
+      expect(result.transportCalls).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails startup when its required API key is absent', () => {
+    expect(() => execFileSync(process.execPath, ['--import', INITIALIZE, '-e', '0'], {
+      cwd: PKG,
+      encoding: 'utf-8',
+      timeout: 60_000,
+      env: { ...process.env, OBSVR_API_KEY: '' },
+      stdio: 'pipe',
+    })).toThrow(/OBSVR_API_KEY is required/);
   });
 });
 

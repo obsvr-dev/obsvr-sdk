@@ -19,6 +19,12 @@
         "default": "./dist/register.js"
       }
     },
+    "./initialize": {
+      "import": {
+        "types": "./dist/initialize.d.ts",
+        "default": "./dist/initialize.js"
+      }
+    },
     "./mcp": {
       "import": {
         "types": "./dist/mcp.d.ts",

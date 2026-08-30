@@ -11,6 +11,9 @@ import { _resetSender } from '../../src/proxy/sender/fire-and-forget';
 import {
   interceptProviderClass,
   autoInstrument,
+  interceptProviderNamespace,
+  isInterceptorInstalled,
+  markInterceptorInstalled,
   isInterceptionActive,
   _resetInterception,
 } from '../../src/auto/index';
@@ -194,6 +197,17 @@ describe('auto/interceptProviderClass', () => {
     expect(interceptProviderClass('openai', notAClass)).toBe(notAClass);
     expect(isInterceptionActive()).toBe(false);
   });
+
+  test('namespace client exports are intercepted without mutating the namespace', () => {
+    const namespace = { OpenAI: FakeOpenAI, helper: 'unchanged' };
+    const governed = interceptProviderNamespace('openai', namespace, ['OpenAI']);
+
+    expect(governed).not.toBe(namespace);
+    expect(namespace.OpenAI).toBe(FakeOpenAI);
+    expect(governed.helper).toBe('unchanged');
+    expect(governed.OpenAI).not.toBe(FakeOpenAI);
+    expect(isInterceptionActive()).toBe(true);
+  });
 });
 
 describe('auto/autoInstrument', () => {
@@ -233,6 +247,18 @@ describe('auto/autoInstrument', () => {
       autoInstrument(getConfig());
     });
 
+    expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(false);
+  });
+
+  test('does not warn while a startup interceptor is armed before provider import', () => {
+    markInterceptorInstalled('esm');
+    const warns = captureWarns(() => {
+      init({ api_key: 'test', providers: ['openai'] });
+      autoInstrument(getConfig());
+    });
+
+    expect(isInterceptorInstalled('esm')).toBe(true);
+    expect(isInterceptionActive()).toBe(false);
     expect(warns.some((w) => w.includes('--import @obsvr/sdk/register'))).toBe(false);
   });
 });

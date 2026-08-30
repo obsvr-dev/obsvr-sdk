@@ -27,8 +27,23 @@ import { isInitialized, getConfig, markWrapped } from '../proxy/config.js';
 /** Providers the module interceptor knows how to govern. */
 export type InterceptedProvider = 'openai' | 'anthropic' | 'google';
 
-/** Set once the loader hook has substituted at least one provider class. */
+export type InterceptorKind = 'esm' | 'cjs';
+
+/** Hooks installed before application modules load. */
+const installedInterceptors = new Set<InterceptorKind>();
+
+/** Set once an installed hook has substituted at least one provider class. */
 let interceptionActive = false;
+
+/** Record that a startup hook is ready to intercept future provider loads. */
+export function markInterceptorInstalled(kind: InterceptorKind): void {
+  installedInterceptors.add(kind);
+}
+
+/** True when at least one supported startup hook is armed. */
+export function isInterceptorInstalled(kind?: InterceptorKind): boolean {
+  return kind ? installedInterceptors.has(kind) : installedInterceptors.size > 0;
+}
 
 /** True when `--import @obsvr/sdk/register` substituted a provider class. */
 export function isInterceptionActive(): boolean {
@@ -38,6 +53,7 @@ export function isInterceptionActive(): boolean {
 /** Test hook. */
 export function _resetInterception(): void {
   interceptionActive = false;
+  installedInterceptors.clear();
 }
 
 /**
@@ -160,6 +176,37 @@ export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T)
 }
 
 /**
+ * Intercept client constructors exposed as properties of a namespace object.
+ *
+ * Some CommonJS-compatible subpaths expose an object such as
+ * `{ OpenAI }` as their default export. Wrapping only the ESM named export
+ * would leave `default.OpenAI` raw, so the loader uses this helper for that
+ * shape. The namespace and its properties are not mutated.
+ */
+export function interceptProviderNamespace<T>(
+  provider: InterceptedProvider,
+  namespace: T,
+  clientExports: readonly string[],
+): T {
+  if ((typeof namespace !== 'object' || namespace === null) && typeof namespace !== 'function') {
+    return namespace;
+  }
+  const cache = new Map<PropertyKey, unknown>();
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' && clientExports.includes(prop)) {
+        if (cache.has(prop)) return cache.get(prop);
+        const original = Reflect.get(target, prop, receiver);
+        const intercepted = interceptProviderClass(provider, original);
+        cache.set(prop, intercepted);
+        return intercepted;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as T;
+}
+
+/**
  * Called by `init()` after configuration is resolved.
  *
  * No patching happens here. Its only job is to tell the customer when their
@@ -170,7 +217,7 @@ export function autoInstrument(config: ResolvedConfig): void {
   if (config.disabled) return;
 
   const requested = config.providers ?? [];
-  if (requested.length > 0 && !interceptionActive) {
+  if (requested.length > 0 && !interceptionActive && !isInterceptorInstalled()) {
     console.warn(
       `[obsvr] config.providers lists [${requested.join(', ')}] but the module ` +
         'interceptor is not loaded, so those providers are not globally governed. ' +
