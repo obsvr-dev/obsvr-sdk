@@ -57,15 +57,19 @@ To initialize before application imports, run the application through obsvr:
 ```bash
 OBSVR_API_KEY=... \
 OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+OBSVR_AGENT_POLICY='{"denied_tools":["send_contract"]}' \
 obsvr-run app.py
 # or: obsvr-run -m package.module
 ```
 
 `obsvr-run` also reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`,
-`OBSVR_ENFORCEMENT_MODE`, `OBSVR_FAIL_MODE`, and
-`OBSVR_POLICY_REFRESH_INTERVAL_S`. Set
-`OBSVR_REQUIRED_BINDINGS=openai,anthropic` to fail before the application starts
-unless those constructors were actually bound.
+`OBSVR_ENFORCEMENT_MODE`, `OBSVR_FAIL_MODE`, `OBSVR_AGENT_POLICY`,
+`OBSVR_MCP_TOOL_POLICY`, and `OBSVR_POLICY_REFRESH_INTERVAL_S`. Set
+`OBSVR_REQUIRED_BINDINGS` to a required subset such as
+`openai,anthropic,crewai,autogen,openai_agents`; startup fails before the target
+runs unless those installed boundaries actually bind. Python MCP remains an
+explicit governed-session boundary, so do not declare `mcp` as an automatic
+binding.
 
 Wrap your existing LLM client. No other code changes.
 
@@ -106,13 +110,17 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 
 Both Gemini clients need an explicit `obsvr.wrap()` — unlike OpenAI and Anthropic, Python auto-registration does not intercept either package. The current adapter wraps `GoogleGenAI` and governs `models.generate_content`, `models.generate_content_stream`, and the corresponding `aio.models` methods. The legacy adapter wraps `GenerativeModel` and remains compatibility-only.
 
-`obsvr-run` is the safest automatic path because it installs constructor
-interception before the target imports. If the application controls import
-order, `obsvr.init(..., auto=True)` provides the same OpenAI and Anthropic
-registration. This rebinds documented module constructor exports; it is not a
-heap scan. Existing instances, constructor references copied before init,
-unlisted import aliases, custom transports, and hosted tool runners remain
-outside the boundary.
+`obsvr-run` is the safest automatic path because it installs constructor and
+supported process-global interception before the target imports. If the
+application controls import order, `obsvr.init(..., auto=True)` provides the
+same registration. Automatic startup currently covers OpenAI and Anthropic
+client construction, CrewAI's supported process-global pre-tool hook,
+AutoGen/ag2 0.x `ConversableAgent` execution, and future OpenAI Agents `Agent`
+construction with function tools present at construction. This is not a heap
+scan. Existing instances, constructor references copied before init, unlisted
+import aliases, custom transports, tools added after Agent construction,
+hosted tools, Python MCP sessions, and LangChain callback configuration remain
+outside that automatic boundary.
 
 Explicit wrapping accepts `seal_raw=True` to revoke documented governed methods
 on the exact raw client after the proxy is ready. This does not freeze provider
@@ -255,6 +263,13 @@ before dispatch; a requested redaction fails closed because callbacks cannot
 reliably rewrite provider-bound content. OpenAI Agents tracing remains
 observe-only, while `govern_model` and `govern_model_provider` enforce at the
 model interface. Tool gates are documented separately below.
+
+**Automatic startup attachment uses those same gates; it does not create a
+second enforcement mechanism.** `obsvr-run` / early `init(auto=True)` installs
+the supported CrewAI and AutoGen execution gates and attaches the OpenAI Agents
+input guardrail to function tools present on every later `Agent` construction.
+Use the explicit functions below for already-created objects, tools added later,
+LangChain callbacks, LlamaIndex agent tool assembly, and MCP sessions.
 **Whether a tool-policy block actually stops the tool
 is a per-integration property, not a property of the SDK** — it depends on
 whether the framework hands obsvr a hook that runs *before* the tool does, and
@@ -330,10 +345,11 @@ never executes:
 from obsvr.integrations.pydantic_ai import ObsvrToolset
 agent = Agent("openai:gpt-4o", toolsets=[ObsvrToolset(my_toolset)])
 
-# OpenAI Agents — obsvr's guardrail on every function tool reachable from the
-# agent (handoff targets included); a denied tool never runs and the model
-# receives the block message as the tool result. govern_tool is the
-# alternative when a denial should ABORT the run instead.
+# OpenAI Agents — obsvr-run attaches this guardrail to function tools present
+# on future Agent construction. Call it explicitly for an existing Agent or
+# after adding tools. Handoff targets are included; a denied tool never runs
+# and the model receives the block message as the tool result. govern_tool is
+# the alternative when a denial should ABORT the run instead.
 from obsvr.integrations.openai_agents import attach_tool_gate
 detach = attach_tool_gate(agent)
 

@@ -50,20 +50,34 @@ The signing algorithm is byte-for-byte identical in both SDKs, pinned by the sha
 
 ### Startup auto-governance boundary
 
-Startup auto-governance intercepts construction; it does not discover existing
-objects. `@obsvr/sdk/initialize` must be preloaded before TypeScript application
-imports, and `obsvr-run` initializes Python before executing the target script or
-module. TypeScript substitutes documented ESM exports and chains Node's CommonJS
-module loader for documented provider specifiers. Python rebinds documented
-provider constructor exports. Neither SDK walks the heap.
+Startup auto-governance intercepts documented future construction or installs a
+framework's documented process-global pre-execution hook; it does not discover
+existing objects. `@obsvr/sdk/initialize` must be preloaded before TypeScript
+application imports, and `obsvr-run` initializes Python before executing the
+target script or module. Neither SDK walks the heap.
 
-Therefore a provider instance, constructor, or callable captured before startup
+| Runtime | Automatic startup boundary | Still explicit |
+| --- | --- | --- |
+| TypeScript | documented OpenAI, Anthropic, and Gemini constructors; MCP `Client` on the two documented client exports; OpenAI Agents `Agent` function tools present at construction | LangChain callbacks, LlamaIndex model/tool wrappers, tools added after Agent construction, unlisted MCP/Agents paths |
+| Python | documented OpenAI and Anthropic constructors; supported CrewAI process-global pre-tool hook; AutoGen/ag2 0.x execution gate; future OpenAI Agents `Agent` function tools present at construction | LangChain callbacks, LlamaIndex agent tool gate, MCP sessions, Gemini, already-created framework objects |
+
+The automatic path uses the same enforcing boundaries as the explicit APIs:
+MCP request governance, framework tool-input guardrails, CrewAI's pre-tool
+sentinel, and AutoGen's execution gate. It does not turn tracing into a veto.
+OpenAI Agents model tracing remains observe-only; its model boundary still
+requires `governModel` / `govern_model` or the provider variants. LangChain
+still requires its callback handler. Hosted provider-side tools expose no local
+callback to attach, and OpenAI Agents MCP tools converted per turn must be
+governed at the MCP boundary.
+
+Therefore an instance, constructor, tool, or callable captured before startup
 can bypass governance, as can an unlisted import path, custom transport,
-unsupported method, or hosted tool runner. `OBSVR_REQUIRED_BINDINGS` makes
-startup fail when a declared provider constructor did not bind; TypeScript's
-`autoGovernanceStatus()` reports armed interceptors and observed provider
-bindings. These prove startup attachment, not that every future call used the
-attached boundary.
+unsupported method, tool added after an Agent constructor has returned, or
+hosted tool runner. `OBSVR_REQUIRED_BINDINGS` makes startup fail when a declared
+automatic integration did not bind; TypeScript's `autoGovernanceStatus()`
+reports armed interceptors and observed direct-provider bindings, while each
+SDK's binding report covers framework and MCP symbols. These prove startup
+attachment, not that every future call used the attached boundary.
 
 Explicit wrapping may request `sealRaw: true` in TypeScript or `seal_raw=True`
 in Python. Sealing revokes documented governed methods on the exact raw object

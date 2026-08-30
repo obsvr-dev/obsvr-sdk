@@ -91,30 +91,40 @@ Compatibility only means fixes, not features: the legacy adapter is kept working
 ### One-step startup auto-governance
 
 The preferred startup path initializes obsvr from environment variables before
-application imports and arms both ESM and CommonJS provider construction:
+application imports and arms documented ESM and CommonJS provider, MCP-client,
+and OpenAI Agents construction:
 
 ```bash
 OBSVR_API_KEY=... \
 OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+OBSVR_AGENT_POLICY='{"deniedTools":["send_contract"]}' \
+OBSVR_MCP_TOOL_POLICY='{"deniedTools":["delete_record"]}' \
+OBSVR_REQUIRED_BINDINGS='openai,mcp,openai_agents' \
 NODE_OPTIONS="--import @obsvr/sdk/initialize" node app.js
 ```
 
 The preload reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`, `OBSVR_PROVIDERS`,
-and JSON `OBSVR_PII_POLICY` in addition to the required API key. Set
-`OBSVR_REQUIRED_BINDINGS=openai,anthropic` to fail startup unless those provider
-constructors were actually intercepted. `autoGovernanceStatus()` reports which
-interceptors are armed and which providers have bound.
+and JSON `OBSVR_PII_POLICY`, `OBSVR_AGENT_POLICY`, and
+`OBSVR_MCP_TOOL_POLICY` in addition to the required API key. Set
+`OBSVR_REQUIRED_BINDINGS` to any required subset of `openai`, `anthropic`,
+`google`, `mcp`, and `openai_agents`; startup fails unless those package exports
+actually bind. `autoGovernanceStatus()` reports armed interceptors and direct
+provider bindings; `integrationBindings()` reports every recorded binding.
 
 For code-owned configuration, preload `@obsvr/sdk/register` and call
 `obsvr.init()` before importing providers. `register` arms interception but does
 not initialize policy by itself.
 
-`new OpenAI()`, `new Anthropic()`, `new GoogleGenAI()` and legacy
-`getGenerativeModel()` then return governed instances automatically through
-supported exports. ESM exports are substituted with construct-trap `Proxy`
-objects. The CommonJS path explicitly chains Node's module loader; it is loader
-monkey-patching, although provider prototypes, classes, and module objects are
-not mutated. The instance underneath remains a genuine SDK client.
+`new OpenAI()`, `new Anthropic()`, `new GoogleGenAI()`, legacy
+`getGenerativeModel()`, documented MCP `new Client()`, and OpenAI Agents
+`new Agent()` then receive their documented governance boundary automatically.
+For Agents, function tools present when the Agent is constructed receive the
+same input guardrail as `attachToolGate`; for MCP, the Client receives the same
+request/discovery/response gate as `obsvrGovernMCP`. ESM exports are substituted
+with construct-trap `Proxy` objects. The CommonJS path explicitly chains Node's
+module loader; it is loader monkey-patching, although provider prototypes,
+classes, and module objects are not mutated. The instance underneath remains a
+genuine SDK or framework object.
 
 Use `providers: ['openai']` in `obsvr.init()` to narrow which providers the interceptor governs; omit it to govern all supported ones.
 
@@ -124,6 +134,14 @@ OpenAI construction is intercepted on the package root plus `openai/index`,
 `openai/index.mjs`, `openai/client`, `openai/client.mjs`, `openai/client.js`, and
 `openai/azure`; the applicable subset is covered for both ESM and CommonJS.
 Anthropic and Google use their documented package roots.
+
+MCP construction is intercepted on `@modelcontextprotocol/sdk/client` and
+`@modelcontextprotocol/sdk/client/index.js`. OpenAI Agents construction is
+intercepted on `@openai/agents`. A function tool added after the intercepted
+Agent constructor returns is not retroactively attached; call
+`attachToolGate(agent)` after adding it. Hosted tools and MCP tools converted by
+the Agents runtime per turn do not expose the same local construction boundary;
+govern those at their execution or MCP boundary.
 
 This is constructor interception, not discovery. The preload must run before the
 provider import or `require`. A client, constructor, or unbound method saved
@@ -371,6 +389,11 @@ const GovernedClient = obsvrGovernMCP(Client, getConfig());
 const client = new GovernedClient({ name: 'my-agent', version: '1.0.0' }, { capabilities: {} });
 ```
 
+With the one-step startup preload, a `Client` constructed later from the two
+documented MCP client exports receives this same gate automatically. Keep the
+explicit form for clients imported before the preload, unlisted subpaths, and
+instances whose binding must be visible in application code.
+
 `obsvrGovernMCP` also accepts an existing Client **instance** and returns a governed instance. The legacy `patchMCP()` (prototype-mutating) is **deprecated**: it logs a one-time warning and will be removed in the next major release — migrate to `obsvrGovernMCP`.
 
 Governance covers all three MCP phases: **discovery** (`listTools()` is scanned for tool poisoning), **request** (tool arguments are policy- and PII-checked before the call runs), and **response** (the tool RESULT is scanned before it reaches the caller). Tool results are the exfiltration/poisoning channel, so a result carrying PII, secrets, or an injection payload is **blocked**, **sanitized** (offending spans redacted), or **logged** per policy — a blocked result is withheld from the caller entirely. Pass caller identity via the options argument (`obsvrGovernMCP(Client, getConfig(), { user_id })`) so user/service/tenant-scoped quota rules meter the right bucket and the decision is attributed to the principal in the audit trail.
@@ -432,6 +455,11 @@ side-effect-counting tool: a denied tool writes ZERO marker lines under either
 mechanism, exactly one on every paired allow control, with the tool's payload
 asserted absent from what the caller received; the two redden independently
 under mutation.
+
+The one-step startup preload automatically applies the first mechanism to
+function tools present on every later `new Agent(...)` from `@openai/agents`.
+Use `attachToolGate(agent)` explicitly for an Agent constructed earlier or
+after adding/replacing tools on an existing Agent.
 
 - `attachToolGate(agent)` pushes obsvr's tool input guardrail into each
   function tool's own `inputGuardrails` — the framework's per-tool extension
@@ -579,10 +607,12 @@ The combined list for both, with the scope marked on each entry, is in the
    [Grading](#framework-integrations).
 
 6. **Startup interception is exact and order-dependent.** Supported OpenAI root
-   and documented subpath exports, Anthropic roots, and Google roots construct
-   governed clients after the preload runs. Objects or callables captured
-   earlier, arbitrary subpaths, custom transports, and hosted tool runners remain
-   bypasses. An escaped call records nothing rather than something false.
+   and documented subpath exports, Anthropic roots, Google roots, MCP Client
+   exports, and the OpenAI Agents Agent export construct governed objects after
+   the preload runs. Objects or callables captured earlier, arbitrary subpaths,
+   custom transports, function tools added after Agent construction, and hosted
+   tool runners remain bypasses. An escaped call records nothing rather than
+   something false.
    [Detail](#one-step-startup-auto-governance).
 
 7. **Current Gemini coverage is method-bounded.** `@google/genai` 2.x is

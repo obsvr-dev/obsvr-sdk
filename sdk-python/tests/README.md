@@ -11,7 +11,7 @@ Read this before trusting a green run on an integration surface.
 | `llama-index-core` | **yes** — declared in the `dev` extra | `test_llamaindex_real_package.py` drives the real callback payload shape |
 | `openai` | **yes** — isolated provider CI cell | `test_openai_text_routes_real_package.py` drives the official client with a local transport |
 | `anthropic` | **yes** — isolated provider CI cell | `test_provider_tool_runners_real_package.py` drives the official Messages runner and proves a later blocked turn makes no second request |
-| `openai-agents` | **yes** — isolated provider CI cell | `test_openai_agents_real_package.py` drives explicit model and model-provider enforcement |
+| `openai-agents` | **yes** — isolated provider CI cell | `test_openai_agents_real_package.py` drives explicit model/model-provider enforcement and automatic future-Agent tool attachment through a real Runner; a denied function tool remains at zero executions and its refusal reaches the next model turn |
 | `google-genai` | **yes** — dev extra and isolated provider CI cell | `test_google_genai_real_package.py` drives the real 2.x request models, streams, and chat resource shape |
 | `google-generativeai` | **yes** — isolated provider CI cell | `test_google_generativeai_real_package.py` drives official legacy model and chat objects |
 | `google-cloud-aiplatform` | **yes** — isolated provider CI cell | `test_vertex_real_package.py` drives official stable/preview model and chat objects |

@@ -9,11 +9,11 @@ installs them, so a test may import any of them:
 
 | Package | Driven by a test |
 |---|---|
-| `@modelcontextprotocol/sdk` | **yes** — `tests/integration/mcp-real-package.test.ts` connects a real `Client` to a real `McpServer` over the package's own `InMemoryTransport` |
+| `@modelcontextprotocol/sdk` | **yes** — `tests/integration/mcp-real-package.test.ts` connects a real `Client` to a real `McpServer` over the package's own `InMemoryTransport`; `tests/unit/module-hook-resolution.test.ts` repeats the zero-execution denial through the startup-intercepted ESM and CommonJS Client exports |
 | `openai` | **yes** — `tests/integration/openai-real-package.test.ts` drives a real client with the transport injected via the constructor `fetch`, grading a block at zero transport calls; plus resolution in `tests/unit/module-hook-resolution.test.ts` |
 | `@google/generative-ai` | **yes** — `tests/integration/google-genai-real-package.test.ts` drives a real `GenerativeModel`, splitting provider traffic from sender traffic by host |
 | `@google/genai` | **yes** — `tests/integration/google-genai-maintained-real-package.test.ts` drives a real 2.x client through unary, streaming, block, redact, structured-output, and module-interceptor paths with provider transport mocked |
-| `@openai/agents` | **yes** — `tests/integration/openai-agents-real-package.test.ts` runs a real `Agent` with real `tool()` objects and only the model stubbed; a denied tool's body never runs and the block message reaches the model's next turn |
+| `@openai/agents` | **yes** — `tests/integration/openai-agents-real-package.test.ts` runs a real `Agent` with real `tool()` objects and only the model stubbed; `tests/unit/module-hook-resolution.test.ts` constructs that Agent through the startup interceptor; a denied tool's body never runs and the block message reaches the model's next turn |
 | `@anthropic-ai/sdk` | **yes** — `tests/integration/anthropic-real-package.test.ts` drives the real tool runner and proves a blocked later turn makes no second provider request |
 | `@google-cloud/vertexai` | **yes** — `tests/integration/vertex-real-package.test.ts` drives official stable and preview model/chat objects with provider dispatch replaced locally |
 | `@langchain/core` | **yes** — `tests/integration/langchain-real-package.test.ts` drives the real awaited model-start callback boundary |

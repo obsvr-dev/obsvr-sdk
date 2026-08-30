@@ -19,7 +19,9 @@ Changes land here and are renamed at the next release cut.
 
 - Added one-step startup auto-governance through `@obsvr/sdk/initialize` and
   `obsvr-run`, including documented ESM and CommonJS provider construction,
-  required binding manifests, binding status, and packaged-entrypoint gates.
+  TypeScript MCP and OpenAI Agents construction, Python CrewAI, AutoGen, and
+  OpenAI Agents tool gates, required binding manifests, binding status, and
+  packaged-entrypoint gates.
 - Explicit wrappers can transactionally revoke governed methods on the exact raw
   client through `sealRaw` / `seal_raw`, reducing accidental raw-handle bypasses
   without freezing provider SDK internals.

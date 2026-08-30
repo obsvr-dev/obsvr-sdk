@@ -188,6 +188,27 @@ been walked.
 
 **Module format: ESM-only API, ESM and CommonJS provider interception.** `@obsvr/sdk` declares `"type": "module"` and every public API export condition is `import`, so a CommonJS consumer cannot `require()` the SDK itself. The `@obsvr/sdk/initialize` and `@obsvr/sdk/register` preloads are ESM; once loaded, they also chain Node's CommonJS module loader for documented provider entry points. OpenAI coverage includes the root plus `openai/index`, `openai/index.mjs`, `openai/client`, `openai/client.mjs`, `openai/client.js`, and `openai/azure` where the module format applies. This does not cover arbitrary subpaths, imports completed before the preload, saved constructor references, or custom transports. `obsvr.wrap()` and named compatibility wrappers remain the explicit boundary. See the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only).
 
+### Startup automatic bindings
+
+The startup paths bind only upstream surfaces with a construction or
+process-global pre-execution point. The version evidence below is the evidence
+for the underlying gate plus an automatic-attachment test; it is not a claim
+that every API in the framework is intercepted.
+
+| Surface | Runtime | Automatic entry point | Version/evidence boundary |
+| --- | --- | --- | --- |
+| MCP client | TypeScript | `@modelcontextprotocol/sdk/client` and `/client/index.js` `Client` construction, ESM and CommonJS | real client/server startup tests on the declared `>=1.26.0 <2.0.0` line; the security floor remains 1.26.0 |
+| OpenAI Agents tools | TypeScript | `@openai/agents` `Agent` construction; function tools present at construction receive input guardrails | real-runner startup test on the declared `>=0.13.0 <1.0.0` line; the listed observed versions remain the range evidence |
+| OpenAI Agents tools | Python | future `agents.Agent` construction; function tools present at construction receive input guardrails | real-runner startup test at 0.19.2; the declared range remains `>=0.19.0,<1.0.0` |
+| CrewAI tools | Python | official process-global `before_tool_call` hook | automatic attachment is available only where the executor consult site exists, currently 1.15.3+; earlier supported versions require `govern_tool` |
+| AutoGen/ag2 tools | Python | class-level `ConversableAgent.execute_function` / `a_execute_function` gate | automatic attachment follows the supported 0.x range, live-driven at 0.3.2 and 0.9.9 |
+
+LangChain remains an explicit callback binding in both SDKs. Python MCP,
+LlamaIndex agent tool governance, Python Gemini, already-imported aliases, tools
+added after Agent construction, hosted tools, and unlisted import paths remain
+explicit. OpenAI Agents tracing is still observe-only for model calls; automatic
+tool attachment does not change that model boundary.
+
 ## Ordinary enforcement boundary
 
 The ordinary wrappers are broader than strict profile 2.1. On every method
