@@ -244,7 +244,7 @@ crypto-nacl = ["PyNaCl>=1.0.0"]
 # It stays out of the blocking dependency audit by construction: that job runs
 # `pip-audit --strict .` over declared RUNTIME dependencies, which remain empty,
 # and the environment audit that would see these is report-only.
-dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=2.0.0,<3.0.0", "google-genai>=2.0.0,<3.0.0", "langchain-core>=1.0.0,<2.0.0"]
+dev = ["pytest>=7.0", "cryptography>=41.0.0", "hypothesis>=6.0", "mcp>=2.0.0,<3.0.0", "google-genai>=2.0.0,<3.0.0", "langchain-core>=1.0.0,<2.0.0", "llama-index-core>=0.14.5,<0.15.0"]
 
 [tool.setuptools.dynamic]
 version = { attr = "obsvr._version.__version__" }

@@ -422,7 +422,7 @@ def test_llamaindex_non_llm_ignored(sent):
     assert len(sent) == 0
 
 
-def test_llamaindex_pii_observe_only(sent):
+def test_llamaindex_pii_block_stops_model_start(sent):
     _init_pii()
     from obsvr.integrations.llamaindex import ObsvrLlamaIndexHandler
     h = ObsvrLlamaIndexHandler()
@@ -432,21 +432,17 @@ def test_llamaindex_pii_observe_only(sent):
             self.role = role
             self.content = content
 
-    class FakeResponse:
-        def __init__(self, text):
-            self.text = text
-
-    h.on_event_start(
-        LLM_EVENT,
-        payload={"messages": [FakeMsg("user", "ssn 123-45-6789")]},
-        event_id="ev-4",
-    )
-    h.on_event_end(LLM_EVENT, payload={"response": FakeResponse("ok")}, event_id="ev-4")
+    with pytest.raises(obsvr.ObsvrPolicyError, match="Request blocked by policy"):
+        h.on_event_start(
+            LLM_EVENT,
+            payload={"messages": [FakeMsg("user", "ssn 123-45-6789")]},
+            event_id="ev-4",
+        )
     assert len(sent) == 1
     e = sent[0]
     assert "[REDACTED_SSN]" in e["prompt"]
-    assert e["action_taken"] == "not_evaluated"
-    assert e["metadata"]["obsvr_telemetry"]["stored_redaction_scope"] == "observe_only"
+    assert e["action_taken"] == "blocked"
+    assert e["success"] is False
 
 
 def test_llamaindex_uninitialized_no_op(sent):
