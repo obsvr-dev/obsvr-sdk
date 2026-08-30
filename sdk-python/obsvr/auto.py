@@ -8,7 +8,9 @@ references saved earlier are outside that boundary.
 Cleanly auto-wired (global registration or an explicitly supported class gate):
   * Providers (openai / anthropic) — construct interception via obsvr.register.
   * OpenAI Agents SDK — trace processor plus future Agent construction with
-    pre-tool input guardrails on function tools present at construction time.
+    pre-call model governance and pre-tool input guardrails. Later concrete
+    model assignments and mutable tool/handoff list changes are covered too.
+  * MCP — future ClientSession construction is returned behind govern_mcp.
   * LlamaIndex — Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler()).
   * CrewAI — official process-global before_tool_call hook.
   * AutoGen/ag2 0.x — supported ConversableAgent tool-execution boundary.
@@ -20,8 +22,9 @@ CrewAI run/step audit callbacks and AutoGen message policy remain explicit;
 their pre-tool execution gates are installed automatically. These residual
 bindings are reported so the developer knows the one line to add.
 
-Every step is best-effort and isolated: a failure to wire one framework never
-raises and never affects the audit path.
+Every step is best-effort and isolated. Deployments that require an automatic
+surface must declare its exact key through ``OBSVR_REQUIRED_BINDINGS`` so a
+failed or missing attachment stops startup instead of silently degrading.
 """
 
 from __future__ import annotations

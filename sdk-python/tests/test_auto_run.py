@@ -64,7 +64,7 @@ print(f"RESULT:{blocked}:{transport_calls}:{type(client).__name__}")
     result = subprocess.run(
         [sys.executable, "-m", "obsvr.auto_run", str(script)],
         cwd=ROOT,
-        env=_runner_env(),
+        env={**_runner_env(), "OBSVR_REQUIRED_BINDINGS": "openai.client"},
         text=True,
         capture_output=True,
         timeout=60,
