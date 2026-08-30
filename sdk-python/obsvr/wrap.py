@@ -75,6 +75,7 @@ from .policy import (
     apply_post_call_policy,
     blocked_prompt_for_storage,
     apply_outbound_redaction,
+    assert_redaction_applied,
     outbound_redaction_blocked_compliance,
     outbound_redactor,
 )
@@ -577,10 +578,9 @@ def _rebuild_message(msg: Any, new_content: Any) -> Any:
 
     A message OBJECT is copied with ``copy.copy`` so the provider's own type
     survives — substituting a dict would be rejected by a client that validates
-    its argument. If the copy or the assignment fails, the ORIGINAL is returned
-    untouched and this message goes out unredacted: the stored copy is still
-    scrubbed by the event-build net, and corrupting a caller's object is not an
-    acceptable price for redacting one field.
+    its argument. If the copy or assignment fails, redaction fails closed. The
+    original must never be forwarded under an event that claims its content was
+    removed.
     """
     if isinstance(msg, dict):
         return {**msg, "content": new_content}
@@ -588,8 +588,8 @@ def _rebuild_message(msg: Any, new_content: Any) -> Any:
         clone = _copy.copy(msg)
         setattr(clone, "content", new_content)
         return clone
-    except Exception:
-        return msg
+    except Exception as err:
+        raise TypeError("message could not be copied for outbound redaction") from err
 
 
 def _redact_messages_in_place(
@@ -1933,6 +1933,10 @@ def _build_direct_call_pre_call_plan(
             nonlocal _redacted_args
             _redact_messages_in_place(provider, kwargs, _redactor)
             _redacted_args = _redact_positional_inputs(args, _redactor)
+            assert_redaction_applied(
+                _extract_prompt_text(provider, _redacted_args, kwargs),
+                compliance,
+            )
 
         _not_redacted = apply_outbound_redaction(_apply_redaction)
         if _not_redacted is not None:
