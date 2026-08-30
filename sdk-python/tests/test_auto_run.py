@@ -136,3 +136,33 @@ def test_runner_refuses_an_unbound_required_integration(tmp_path):
     assert result.returncode != 0
     assert "not-installed was never bound" in result.stderr
     assert "application must not start" not in result.stderr
+
+
+def test_runner_parses_agent_and_mcp_tool_policies_before_the_app(tmp_path):
+    script = tmp_path / "policies.py"
+    script.write_text(
+        """
+from obsvr import get_config
+config = get_config()
+print("AGENT:" + ",".join(config.agent_policy.get("denied_tools", [])))
+print("MCP:" + ",".join(config.mcp_tool_policy.get("denied_tools", [])))
+""",
+        encoding="utf-8",
+    )
+    env = _runner_env()
+    env["OBSVR_AGENT_POLICY"] = '{"denied_tools":["send_contract"]}'
+    env["OBSVR_MCP_TOOL_POLICY"] = '{"denied_tools":["delete_record"]}'
+
+    result = subprocess.run(
+        [sys.executable, "-m", "obsvr.auto_run", str(script)],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "AGENT:send_contract" in result.stdout
+    assert "MCP:delete_record" in result.stdout

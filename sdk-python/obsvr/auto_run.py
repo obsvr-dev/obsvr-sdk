@@ -57,6 +57,8 @@ def _initialize_from_environment() -> None:
         ingest_url=os.environ.get("OBSVR_INGEST_URL") or None,
         environment=os.environ.get("OBSVR_ENVIRONMENT") or None,
         pii_policy=_json_object("OBSVR_PII_POLICY"),
+        agent_policy=_json_object("OBSVR_AGENT_POLICY"),
+        mcp_tool_policy=_json_object("OBSVR_MCP_TOOL_POLICY"),
         enforcement_mode=os.environ.get("OBSVR_ENFORCEMENT_MODE") or None,
         fail_mode=os.environ.get("OBSVR_FAIL_MODE") or None,
         policy_refresh_interval_s=_optional_float(
