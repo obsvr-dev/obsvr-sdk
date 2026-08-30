@@ -199,6 +199,10 @@ class TestRegistryGate:
         "__init__.py",
         "_version.py",
         "agent_run.py",
+        # Console entry point: validates startup configuration, installs
+        # bindings, and transfers control to the target application. It runs
+        # no detector and owns no per-call failure disposition.
+        "auto_run.py",
         # Canonical document + hash for an approval action; decides nothing on
         # its own. The layer that DOES decide is policy_rules, which is
         # declared. Same exemption reason as decision_record.py in TS.
