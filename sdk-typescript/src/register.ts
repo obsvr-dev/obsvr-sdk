@@ -11,7 +11,8 @@
  * construct-trap Proxy. It also intercepts exact supported CommonJS
  * `require()` entry points by chaining Node's module loader. Provider
  * prototypes, classes, and module objects are never mutated, so other
- * instrumentation keeps working underneath.
+ * instrumentation keeps working underneath. The CommonJS mechanism does
+ * explicitly chain Node's module loader and is therefore loader monkey-patching.
  *
  * WHAT THIS GOVERNS, and what it does not. This comment previously said
  * "every client instance created anywhere in the process", which is not

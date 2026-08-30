@@ -1,16 +1,18 @@
 /**
- * Auto-Instrumentation (module-level interception, no monkey patching)
+ * Auto-Instrumentation (startup module interception)
  *
  * obsvr never mutates provider SDK prototypes, classes, or module objects.
- * Global coverage is delivered by a Node module hook:
+ * Provider-construction coverage is delivered by Node ESM and CommonJS module
+ * hooks:
  *
  *     node --import @obsvr/sdk/register app.js
  *
- * The hook (see loader-hooks.ts) swaps the provider's exported class for a
- * construct-trap Proxy built here. Every `new OpenAI()` anywhere in the
- * process then returns a governed instance. The real class, its prototype,
- * and the underlying instance stay untouched, so APM, tracing, and other
- * instrumentation that patches the same SDKs keeps working underneath.
+ * The ESM hook (see loader-hooks.ts) swaps documented exported classes for
+ * construct-trap Proxy objects built here. The CommonJS hook chains Node's
+ * module loader for documented provider specifiers. That loader chaining is
+ * monkey-patching; provider classes, prototypes, module objects, and the
+ * underlying instances remain untouched so other instrumentation can operate
+ * underneath.
  *
  * Instances constructed before `obsvr.init()` pass calls through to the raw
  * client and pick up governance automatically on the first call after init.
