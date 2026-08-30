@@ -175,6 +175,10 @@ _gap_marker_ordinal = 0
 # out is exactly the gap most worth recording.
 _last_config: Optional[ResolvedConfig] = None
 _queued_outbox_ids: set[str] = set()
+# Serializes the filesystem record with its in-memory queue reservation. Without
+# this lock, flush() can discover a just-persisted record before the producer
+# records its id, enqueue it twice, and create duplicate loss declarations.
+_durable_queue_lock = threading.RLock()
 
 
 def configure_durable_delivery(config: ResolvedConfig) -> None:
@@ -182,9 +186,10 @@ def configure_durable_delivery(config: ResolvedConfig) -> None:
     global _last_config
     from . import durable_outbox
 
-    durable_outbox.configure(getattr(config, "durable_delivery", None))
-    _last_config = config
-    _refill_durable_queue(config)
+    with _durable_queue_lock:
+        durable_outbox.configure(getattr(config, "durable_delivery", None))
+        _last_config = config
+        _refill_durable_queue(config)
     if get_queue_size() > 0:
         _ensure_worker()
 
@@ -203,18 +208,19 @@ def _refill_durable_queue(config: Optional[ResolvedConfig] = None) -> None:
     cfg = config or _last_config
     if cfg is None or not durable_outbox.enabled():
         return
-    replayed = 0
-    for record in durable_outbox.pending_records():
-        record_id = record["id"]
-        if record_id in _queued_outbox_ids:
-            continue
-        try:
-            _queue.put_nowait((cfg, record["event"], 0, record_id))
-        except Full:
-            break
-        _queued_outbox_ids.add(record_id)
-        replayed += 1
-    durable_outbox.mark_replayed(replayed)
+    with _durable_queue_lock:
+        replayed = 0
+        for record in durable_outbox.pending_records():
+            record_id = record["id"]
+            if record_id in _queued_outbox_ids:
+                continue
+            try:
+                _queue.put_nowait((cfg, record["event"], 0, record_id))
+            except Full:
+                break
+            _queued_outbox_ids.add(record_id)
+            replayed += 1
+        durable_outbox.mark_replayed(replayed)
 
 
 def _reseed_chain_after_fork() -> None:
@@ -256,12 +262,13 @@ def _reseed_chain_after_fork() -> None:
     """
     global _sdk_session_id, _seq_no, _last_sig
     global _queue, _worker_pending, _worker_front
-    global _sign_lock, _stats_lock, _worker_lock, _worker
+    global _sign_lock, _stats_lock, _worker_lock, _durable_queue_lock, _worker
     global _gap_pending, _gap_marker_ordinal, _dropped
 
     _sign_lock = threading.RLock()
     _stats_lock = threading.Lock()
     _worker_lock = threading.Lock()
+    _durable_queue_lock = threading.RLock()
 
     _sdk_session_id = str(uuid.uuid4())
     _seq_no = 0
@@ -883,15 +890,20 @@ def _finish_durable_items(items: list, rejected_reason: Optional[str] = None) ->
     """Acknowledge delivered durable records or move terminal failures aside."""
     from . import durable_outbox
 
-    for item in items:
-        outbox_id = item[3] if len(item) > 3 else None
-        if not outbox_id:
-            continue
-        _queued_outbox_ids.discard(outbox_id)
-        if rejected_reason is None:
-            durable_outbox.acknowledge(outbox_id)
-        else:
-            durable_outbox.dead_letter(outbox_id, rejected_reason)
+    with _durable_queue_lock:
+        for item in items:
+            outbox_id = item[3] if len(item) > 3 else None
+            if not outbox_id:
+                continue
+            try:
+                if rejected_reason is None:
+                    durable_outbox.acknowledge(outbox_id)
+                else:
+                    durable_outbox.dead_letter(outbox_id, rejected_reason)
+            finally:
+                # If the filesystem operation fails, make the still-pending
+                # record eligible for a later refill instead of stranding it.
+                _queued_outbox_ids.discard(outbox_id)
 
 
 def _ensure_worker() -> None:
@@ -1161,16 +1173,17 @@ def _declare_delivery_gap(
         _gap_marker_ordinal = 0
         marker = _build_gap_marker(config, dropped, reason)
         sign_event(marker, config.api_key)
-        outbox_id = _persist_gap_marker(marker)
-        # This evidence may be armed while the bounded queue is full. Match the
-        # forced overflow-marker rule: exceed the bound by one on a queue that
-        # the current worker is already draining.
-        with _queue.mutex:
-            _queue.queue.append((config, marker, 0, outbox_id))
-            _queue.unfinished_tasks += 1
-            _queue.not_empty.notify()
-        if outbox_id:
-            _queued_outbox_ids.add(outbox_id)
+        with _durable_queue_lock:
+            outbox_id = _persist_gap_marker(marker)
+            # This evidence may be armed while the bounded queue is full. Match
+            # the forced overflow-marker rule: exceed the bound by one on a
+            # queue that the current worker is already draining.
+            with _queue.mutex:
+                _queue.queue.append((config, marker, 0, outbox_id))
+                _queue.unfinished_tasks += 1
+                _queue.not_empty.notify()
+            if outbox_id:
+                _queued_outbox_ids.add(outbox_id)
         _bump("enqueued")
         _bump("gap_markers")
         _bump("gap_events_declared", dropped)
@@ -1301,34 +1314,35 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
         # callers that hook sign_event still see every signed event.
         sign_event(event, config.api_key)
         outbox_id = None
-        try:
-            outbox_id = durable_outbox.persist(event)
-        except Exception as exc:
-            _bump("durable_write_failures")
-            if durable_outbox.failure_mode() == "error":
-                _seq_no, _last_sig = prev_seq, prev_sig
-                raise RuntimeError(
-                    "obsvr durable audit persistence failed before enqueue"
-                ) from exc
-            logging.getLogger("obsvr").warning(
-                "durable audit persistence failed; continuing with memory-only delivery: %s",
-                exc,
-            )
-        try:
-            _queue.put_nowait((config, event, 0, outbox_id))
-            if outbox_id:
-                _queued_outbox_ids.add(outbox_id)
-            enqueued = True
-        except Full:
-            if outbox_id:
-                _bump("durable_deferred")
+        with _durable_queue_lock:
+            try:
+                outbox_id = durable_outbox.persist(event)
+            except Exception as exc:
+                _bump("durable_write_failures")
+                if durable_outbox.failure_mode() == "error":
+                    _seq_no, _last_sig = prev_seq, prev_sig
+                    raise RuntimeError(
+                        "obsvr durable audit persistence failed before enqueue"
+                    ) from exc
+                logging.getLogger("obsvr").warning(
+                    "durable audit persistence failed; continuing with memory-only delivery: %s",
+                    exc,
+                )
+            try:
+                _queue.put_nowait((config, event, 0, outbox_id))
+                if outbox_id:
+                    _queued_outbox_ids.add(outbox_id)
                 enqueued = True
-            else:
-                _seq_no, _last_sig = prev_seq, prev_sig
-                _dropped += 1
-                _bump("dropped_overflow")
-                _gap_pending += 1
-                enqueued = False
+            except Full:
+                if outbox_id:
+                    _bump("durable_deferred")
+                    enqueued = True
+                else:
+                    _seq_no, _last_sig = prev_seq, prev_sig
+                    _dropped += 1
+                    _bump("dropped_overflow")
+                    _gap_pending += 1
+                    enqueued = False
         if enqueued:
             _bump("enqueued")
     # Optional OTel mirror. NOT fire-and-forget: the exporter runs
@@ -1422,8 +1436,9 @@ def _reset_sender() -> None:
     _reset_backoff()
     _shutdown.clear()
     _dropped = 0
-    _queued_outbox_ids.clear()
-    durable_outbox.reset()
+    with _durable_queue_lock:
+        _queued_outbox_ids.clear()
+        durable_outbox.reset()
     with _stats_lock:
         for k in _stats:
             _stats[k] = 0

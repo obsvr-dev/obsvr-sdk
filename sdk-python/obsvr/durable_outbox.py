@@ -37,7 +37,20 @@ def _directory(name: str) -> Path:
 
 
 def _files(name: str) -> List[Path]:
-    return sorted(_directory(name).glob("*.json"), key=lambda path: path.name)
+    paths = sorted(_directory(name).glob("*.json"), key=lambda path: path.name)
+    for path in paths:
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"durable outbox record must be a regular file: {path}")
+    return paths
+
+
+def _secure_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(f"durable outbox directory must not be a symbolic link: {path}")
+    if not path.is_dir():
+        raise ValueError(f"durable outbox path must be a directory: {path}")
+    # mkdir(mode=...) does not tighten permissions on an existing directory.
+    path.chmod(0o700)
 
 
 def _disk_usage() -> int:
@@ -64,12 +77,15 @@ def configure(value: Optional[Dict[str, Any]]) -> None:
         raw = Path(_config["directory"])
         if not raw.is_absolute():
             raise ValueError("durable_delivery.directory must be absolute")
-        if raw.exists() and raw.is_symlink():
+        if raw.is_symlink():
             raise ValueError("durable_delivery.directory must not be a symbolic link")
         directory = raw.resolve()
         _config["directory"] = str(directory)
         _directory("pending").mkdir(parents=True, exist_ok=True, mode=0o700)
         _directory("dead").mkdir(parents=True, exist_ok=True, mode=0o700)
+        _secure_directory(directory)
+        _secure_directory(_directory("pending"))
+        _secure_directory(_directory("dead"))
         _status.update(
             enabled=True,
             directory=str(directory),
