@@ -11,8 +11,11 @@
  */
 import {
   _resetBindings,
+  RequiredBindingsError,
+  assertRequiredBindings,
   integrationBindings,
   recordBinding,
+  requiredBindingFailures,
   unboundSymbols,
 } from "../../src/binding-report";
 import { patchMCP, _resetPatchMCPDeprecationWarning } from "../../src/integrations/mcp";
@@ -90,6 +93,57 @@ describe("package surface", () => {
   test("integrationBindings and unboundSymbols are exported from the index", () => {
     expect(sdk.integrationBindings).toBe(integrationBindings);
     expect(sdk.unboundSymbols).toBe(unboundSymbols);
+    expect(sdk.requiredBindingFailures).toBe(requiredBindingFailures);
+    expect(sdk.assertRequiredBindings).toBe(assertRequiredBindings);
+  });
+});
+
+describe("required binding assertions", () => {
+  test("passes only after every required integration reports bound", () => {
+    recordBinding("openai", "openai.OpenAI");
+    recordBinding("langchain", "langchain_core.callbacks.BaseCallbackHandler");
+
+    expect(requiredBindingFailures(["openai", "langchain"])).toEqual([]);
+    expect(() => assertRequiredBindings(["openai", "langchain"])).not.toThrow();
+  });
+
+  test("distinguishes a missing integration from an unbound symbol", () => {
+    recordBinding(
+      "langchain",
+      "langchain_core.callbacks.BaseCallbackHandler",
+      new TypeError("symbol moved"),
+    );
+
+    expect(requiredBindingFailures(["openai", "langchain"])).toEqual([
+      { integration: "openai", symbol: "", reason: "missing" },
+      {
+        integration: "langchain",
+        symbol: "langchain_core.callbacks.BaseCallbackHandler",
+        reason: "unbound",
+        errorType: "TypeError",
+        error: "symbol moved",
+      },
+    ]);
+  });
+
+  test("throws a typed error carrying a defensive copy of every failure", () => {
+    expect(() => assertRequiredBindings(["openai"])).toThrow(RequiredBindingsError);
+    try {
+      assertRequiredBindings(["openai"]);
+    } catch (error) {
+      expect(error).toBeInstanceOf(RequiredBindingsError);
+      const typed = error as RequiredBindingsError;
+      expect(typed.failures).toEqual([
+        { integration: "openai", symbol: "", reason: "missing" },
+      ]);
+      typed.failures[0].integration = "mutated";
+      expect(requiredBindingFailures(["openai"])[0].integration).toBe("openai");
+    }
+  });
+
+  test("deduplicates requirements and refuses blank names", () => {
+    expect(requiredBindingFailures(["openai", "openai"])).toHaveLength(1);
+    expect(() => requiredBindingFailures([" "])).toThrow(TypeError);
   });
 });
 

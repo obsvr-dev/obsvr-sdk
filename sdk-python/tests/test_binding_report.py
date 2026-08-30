@@ -27,8 +27,11 @@ import pytest
 import obsvr
 from obsvr import binding_report
 from obsvr.binding_report import (
+    RequiredBindingsError,
+    assert_required_bindings,
     integration_bindings,
     record_binding,
+    required_binding_failures,
     unbound_symbols,
 )
 
@@ -113,6 +116,49 @@ class TestRecording:
         assert entry["error_type"] == "Hostile"
 
 
+class TestRequiredBindings:
+    def test_passes_only_after_every_required_integration_reports_bound(
+        self, isolated_registry
+    ):
+        record_binding("openai", "openai.OpenAI")
+        record_binding("langchain", "langchain_core.callbacks.BaseCallbackHandler")
+
+        assert required_binding_failures(["openai", "langchain"]) == []
+        assert_required_bindings(["openai", "langchain"])
+
+    def test_distinguishes_missing_from_unbound(self, isolated_registry):
+        record_binding(
+            "langchain",
+            "langchain_core.callbacks.BaseCallbackHandler",
+            TypeError("symbol moved"),
+        )
+
+        assert required_binding_failures(["openai", "langchain"]) == [
+            {"integration": "openai", "symbol": "", "reason": "missing"},
+            {
+                "integration": "langchain",
+                "symbol": "langchain_core.callbacks.BaseCallbackHandler",
+                "reason": "unbound",
+                "error_type": "TypeError",
+                "error": "symbol moved",
+            },
+        ]
+
+    def test_typed_error_carries_a_copy_of_failures(self, isolated_registry):
+        with pytest.raises(RequiredBindingsError) as exc_info:
+            assert_required_bindings(["openai"])
+        assert exc_info.value.failures == [
+            {"integration": "openai", "symbol": "", "reason": "missing"}
+        ]
+        exc_info.value.failures[0]["integration"] = "mutated"
+        assert required_binding_failures(["openai"])[0]["integration"] == "openai"
+
+    def test_deduplicates_and_rejects_blank_names(self, isolated_registry):
+        assert len(required_binding_failures(["openai", "openai"])) == 1
+        with pytest.raises(TypeError):
+            required_binding_failures([" "])
+
+
 class TestRealIntegrationsReport:
     def test_every_guarded_integration_reports_its_binds(self):
         # Importing the modules is what records; assert each names itself.
@@ -145,6 +191,8 @@ class TestRealIntegrationsReport:
     def test_exposed_on_the_package_surface(self):
         assert obsvr.integration_bindings() == integration_bindings()
         assert obsvr.unbound_symbols() == unbound_symbols()
+        assert obsvr.required_binding_failures is required_binding_failures
+        assert obsvr.assert_required_bindings is assert_required_bindings
 
 
 class TestEveryIntegrationRecordsItsBindFailures:
