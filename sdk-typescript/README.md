@@ -95,6 +95,10 @@ function is entered; redaction changes the arguments it receives or fails
 closed. The returned wrapper is the boundary. A retained raw function alias is
 not governed and is reported as a coverage exclusion.
 
+`buildActionContextV2()` provides the bounded context for strict application
+actions. Optional principal, execution, and governance layers carry stable
+facts and hashes only; unknown fields and raw target storage are rejected.
+
 **Which Gemini SDK.** Google ships two, and obsvr integrates both:
 
 | Package | State |

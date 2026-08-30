@@ -22,6 +22,15 @@ ACTION_CONTEXT_V2_SCHEMA = "obsvr-action-context-v2"
 ACTION_TARGET_HASH_DOMAIN = b"obsvr-action-target/1"
 _HEX = frozenset("0123456789abcdef")
 _OUTCOMES = frozenset(AARM_OUTCOMES)
+_PRINCIPAL_KINDS = frozenset({"human", "service", "agent", "unknown"})
+_AUTONOMY_LEVELS = frozenset({"assistive", "supervised", "autonomous"})
+_CONSEQUENCE_LEVELS = frozenset(
+    {"none", "read", "internal_write", "external_write", "destructive"}
+)
+_APPROVAL_STATES = frozenset(
+    {"not_required", "required", "approved", "denied", "expired"}
+)
+_QUOTA_STATES = frozenset({"within_limit", "near_limit", "exceeded", "unknown"})
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
@@ -67,6 +76,91 @@ def _string_set(value: Any, field: str) -> List[str]:
     return normalized_bounded_set(
         value, field, STRICT_SET_MAX_ITEMS, STRICT_IDENTIFIER_MAX_BYTES, _fail
     )
+
+
+def _enumeration(value: Any, allowed: frozenset[str], field: str) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        _fail(f"{field} is unsupported")
+    return value
+
+
+def _principal_layer(value: Any) -> Dict[str, Any]:
+    layer = _record(value, "principal")
+    _exact_keys(layer, {"principal_id", "kind", "tenant_hash", "roles"}, "principal")
+    result = {
+        "principal_id": _text(layer.get("principal_id"), "principal.principal_id"),
+        "kind": _enumeration(layer.get("kind"), _PRINCIPAL_KINDS, "principal.kind"),
+        "roles": _string_set(layer.get("roles"), "principal.roles"),
+    }
+    if "tenant_hash" in layer:
+        result["tenant_hash"] = _hash(layer["tenant_hash"], "principal.tenant_hash")
+    return result
+
+
+def _execution_layer(value: Any) -> Dict[str, Any]:
+    layer = _record(value, "execution")
+    _exact_keys(
+        layer,
+        {"environment", "autonomy_level", "consequence_level"},
+        "execution",
+    )
+    return {
+        "environment": _text(layer.get("environment"), "execution.environment"),
+        "autonomy_level": _enumeration(
+            layer.get("autonomy_level"),
+            _AUTONOMY_LEVELS,
+            "execution.autonomy_level",
+        ),
+        "consequence_level": _enumeration(
+            layer.get("consequence_level"),
+            _CONSEQUENCE_LEVELS,
+            "execution.consequence_level",
+        ),
+    }
+
+
+def _governance_layer(value: Any) -> Dict[str, Any]:
+    layer = _record(value, "governance")
+    _exact_keys(
+        layer,
+        {
+            "integration_id",
+            "integration_version",
+            "coverage_claim_hash",
+            "active_pack_hashes",
+            "approval_state",
+            "quota_state",
+        },
+        "governance",
+    )
+    result = {
+        "integration_id": _text(
+            layer.get("integration_id"), "governance.integration_id"
+        ),
+        "active_pack_hashes": [
+            _hash(item, "governance.active_pack_hashes")
+            for item in _string_set(
+                layer.get("active_pack_hashes"), "governance.active_pack_hashes"
+            )
+        ],
+        "approval_state": _enumeration(
+            layer.get("approval_state"),
+            _APPROVAL_STATES,
+            "governance.approval_state",
+        ),
+        "quota_state": _enumeration(
+            layer.get("quota_state"), _QUOTA_STATES, "governance.quota_state"
+        ),
+    }
+    if "integration_version" in layer:
+        result["integration_version"] = _text(
+            layer["integration_version"], "governance.integration_version"
+        )
+    if "coverage_claim_hash" in layer:
+        result["coverage_claim_hash"] = _hash(
+            layer["coverage_claim_hash"], "governance.coverage_claim_hash"
+        )
+    return result
 
 
 def action_target_hash(value: Any) -> str:
@@ -124,6 +218,9 @@ def build_action_context_v2(input_value: Any) -> Dict[str, Any]:
             "session_id",
             "thread_id",
             "prior_actions",
+            "principal",
+            "execution",
+            "governance",
         },
         "action context",
     )
@@ -205,6 +302,12 @@ def build_action_context_v2(input_value: Any) -> Dict[str, Any]:
     thread_id = _optional_text(root, "thread_id", "thread_id")
     if thread_id is not None:
         doc["thread_id"] = thread_id
+    if "principal" in root:
+        doc["principal"] = _principal_layer(root["principal"])
+    if "execution" in root:
+        doc["execution"] = _execution_layer(root["execution"])
+    if "governance" in root:
+        doc["governance"] = _governance_layer(root["governance"])
     if len(_canonical_json_for_hash(doc).encode("utf-8")) > STRICT_CONTEXT_MAX_BYTES:
         _fail(
             f"canonical action context exceeds {STRICT_CONTEXT_MAX_BYTES} UTF-8 bytes"

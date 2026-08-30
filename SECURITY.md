@@ -123,6 +123,13 @@ function, and a redact verdict changes the arguments that function receives or
 fails closed. It does not revoke any other reference to the original callable;
 coverage reports therefore record retained raw aliases as an exclusion.
 
+Optional `ActionContextV2` layers are closed and bounded. They carry only
+identity, execution, and governance facts needed for deterministic policy and
+receipt reconstruction. Raw action targets remain tokenized, policy packs and
+coverage statements travel by hash, and arbitrary prompt/output fields are
+rejected. Adding the layers is backward-compatible for callers that omit them:
+their canonical v2 bytes do not change.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.

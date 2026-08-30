@@ -71,6 +71,14 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 # SDKs must not diverge on the entry point for the same primitive.
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .govern_fn import govern, govern_fn  # noqa: F401
+from .action_context_v2 import (  # noqa: F401
+    ACTION_CONTEXT_V2_SCHEMA,
+    ActionContextV2ValidationError,
+    action_context_v2_hash,
+    action_target_hash,
+    build_action_context_v2,
+    canonicalize_action_context_v2,
+)
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .otel_mirror import (  # noqa: F401
     correlate_strict_runtime_checkpoint_v2_1_to_otel,
@@ -218,6 +226,12 @@ __all__ = [
     "govern_tools",
     "govern",
     "govern_fn",
+    "ACTION_CONTEXT_V2_SCHEMA",
+    "ActionContextV2ValidationError",
+    "action_context_v2_hash",
+    "action_target_hash",
+    "build_action_context_v2",
+    "canonicalize_action_context_v2",
     "integration_bindings",
     "required_binding_failures",
     "assert_required_bindings",

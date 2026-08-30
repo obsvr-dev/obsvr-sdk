@@ -29,6 +29,9 @@ const FIXTURE = JSON.parse(fs.readFileSync(
   policy_expect: { document: object; canonical: string; hash: string };
   cases: Array<{ id: string; target: string; expect: object }>;
 };
+const LAYERED = JSON.parse(fs.readFileSync(
+  findFixture('conformance/fixtures/action_context_layers_v2.json'), 'utf8',
+)) as { input: Record<string, any> };
 
 describe('v2 intent alignment', () => {
   it('normalizes raw policy targets to hashes only', () => {
@@ -63,6 +66,19 @@ describe('v2 intent alignment', () => {
     expect(evaluateIntentAlignmentV2({
       context: buildActionContextV2(FIXTURE.base_context as any),
       policy: buildIntentPolicyV2(FIXTURE.base_policy),
+      base_result: { action_taken: 'allowed' },
+    })).toEqual(raw);
+  });
+
+  it('preserves optional layers when a canonical context is revalidated', () => {
+    const raw = evaluateIntentAlignmentV2({
+      context: LAYERED.input as any,
+      policy: FIXTURE.base_policy,
+      base_result: { action_taken: 'allowed' },
+    });
+    expect(evaluateIntentAlignmentV2({
+      context: buildActionContextV2(LAYERED.input as any),
+      policy: FIXTURE.base_policy,
       base_result: { action_taken: 'allowed' },
     })).toEqual(raw);
   });

@@ -242,6 +242,20 @@ wait for approval or an external backend. Python preserves the original sync
 or async shape. A retained reference to the raw function remains a bypass and
 is listed in the `govern_fn` coverage binding.
 
+For strict decisions, `ActionContextV2` keeps context in bounded, closed
+layers rather than accepting one arbitrary payload:
+
+| Layer | Contents |
+| --- | --- |
+| agent and action | intent, scopes, classifications, argument hash, tokenized target |
+| principal | stable principal id, principal kind, roles, optional tenant hash |
+| execution | environment, autonomy level, consequence level |
+| governance | integration/version, coverage-claim hash, active policy-pack hashes, approval and quota state |
+
+Raw targets are replaced by a domain-separated hash. Unknown fields and
+unbounded enum values are rejected, and existing v2 inputs produce exactly the
+same canonical bytes as before.
+
 ## Policy engine
 
 Obsvr uses deterministic code in the decision path—never a second LLM. Rules cover keywords, bounded regex, topic allow/deny, model and environment gates, namespace and tenant isolation, destructive operations, source grounding, quotas, action gates, and parsed protocol facets.

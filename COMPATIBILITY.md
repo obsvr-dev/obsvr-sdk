@@ -232,6 +232,15 @@ The schema is closed: unknown body fields and noncanonical derived values are
 invalid. Adding fields or changing ordering, depth semantics, or signature
 bytes requires a new schema version and new shared fixtures.
 
+### Layered action-context contract
+
+`obsvr-action-context-v2` accepts optional `principal`, `execution`, and
+`governance` layers in both languages. The layers use closed fields and enums;
+coverage and policy evidence are represented by SHA-256 hashes rather than raw
+documents. Existing inputs that omit the layers retain their pinned canonical
+bytes and hash. The layered fixture separately pins ordering, deduplication,
+target tokenization, enum validation, and the new canonical hash.
+
 ## Ordinary enforcement boundary
 
 The ordinary wrappers are broader than strict profile 2.1. On every method

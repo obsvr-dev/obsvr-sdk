@@ -105,6 +105,20 @@ export type { Subject } from "./proxy/subject.js";
 export { verifyAuditChain } from "./governance/verify-chain.js";
 export { governFn } from "./governance/govern-fn.js";
 export type { GovernedFunction, GovernFnOptions } from "./governance/govern-fn.js";
+export {
+  ACTION_CONTEXT_V2_SCHEMA,
+  ACTION_TARGET_HASH_DOMAIN,
+  buildActionContextV2,
+  canonicalizeActionContextV2,
+  actionContextV2Hash,
+  actionTargetHash,
+  ActionContextV2ValidationError,
+} from "./governance/action-context-v2.js";
+export type {
+  ActionContextV2Input,
+  ActionContextV2Document,
+  PriorActionV2Input,
+} from "./governance/action-context-v2.js";
 // Gap markers: a verified chain can still declare events the bounded sender
 // queue dropped. `verifyAuditChain` totals them; this identifies which events
 // carry the claim, for callers processing their own exports.

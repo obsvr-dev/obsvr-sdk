@@ -247,6 +247,9 @@ def _context_input(value: Dict[str, Any]) -> Dict[str, Any]:
         result["session_id"] = value["session_id"]
     if "thread_id" in value:
         result["thread_id"] = value["thread_id"]
+    for layer in ("principal", "execution", "governance"):
+        if layer in value:
+            result[layer] = value[layer]
     return result
 
 
