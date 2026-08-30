@@ -251,6 +251,29 @@ function safeJson(v: unknown): string {
 }
 
 /**
+ * Resolve the argument that actually crosses the tool boundary.
+ *
+ * LangChain and ordinary tool objects expose `invoke(input, config)`, so their
+ * governed value is argument zero even when a second configuration argument
+ * exists. OpenAI Agents function tools expose `invoke(runContext, input)` and
+ * identify that distinct shape with the framework's guardrail arrays. Treating
+ * every two-argument `invoke` as the latter scanned LangChain's config object
+ * while forwarding its raw input to the tool body.
+ */
+function toolInputIndex(
+  execKey: string,
+  tool: AnyTool,
+  args: unknown[],
+): number {
+  if (execKey !== "invoke" || args.length < 2) return 0;
+  const agentsFunctionTool =
+    tool.type === "function" &&
+    Array.isArray(tool.inputGuardrails) &&
+    Array.isArray(tool.outputGuardrails);
+  return agentsFunctionTool ? 1 : 0;
+}
+
+/**
  * Wrap a framework tool so its execution is governed by obsvr. Returns a
  * proxy that behaves exactly like the original tool but gates its execute
  * function. If the tool shape isn't recognized, the original is returned
@@ -280,11 +303,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
     async function (this: unknown, ...args: unknown[]): Promise<unknown> {
     const config = tryGetConfig();
     if (config) {
-      // Tool input position differs by framework: Vercel `execute(input, opts)`,
-      // LlamaIndex `call(input)`, LangChain `func(input)` all put it at arg 0;
-      // OpenAI Agents `invoke(runContext, input)` puts it at arg 1 (arg 0 is the
-      // run context). Pick arg 1 for the invoke shape, else arg 0.
-      const inputIndex = execKey === "invoke" && args.length >= 2 ? 1 : 0;
+      const inputIndex = toolInputIndex(execKey, t, args);
       let input = args[inputIndex];
       const inputText = safeJson(input);
 
