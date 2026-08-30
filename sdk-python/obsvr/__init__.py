@@ -53,6 +53,11 @@ from .policy_template_v1 import (  # noqa: F401
     sign_rendered_policy_v1,
     verify_rendered_policy_v1,
 )
+from .control_analytics_v1 import (  # noqa: F401
+    CONTROL_ANALYTICS_REPORT_V1_SCHEMA,
+    ControlAnalyticsV1ValidationError,
+    build_control_analytics_report_v1,
+)
 from .reason_codes import (  # noqa: F401
     REASON_CODES,
     RULE_TYPE_TO_REASON_CODE,
@@ -323,6 +328,9 @@ __all__ = [
     "render_policy_template_v1",
     "sign_rendered_policy_v1",
     "verify_rendered_policy_v1",
+    "CONTROL_ANALYTICS_REPORT_V1_SCHEMA",
+    "ControlAnalyticsV1ValidationError",
+    "build_control_analytics_report_v1",
     "get_config",
     "is_initialized",
     "try_get_config",

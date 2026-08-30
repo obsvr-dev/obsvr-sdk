@@ -381,6 +381,12 @@ export {
   verifyRenderedPolicyV1,
 } from "./governance/policy-template-v1.js";
 export type { PolicyTemplateV1Input, TemplateParameterV1 } from "./governance/policy-template-v1.js";
+export {
+  CONTROL_ANALYTICS_REPORT_V1_SCHEMA,
+  ControlAnalyticsV1ValidationError,
+  buildControlAnalyticsReportV1,
+} from "./governance/control-analytics-v1.js";
+export type { ControlAnalyticsEventV1 } from "./governance/control-analytics-v1.js";
 export type {
   PolicyCandidateV1Input,
   PolicyReplayCaseV1,
