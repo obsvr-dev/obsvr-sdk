@@ -27,20 +27,20 @@ function parseProviders(raw: string | undefined): ObsvrConfig['providers'] {
   return providers as ObsvrConfig['providers'];
 }
 
-function parsePiiPolicy(raw: string | undefined): ObsvrConfig['piiPolicy'] {
+function parseJsonObject(name: string, raw: string | undefined): Record<string, unknown> | undefined {
   if (!raw?.trim()) return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
     throw new Error(
-      `[obsvr] OBSVR_PII_POLICY must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      `[obsvr] ${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('[obsvr] OBSVR_PII_POLICY must be a JSON object');
+    throw new Error(`[obsvr] ${name} must be a JSON object`);
   }
-  return parsed as ObsvrConfig['piiPolicy'];
+  return parsed as Record<string, unknown>;
 }
 
 function environmentConfig(): ObsvrConfig {
@@ -67,7 +67,9 @@ function environmentConfig(): ObsvrConfig {
     ingestUrl: process.env.OBSVR_INGEST_URL?.trim() || undefined,
     environment: environment as ObsvrConfig['environment'],
     providers: parseProviders(process.env.OBSVR_PROVIDERS),
-    piiPolicy: parsePiiPolicy(process.env.OBSVR_PII_POLICY),
+    piiPolicy: parseJsonObject('OBSVR_PII_POLICY', process.env.OBSVR_PII_POLICY) as ObsvrConfig['piiPolicy'],
+    agentPolicy: parseJsonObject('OBSVR_AGENT_POLICY', process.env.OBSVR_AGENT_POLICY) as ObsvrConfig['agentPolicy'],
+    mcpToolPolicy: parseJsonObject('OBSVR_MCP_TOOL_POLICY', process.env.OBSVR_MCP_TOOL_POLICY) as ObsvrConfig['mcpToolPolicy'],
   };
 }
 
@@ -78,7 +80,7 @@ function requiredBindings(raw: string | undefined): string[] {
   return [...new Set(raw.split(',').map((value) => value.trim()).filter(Boolean))];
 }
 
-async function bindRequiredProvider(name: string): Promise<void> {
+async function bindRequiredIntegration(name: string): Promise<void> {
   // Keep optional peers optional at build time. The runtime string still goes
   // through the registered loader hook, which is the binding being verified.
   const load = (specifier: string): Promise<unknown> => import(specifier);
@@ -99,6 +101,14 @@ async function bindRequiredProvider(name: string): Promise<void> {
       }
       return;
     }
+    if (name === 'mcp') {
+      await load('@modelcontextprotocol/sdk/client/index.js');
+      return;
+    }
+    if (name === 'openai_agents') {
+      await load('@openai/agents');
+      return;
+    }
   } catch (error) {
     recordBinding(name, `${name}.provider-constructor`, error);
   }
@@ -106,6 +116,6 @@ async function bindRequiredProvider(name: string): Promise<void> {
 
 const required = requiredBindings(process.env.OBSVR_REQUIRED_BINDINGS);
 for (const name of required) {
-  await bindRequiredProvider(name);
+  await bindRequiredIntegration(name);
 }
 assertRequiredBindings(required);

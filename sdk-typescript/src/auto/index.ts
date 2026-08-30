@@ -26,6 +26,11 @@ import type { ResolvedConfig } from '../proxy/types.js';
 import { wrap } from '../proxy/wrapper.js';
 import { isInitialized, getConfig, markWrapped } from '../proxy/config.js';
 import { recordBinding } from '../binding-report.js';
+import {
+  _MCP_GOVERNED_SYMBOL,
+  obsvrGovernMCP,
+} from '../integrations/mcp.js';
+import { attachToolGate } from '../integrations/openai-agents.js';
 
 /** Providers the module interceptor knows how to govern. */
 export type InterceptedProvider = 'openai' | 'anthropic' | 'google';
@@ -227,6 +232,125 @@ export function interceptProviderNamespace<T>(
         return intercepted;
       }
       return Reflect.get(target, prop, receiver);
+    },
+  }) as T;
+}
+
+/**
+ * Lazily govern an MCP Client constructed through the startup module hook.
+ * The instance may be created before explicit init when callers use the
+ * register-only preload, so governance materializes on first access after init
+ * just like direct-provider interception. The raw Client and its prototype are
+ * never mutated.
+ */
+function lazyGovernMcp<T extends object>(instance: T): T {
+  let governed: T | null = null;
+  let passthroughForever = false;
+
+  const materialize = (): T | null => {
+    if (governed) return governed;
+    if (passthroughForever || !isInitialized()) return null;
+    const config = getConfig();
+    if (config.disabled) {
+      passthroughForever = true;
+      return null;
+    }
+    governed = obsvrGovernMCP(instance, config);
+    return governed;
+  };
+
+  return new Proxy(instance, {
+    get(target, prop, _receiver) {
+      if (prop === _MCP_GOVERNED_SYMBOL) return true;
+      const active = materialize();
+      if (active) return Reflect.get(active, prop, active);
+      const value = Reflect.get(target, prop, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    set(target, prop, value) {
+      return Reflect.set(target, prop, value, target);
+    },
+    has(target, prop) {
+      return prop === _MCP_GOVERNED_SYMBOL || Reflect.has(target, prop);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      return Reflect.getOwnPropertyDescriptor(target, prop);
+    },
+    ownKeys(target) {
+      return Reflect.ownKeys(target);
+    },
+    getPrototypeOf(target) {
+      return Reflect.getPrototypeOf(target);
+    },
+  }) as T;
+}
+
+/** Replace only construction of the documented MCP Client export. */
+export function interceptMcpClientClass<T>(cls: T): T {
+  if (typeof cls !== 'function') return cls;
+  recordBinding('mcp', '@modelcontextprotocol/sdk/client.Client');
+  return new Proxy(cls as object, {
+    construct(target, args, newTarget) {
+      const instance = Reflect.construct(
+        target as new (...a: unknown[]) => object,
+        args,
+        newTarget,
+      );
+      return lazyGovernMcp(instance);
+    },
+  }) as T;
+}
+
+/** Intercept Client on a CommonJS MCP namespace without mutating that object. */
+export function interceptMcpNamespace<T>(namespace: T): T {
+  if ((typeof namespace !== 'object' || namespace === null) && typeof namespace !== 'function') {
+    return namespace;
+  }
+  let interceptedClient: unknown;
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (prop !== 'Client') return Reflect.get(target, prop, receiver);
+      if (interceptedClient) return interceptedClient;
+      interceptedClient = interceptMcpClientClass(Reflect.get(target, prop, receiver));
+      return interceptedClient;
+    },
+  }) as T;
+}
+
+/**
+ * Attach obsvr's real pre-execution tool guardrail to each newly constructed
+ * OpenAI Agents Agent. The guardrail reads policy at execution time, so this is
+ * safe even when construction happens before explicit init under register-only
+ * startup. Hosted tools remain outside the client-side boundary.
+ */
+export function interceptOpenAIAgentClass<T>(cls: T): T {
+  if (typeof cls !== 'function') return cls;
+  recordBinding('openai_agents', '@openai/agents.Agent');
+  return new Proxy(cls as object, {
+    construct(target, args, newTarget) {
+      const agent = Reflect.construct(
+        target as new (...a: unknown[]) => object,
+        args,
+        newTarget,
+      );
+      attachToolGate(agent);
+      return agent;
+    },
+  }) as T;
+}
+
+/** Intercept Agent on the package namespace without mutating that namespace. */
+export function interceptOpenAIAgentsNamespace<T>(namespace: T): T {
+  if ((typeof namespace !== 'object' || namespace === null) && typeof namespace !== 'function') {
+    return namespace;
+  }
+  let interceptedAgent: unknown;
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (prop !== 'Agent') return Reflect.get(target, prop, receiver);
+      if (interceptedAgent) return interceptedAgent;
+      interceptedAgent = interceptOpenAIAgentClass(Reflect.get(target, prop, receiver));
+      return interceptedAgent;
     },
   }) as T;
 }

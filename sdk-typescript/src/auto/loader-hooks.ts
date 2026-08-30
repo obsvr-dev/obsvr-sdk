@@ -44,6 +44,9 @@ const PROVIDER_SPECIFIERS: Record<string, string> = {
   '@anthropic-ai/sdk': 'anthropic',
   '@google/generative-ai': 'google',
   '@google/genai': 'google-genai',
+  '@modelcontextprotocol/sdk/client': 'mcp-client',
+  '@modelcontextprotocol/sdk/client/index.js': 'mcp-client',
+  '@openai/agents': 'openai-agents',
 };
 
 /** Shim id -> canonical provider passed to the runtime interceptor. */
@@ -197,6 +200,24 @@ const PROVIDER_CLIENT_EXPORTS: Record<string, readonly string[]> = {
 function buildShim(provider: string, originalUrl: string, runtimeUrl: string): string {
   const orig = JSON.stringify(originalUrl);
   const runtime = JSON.stringify(runtimeUrl);
+  if (provider === 'mcp-client') {
+    return [
+      `export * from ${orig};`,
+      `import { Client as $obsvrOriginalClient } from ${orig};`,
+      `import { interceptMcpClientClass as $obsvrInterceptMcp } from ${runtime};`,
+      `const $obsvrClient = $obsvrInterceptMcp($obsvrOriginalClient);`,
+      `export { $obsvrClient as Client };`,
+    ].join('\n');
+  }
+  if (provider === 'openai-agents') {
+    return [
+      `export * from ${orig};`,
+      `import { Agent as $obsvrOriginalAgent } from ${orig};`,
+      `import { interceptOpenAIAgentClass as $obsvrInterceptAgent } from ${runtime};`,
+      `const $obsvrAgent = $obsvrInterceptAgent($obsvrOriginalAgent);`,
+      `export { $obsvrAgent as Agent };`,
+    ].join('\n');
+  }
   const names = PROVIDER_CLIENT_EXPORTS[provider];
   if (!names) return `export * from ${orig};`;
 

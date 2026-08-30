@@ -198,6 +198,56 @@ describe('CommonJS provider construction interception', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('governs a real CommonJS MCP Client before server execution', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'mcp-probe.cjs');
+    try {
+      writeFileSync(file, `
+(async () => {
+  const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+  const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+  const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
+  const executed = [];
+  const server = new McpServer({ name: 'server', version: '1.0.0' });
+  server.registerTool('send_contract', { description: 'Send a contract' }, async () => {
+    executed.push('send_contract');
+    return { content: [{ type: 'text', text: 'sent' }] };
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'client', version: '1.0.0' }, { capabilities: {} });
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  let blocked = false;
+  try {
+    await client.callTool({ name: 'send_contract', arguments: {} });
+  } catch (error) {
+    blocked = String(error).includes('[obsvr] MCP tool blocked by policy');
+  }
+  await client.close();
+  await server.close();
+  console.log('RESULT_JSON:' + JSON.stringify({ blocked, executed }));
+  process.exit(0);
+})();
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_MCP_TOOL_POLICY: '{"deniedTools":["send_contract"]}',
+          OBSVR_REQUIRED_BINDINGS: 'mcp',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result).toEqual({ blocked: true, executed: [] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('@obsvr/sdk/initialize one-step preload', () => {
@@ -288,6 +338,140 @@ process.exit(0);
     const status = JSON.parse(line.slice('RESULT_JSON:'.length));
     expect(status.boundProviders).toContain('openai');
     expect(status.active).toBe(true);
+  });
+
+  it('auto-governs a real MCP Client before the server executes a denied tool', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'mcp-probe.mjs');
+    try {
+      writeFileSync(file, `
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+
+const executed = [];
+const server = new McpServer({ name: 'server', version: '1.0.0' });
+server.registerTool('send_contract', { description: 'Send a contract' }, async () => {
+  executed.push('send_contract');
+  return { content: [{ type: 'text', text: 'sent' }] };
+});
+server.registerTool('read_contract', { description: 'Read a contract' }, async () => {
+  executed.push('read_contract');
+  return { content: [{ type: 'text', text: 'read' }] };
+});
+
+const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+const client = new Client({ name: 'client', version: '1.0.0' }, { capabilities: {} });
+await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+let blocked = false;
+try {
+  await client.callTool({ name: 'send_contract', arguments: {} });
+} catch (error) {
+  blocked = String(error).includes('[obsvr] MCP tool blocked by policy');
+}
+await client.callTool({ name: 'read_contract', arguments: {} });
+await client.close();
+await server.close();
+console.log('RESULT_JSON:' + JSON.stringify({ blocked, executed }));
+process.exit(0);
+`, 'utf-8');
+
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_MCP_TOOL_POLICY: '{"deniedTools":["send_contract"]}',
+          OBSVR_REQUIRED_BINDINGS: 'mcp',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result.blocked).toBe(true);
+      expect(result.executed).toEqual(['read_contract']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-attaches the real OpenAI Agents pre-tool guardrail', () => {
+    const dir = mkdtempSync(path.join(PKG, '.hook-probe-'));
+    const file = path.join(dir, 'agents-probe.mjs');
+    try {
+      writeFileSync(file, `
+import { Agent, Usage, run, setTracingDisabled, tool } from '@openai/agents';
+setTracingDisabled(true);
+
+const executed = [];
+const requests = [];
+let turn = 0;
+const model = {
+  async getResponse(request) {
+    requests.push(request);
+    turn += 1;
+    if (turn === 1) {
+      return {
+        usage: new Usage(),
+        output: [{
+          type: 'function_call', callId: 'call-1', name: 'send_contract',
+          arguments: '{}', status: 'completed',
+        }],
+      };
+    }
+    return {
+      usage: new Usage(),
+      output: [{
+        type: 'message', role: 'assistant', status: 'completed',
+        content: [{ type: 'output_text', text: 'done' }],
+      }],
+    };
+  },
+  async *getStreamedResponse() { throw new Error('not used'); },
+};
+const sendContract = tool({
+  name: 'send_contract',
+  description: 'Send a contract',
+  parameters: { type: 'object', properties: {}, additionalProperties: false },
+  strict: true,
+  execute: async () => { executed.push('send_contract'); return 'sent'; },
+});
+const agent = new Agent({
+  name: 'agent', instructions: 'Use the tool.', model, tools: [sendContract],
+});
+const result = await run(agent, 'send it');
+console.log('RESULT_JSON:' + JSON.stringify({
+  executed,
+  finalOutput: result.finalOutput,
+  refusalReturned: JSON.stringify(requests[1]?.input ?? '').includes('[obsvr]'),
+}));
+process.exit(0);
+`, 'utf-8');
+      const out = execFileSync(process.execPath, ['--import', INITIALIZE, file], {
+        cwd: PKG,
+        encoding: 'utf-8',
+        timeout: 60_000,
+        env: {
+          ...process.env,
+          OBSVR_API_KEY: 'k',
+          OBSVR_INGEST_URL: 'http://127.0.0.1:1',
+          OBSVR_AGENT_POLICY: '{"deniedTools":["send_contract"]}',
+          OBSVR_REQUIRED_BINDINGS: 'openai_agents',
+        },
+      });
+      const line = out.split('\n').find((value) => value.startsWith('RESULT_JSON:'))!;
+      const result = JSON.parse(line.slice('RESULT_JSON:'.length));
+      expect(result).toEqual({
+        executed: [],
+        finalOutput: 'done',
+        refusalReturned: true,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

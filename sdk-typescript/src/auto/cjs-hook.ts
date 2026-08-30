@@ -4,6 +4,8 @@ import * as nodeModule from 'node:module';
 import {
   interceptProviderClass,
   interceptProviderNamespace,
+  interceptMcpNamespace,
+  interceptOpenAIAgentsNamespace,
   markInterceptorInstalled,
   type InterceptedProvider,
 } from './index.js';
@@ -13,7 +15,7 @@ interface ModuleLoader {
 }
 
 interface CjsTarget {
-  provider: InterceptedProvider;
+  provider: InterceptedProvider | 'mcp' | 'openai-agents';
   clientExports: readonly string[];
   constructDefault: boolean;
 }
@@ -52,6 +54,21 @@ const CJS_TARGETS: Readonly<Record<string, CjsTarget>> = {
   '@google/generative-ai': {
     provider: 'google',
     clientExports: ['GoogleGenerativeAI'],
+    constructDefault: false,
+  },
+  '@modelcontextprotocol/sdk/client': {
+    provider: 'mcp',
+    clientExports: ['Client'],
+    constructDefault: false,
+  },
+  '@modelcontextprotocol/sdk/client/index.js': {
+    provider: 'mcp',
+    clientExports: ['Client'],
+    constructDefault: false,
+  },
+  '@openai/agents': {
+    provider: 'openai-agents',
+    clientExports: ['Agent'],
     constructDefault: false,
   },
 };
@@ -99,6 +116,17 @@ export function installCjsHook(): boolean {
     }
     const cached = namespaceCache.get(loaded as object);
     if (cached) return cached;
+
+    if (target.provider === 'mcp') {
+      const intercepted = interceptMcpNamespace(loaded);
+      namespaceCache.set(loaded as object, intercepted);
+      return intercepted;
+    }
+    if (target.provider === 'openai-agents') {
+      const intercepted = interceptOpenAIAgentsNamespace(loaded);
+      namespaceCache.set(loaded as object, intercepted);
+      return intercepted;
+    }
 
     const base = target.constructDefault && typeof loaded === 'function'
       ? interceptProviderClass(target.provider, loaded)

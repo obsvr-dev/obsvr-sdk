@@ -13,6 +13,10 @@ import {
   autoInstrument,
   autoGovernanceStatus,
   interceptProviderNamespace,
+  interceptMcpClientClass,
+  interceptMcpNamespace,
+  interceptOpenAIAgentClass,
+  interceptOpenAIAgentsNamespace,
   isInterceptorInstalled,
   markInterceptorInstalled,
   isInterceptionActive,
@@ -69,6 +73,25 @@ class FakeMaintainedGoogleClient {
       text: `gemini says: ${req.contents}`,
     }),
   };
+}
+
+class FakeMcpClient {
+  calls: string[] = [];
+
+  async callTool(params: { name: string }): Promise<{ content: unknown[] }> {
+    this.calls.push(params.name);
+    return { content: [] };
+  }
+}
+
+class FakeAgent {
+  tools: unknown[];
+  handoffs: unknown[];
+
+  constructor(config: { tools?: unknown[]; handoffs?: unknown[] }) {
+    this.tools = config.tools ?? [];
+    this.handoffs = config.handoffs ?? [];
+  }
 }
 
 const SSN_PROMPT = {
@@ -278,5 +301,93 @@ describe('auto/autoInstrument', () => {
       boundProviders: ['anthropic'],
       active: true,
     });
+  });
+});
+
+describe('auto/MCP construction interception', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+    _resetInterception();
+  });
+
+  test('a denied tool never reaches a Client constructed after init', async () => {
+    const Intercepted = interceptMcpClientClass(FakeMcpClient);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      mcpToolPolicy: { deniedTools: ['send_contract'] },
+    });
+    const client = new Intercepted();
+
+    await expect(client.callTool({ name: 'send_contract' })).rejects.toThrow();
+    expect(client.calls).toEqual([]);
+  });
+
+  test('a Client constructed before init becomes governed after init', async () => {
+    const Intercepted = interceptMcpClientClass(FakeMcpClient);
+    const client = new Intercepted();
+
+    await client.callTool({ name: 'read_contract' });
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      mcpToolPolicy: { deniedTools: ['send_contract'] },
+    });
+    await expect(client.callTool({ name: 'send_contract' })).rejects.toThrow();
+
+    expect(client.calls).toEqual(['read_contract']);
+  });
+
+  test('the CommonJS namespace is proxied without mutation', () => {
+    const namespace = { Client: FakeMcpClient, helper: 'unchanged' };
+    const intercepted = interceptMcpNamespace(namespace);
+
+    expect(intercepted).not.toBe(namespace);
+    expect(namespace.Client).toBe(FakeMcpClient);
+    expect(intercepted.Client).not.toBe(FakeMcpClient);
+    expect(intercepted.helper).toBe('unchanged');
+  });
+});
+
+describe('auto/OpenAI Agents construction interception', () => {
+  beforeEach(() => {
+    _reset();
+    _resetSender();
+    _resetInterception();
+  });
+
+  test('new Agents receive a pre-execution function-tool guardrail', async () => {
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      agent_policy: { deniedTools: ['send_contract'] },
+    } as any);
+    const tool = {
+      type: 'function',
+      name: 'send_contract',
+      inputGuardrails: [] as Array<{ name: string; run: (data: unknown) => Promise<any> }>,
+    };
+    const agent = new Intercepted({ tools: [tool] });
+
+    expect(tool.inputGuardrails.map((guardrail) => guardrail.name)).toContain(
+      'obsvr_tool_gate',
+    );
+    const verdict = await tool.inputGuardrails[0].run({
+      toolCall: { name: 'send_contract', callId: 'call-1' },
+    });
+    expect(verdict.behavior.type).toBe('rejectContent');
+    expect(agent.tools).toContain(tool);
+  });
+
+  test('the CommonJS package namespace is proxied without mutation', () => {
+    const namespace = { Agent: FakeAgent, helper: 'unchanged' };
+    const intercepted = interceptOpenAIAgentsNamespace(namespace);
+
+    expect(intercepted).not.toBe(namespace);
+    expect(namespace.Agent).toBe(FakeAgent);
+    expect(intercepted.Agent).not.toBe(FakeAgent);
+    expect(intercepted.helper).toBe('unchanged');
   });
 });
