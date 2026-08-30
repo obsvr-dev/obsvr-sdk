@@ -6,11 +6,12 @@ import inspect
 import types
 
 import pytest
-import vertexai
-from google.auth.credentials import AnonymousCredentials
-
 import obsvr
 from obsvr.integrations import vertex as WRAP_MODULE
+
+vertexai = pytest.importorskip("vertexai")
+google_auth = pytest.importorskip("google.auth.credentials")
+AnonymousCredentials = google_auth.AnonymousCredentials
 
 try:
     vertex_models = importlib.import_module("vertexai.generative_models")
