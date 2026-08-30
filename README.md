@@ -210,6 +210,38 @@ obsvr-run app.py
 
 See the [TypeScript](sdk-typescript/README.md) and [Python](sdk-python/README.md) package guides for every supported method and configuration option.
 
+### Govern application actions
+
+Provider adapters cannot know about business actions such as sending a
+contract. `governFn` and Python `@govern` put the same pre-execution tool-policy
+kernel around any application callable:
+
+```typescript
+const sendContract = obsvr.governFn(rawSendContract, {
+  name: "contract.send",
+  consequence: "external_write",
+});
+
+await sendContract(contractId);
+```
+
+```python
+@obsvr.govern(name="contract.send", consequence="external_write")
+def send_contract(contract_id):
+    return raw_send_contract(contract_id)
+```
+
+| Verdict | Function behavior |
+| --- | --- |
+| allow | the original callable runs |
+| block | the callable is not entered |
+| redact | the callable receives rewritten arguments; an unprovable rewrite fails closed |
+
+TypeScript returns an async function because the shared policy pipeline may
+wait for approval or an external backend. Python preserves the original sync
+or async shape. A retained reference to the raw function remains a bypass and
+is listed in the `govern_fn` coverage binding.
+
 ## Policy engine
 
 Obsvr uses deterministic code in the decision path—never a second LLM. Rules cover keywords, bounded regex, topic allow/deny, model and environment gates, namespace and tenant isolation, destructive operations, source grounding, quotas, action gates, and parsed protocol facets.

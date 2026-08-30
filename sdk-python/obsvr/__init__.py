@@ -70,6 +70,7 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 # TypeScript twin (`import { obsvrGovernTool } from "@obsvr/sdk"`): the two
 # SDKs must not diverge on the entry point for the same primitive.
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
+from .govern_fn import govern, govern_fn  # noqa: F401
 from .span_attributes import SPAN_ATTR  # noqa: F401
 from .otel_mirror import (  # noqa: F401
     correlate_strict_runtime_checkpoint_v2_1_to_otel,
@@ -215,6 +216,8 @@ __all__ = [
     "load_device_signer",
     "govern_tool",
     "govern_tools",
+    "govern",
+    "govern_fn",
     "integration_bindings",
     "required_binding_failures",
     "assert_required_bindings",

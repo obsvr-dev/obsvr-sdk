@@ -95,6 +95,20 @@ policy-pack hashes, versions, initialization times, and known exclusions.
 under the pinned public key. This proves the process-reported bindings, not
 calls made through a raw alias or outside a documented boundary.
 
+Govern an application-owned action without adapting it to a framework tool:
+
+```python
+@obsvr.govern(name="contract.send", consequence="external_write")
+def send_contract(contract_id):
+    return raw_send_contract(contract_id)
+```
+
+`govern_fn(function, ...)` is the equivalent direct wrapper. Python preserves
+the original sync or async shape. Block occurs before the function is entered;
+redaction changes the arguments it receives or fails closed. The returned
+wrapper is the boundary. A retained raw function alias is not governed and is
+reported as a coverage exclusion.
+
 The same manifest is enforced by direct `obsvr.init(auto=True)`. Production
 direct-init also warns if a supported package was imported first, because a
 constructor or object reference copied before rebinding can remain raw.

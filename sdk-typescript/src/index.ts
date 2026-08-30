@@ -55,6 +55,7 @@ import {
   isGoverningInstance,
 } from "./proxy/instance-guard.js";
 import { SDK_VERSION } from "./constants.js";
+import { governFn as _governFn } from "./governance/govern-fn.js";
 
 // Re-export proxy types
 export type { LLMAuditInitConfig, ObsvrConfig, WrapOptions, AuditEvent, AuditFields, AgentPolicy } from "./proxy/types.js";
@@ -102,6 +103,8 @@ export type {
 export { useSubject, getCurrentSubject, parseSubject } from "./proxy/subject.js";
 export type { Subject } from "./proxy/subject.js";
 export { verifyAuditChain } from "./governance/verify-chain.js";
+export { governFn } from "./governance/govern-fn.js";
+export type { GovernedFunction, GovernFnOptions } from "./governance/govern-fn.js";
 // Gap markers: a verified chain can still declare events the bounded sender
 // queue dropped. `verifyAuditChain` totals them; this identifies which events
 // carry the claim, for callers processing their own exports.
@@ -479,6 +482,9 @@ export const obsvr = {
     if (!isGoverningCopy()) return client;
     return wrap(client, options);
   },
+
+  /** Govern an application-owned action or workflow function. */
+  governFn: _governFn,
 
   /**
    * Run a function inside a named span scope. Governed calls made within it

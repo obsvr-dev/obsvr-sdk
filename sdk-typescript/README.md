@@ -79,6 +79,22 @@ const result = await gemini.models.generateContent({
 });
 ```
 
+Govern application-owned side effects with the same pre-call policy kernel:
+
+```typescript
+const sendContract = obsvr.governFn(rawSendContract, {
+  name: 'contract.send',
+  consequence: 'external_write',
+});
+
+await sendContract(contractId);
+```
+
+`governFn` always returns an async function. Block occurs before the original
+function is entered; redaction changes the arguments it receives or fails
+closed. The returned wrapper is the boundary. A retained raw function alias is
+not governed and is reported as a coverage exclusion.
+
 **Which Gemini SDK.** Google ships two, and obsvr integrates both:
 
 | Package | State |

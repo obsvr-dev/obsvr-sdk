@@ -247,11 +247,17 @@ or fails closed when the SDK cannot prove the rewrite was applied.
 | LangChain model callbacks | enforcing model-start boundary; redaction fails closed because callbacks cannot rewrite requests | same |
 | LlamaIndex model callbacks | tracing is observe-only; `obsvrGovernLlamaIndexLLM` enforces `chat`/`complete` | enforcing model-start boundary; redaction fails closed |
 | OpenAI Agents model callbacks | tracing is observe-only; `governModel` / `governModelProvider` enforce | tracing is observe-only; `govern_model` / `govern_model_provider` enforce |
+| Application callable | `governFn`; async wrapper around sync or async callable | `govern_fn` / `@govern`; preserves sync or async shape |
 
 Batch APIs, opaque provider-hosted tools, and methods not named by the SDK's
 coverage tables remain outside this ordinary boundary. A later runner turn can
 be blocked before its request, but an earlier allowed tool side effect cannot be
 rolled back.
+
+The application-callable row reuses the ordinary tool-policy kernel. Policy
+block has zero calls to the wrapped function, and redaction reaches its actual
+arguments or fails closed. Only the returned wrapper is covered; raw aliases
+remain explicit exclusions.
 
 ## Strict profile 2.1 direct-provider boundary
 

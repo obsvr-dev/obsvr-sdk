@@ -117,6 +117,12 @@ inside the signed body, but the verifier intentionally returns their exact
 values rather than consulting wall-clock time; the deployment controller owns
 its clock and expiry policy.
 
+`governFn` / `govern_fn` / `@govern` is an enforcing callable boundary backed
+by the existing tool-policy kernel. A deny has zero calls to the wrapped
+function, and a redact verdict changes the arguments that function receives or
+fails closed. It does not revoke any other reference to the original callable;
+coverage reports therefore record retained raw aliases as an exclusion.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.
