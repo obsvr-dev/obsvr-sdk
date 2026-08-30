@@ -388,6 +388,7 @@ type RebindTarget = {
   instance: object;
   options: WrapOptions;
   declaredProvider?: CanonicalProvider;
+  sealedMethods?: Map<string, Function>;
 };
 
 /** True when another front-door call would rebuild the exact same proxy. */
@@ -475,6 +476,8 @@ export type PathContext = {
   providerAttribution: Record<string, unknown>;
   /** Optional fallback supplied by a named compatibility wrapper. */
   declaredProvider?: CanonicalProvider;
+  /** Original callables retained when sealRaw revokes the raw handle. */
+  sealedMethods?: Map<string, Function>;
 };
 
 /**
@@ -3714,6 +3717,100 @@ function resolvesToFunction(client: object, path: string): boolean {
   return typeof cur === "function";
 }
 
+type SealMutation = {
+  receiver: object;
+  property: string;
+  descriptor?: PropertyDescriptor;
+};
+
+/**
+ * Revoke governed methods on the exact client graph handed to wrap().
+ *
+ * The governed proxy reads the retained callables from the returned map, while
+ * the caller's raw object sees refusal stubs. A function reference copied before
+ * wrap() and a different instance remain outside this operation by construction.
+ */
+function sealGovernedMethods(client: object): Map<string, Function> {
+  const retained = new Map<string, Function>();
+  const targets = new Map<object, Set<string>>();
+
+  for (const path of governedMethodPaths()) {
+    const segments = path.split(".");
+    const property = segments.pop()!;
+    let receiver: unknown = client;
+    try {
+      for (const segment of segments) {
+        receiver = (receiver as Record<string, unknown>)[segment];
+      }
+      if (receiver === null ||
+          (typeof receiver !== "object" && typeof receiver !== "function")) {
+        continue;
+      }
+      const original = Reflect.get(receiver as object, property);
+      if (typeof original !== "function") continue;
+      retained.set(path, original);
+      let properties = targets.get(receiver as object);
+      if (!properties) {
+        properties = new Set();
+        targets.set(receiver as object, properties);
+      }
+      properties.add(property);
+    } catch {
+      // A lazy resource that cannot be read is not a sealable surface.
+    }
+  }
+
+  const applied: SealMutation[] = [];
+  try {
+    for (const [receiver, properties] of targets) {
+      for (const property of properties) {
+        const descriptor = Object.getOwnPropertyDescriptor(receiver, property);
+        const blocker = function obsvrSealedRawMethod(): never {
+          throw new Error(
+            `[obsvr] raw method ${property} is sealed; use the client returned by obsvr.wrap()`,
+          );
+        };
+        if (descriptor) {
+          if ("value" in descriptor && descriptor.writable) {
+            Object.defineProperty(receiver, property, { ...descriptor, value: blocker });
+          } else if (descriptor.configurable) {
+            Object.defineProperty(receiver, property, {
+              configurable: true,
+              enumerable: descriptor.enumerable,
+              writable: true,
+              value: blocker,
+            });
+          } else {
+            throw new TypeError(`${property} is not replaceable`);
+          }
+        } else {
+          if (!Object.isExtensible(receiver)) {
+            throw new TypeError(`${property} belongs to a non-extensible object`);
+          }
+          Object.defineProperty(receiver, property, {
+            configurable: true,
+            enumerable: false,
+            writable: true,
+            value: blocker,
+          });
+        }
+        applied.push({ receiver, property, descriptor });
+      }
+    }
+  } catch (error) {
+    for (const mutation of applied.reverse()) {
+      if (mutation.descriptor) {
+        Object.defineProperty(mutation.receiver, mutation.property, mutation.descriptor);
+      } else {
+        Reflect.deleteProperty(mutation.receiver, mutation.property);
+      }
+    }
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`[obsvr] sealRaw could not revoke every governed method: ${detail}`);
+  }
+  return retained;
+}
+
 /** Clients already reported. Weak, so holding one here cannot leak a client. */
 let ungovernedReported = new WeakSet<object>();
 
@@ -3809,6 +3906,7 @@ function createRecursiveProxy<T extends object>(
               instance: obj,
               options: ctx.options,
               declaredProvider: ctx.declaredProvider,
+              sealedMethods: ctx.sealedMethods,
             } as RebindTarget)
           : undefined;
       }
@@ -3818,7 +3916,8 @@ function createRecursiveProxy<T extends object>(
         return Reflect.get(obj, prop);
       }
 
-      const value = Reflect.get(obj, prop);
+      const newPath = [...ctx.path, prop];
+      const value = ctx.sealedMethods?.get(newPath.join(".")) ?? Reflect.get(obj, prop);
 
       // Non-existent or primitive values pass through
       if (value === undefined || value === null) {
@@ -3826,7 +3925,6 @@ function createRecursiveProxy<T extends object>(
       }
 
       // Track the path
-      const newPath = [...ctx.path, prop];
       const stepCtx = () => atPath(ctx, newPath);
 
       // If it's a function
@@ -4003,6 +4101,7 @@ export function wrapWithProviderHint<T extends object>(
         { ...rebind.options, ...options },
         config,
         resolvedProvider,
+        rebind.sealedMethods,
       ) as T;
     }
     if (options.strict_receipt_v2_1 && !rebind) {
@@ -4026,6 +4125,7 @@ function governClient<T extends object>(
   options: WrapOptions,
   config: ResolvedConfig,
   declaredProvider?: CanonicalProvider,
+  existingSealedMethods?: Map<string, Function>,
 ): T {
   // The client's SHAPE, which selects the extractors.
   const provider = detectProvider(client);
@@ -4043,6 +4143,8 @@ function governClient<T extends object>(
   );
 
   // Create context with provider (V2)
+  const sealedMethods = existingSealedMethods ??
+    (options.sealRaw === true ? sealGovernedMethods(client) : undefined);
   const ctx: PathContext = {
     path: [],
     options,
@@ -4070,6 +4172,7 @@ function governClient<T extends object>(
     recordedProvider,
     providerAttribution,
     declaredProvider,
+    sealedMethods,
   };
 
   // COVERAGE, decided here rather than discovered from missing traffic. The

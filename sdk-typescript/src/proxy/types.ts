@@ -639,6 +639,14 @@ export interface WrapOptions {
   strict_receipt_v2_1?: StrictProviderBoundaryV21Capability;
 
   /**
+   * Replace governed methods on the exact raw instance passed to `wrap()` with
+   * refusal stubs. The returned governed proxy retains the original callables.
+   * Other instances and method references copied before wrapping are unchanged.
+   * @default false
+   */
+  sealRaw?: boolean;
+
+  /**
    * Customer ID to associate with this client's events
    */
   customer_id?: string;

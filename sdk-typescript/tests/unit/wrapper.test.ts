@@ -22,6 +22,53 @@ describe('wrap', () => {
     expect(wrapped).toBe(mockClient);
   });
 
+  it('sealRaw revokes governed methods only on the exact raw handle', async () => {
+    init({ api_key: 'test', sample_rate: 0 });
+    const create = jest.fn(async (_request: unknown) => ({ choices: [] }));
+    const ping = jest.fn(() => 'pong');
+    const raw = { chat: { completions: { create, ping } } };
+    const wrapped = wrap(raw, { sealRaw: true });
+
+    expect(() => raw.chat.completions.create({})).toThrow(/raw method create is sealed/);
+    expect(raw.chat.completions.ping()).toBe('pong');
+    await wrapped.chat.completions.create({ model: 'gpt-4o', messages: [] });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('sealRaw does not revoke a callable copied before wrapping', async () => {
+    init({ api_key: 'test', sample_rate: 0 });
+    const create = jest.fn(async (_request: unknown) => ({ choices: [] }));
+    const raw = { chat: { completions: { create } } };
+    const copied = raw.chat.completions.create;
+    wrap(raw, { sealRaw: true });
+
+    await copied({ model: 'gpt-4o', messages: [] });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves retained methods when a sealed wrapper is rebound', async () => {
+    init({ api_key: 'test', sample_rate: 0 });
+    const create = jest.fn(async (_request: unknown) => ({ choices: [] }));
+    const raw = { chat: { completions: { create } } };
+    const first = wrap(raw, { sealRaw: true });
+    const rebound = wrap(first, { user_id: 'user-1' });
+
+    await rebound.chat.completions.create({ model: 'gpt-4o', messages: [] });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back earlier revocations when any governed method cannot be sealed', () => {
+    init({ api_key: 'test', sample_rate: 0 });
+    const create = jest.fn(async (_request: unknown) => ({ choices: [] }));
+    const lockedMessages = Object.preventExtensions(
+      Object.create({ create: jest.fn() }) as { create: () => void },
+    );
+    const raw = { chat: { completions: { create } }, messages: lockedMessages };
+
+    expect(() => wrap(raw, { sealRaw: true })).toThrow(/could not revoke every governed method/);
+    expect(raw.chat.completions.create).toBe(create);
+  });
+
   it('should preserve non-function properties', () => {
     init({ api_key: 'test' });
     const mockClient = {

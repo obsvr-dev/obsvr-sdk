@@ -322,6 +322,86 @@ class TestWrapBasics:
         client = FakeOpenAI()
         assert obsvr.wrap(client) is client
 
+    def test_seal_raw_revokes_only_governed_methods_on_the_exact_handle(self):
+        _init(sample_rate=0)
+        calls = []
+
+        class Completions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return {"choices": []}
+
+            def ping(self):
+                return "pong"
+
+        raw = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=Completions())
+        )
+        wrapped = obsvr.wrap(raw, seal_raw=True)
+
+        with pytest.raises(RuntimeError, match="raw method create is sealed"):
+            raw.chat.completions.create(model="gpt-4o", messages=[])
+        assert raw.chat.completions.ping() == "pong"
+        wrapped.chat.completions.create(model="gpt-4o", messages=[])
+        assert len(calls) == 1
+
+    def test_seal_raw_cannot_revoke_a_callable_copied_before_wrap(self):
+        _init(sample_rate=0)
+        calls = []
+
+        class Completions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return {"choices": []}
+
+        raw = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=Completions())
+        )
+        copied = raw.chat.completions.create
+        obsvr.wrap(raw, seal_raw=True)
+        copied(model="gpt-4o", messages=[])
+        assert len(calls) == 1
+
+    def test_sealed_wrapper_can_be_rebound_without_losing_retained_methods(self):
+        _init(sample_rate=0)
+        calls = []
+
+        class Completions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return {"choices": []}
+
+        raw = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=Completions())
+        )
+        first = obsvr.wrap(raw, seal_raw=True)
+        rebound = obsvr.wrap(first, user_id="user-1")
+        rebound.chat.completions.create(model="gpt-4o", messages=[])
+        assert len(calls) == 1
+
+    def test_seal_raw_rolls_back_when_any_governed_method_rejects_replacement(self):
+        _init(sample_rate=0)
+
+        class Completions:
+            def create(self, **_kwargs):
+                return {"choices": []}
+
+        class LockedMessages:
+            __slots__ = ()
+
+            def create(self, **_kwargs):
+                return {"content": []}
+
+        raw = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=Completions()),
+            messages=LockedMessages(),
+        )
+        original = raw.chat.completions.create
+
+        with pytest.raises(RuntimeError, match="could not revoke every governed method"):
+            obsvr.wrap(raw, seal_raw=True)
+        assert raw.chat.completions.create == original
+
     def test_non_audited_attributes_pass_through(self):
         _init()
         client = obsvr.wrap(FakeOpenAI())
