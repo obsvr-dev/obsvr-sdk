@@ -373,6 +373,15 @@ class TestRegistryGate:
         # Closed remediation/retry document canonicalizer. It validates and
         # hashes evidence references but never decides whether an action runs.
         "remediation_v1.py",
+        # Deployment/operator contracts. These validate, hash, sign, summarize,
+        # or project already supplied records. They are not invoked as detector
+        # layers on a governed call; signal failure disposition is data carried
+        # to the deterministic kernel, not an exception policy owned here.
+        "policy_lifecycle_v1.py",
+        "workload_registry_v1.py",
+        "policy_template_v1.py",
+        "control_analytics_v1.py",
+        "signal_interface_v1.py",
         "verify_chain.py",
         "wrap.py",
     }
