@@ -137,6 +137,56 @@ def test_converse_redacts_input_before_send(sent):
     assert "[REDACTED_EMAIL]" in sent_text
 
 
+def test_converse_nested_tool_result_block_stops_execution(sent):
+    _init(pii_policy={"rules": {"ssn": "block"}})
+    fake = FakeBedrockClient()
+    client = wrap_bedrock(fake)
+    request = _converse_kwargs("safe")
+    request["messages"][0]["content"] = [{
+        "toolResult": {
+            "toolUseId": "tool-1",
+            "content": [{"text": "SSN 123-45-6789"}],
+        }
+    }]
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        client.converse(**request)
+
+    assert fake.converse_calls == []
+
+
+def test_converse_nested_tool_result_redacts_before_send(sent):
+    _init(pii_policy={"rules": {"email": "redact"}})
+    fake = FakeBedrockClient()
+    client = wrap_bedrock(fake)
+    request = _converse_kwargs("safe")
+    request["messages"][0]["content"] = [{
+        "toolResult": {
+            "toolUseId": "tool-1",
+            "content": [{"text": "Contact secret@example.com"}],
+        }
+    }]
+
+    client.converse(**request)
+
+    wire = str(fake.converse_calls[0])
+    assert "secret@example.com" not in wire
+    assert "[REDACTED_EMAIL]" in wire
+
+
+def test_converse_system_block_stops_execution_with_clean_user(sent):
+    _init(pii_policy={"rules": {"ssn": "block"}})
+    fake = FakeBedrockClient()
+    client = wrap_bedrock(fake)
+    request = _converse_kwargs("safe request")
+    request["system"] = [{"text": "SSN 123-45-6789"}]
+
+    with pytest.raises(RuntimeError, match="blocked by policy"):
+        client.converse(**request)
+
+    assert fake.converse_calls == []
+
+
 def test_converse_post_call_redacts_output(sent):
     resp = copy.deepcopy(CONVERSE_RESPONSE)
     resp["output"]["message"]["content"][0]["text"] = "the ssn is 123-45-6789"
