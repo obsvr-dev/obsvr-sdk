@@ -25,6 +25,8 @@ import { readTokenUsage } from "./token-usage.js";
 export interface GeminiPart {
   text?: string;
   inlineData?: unknown;
+  functionCall?: { name?: string; args?: unknown };
+  functionResponse?: { name?: string; response?: unknown };
 }
 
 /**
@@ -62,7 +64,12 @@ export interface GeminiRequestObject {
  * Google Gemini generateContent request - either a plain string prompt
  * or a structured request object.
  */
-export type GeminiRequest = string | GeminiRequestObject;
+export type GeminiRequest =
+  | string
+  | GeminiPart
+  | GeminiContent
+  | Array<string | GeminiPart | GeminiContent>
+  | GeminiRequestObject;
 
 /**
  * Google Gemini generateContent response (bare GenerateContentResponse shape)
@@ -121,14 +128,44 @@ function contentText(value: unknown): string {
   const record = value as Record<string, unknown>;
   if (typeof record.text === "string") return record.text;
   if (Array.isArray(record.parts)) return contentText(record.parts);
+  const structured: string[] = [];
+  const appendLeaves = (item: unknown): void => {
+    if (typeof item === "string") structured.push(item);
+    else if (Array.isArray(item)) item.forEach(appendLeaves);
+    else if (item && typeof item === "object") {
+      Object.values(item as Record<string, unknown>).forEach(appendLeaves);
+    }
+  };
+  const functionResponse = record.functionResponse as Record<string, unknown> | undefined;
+  const functionCall = record.functionCall as Record<string, unknown> | undefined;
+  appendLeaves(functionResponse?.response);
+  appendLeaves(functionCall?.args);
+  if (structured.length > 0) return structured.join("\n");
   return "";
 }
 
 /** Newest user turn, including the maintained SDK's string/part shorthand. */
 export function extractLastUserText(request: GeminiRequest): string {
   if (typeof request === "string") return request;
-  if (request?.message !== undefined) return contentText(request.message);
-  const contents = request?.contents;
+  if (Array.isArray(request)) {
+    for (let i = request.length - 1; i >= 0; i--) {
+      const entry = request[i];
+      if (
+        entry &&
+        typeof entry === "object" &&
+        "role" in entry &&
+        (entry as GeminiContent).role !== "user"
+      ) {
+        continue;
+      }
+      const text = contentText(entry);
+      if (text) return text;
+    }
+    return "";
+  }
+  const record = request as GeminiRequestObject;
+  if (record.message !== undefined) return contentText(record.message);
+  const contents = record.contents;
   if (!Array.isArray(contents)) return contentText(contents);
   for (let i = contents.length - 1; i >= 0; i--) {
     const entry = contents[i];
@@ -161,19 +198,25 @@ export function extractPrompt(request: GeminiRequest): string {
   if (typeof request === "string") {
     return request;
   }
+  if (Array.isArray(request)) return contentText(request);
+
+  const record = request as GeminiRequestObject;
+  if (!("contents" in record) && !("message" in record) && !("systemInstruction" in record) && !("config" in record)) {
+    return contentText(record);
+  }
 
   const parts: string[] = [];
 
   const systemText = contentText(
-    request.systemInstruction ?? request.config?.systemInstruction,
+    record.systemInstruction ?? record.config?.systemInstruction,
   );
   if (systemText) parts.push(`system: ${systemText}`);
 
-  const messageText = contentText(request.message);
+  const messageText = contentText(record.message);
   if (messageText) parts.push(messageText);
 
-  if (Array.isArray(request.contents)) {
-    for (const content of request.contents) {
+  if (Array.isArray(record.contents)) {
+    for (const content of record.contents) {
       const text = contentText(content);
       if (!text) continue;
       const role =
@@ -183,7 +226,7 @@ export function extractPrompt(request: GeminiRequest): string {
       parts.push(role ? `${role}: ${text}` : text);
     }
   } else {
-    const text = contentText(request.contents);
+    const text = contentText(record.contents);
     if (text) parts.push(text);
   }
 
@@ -232,13 +275,15 @@ export function extractResponse(response: GeminiResponse): string {
  * after stripping the "models/" prefix. Otherwise return "gemini".
  */
 export function extractModel(request: GeminiRequest, modelHint?: string): string {
+  const record = request && typeof request === "object" && !Array.isArray(request)
+    ? request as GeminiRequestObject
+    : undefined;
   if (
-    request &&
-    typeof request === "object" &&
-    typeof request.model === "string" &&
-    request.model.length > 0
+    record &&
+    typeof record.model === "string" &&
+    record.model.length > 0
   ) {
-    return request.model.replace(/^models\//, "");
+    return record.model.replace(/^models\//, "");
   }
   if (modelHint) return modelHint.replace(/^models\//, "");
   return "gemini";

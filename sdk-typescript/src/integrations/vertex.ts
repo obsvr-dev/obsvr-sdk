@@ -61,7 +61,13 @@ import type { ResolvedConfig } from "../proxy/types.js";
 const PROVIDER = "vertex_ai" as const;
 const WRAPPED_MARKER = Symbol("obsvr-vertex-wrapped");
 
-const TARGET_METHODS = new Set(["generateContent", "generateContentStream"]);
+const TARGET_METHODS = new Set([
+  "generateContent",
+  "generateContentStream",
+  "sendMessage",
+  "sendMessageStream",
+]);
+const FACTORY_METHODS = new Set(["startChat"]);
 
 interface VertexResult {
   response?: GeminiResponse;
@@ -107,6 +113,14 @@ export function wrapVertexAI<T extends object>(
 
       const value = Reflect.get(target, prop);
       if (typeof value !== "function") return value;
+      if (FACTORY_METHODS.has(prop)) {
+        return function governedFactory(...args: unknown[]): unknown {
+          const result = value.apply(target, args);
+          return result && typeof result === "object"
+            ? wrapVertexAI(result as object, opts)
+            : result;
+        };
+      }
       if (!TARGET_METHODS.has(prop)) return value.bind(target);
 
       return createAuditedMethod(value, target, prop, config, opts);
@@ -119,8 +133,16 @@ export function wrapVertexAI<T extends object>(
 }
 
 function modelHintOf(target: object): string | undefined {
-  const m = (target as Record<string, unknown>).model;
-  return typeof m === "string" ? m : undefined;
+  const record = target as Record<string, unknown>;
+  const nested = record.model && typeof record.model === "object"
+    ? record.model as Record<string, unknown>
+    : undefined;
+  for (const value of [record.model, nested?.model, record.resourcePath]) {
+    if (typeof value !== "string") continue;
+    const marker = "/models/";
+    return value.includes(marker) ? value.slice(value.lastIndexOf(marker) + marker.length) : value;
+  }
+  return undefined;
 }
 
 /**
@@ -133,8 +155,44 @@ function extractResolvedModel(response: unknown): string | undefined {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
 }
 
+function stringLeavesText(value: unknown): string {
+  const parts: string[] = [];
+  const visit = (item: unknown): void => {
+    if (typeof item === "string") parts.push(item);
+    else if (Array.isArray(item)) item.forEach(visit);
+    else if (item && typeof item === "object") {
+      Object.values(item as Record<string, unknown>).forEach(visit);
+    }
+  };
+  visit(value);
+  return parts.join("\n");
+}
+
+function vertexCachedContextText(record: Record<string, unknown>): string {
+  const nestedModel = record.model && typeof record.model === "object"
+    ? record.model as Record<string, unknown>
+    : undefined;
+  for (const cached of [record.cachedContent, nestedModel?.cachedContent]) {
+    if (cached === undefined || cached === null) continue;
+    if (typeof cached === "object") {
+      const item = cached as Record<string, unknown>;
+      const text = extractPrompt({
+        contents: item.contents as GeminiRequest,
+        systemInstruction: item.systemInstruction,
+      } as GeminiRequest);
+      if (text) return text;
+    }
+    throw new Error("[obsvr] Vertex cached context is opaque and cannot be verified");
+  }
+  return "";
+}
+
 function extractCompletePrompt(request: GeminiRequest, target: object): string {
-  const configuredSystem = (target as Record<string, unknown>).systemInstruction;
+  const record = target as Record<string, unknown>;
+  const nestedModel = record.model && typeof record.model === "object"
+    ? record.model as Record<string, unknown>
+    : undefined;
+  const configuredSystem = record.systemInstruction ?? nestedModel?.systemInstruction;
   const parts: string[] = [];
   if (configuredSystem !== undefined) {
     const systemPrompt = extractPrompt({
@@ -143,9 +201,52 @@ function extractCompletePrompt(request: GeminiRequest, target: object): string {
     } as GeminiRequest);
     if (systemPrompt) parts.push(systemPrompt);
   }
+  if (record.historyInternal !== undefined) {
+    const historyPrompt = extractPrompt({ contents: record.historyInternal } as GeminiRequest);
+    if (historyPrompt) parts.push(historyPrompt);
+  }
+  const cached = vertexCachedContextText(record);
+  if (cached) parts.push(`cached: ${cached}`);
+  for (const tools of [record.tools, nestedModel?.tools]) {
+    const text = stringLeavesText(tools);
+    if (text) parts.push(`tools: ${text}`);
+  }
   const requestPrompt = extractPrompt(request);
   if (requestPrompt) parts.push(requestPrompt);
   return parts.join("\n");
+}
+
+function redactVertexRetainedHistory(target: object): void {
+  const record = target as Record<string, unknown>;
+  const nestedModel = record.model && typeof record.model === "object"
+    ? record.model as Record<string, unknown>
+    : undefined;
+  if (record.cachedContent !== undefined || nestedModel?.cachedContent !== undefined) {
+    throw new TypeError("Vertex cached context cannot be redacted in place");
+  }
+  if (record.historyInternal !== undefined) {
+    record.historyInternal = redactVertexContent(record.historyInternal);
+  }
+  if (
+    record.systemInstruction !== undefined
+    || nestedModel?.systemInstruction !== undefined
+    || record.tools !== undefined
+    || nestedModel?.tools !== undefined
+  ) {
+    throw new TypeError("Vertex model context cannot be redacted without mutation");
+  }
+}
+
+function redactVertexStringLeaves(value: unknown): unknown {
+  if (typeof value === "string") return redactBuiltinPii(value);
+  if (Array.isArray(value)) return value.map(redactVertexStringLeaves);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      redactVertexStringLeaves(item),
+    ]),
+  );
 }
 
 function redactVertexContent(value: unknown): unknown {
@@ -159,18 +260,44 @@ function redactVertexContent(value: unknown): unknown {
   if (Array.isArray(item.parts)) {
     return { ...item, parts: item.parts.map(redactVertexContent) };
   }
+  if (item.functionResponse && typeof item.functionResponse === "object") {
+    const response = item.functionResponse as Record<string, unknown>;
+    return {
+      ...item,
+      functionResponse: {
+        ...response,
+        response: redactVertexStringLeaves(response.response),
+      },
+    };
+  }
+  if (item.functionCall && typeof item.functionCall === "object") {
+    const call = item.functionCall as Record<string, unknown>;
+    return {
+      ...item,
+      functionCall: {
+        ...call,
+        args: redactVertexStringLeaves(call.args),
+      },
+    };
+  }
   return value;
 }
 
 function redactVertexRequest(request: GeminiRequest): GeminiRequest {
-  if (typeof request === "string") return redactBuiltinPii(request);
-  const out: Record<string, unknown> = { ...request };
-  out.contents = redactVertexContent(request.contents);
-  if ("systemInstruction" in request) {
-    out.systemInstruction = redactVertexContent(request.systemInstruction);
+  if (typeof request === "string" || Array.isArray(request)) {
+    return redactVertexContent(request) as GeminiRequest;
   }
-  if (request.config && typeof request.config === "object") {
-    const config = request.config as Record<string, unknown>;
+  const record = request as Record<string, unknown>;
+  if (!("contents" in record) && !("systemInstruction" in record) && !("config" in record)) {
+    return redactVertexContent(request) as GeminiRequest;
+  }
+  const out: Record<string, unknown> = { ...record };
+  if ("contents" in record) out.contents = redactVertexContent(record.contents);
+  if ("systemInstruction" in record) {
+    out.systemInstruction = redactVertexContent(record.systemInstruction);
+  }
+  if (record.config && typeof record.config === "object") {
+    const config = record.config as Record<string, unknown>;
     out.config = "systemInstruction" in config
       ? {
           ...config,
@@ -188,10 +315,8 @@ function createAuditedMethod(
   config: ResolvedConfig,
   opts: IntegrationOptions,
 ): Function {
-  const isStream = methodName === "generateContentStream";
-  const operation = isStream
-    ? "generateContentStream"
-    : "generateContent";
+  const isStream = methodName === "generateContentStream" || methodName === "sendMessageStream";
+  const operation = methodName;
 
   return async function auditedGenerate(
     ...args: unknown[]
@@ -249,6 +374,7 @@ function createAuditedMethod(
       // the call rather than forwarding the content it was told to remove.
       const notRedacted = applyOutboundRedaction(() => {
         cleaned_args[0] = redactVertexRequest(request as GeminiRequest);
+        redactVertexRetainedHistory(target);
         assertRedactionApplied(
           extractCompletePrompt(cleaned_args[0] as GeminiRequest, target),
           policy.compliance,

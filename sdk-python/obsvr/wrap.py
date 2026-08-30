@@ -282,6 +282,8 @@ def _detect_provider(client: Any) -> str:
         return "openai"
     if hasattr(client, "generate_content"):
         return "google"
+    if hasattr(client, "send_message"):
+        return "google"
     models = getattr(client, "models", None)
     if models is not None and hasattr(models, "generate_content"):
         return "google"
@@ -421,6 +423,11 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
         text = _google_content_text(contents)
         if text:
             parts.append(text)
+    content = kwargs.get("content")
+    if provider == "google" and content is not None:
+        text = _google_content_text(content)
+        if text:
+            parts.append(text)
     message = kwargs.get("message")
     if message is not None:
         text = _google_content_text(message)
@@ -436,73 +443,154 @@ def _extract_prompt_text(provider: str, args: tuple, kwargs: dict) -> str:
     return "\n".join(parts)
 
 
+def _google_context_carriers(target: Any) -> List[Any]:
+    carriers: List[Any] = []
+    for candidate in (
+        target,
+        getattr(target, "_model", None),
+        getattr(target, "model", None),
+    ):
+        if candidate is not None and all(candidate is not item for item in carriers):
+            carriers.append(candidate)
+    return carriers
+
+
+def _google_cached_context_text(target: Any) -> str:
+    for carrier in _google_context_carriers(target):
+        cached = getattr(carrier, "_cached_content", None)
+        if cached is None:
+            cached = getattr(carrier, "cached_content", None)
+        if cached is None:
+            continue
+        raw = getattr(cached, "_raw_cached_content", None) or cached
+        parts: List[str] = []
+        for attr in ("system_instruction", "systemInstruction", "contents"):
+            value = raw.get(attr) if isinstance(raw, dict) else getattr(raw, attr, None)
+            text = _google_content_text(value)
+            if text:
+                parts.append(text)
+        if parts:
+            return "\n".join(parts)
+        raise RuntimeError(
+            "[obsvr] Google cached context is opaque and cannot be verified"
+        )
+    return ""
+
+
 def _google_chat_context_text(target: Any) -> str:
     """Text retained by a chat object and sent with the next message."""
     parts: List[str] = []
     seen = set()
-    for name in ("history", "_history", "_curated_history"):
-        value = getattr(target, name, None)
-        if value is not None and id(value) not in seen:
+    for carrier in _google_context_carriers(target):
+        for name in (
+            "_history",
+            "_curated_history",
+            "_comprehensive_history",
+            "historyInternal",
+        ):
+            value = getattr(carrier, name, None)
+            if value is not None and id(value) not in seen:
+                seen.add(id(value))
+                text = _google_content_text(value)
+                if text:
+                    parts.append(text)
+        for name in ("_system_instruction", "system_instruction", "systemInstruction"):
+            value = getattr(carrier, name, None)
+            if value is not None and id(value) not in seen:
+                seen.add(id(value))
+                text = _google_content_text(value)
+                if text:
+                    parts.append(text)
+        for name in ("_tools", "tools"):
+            value = getattr(carrier, name, None)
+            if value is not None and id(value) not in seen:
+                seen.add(id(value))
+                leaves: List[str] = []
+                to_dict = getattr(value, "to_dict", None)
+                _append_string_leaves(to_dict() if callable(to_dict) else value, leaves)
+                parts.extend(leaves)
+        for name in ("config", "_config", "params"):
+            value = getattr(carrier, name, None)
+            if value is None or id(value) in seen:
+                continue
             seen.add(id(value))
-            text = _google_content_text(value)
-            if text:
-                parts.append(text)
-    for name in ("config", "_config", "params"):
-        value = getattr(target, name, None)
-        if value is None or id(value) in seen:
-            continue
-        seen.add(id(value))
-        system = _google_config_system_instruction(value)
-        if system is not None:
-            text = _google_content_text(system)
-            if text:
-                parts.append(text)
-        history = (
-            value.get("history")
-            if isinstance(value, dict)
-            else getattr(value, "history", None)
-        )
-        if history is not None and id(history) not in seen:
-            seen.add(id(history))
-            text = _google_content_text(history)
-            if text:
-                parts.append(text)
+            system = _google_config_system_instruction(value)
+            if system is not None:
+                text = _google_content_text(system)
+                if text:
+                    parts.append(text)
+            history = (
+                value.get("history")
+                if isinstance(value, dict)
+                else getattr(value, "history", None)
+            )
+            if history is not None and id(history) not in seen:
+                seen.add(id(history))
+                text = _google_content_text(history)
+                if text:
+                    parts.append(text)
+    cached = _google_cached_context_text(target)
+    if cached:
+        parts.append(cached)
     return "\n".join(parts)
 
 
 def _redact_google_chat_context(target: Any, redact_fn: Callable[[str], str]) -> None:
     """Redact chat-owned context without mutating the factory arguments."""
-    for name in ("history", "_history", "_curated_history", "_comprehensive_history"):
-        value = getattr(target, name, None)
-        if value is not None:
-            setattr(target, name, _redact_google_content(value, redact_fn))
-    for name in ("config", "_config"):
-        value = getattr(target, name, None)
-        if value is not None:
-            setattr(target, name, _redact_google_config(value, redact_fn))
-    params = getattr(target, "params", None)
-    if isinstance(params, dict):
-        setattr(
-            target,
-            "params",
-            {
-                **params,
-                **(
-                    {
-                        "systemInstruction": _redact_google_content(
-                            params["systemInstruction"], redact_fn
-                        )
-                    }
-                    if "systemInstruction" in params
-                    else {}
-                ),
-                **(
-                    {"history": _redact_google_content(params["history"], redact_fn)}
-                    if "history" in params
-                    else {}
-                ),
-            },
-        )
+    for carrier in _google_context_carriers(target):
+        if (
+            getattr(carrier, "_cached_content", None) is not None
+            or getattr(carrier, "cached_content", None) is not None
+        ):
+            raise TypeError("Google cached context cannot be redacted in place")
+        for name in (
+            "history",
+            "_history",
+            "_curated_history",
+            "_comprehensive_history",
+            "historyInternal",
+        ):
+            value = getattr(carrier, name, None)
+            if value is not None:
+                setattr(carrier, name, _redact_google_content(value, redact_fn))
+        if all(
+            getattr(carrier, name, None) is None
+            for name in ("_history", "_curated_history", "_comprehensive_history", "historyInternal")
+        ):
+            history = getattr(carrier, "history", None)
+            if history is not None:
+                setattr(carrier, "history", _redact_google_content(history, redact_fn))
+        for name in ("_system_instruction", "system_instruction", "systemInstruction"):
+            value = getattr(carrier, name, None)
+            if value is not None:
+                setattr(carrier, name, _redact_google_content(value, redact_fn))
+        for name in ("config", "_config"):
+            value = getattr(carrier, name, None)
+            if value is not None:
+                setattr(carrier, name, _redact_google_config(value, redact_fn))
+        params = getattr(carrier, "params", None)
+        if isinstance(params, dict):
+            setattr(
+                carrier,
+                "params",
+                {
+                    **params,
+                    **(
+                        {
+                            "systemInstruction": _redact_google_content(
+                                params["systemInstruction"], redact_fn
+                            )
+                        }
+                        if "systemInstruction" in params
+                        else {}
+                    ),
+                    **(
+                        {"history": _redact_google_content(params["history"], redact_fn)}
+                        if "history" in params
+                        else {}
+                    ),
+                },
+            )
 
 
 def _last_user_message(kwargs: dict) -> Optional[str]:
@@ -526,6 +614,8 @@ def _last_user_message(kwargs: dict) -> Optional[str]:
         return kwargs["input"]
     if kwargs.get("contents") is not None:
         return _google_content_text(kwargs["contents"]) or None
+    if kwargs.get("content") is not None:
+        return _google_content_text(kwargs["content"]) or None
     return None
 
 
@@ -577,6 +667,9 @@ def _last_user_message_text(provider: str, args: tuple, kwargs: dict) -> str:
             if role == "user":
                 return _google_content_text(item)
 
+    if provider == "google" and kwargs.get("content") is not None:
+        return _google_content_text(kwargs["content"])
+
     # No identifiable user turn — fall back to the full prompt text.
     return _extract_prompt_text(provider, args, kwargs)
 
@@ -626,7 +719,21 @@ def _google_content_text(value: Any) -> str:
         if isinstance(text, str):
             return text
         parts = value.get("parts")
-        return _google_content_text(parts) if parts is not None else ""
+        if parts is not None:
+            return _google_content_text(parts)
+        out: List[str] = []
+        for key in ("function_response", "functionResponse"):
+            item = value.get(key)
+            if isinstance(item, dict):
+                _append_string_leaves(item.get("response"), out)
+        for key in ("function_call", "functionCall"):
+            item = value.get(key)
+            if isinstance(item, dict):
+                _append_string_leaves(item.get("args"), out)
+        return "\n".join(out)
+    serialized = _google_model_dict(value)
+    if serialized is not None:
+        return _google_content_text(serialized)
     text = getattr(value, "text", None)
     if isinstance(text, str):
         return text
@@ -655,6 +762,21 @@ def _rebuild_google_model(value: Any, updates: Dict[str, Any]) -> Any:
         raise TypeError("Gemini content could not be copied for outbound redaction") from err
 
 
+def _google_model_dict(value: Any) -> Optional[Dict[str, Any]]:
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return to_dict()
+        except Exception:
+            pass
+    for attr in ("_raw_part", "_raw_content"):
+        raw = getattr(value, attr, None)
+        raw_to_dict = getattr(type(raw), "to_dict", None)
+        if raw is not None and callable(raw_to_dict):
+            return raw_to_dict(raw)
+    return None
+
+
 def _redact_google_content(value: Any, redact_fn: Callable[[str], str]) -> Any:
     """Redact every text-bearing google-genai/legacy contents shape into copies."""
     if isinstance(value, str):
@@ -671,7 +793,26 @@ def _redact_google_content(value: Any, redact_fn: Callable[[str], str]) -> Any:
                 **value,
                 "parts": _redact_google_content(value["parts"], redact_fn),
             }
-        return value
+        out = dict(value)
+        for key in ("function_response", "functionResponse"):
+            item = value.get(key)
+            if isinstance(item, dict) and "response" in item:
+                out[key] = {
+                    **item,
+                    "response": _redact_string_leaves(item["response"], redact_fn),
+                }
+        for key in ("function_call", "functionCall"):
+            item = value.get(key)
+            if isinstance(item, dict) and "args" in item:
+                out[key] = {
+                    **item,
+                    "args": _redact_string_leaves(item["args"], redact_fn),
+                }
+        return out
+    from_dict = getattr(value, "from_dict", None)
+    serialized = _google_model_dict(value)
+    if serialized is not None and callable(from_dict):
+        return from_dict(_redact_google_content(serialized, redact_fn))
     text = getattr(value, "text", None)
     if isinstance(text, str):
         return _rebuild_google_model(value, {"text": redact_fn(text)})
@@ -825,6 +966,9 @@ def _redact_messages_in_place(
     contents = kwargs.get("contents")
     if contents is not None:
         kwargs["contents"] = _redact_google_content(contents, redact_fn)
+    content = kwargs.get("content")
+    if provider == "google" and content is not None:
+        kwargs["content"] = _redact_google_content(content, redact_fn)
     if provider == "google" and kwargs.get("config") is not None:
         kwargs["config"] = _redact_google_config(kwargs["config"], redact_fn)
 
@@ -2498,6 +2642,11 @@ class _ObsvrProxy:
                 return lambda *_args, **_kwargs: strict_provider_surface_unsupported_v2_1()
             def intercepted_factory(*args: Any, **kwargs: Any) -> Any:
                 result = value(*args, **kwargs)
+                if provider == "google" and getattr(result, "_responder", None) is not None:
+                    raise RuntimeError(
+                        "[obsvr] Google automatic responder sessions are not "
+                        "supported by this enforcement boundary"
+                    )
                 return _ObsvrProxy(result, [], provider, options)
             return intercepted_factory
 

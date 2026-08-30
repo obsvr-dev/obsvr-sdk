@@ -533,6 +533,9 @@ function detectProvider(
   if (typeof c.generateContent === "function") {
     return "google";
   }
+  if (typeof c.sendMessage === "function") {
+    return "google";
+  }
   const models = c.models as Record<string, unknown> | undefined;
   if (typeof models?.generateContent === "function") {
     return "google";
@@ -624,7 +627,17 @@ function appendContentText(value: unknown, parts: string[]): void {
   }
   if (!value || typeof value !== "object") return;
   const record = value as Record<string, unknown>;
-  for (const key of ["text", "content", "input", "output", "parts"] as const) {
+  for (const key of [
+    "text",
+    "content",
+    "input",
+    "output",
+    "parts",
+    "functionResponse",
+    "functionCall",
+    "response",
+    "args",
+  ] as const) {
     if (key in record) appendContentText(record[key], parts);
   }
 }
@@ -827,6 +840,23 @@ function redactMessagesInPlace(args: unknown): void {
     if (Array.isArray(item.parts)) {
       return { ...item, parts: item.parts.map(redactGeminiContent) };
     }
+    if (item.functionResponse && typeof item.functionResponse === "object") {
+      const response = item.functionResponse as Record<string, unknown>;
+      return {
+        ...item,
+        functionResponse: {
+          ...response,
+          response: redactStringLeaves(response.response),
+        },
+      };
+    }
+    if (item.functionCall && typeof item.functionCall === "object") {
+      const call = item.functionCall as Record<string, unknown>;
+      return {
+        ...item,
+        functionCall: { ...call, args: redactStringLeaves(call.args) },
+      };
+    }
     return value;
   };
 
@@ -894,27 +924,54 @@ function redactMessagesInPlace(args: unknown): void {
 
 /** Text retained by a provider chat object and sent on its next turn. */
 function extractGoogleChatContextText(target: object): string {
-  const record = target as Record<string, unknown>;
   const parts: string[] = [];
   const seen = new Set<unknown>();
+  const root = target as Record<string, unknown>;
+  const nested = root.model && typeof root.model === "object"
+    ? root.model as Record<string, unknown>
+    : undefined;
+  const carriers = nested ? [root, nested] : [root];
 
-  for (const key of ["history", "_history"] as const) {
-    const value = record[key];
-    if (value !== undefined && !seen.has(value)) {
-      seen.add(value);
-      appendContentText(value, parts);
+  for (const record of carriers) {
+    for (const key of ["history", "_history", "historyInternal"] as const) {
+      const value = record[key];
+      if (value !== undefined && !seen.has(value)) {
+        seen.add(value);
+        appendContentText(value, parts);
+      }
     }
-  }
 
-  for (const key of ["config", "params"] as const) {
-    const value = record[key];
-    if (!value || typeof value !== "object" || seen.has(value)) continue;
-    seen.add(value);
-    const config = value as Record<string, unknown>;
-    if ("systemInstruction" in config) appendContentText(config.systemInstruction, parts);
-    if ("history" in config && !seen.has(config.history)) {
-      seen.add(config.history);
-      appendContentText(config.history, parts);
+    if (record.systemInstruction !== undefined && !seen.has(record.systemInstruction)) {
+      seen.add(record.systemInstruction);
+      appendContentText(record.systemInstruction, parts);
+    }
+    if (record.tools !== undefined && !seen.has(record.tools)) {
+      seen.add(record.tools);
+      appendStringLeaves(record.tools, parts);
+    }
+
+    for (const key of ["config", "params"] as const) {
+      const value = record[key];
+      if (!value || typeof value !== "object" || seen.has(value)) continue;
+      seen.add(value);
+      const config = value as Record<string, unknown>;
+      if ("systemInstruction" in config) appendContentText(config.systemInstruction, parts);
+      if ("history" in config && !seen.has(config.history)) {
+        seen.add(config.history);
+        appendContentText(config.history, parts);
+      }
+    }
+
+    const cached = record.cachedContent;
+    if (cached !== undefined && cached !== null) {
+      if (typeof cached === "object") {
+        const item = cached as Record<string, unknown>;
+        const before = parts.length;
+        appendContentText(item.systemInstruction, parts);
+        appendContentText(item.contents, parts);
+        if (parts.length > before) continue;
+      }
+      throw new Error("[obsvr] Google cached context is opaque and cannot be verified");
     }
   }
 
@@ -923,7 +980,22 @@ function extractGoogleChatContextText(target: object): string {
 
 /** Redact chat-owned history/config without mutating factory arguments. */
 function redactGoogleChatContextInPlace(target: object): void {
-  const record = target as Record<string, unknown>;
+  const root = target as Record<string, unknown>;
+  const nested = root.model && typeof root.model === "object"
+    ? root.model as Record<string, unknown>
+    : undefined;
+  const carriers = nested ? [root, nested] : [root];
+  const redactLeaves = (value: unknown): unknown => {
+    if (typeof value === "string") return redactBuiltinPii(value);
+    if (Array.isArray(value)) return value.map(redactLeaves);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        redactLeaves(item),
+      ]),
+    );
+  };
   const redactContent = (value: unknown): unknown => {
     if (typeof value === "string") return redactBuiltinPii(value);
     if (Array.isArray(value)) return value.map(redactContent);
@@ -935,23 +1007,42 @@ function redactGoogleChatContextInPlace(target: object): void {
     if (Array.isArray(item.parts)) {
       return { ...item, parts: item.parts.map(redactContent) };
     }
+    if (item.functionResponse && typeof item.functionResponse === "object") {
+      return { ...item, functionResponse: redactLeaves(item.functionResponse) };
+    }
+    if (item.functionCall && typeof item.functionCall === "object") {
+      return { ...item, functionCall: redactLeaves(item.functionCall) };
+    }
     return value;
   };
 
-  for (const key of ["history", "_history"] as const) {
-    if (record[key] !== undefined) record[key] = redactContent(record[key]);
-  }
-  for (const key of ["config", "params"] as const) {
-    const value = record[key];
-    if (!value || typeof value !== "object") continue;
-    const config = value as Record<string, unknown>;
-    record[key] = {
-      ...config,
-      ...(config.systemInstruction !== undefined
-        ? { systemInstruction: redactContent(config.systemInstruction) }
-        : {}),
-      ...(config.history !== undefined ? { history: redactContent(config.history) } : {}),
-    };
+  for (const record of carriers) {
+    if (record.cachedContent !== undefined && record.cachedContent !== null) {
+      throw new TypeError("Google cached context cannot be redacted in place");
+    }
+    for (const key of ["_history", "historyInternal"] as const) {
+      if (record[key] !== undefined) record[key] = redactContent(record[key]);
+    }
+    if (record._history === undefined && record.historyInternal === undefined
+      && record.history !== undefined) {
+      record.history = redactContent(record.history);
+    }
+    if (record.systemInstruction !== undefined) {
+      record.systemInstruction = redactContent(record.systemInstruction);
+    }
+    if (record.tools !== undefined) record.tools = redactLeaves(record.tools);
+    for (const key of ["config", "params"] as const) {
+      const value = record[key];
+      if (!value || typeof value !== "object") continue;
+      const config = value as Record<string, unknown>;
+      record[key] = {
+        ...config,
+        ...(config.systemInstruction !== undefined
+          ? { systemInstruction: redactContent(config.systemInstruction) }
+          : {}),
+        ...(config.history !== undefined ? { history: redactContent(config.history) } : {}),
+      };
+    }
   }
 }
 
