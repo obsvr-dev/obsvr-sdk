@@ -53,6 +53,12 @@ export interface StrictReceiptCoordinatorV21Options {
   intent_decision_provider: TrustedIntentDecisionProviderV21;
   evaluation_evidence_provider: TrustedEvaluationEvidenceProviderV21;
   approval_verifier?: StrictApprovalVerifier;
+  /**
+   * Optional approval separation-of-duties policy. When enabled, a granted
+   * approval must include `principal_ref_hash` and the approver must differ
+   * from the requester, or from both requester and initiating agent.
+   */
+  approval_separation_of_duties?: 'none' | 'requester' | 'requester_and_initiator';
   pid?: () => number;
   prepared_token_factory?: () => string;
 }

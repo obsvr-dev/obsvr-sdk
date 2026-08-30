@@ -167,6 +167,15 @@ The provider-neutral action boundary applies the same admit-commit-start-termina
 
 A `STEP_UP` decision can be resumed only through the strict approval-resolution path. The resolution must bind the suspended receipt, action, policy evidence, and approval evidence; a new signed resolution receipt is admitted before the original action can run. Duplicate, conflicting, expired, or already-consumed resolutions do not execute the action again.
 
+Strict profile 2.1 supports an opt-in separation-of-duties check through
+`approval_separation_of_duties`. A granted result must carry a trusted
+`principal_ref_hash`; `requester` rejects the original requester, while
+`requester_and_initiator` rejects both the requester and the initiating agent.
+The verifier must derive that hash in the same pseudonymous identity namespace
+as the receipt. The default is `none` so existing verifiers remain compatible.
+This check applies to grants, not denials. Ordinary policy-poll grants remain a
+separate compatibility path and do not gain this strict guarantee.
+
 ### Recovery, bundles, and telemetry
 
 Recovery accepts a self-contained execution journal only after validating its exact schema, receipt binding, chain position, execution-start hash, terminal state, and any signed outcome. It reports pre-invocation, unresolved, or resolved state, but always returns `retry_safe: false`: the recovery helper does not own enough external state to authorize replay.

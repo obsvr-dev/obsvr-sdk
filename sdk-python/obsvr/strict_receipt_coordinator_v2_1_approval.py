@@ -65,6 +65,25 @@ def _assert_authority_active(pending: Dict[str, Any], timestamp: int) -> None:
         raise ValueError("delegated authority is not active at approval time")
 
 
+def _assert_approval_separation_of_duties(
+    pending: Dict[str, Any], approver_ref_hash: str | None, mode: str
+) -> None:
+    if mode == "none":
+        return
+    if approver_ref_hash is None:
+        raise ValueError(
+            "approval separation of duties requires principal_ref_hash"
+        )
+    identity = pending["receipt"]["body"]["identity"]
+    if approver_ref_hash == identity["requester"]["requester_ref_hash"]:
+        raise ValueError("approver must differ from the requester")
+    if (
+        mode == "requester_and_initiator"
+        and approver_ref_hash == identity["initiator"]["agent_ref_hash"]
+    ):
+        raise ValueError("approver must differ from the initiating agent")
+
+
 def sign_approval_resolution_v2_1(
     *,
     input_value: Dict[str, Any],
@@ -107,6 +126,12 @@ def sign_approval_resolution_v2_1(
         expected,
         suspension["expires_at_ms"],
     )
+    if decision == "granted":
+        _assert_approval_separation_of_duties(
+            pending,
+            trusted.get("principal_ref_hash"),
+            options.get("approval_separation_of_duties", "none"),
+        )
     evaluated = evaluate_decision_v2_1(
         pending["context"],
         policy,
@@ -143,7 +168,8 @@ def sign_approval_resolution_v2_1(
             "resolves_receipt_hash": prior["receipt_hash"],
             "suspension_id": suspension["suspension_id"],
             "method": input_value["method"],
-            "resolver_ref_hash": _canonical_hash(
+            "resolver_ref_hash": trusted.get("principal_ref_hash")
+            or _canonical_hash(
                 {
                     "schema": "obsvr-strict-resolver-ref-v2-1",
                     "principal_id": v21_text(

@@ -248,6 +248,24 @@ requirement exactly once. Action-context retry linkage is optional, but when a
 parent attempt is present the new attempt id and remediation retry hash are
 both required.
 
+### Strict approval lifecycle
+
+The profile 2.1 coordinator uses one exact approval lifecycle in both SDKs.
+
+| Property | Contract |
+| --- | --- |
+| Action binding | `approval_action_hash` and suspended receipt hash must match. |
+| Expiry | Verifier expiry cannot exceed suspension expiry; a grant is live at resolution time. |
+| Revalidation | The active policy and trusted evaluation evidence run again before authorization. |
+| Consumption | One suspended receipt has at most one committed resolution and one execution. |
+| Separation of duties | Optional `requester` or `requester_and_initiator`; requires a same-namespace `principal_ref_hash`. |
+
+Separation of duties defaults to `none` for source compatibility. The verifier
+result remains compatible without `principal_ref_hash` unless either strict
+mode is selected. The resolver hash in new receipts uses the supplied
+pseudonymous reference when present; otherwise it retains the legacy derived
+hash of `principal_id`.
+
 ## Ordinary enforcement boundary
 
 The ordinary wrappers are broader than strict profile 2.1. On every method

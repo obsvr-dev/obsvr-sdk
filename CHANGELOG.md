@@ -13,7 +13,12 @@ Entries link the implementing commit when a stable public hash is available.
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- Strict profile 2.1 approval resolution can require separation of duties
+  between the pseudonymous approver and the original requester, or both the
+  requester and initiating agent. Existing verifiers remain compatible unless
+  the new check is enabled.
 
 ## [0.13.0] - 2026-08-30
 

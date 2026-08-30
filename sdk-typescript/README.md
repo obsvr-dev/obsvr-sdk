@@ -248,6 +248,13 @@ This mode supports only unary `chat.completions.create` / `.parse`, `responses.c
 
 For a side effect that is not a model call, use `createStrictActionBoundaryV21()` with an explicit action, target, data classifications, requested scopes, and invocation function. Suspended `STEP_UP` decisions can be resumed through the runtime's signed approval-resolution path; a valid `ALLOW`, or `MODIFY` with bound effective arguments, executes the original action at most once.
 
+To prevent self-approval, configure the coordinator with
+`approval_separation_of_duties: 'requester_and_initiator'`. Its trusted
+`approval_verifier` must return `principal_ref_hash` in the same pseudonymous
+identity namespace as the requester's and agent's receipt hashes. Use
+`'requester'` to check only the requester. The compatibility default is
+`'none'`.
+
 To correlate durable strict evidence with an existing OpenTelemetry trace, wrap the checkpoint store with `withStrictOtelCorrelationV21()`. It adds content-free `obsvr.strict.*` references only to the active recording span and only after `save()` succeeds. Telemetry errors are ignored and telemetry never authorizes an action. The cross-language keys are pinned by [`strict_otel_attributes_v2_1.json`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/conformance/fixtures/strict_otel_attributes_v2_1.json).
 
 The full construction used by the executable tests is in [`strict-provider-boundary-v2-1.test.ts`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-typescript/tests/unit/strict-provider-boundary-v2-1.test.ts). Read the repository [security boundary](https://github.com/obsvr-dev/obsvr-sdk/blob/main/SECURITY.md#strict-profile-21-execution-boundary) and [compatibility matrix](https://github.com/obsvr-dev/obsvr-sdk/blob/main/COMPATIBILITY.md#strict-profile-21-direct-provider-boundary) before enabling it.

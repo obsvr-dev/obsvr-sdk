@@ -81,6 +81,13 @@ export class StrictReceiptCoordinatorV21 {
     if (typeof options.clock !== 'function') {
       throw new StrictReceiptCoordinatorV21Error('clock must be callable');
     }
+    if (options.approval_separation_of_duties !== undefined
+      && !['none', 'requester', 'requester_and_initiator']
+        .includes(options.approval_separation_of_duties)) {
+      throw new StrictReceiptCoordinatorV21Error(
+        'approval_separation_of_duties is unsupported',
+      );
+    }
     if (typeof options.identity_snapshot !== 'function'
       || !options.identity_authority || typeof options.identity_authority.issue !== 'function') {
       throw new StrictReceiptCoordinatorV21Error('trusted identity authority and snapshot are required');

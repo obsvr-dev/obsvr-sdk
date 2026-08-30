@@ -524,6 +524,21 @@ flowchart LR
 
 The same protocol can guard a provider-neutral side effect through `createStrictActionBoundaryV21` / `create_strict_action_boundary_v2_1`: the caller declares the action, target, data classifications, and requested scopes, and supplies the function that may run only after admission. Approval resolution is also explicit. A signed `STEP_UP` receipt is resumed through a new signed resolution receipt; the original action executes at most once only when the resolved outcome is `ALLOW`, or `MODIFY` with trusted effective arguments, and every binding still matches.
 
+Strict profile 2.1 can also require approval separation of duties. Set
+`approval_separation_of_duties` to `requester` or
+`requester_and_initiator`; the trusted approval verifier must then return a
+`principal_ref_hash` in the same pseudonymous identity namespace used by the
+receipt. A self-approval fails before a resolution receipt can authorize the
+action. The default is `none` for compatibility.
+
+| Approval property | Strict profile 2.1 behavior |
+| --- | --- |
+| Exact action | Resolution must match the suspended receipt and `approval_action_hash`. |
+| Expiry | A grant cannot outlive the suspension and is checked at resolution time. |
+| Revalidation | Policy and trusted evaluation evidence are evaluated again. |
+| Consume once | A committed resolution cannot execute the original action again. |
+| Separation of duties | Optional pseudonymous requester and initiator checks reject self-approval. |
+
 `submitStrictExecutionOutcomeV21()` / `submit_strict_execution_outcome_v2_1()` sends the exact signed terminal envelope to hosted strict ingest using the same bounded, DNS-pinned, no-redirect transport posture as receipt admission. Upload is caller-initiated: terminal outcomes remain in the durable checkpoint until the application submits the outcome or terminal journal, including after restart. Exact duplicates are idempotent. Transport failure is returned separately and never changes a locally recorded execution result. Only an exact matching `400`, `401`, `403`, or `413` response with `stored: false` is definitive non-storage; conflicts and ambiguous responses remain uncertain. The terminal-journal helpers verify the saved receipt, start, outcome, and signer bindings before upload.
 
 Receipts and terminal outcomes can be exported as a portable, Ed25519-signed evidence bundle. Verification checks the exact schema, receipt-chain trust, outcome-to-decision bindings, policy continuity, coverage, and a bundle signature made by the head receipt signer. This SDK bundle does not itself contain hosted acceptance attestations, daily Merkle inclusion, or off-host anchors. Cross-language terminal-outcome bytes are pinned by [`strict_execution_outcomes_v2_1.json`](conformance/fixtures/strict_execution_outcomes_v2_1.json).

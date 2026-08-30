@@ -115,6 +115,7 @@ def coordinator(
     tenant_id="tenant-1",
     pid=lambda: 7,
     approval_verifier=None,
+    approval_separation_of_duties="none",
 ):
     signer = device_signer or make_signer(tmp_path)
     base_result = base or {"action_taken": "allowed"}
@@ -142,6 +143,7 @@ def coordinator(
             )
         ),
         approval_verifier=approval_verifier,
+        approval_separation_of_duties=approval_separation_of_duties,
         pid=pid,
         prepared_token_factory=lambda: "prepared-token",
     )
@@ -466,6 +468,105 @@ def test_rejects_expired_mismatched_and_delegated_approval_authority(tmp_path):
             {"suspended_receipt_hash": delegated_pending["receipt_hash"],
              "method": "approval_granted", "approval_evidence": {}}
         )
+
+
+def test_enforces_approval_separation_of_duties(tmp_path):
+    base = {
+        "action_taken": "blocked",
+        "approval_required": True,
+        "approval_request_id": "approval-1",
+        "approval_action_hash": A,
+        "approval_expires_at_ms": 1_500,
+    }
+
+    def verifier(principal_ref_hash=None):
+        def verify(_evidence, expected):
+            result = {
+                "request_id": expected["request_id"],
+                "action_hash": expected["action_hash"],
+                "principal_id": "reviewer-1",
+                "decision": expected["decision"],
+                "source_hash": D,
+                "expires_at_ms": 1_400,
+            }
+            if principal_ref_hash is not None:
+                result["principal_ref_hash"] = principal_ref_hash
+            return result
+
+        return verify
+
+    def resolve(subject):
+        pending = subject.prepare_decision(action("approval-action"))
+        subject.commit_prepared(pending["token"], pending["receipt_hash"])
+        return lambda: subject.prepare_approval_resolution(
+            {
+                "suspended_receipt_hash": pending["receipt_hash"],
+                "method": "approval_granted",
+                "approval_evidence": {},
+            }
+        )
+
+    missing = coordinator(
+        tmp_path,
+        base=base,
+        approval_verifier=verifier(),
+        approval_separation_of_duties="requester",
+    )
+    with pytest.raises(ValueError, match="requires principal_ref_hash"):
+        resolve(missing)()
+
+    self_approved = coordinator(
+        tmp_path,
+        base=base,
+        approval_verifier=verifier(B),
+        approval_separation_of_duties="requester_and_initiator",
+    )
+    with pytest.raises(ValueError, match="differ from the requester"):
+        resolve(self_approved)()
+
+    independent = coordinator(
+        tmp_path,
+        base=base,
+        approval_verifier=verifier(C),
+        approval_separation_of_duties="requester_and_initiator",
+    )
+    approved = resolve(independent)()
+    assert approved["value"]["body"]["resolution"]["resolver_ref_hash"] == C
+
+    def delegated_identity(timestamp, device_signer):
+        value = identity(timestamp, device_signer)
+        value["relationship"] = "delegated"
+        value["requester"] = {
+            "requester_ref_hash": C,
+            "principal_type": "human",
+            "role_ids": ["owner"],
+            "privilege_scopes": ["write"],
+        }
+        value["delegation_chain"] = [
+            {
+                "hop": 0,
+                "delegation_id_hash": D,
+                "delegator_ref_hash": C,
+                "delegatee_ref_hash": B,
+                "granted_scopes": ["write"],
+                "issued_at_ms": 900,
+                "expires_at_ms": 1_600,
+            }
+        ]
+        return value
+
+    delegated_initiator = coordinator(
+        tmp_path,
+        base=base,
+        approval_verifier=verifier(B),
+        approval_separation_of_duties="requester_and_initiator",
+        identity_snapshot=delegated_identity,
+    )
+    with pytest.raises(ValueError, match="differ from the initiating agent"):
+        resolve(delegated_initiator)()
+
+    with pytest.raises(ValueError, match="approval_separation_of_duties is unsupported"):
+        coordinator(tmp_path, approval_separation_of_duties="invalid")
 
 
 def test_sequence_linking_and_freeze(tmp_path):
