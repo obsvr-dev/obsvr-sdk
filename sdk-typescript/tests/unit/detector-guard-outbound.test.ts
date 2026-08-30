@@ -23,7 +23,11 @@ import {
   getDetectorErrorCount,
   _resetDetectorErrors,
 } from '../../src/policy/detector-guard';
-import { outboundRedactionBlockedCompliance, type ComplianceInfo } from '../../src/integrations/core';
+import {
+  assertRedactionApplied,
+  outboundRedactionBlockedCompliance,
+  type ComplianceInfo,
+} from '../../src/integrations/core';
 
 const realError = console.error;
 let sentEvents: any[] = [];
@@ -113,6 +117,15 @@ describe('the event must never claim a redaction that did not happen', () => {
     const corrected = outboundRedactionBlockedCompliance(base, failed);
     expect(corrected.policy_version).toBe('v1');
     expect(corrected.action_source).toBe('builtin');
+  });
+
+  it('rejects a rewritten payload when a claimed type survives', () => {
+    expect(() => assertRedactionApplied('still 123-45-6789', {
+      redacted_types: ['ssn'],
+    })).toThrow(/redaction did not remove ssn/i);
+    expect(() => assertRedactionApplied('[REDACTED_SSN]', {
+      redacted_types: ['ssn'],
+    })).not.toThrow();
   });
 });
 
@@ -310,5 +323,117 @@ describe('the proxy wrapper, end to end', () => {
     const event = sentEvents.find((e) => e.rule_id === 'sdk:detector_error');
     expect(event?.action_taken).toBe('blocked');
     expect(event?.redacted_types).toEqual([]);
+  });
+
+  it('blocks when an NLP redactor rewrites only part of a structured request', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      fail_mode: 'open',
+      pii_policy: { default: 'detect_only', rules: { name: 'redact' } },
+      presidio_analyzer_url: 'http://analyzer.local',
+      presidio_anonymizer_url: 'http://anonymizer.local',
+    });
+
+    let providerCalls = 0;
+    (global as any).fetch = async (url: any, opts: any) => {
+      const body = JSON.parse(opts.body);
+      if (String(url).includes('/analyze')) {
+        const text = String(body.text);
+        const person = text.includes('Alice Jones') || text.includes('Bob Smith');
+        return {
+          ok: true,
+          status: 200,
+          json: async () => person
+            ? [{ entity_type: 'PERSON', start: 0, end: 9, score: 0.99 }]
+            : [],
+        };
+      }
+      if (String(url).includes('/anonymize')) {
+        const text = String(body.text);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            text: text.includes('Bob Smith') ? '[REDACTED_PERSON]' : text,
+          }),
+        };
+      }
+      const eventBody = JSON.parse(opts.body);
+      Array.isArray(eventBody) ? sentEvents.push(...eventBody) : sentEvents.push(eventBody);
+      return { ok: true, status: 200, json: async () => ({ count: 1 }) };
+    };
+
+    const wrapped = wrap({
+      chat: {
+        completions: {
+          create: async () => {
+            providerCalls += 1;
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        },
+      },
+    }) as { chat: { completions: { create: (a: unknown) => Promise<unknown> } } };
+
+    await expect(wrapped.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        { role: 'user', content: 'ask Bob Smith' },
+        { role: 'user', content: 'ask Alice Jones' },
+      ],
+    })).rejects.toThrow(/blocked by policy/i);
+
+    expect(providerCalls).toBe(0);
+  });
+
+  it('does not mutate structured caller input while applying NLP redaction', async () => {
+    init({
+      api_key: 'test',
+      ingest_url: 'https://x.test',
+      pii_policy: { default: 'detect_only', rules: { name: 'redact' } },
+      presidio_analyzer_url: 'http://analyzer.local',
+      presidio_anonymizer_url: 'http://anonymizer.local',
+    });
+
+    (global as any).fetch = async (url: any, opts: any) => {
+      const body = JSON.parse(opts.body);
+      if (String(url).includes('/analyze')) {
+        const text = String(body.text);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => text.includes('Bob Smith')
+            ? [{ entity_type: 'PERSON', start: 4, end: 13, score: 0.99 }]
+            : [],
+        };
+      }
+      if (String(url).includes('/anonymize')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ text: String(body.text).replace('Bob Smith', '[REDACTED_PERSON]') }),
+        };
+      }
+      return { ok: true, status: 200, json: async () => ({ count: 1 }) };
+    };
+
+    let sentToProvider = '';
+    const wrapped = wrap({
+      chat: {
+        completions: {
+          create: async (args: unknown) => {
+            sentToProvider = JSON.stringify(args);
+            return { choices: [{ message: { content: 'ok' } }] };
+          },
+        },
+      },
+    }) as { chat: { completions: { create: (a: unknown) => Promise<unknown> } } };
+
+    const messages = [Object.freeze({ role: 'user', content: 'ask Bob Smith' })];
+    await wrapped.chat.completions.create({ model: 'gpt-4o', messages });
+
+    expect(sentToProvider).toContain('[REDACTED_PERSON]');
+    expect(sentToProvider).not.toContain('Bob Smith');
+    expect(messages[0].content).toBe('ask Bob Smith');
   });
 });

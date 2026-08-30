@@ -463,7 +463,10 @@ export function redactArguments(value: unknown, redact: (text: string) => string
  *
  * Twin: sdk-python/obsvr/policy.py (`assert_redaction_applied`).
  */
-export function assertRedactionApplied(payload: unknown, compliance?: ComplianceInfo): void {
+export function assertRedactionApplied(
+  payload: unknown,
+  compliance?: Pick<ComplianceInfo, "redacted_types">,
+): void {
   const expected = compliance?.redacted_types ?? [];
   if (expected.length === 0) return;
   const text = typeof payload === "string" ? payload : safeStringify(payload);

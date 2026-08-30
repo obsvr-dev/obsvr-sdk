@@ -189,8 +189,8 @@ export async function presidioRedactArgs(
   anonymizerUrl: string,
   timeoutMs = 500,
   requireNlpRedaction = false,
-): Promise<void> {
-  if (!args || typeof args !== 'object') return;
+): Promise<unknown> {
+  if (!args || typeof args !== 'object') return args;
   const req = args as Record<string, unknown>;
   let changedByPresidio = false;
 
@@ -211,40 +211,67 @@ export async function presidioRedactArgs(
     return redactBuiltinPii(redacted);
   };
 
+  const redactContent = async (value: unknown): Promise<unknown> => {
+    if (typeof value === 'string') return redactText(value);
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((item) => redactContent(item)));
+    }
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      const out = { ...record };
+      for (const key of ['text', 'content', 'input', 'output', 'parts'] as const) {
+        if (key in record) out[key] = await redactContent(record[key]);
+      }
+      return out;
+    }
+    return value;
+  };
+
+  const out: Record<string, unknown> = { ...req };
+
   // Anthropic system prompt
-  if (typeof req.system === 'string') {
-    req.system = await redactText(req.system);
+  if ('system' in req) {
+    out.system = await redactContent(req.system);
   }
 
   // OpenAI / Anthropic messages[]
   if (Array.isArray(req.messages)) {
-    for (const msg of req.messages as Array<Record<string, unknown>>) {
-      if (typeof msg.content === 'string') {
-        msg.content = await redactText(msg.content);
-      } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content as Array<Record<string, unknown>>) {
-          if (typeof part.text === 'string') {
-            part.text = await redactText(part.text);
-          }
-        }
-      }
+    out.messages = await Promise.all(
+      (req.messages as Array<Record<string, unknown>>).map(async (message) => ({
+        ...message,
+        content: await redactContent(message.content),
+      })),
+    );
+  }
+
+  // Gemini request content and both supported system-instruction locations.
+  if ('contents' in req) {
+    out.contents = await redactContent(req.contents);
+  }
+  if ('systemInstruction' in req) {
+    out.systemInstruction = await redactContent(req.systemInstruction);
+  }
+  if (req.config && typeof req.config === 'object') {
+    const config = req.config as Record<string, unknown>;
+    if ('systemInstruction' in config) {
+      out.config = {
+        ...config,
+        systemInstruction: await redactContent(config.systemInstruction),
+      };
     }
   }
 
-  // Gemini contents[].parts[].text
-  if (Array.isArray(req.contents)) {
-    for (const content of req.contents as Array<Record<string, unknown>>) {
-      if (Array.isArray(content.parts)) {
-        for (const part of content.parts as Array<Record<string, unknown>>) {
-          if (typeof part.text === 'string') {
-            part.text = await redactText(part.text);
-          }
-        }
-      }
-    }
+  // OpenAI Responses accepts either a string or a structured item list.
+  if (typeof req.instructions === 'string') {
+    out.instructions = await redactText(req.instructions);
+  }
+  if ('input' in req) {
+    out.input = await redactContent(req.input);
   }
 
   if (requireNlpRedaction && !changedByPresidio) {
     throw new Error('Presidio did not remove the detected NLP-only PII type');
   }
+
+  return out;
 }

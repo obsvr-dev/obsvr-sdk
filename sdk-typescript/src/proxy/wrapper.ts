@@ -32,6 +32,7 @@ import {
   escalateViewOnlyAction,
   redactForStorage,
 } from "../policy/deobfuscate.js";
+import { assertRedactionApplied } from "../integrations/core.js";
 import type { DeobfuscationView } from "../policy/deobfuscate.js";
 import {
   scanForCanary,
@@ -1953,7 +1954,7 @@ export async function _buildDirectCallPreCallPlan(
                 }
               } else {
                 if (config.presidio_analyzer_url && config.presidio_anonymizer_url) {
-                  await presidioRedactArgs(
+                  cleaned_args[0] = await presidioRedactArgs(
                     cleaned_args[0],
                     config.presidio_analyzer_url,
                     config.presidio_anonymizer_url,
@@ -1962,6 +1963,28 @@ export async function _buildDirectCallPreCallPlan(
                   );
                 } else {
                   redactMessagesInPlace(cleaned_args[0]);
+                }
+              }
+
+              const outboundText = extractPromptTextFromArgs(cleaned_args[0]);
+              assertRedactionApplied(outboundText, {
+                redacted_types: resolved.redactedTypes,
+              });
+              if (requiresNlpRedaction && config.presidio_analyzer_url) {
+                const verification = await presidioScan(
+                  outboundText,
+                  config.presidio_analyzer_url,
+                );
+                if (!verification.answered) {
+                  throw new Error("Presidio did not answer the post-redaction verification scan");
+                }
+                const remaining = resolved.redactedTypes.filter((type) =>
+                  verification.detected_types.includes(type),
+                );
+                if (remaining.length > 0) {
+                  throw new Error(
+                    `redaction did not remove ${remaining.sort().join(", ")}`,
+                  );
                 }
               }
             });
