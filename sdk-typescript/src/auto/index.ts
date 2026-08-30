@@ -30,7 +30,10 @@ import {
   _MCP_GOVERNED_SYMBOL,
   obsvrGovernMCP,
 } from '../integrations/mcp.js';
-import { attachToolGate } from '../integrations/openai-agents.js';
+import {
+  attachToolGate,
+  governModel,
+} from '../integrations/openai-agents.js';
 
 /** Providers the module interceptor knows how to govern. */
 export type InterceptedProvider = 'openai' | 'anthropic' | 'google';
@@ -190,7 +193,10 @@ export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T)
   if (typeof cls !== 'function') return cls;
   interceptionActive = true;
   boundProviders.add(provider);
-  recordBinding(provider, `${provider}.${(cls as Function).name || 'client'}`);
+  recordBinding(
+    `${provider}.client`,
+    `${provider}.${(cls as Function).name || 'client'}`,
+  );
 
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {
@@ -288,7 +294,7 @@ function lazyGovernMcp<T extends object>(instance: T): T {
 /** Replace only construction of the documented MCP Client export. */
 export function interceptMcpClientClass<T>(cls: T): T {
   if (typeof cls !== 'function') return cls;
-  recordBinding('mcp', '@modelcontextprotocol/sdk/client.Client');
+  recordBinding('mcp.client', '@modelcontextprotocol/sdk/client.Client');
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {
       const instance = Reflect.construct(
@@ -325,7 +331,126 @@ export function interceptMcpNamespace<T>(namespace: T): T {
  */
 export function interceptOpenAIAgentClass<T>(cls: T): T {
   if (typeof cls !== 'function') return cls;
-  recordBinding('openai_agents', '@openai/agents.Agent');
+  recordBinding('openai_agents.tools', '@openai/agents.Agent.tools');
+  recordBinding('openai_agents.model', '@openai/agents.Agent.model');
+
+  const governModelValue = (value: unknown): unknown => {
+    if (!value || typeof value !== 'object') return value;
+    const candidate = value as Record<string, unknown>;
+    if (
+      typeof candidate.getResponse !== 'function' ||
+      typeof candidate.getStreamedResponse !== 'function'
+    ) {
+      return value;
+    }
+    return governModel(value as Parameters<typeof governModel>[0]);
+  };
+
+  const listMutators = new Set<PropertyKey>([
+    'copyWithin',
+    'fill',
+    'pop',
+    'push',
+    'reverse',
+    'shift',
+    'sort',
+    'splice',
+    'unshift',
+  ]);
+
+  const guardAgent = (agent: Record<string, unknown>): Record<string, unknown> => {
+    let proxy: Record<string, unknown>;
+    const refreshToolGate = (): void => {
+      attachToolGate(proxy);
+    };
+    const guardedList = (values: unknown[]): unknown[] => {
+      const target = values;
+      const rollback = (snapshot: unknown[]): void => {
+        target.splice(0, target.length, ...snapshot);
+      };
+      return new Proxy(target, {
+        get(list, property, receiver) {
+          const value = Reflect.get(list, property, receiver);
+          if (!listMutators.has(property) || typeof value !== 'function') return value;
+          return (...args: unknown[]) => {
+            const snapshot = list.slice();
+            try {
+              const result = Reflect.apply(value, list, args);
+              refreshToolGate();
+              return result;
+            } catch (error) {
+              rollback(snapshot);
+              throw error;
+            }
+          };
+        },
+        set(list, property, value) {
+          const snapshot = list.slice();
+          try {
+            const changed = Reflect.set(list, property, value, list);
+            refreshToolGate();
+            return changed;
+          } catch (error) {
+            rollback(snapshot);
+            throw error;
+          }
+        },
+        deleteProperty(list, property) {
+          const snapshot = list.slice();
+          try {
+            const changed = Reflect.deleteProperty(list, property);
+            refreshToolGate();
+            return changed;
+          } catch (error) {
+            rollback(snapshot);
+            throw error;
+          }
+        },
+      });
+    };
+
+    const rawTools = Array.isArray(agent.tools) ? agent.tools : [];
+    const rawHandoffs = Array.isArray(agent.handoffs) ? agent.handoffs : [];
+    agent.tools = guardedList(rawTools);
+    agent.handoffs = guardedList(rawHandoffs);
+    agent.model = governModelValue(agent.model);
+
+    proxy = new Proxy(agent, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property === 'clone' && typeof value === 'function') {
+          return (...args: unknown[]) => {
+            const cloned = Reflect.apply(value, target, args);
+            return cloned && typeof cloned === 'object'
+              ? guardAgent(cloned as Record<string, unknown>)
+              : cloned;
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+      set(target, property, value, receiver) {
+        if (property === 'model') {
+          return Reflect.set(target, property, governModelValue(value), receiver);
+        }
+        if ((property === 'tools' || property === 'handoffs') && Array.isArray(value)) {
+          const previous = Reflect.get(target, property, receiver);
+          const governed = guardedList(value);
+          try {
+            const changed = Reflect.set(target, property, governed, receiver);
+            refreshToolGate();
+            return changed;
+          } catch (error) {
+            Reflect.set(target, property, previous, receiver);
+            throw error;
+          }
+        }
+        return Reflect.set(target, property, value, receiver);
+      },
+    });
+    refreshToolGate();
+    return proxy;
+  };
+
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {
       const agent = Reflect.construct(
@@ -333,8 +458,19 @@ export function interceptOpenAIAgentClass<T>(cls: T): T {
         args,
         newTarget,
       );
-      attachToolGate(agent);
-      return agent;
+      return guardAgent(agent as Record<string, unknown>);
+    },
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (property === 'create' && typeof value === 'function') {
+        return (...args: unknown[]) => {
+          const agent = Reflect.apply(value, target, args);
+          return agent && typeof agent === 'object'
+            ? guardAgent(agent as Record<string, unknown>)
+            : agent;
+        };
+      }
+      return value;
     },
   }) as T;
 }

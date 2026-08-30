@@ -87,10 +87,12 @@ class FakeMcpClient {
 class FakeAgent {
   tools: unknown[];
   handoffs: unknown[];
+  model: unknown;
 
-  constructor(config: { tools?: unknown[]; handoffs?: unknown[] }) {
+  constructor(config: { tools?: unknown[]; handoffs?: unknown[]; model?: unknown }) {
     this.tools = config.tools ?? [];
     this.handoffs = config.handoffs ?? [];
+    this.model = config.model ?? '';
   }
 }
 
@@ -379,6 +381,95 @@ describe('auto/OpenAI Agents construction interception', () => {
     });
     expect(verdict.behavior.type).toBe('rejectContent');
     expect(agent.tools).toContain(tool);
+  });
+
+  test('a concrete Agent model is governed at construction', async () => {
+    let modelCalls = 0;
+    const rawModel = {
+      model: 'gpt-4o-mini',
+      async getResponse(_request: unknown) {
+        modelCalls += 1;
+        return { output: [] };
+      },
+      async *getStreamedResponse(_request: unknown) {
+        modelCalls += 1;
+      },
+    };
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: 'block' } },
+    });
+    const agent = new Intercepted({ model: rawModel });
+
+    await expect((agent.model as any).getResponse({
+      input: 'SSN 123-45-6789',
+    })).rejects.toThrow();
+    expect(modelCalls).toBe(0);
+  });
+
+  test('function tools added after Agent construction receive the gate', async () => {
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      agent_policy: { deniedTools: ['send_contract'] },
+    } as any);
+    const agent = new Intercepted({ tools: [] });
+    const tool = {
+      type: 'function',
+      name: 'send_contract',
+      inputGuardrails: [] as Array<{ name: string; run: (data: unknown) => Promise<any> }>,
+    };
+
+    agent.tools.push(tool);
+
+    expect(tool.inputGuardrails.map((guardrail) => guardrail.name)).toContain(
+      'obsvr_tool_gate',
+    );
+    const verdict = await tool.inputGuardrails[0].run({
+      toolCall: { name: 'send_contract', callId: 'call-late' },
+    });
+    expect(verdict.behavior.type).toBe('rejectContent');
+  });
+
+  test('later model and tool-list replacement stay governed', async () => {
+    let modelCalls = 0;
+    const rawModel = {
+      model: 'gpt-4o-mini',
+      async getResponse(_request: unknown) {
+        modelCalls += 1;
+        return { output: [] };
+      },
+      async *getStreamedResponse(_request: unknown) {
+        modelCalls += 1;
+      },
+    };
+    const Intercepted = interceptOpenAIAgentClass(FakeAgent);
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      pii_policy: { rules: { ssn: 'block' } },
+      agent_policy: { deniedTools: ['send_contract'] },
+    } as any);
+    const agent = new Intercepted({ tools: [], model: '' });
+    const tool = {
+      type: 'function',
+      name: 'send_contract',
+      inputGuardrails: [] as Array<{ name: string; run: (data: unknown) => Promise<any> }>,
+    };
+
+    agent.model = rawModel;
+    agent.tools = [tool];
+
+    await expect((agent.model as any).getResponse({
+      input: 'SSN 123-45-6789',
+    })).rejects.toThrow();
+    expect(modelCalls).toBe(0);
+    expect(tool.inputGuardrails.map((guardrail) => guardrail.name)).toContain(
+      'obsvr_tool_gate',
+    );
   });
 
   test('the CommonJS package namespace is proxied without mutation', () => {

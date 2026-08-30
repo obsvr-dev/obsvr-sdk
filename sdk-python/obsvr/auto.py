@@ -73,7 +73,13 @@ def _wire_openai_agents() -> bool:
 
 
 def _wire_openai_agents_tool_gate() -> bool:
-    """Replace future ``agents.Agent`` construction with a gated subclass."""
+    """Replace future ``agents.Agent`` construction with a governed subclass.
+
+    Concrete models are wrapped at assignment, and mutable tool/handoff lists
+    re-run the real pre-execution attachment transaction after every mutation.
+    String model aliases remain strings and are governed by the intercepted
+    provider client they resolve through.
+    """
     if not _module_available("agents"):
         return False
     try:
@@ -81,6 +87,7 @@ def _wire_openai_agents_tool_gate() -> bool:
         from .binding_report import record_binding
         from .integrations.openai_agents import (
             attach_tool_gate,
+            govern_model,
             make_tool_gate_guardrail,
         )
 
@@ -94,18 +101,112 @@ def _wire_openai_agents_tool_gate() -> bool:
         # worse than leaving construction untouched and reporting the bind gap.
         make_tool_gate_guardrail()
 
+        def _govern_model_value(value: Any) -> Any:
+            if value is None or isinstance(value, str):
+                return value
+            try:
+                from agents.models.interface import Model  # type: ignore
+            except Exception:
+                return value
+            if not isinstance(value, Model):
+                return value
+            return govern_model(value)
+
+        class _GovernedAgentList(list):
+            """A transactional list that refreshes the owner's tool gate."""
+
+            def __init__(self, owner: Any, values: Any) -> None:
+                super().__init__(values or [])
+                self._obsvr_owner = owner
+
+            def _mutate(self, operation: Callable[[], Any]) -> Any:
+                snapshot = list(self)
+                try:
+                    result = operation()
+                    self._obsvr_owner._obsvr_refresh_tool_gate()
+                    return result
+                except Exception:
+                    list.clear(self)
+                    list.extend(self, snapshot)
+                    raise
+
+            def append(self, value: Any) -> None:
+                self._mutate(lambda: list.append(self, value))
+
+            def extend(self, values: Any) -> None:
+                self._mutate(lambda: list.extend(self, values))
+
+            def insert(self, index: int, value: Any) -> None:
+                self._mutate(lambda: list.insert(self, index, value))
+
+            def pop(self, index: int = -1) -> Any:
+                return self._mutate(lambda: list.pop(self, index))
+
+            def remove(self, value: Any) -> None:
+                self._mutate(lambda: list.remove(self, value))
+
+            def clear(self) -> None:
+                self._mutate(lambda: list.clear(self))
+
+            def reverse(self) -> None:
+                self._mutate(lambda: list.reverse(self))
+
+            def sort(self, *args: Any, **kwargs: Any) -> None:
+                self._mutate(lambda: list.sort(self, *args, **kwargs))
+
+            def __setitem__(self, key: Any, value: Any) -> None:
+                self._mutate(lambda: list.__setitem__(self, key, value))
+
+            def __delitem__(self, key: Any) -> None:
+                self._mutate(lambda: list.__delitem__(self, key))
+
+            def __iadd__(self, values: Any) -> Any:
+                self.extend(values)
+                return self
+
+            def __imul__(self, count: int) -> Any:
+                self._mutate(lambda: list.__imul__(self, count))
+                return self
+
+        class _AutoGovernedAgentMixin:
+            def _obsvr_refresh_tool_gate(self) -> None:
+                if not getattr(self, "_obsvr_auto_ready", False):
+                    return
+                _uninstallers.append(attach_tool_gate(self))
+
+            def __setattr__(self, name: str, value: Any) -> None:
+                if name == "model":
+                    value = _govern_model_value(value)
+                elif name in {"tools", "handoffs"} and isinstance(value, list):
+                    if not isinstance(value, _GovernedAgentList):
+                        value = _GovernedAgentList(self, value)
+                super().__setattr__(name, value)
+                if name in {"tools", "handoffs"}:
+                    self._obsvr_refresh_tool_gate()
+
+            def _obsvr_finish_init(self) -> None:
+                object.__setattr__(self, "_obsvr_auto_ready", True)
+                self._obsvr_refresh_tool_gate()
+
         if getattr(original, "__parameters__", ()):
             class GovernedAgent(  # type: ignore[misc,valid-type,no-redef]
-                original[_TContext], Generic[_TContext]
+                _AutoGovernedAgentMixin,
+                original[_TContext],
+                Generic[_TContext],
             ):
                 def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    object.__setattr__(self, "_obsvr_auto_ready", False)
                     super().__init__(*args, **kwargs)
-                    _uninstallers.append(attach_tool_gate(self))
+                    self._obsvr_finish_init()
         else:
-            class GovernedAgent(original):  # type: ignore[misc,valid-type,no-redef]
+            class GovernedAgent(  # type: ignore[misc,valid-type,no-redef]
+                _AutoGovernedAgentMixin,
+                original,
+            ):
                 def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    object.__setattr__(self, "_obsvr_auto_ready", False)
                     super().__init__(*args, **kwargs)
-                    _uninstallers.append(attach_tool_gate(self))
+                    self._obsvr_finish_init()
 
         GovernedAgent.__name__ = original.__name__
         GovernedAgent.__qualname__ = original.__qualname__
@@ -140,13 +241,15 @@ def _wire_openai_agents_tool_gate() -> bool:
                     pass
 
         _uninstallers.append(_uninstall)
-        record_binding("openai_agents", "agents.Agent")
+        record_binding("openai_agents.tools", "agents.Agent.tools")
+        record_binding("openai_agents.model", "agents.Agent.model")
         return True
     except Exception as exc:
         try:
             from .binding_report import record_binding
 
-            record_binding("openai_agents", "agents.Agent", exc)
+            record_binding("openai_agents.tools", "agents.Agent.tools", exc)
+            record_binding("openai_agents.model", "agents.Agent.model", exc)
         except Exception:
             pass
         logger.debug("obsvr.auto: openai-agents tool gate skipped: %s", exc)

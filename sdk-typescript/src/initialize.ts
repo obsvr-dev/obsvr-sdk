@@ -85,15 +85,15 @@ async function bindRequiredIntegration(name: string): Promise<void> {
   // through the registered loader hook, which is the binding being verified.
   const load = (specifier: string): Promise<unknown> => import(specifier);
   try {
-    if (name === 'openai') {
+    if (name === 'openai.client') {
       await load('openai');
       return;
     }
-    if (name === 'anthropic') {
+    if (name === 'anthropic.client') {
       await load('@anthropic-ai/sdk');
       return;
     }
-    if (name === 'google') {
+    if (name === 'google.client') {
       try {
         await load('@google/genai');
       } catch {
@@ -101,16 +101,16 @@ async function bindRequiredIntegration(name: string): Promise<void> {
       }
       return;
     }
-    if (name === 'mcp') {
+    if (name === 'mcp.client') {
       await load('@modelcontextprotocol/sdk/client/index.js');
       return;
     }
-    if (name === 'openai_agents') {
+    if (name === 'openai_agents.tools' || name === 'openai_agents.model') {
       await load('@openai/agents');
       return;
     }
   } catch (error) {
-    recordBinding(name, `${name}.provider-constructor`, error);
+    recordBinding(name, `${name}.startup-export`, error);
   }
 }
 

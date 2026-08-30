@@ -212,6 +212,73 @@ def test_auto_init_gates_future_real_agent_tool_execution() -> None:
     assert "blocked by agent policy" in str(model.calls[1]["input"])
 
 
+def test_auto_init_governs_a_concrete_model_at_agent_construction() -> None:
+    obsvr.init(
+        api_key="test",
+        pii_policy={"rules": {"ssn": "block"}},
+        auto=True,
+    )
+    raw = CountingModel()
+    agent = agents.Agent(
+        name="auto-governed-model-agent",
+        instructions="Answer.",
+        model=raw,
+    )
+
+    with pytest.raises(Exception, match="obsvr"):
+        asyncio.run(Runner.run(agent, f"ssn {SSN}"))
+    assert raw.calls == []
+
+
+def test_auto_init_gates_a_function_tool_appended_after_construction() -> None:
+    executions: list[str] = []
+
+    @function_tool
+    def send_contract(value: str) -> str:
+        """Send one contract to its destination."""
+        executions.append(value)
+        return "sent"
+
+    obsvr.init(
+        api_key="test",
+        agent_policy={"denied_tools": ["send_contract"]},
+        auto=True,
+    )
+    model = ToolCallingModel()
+    agent = agents.Agent(
+        name="auto-governed-late-tool-agent",
+        instructions="Call the requested tool.",
+        model=model,
+        tools=[],
+    )
+    agent.tools.append(send_contract)
+
+    result = asyncio.run(Runner.run(agent, "send contract-42"))
+
+    assert result.final_output == "done"
+    assert executions == [], "a denied late-added tool entered its callable"
+    assert "blocked by agent policy" in str(model.calls[1]["input"])
+
+
+def test_auto_init_governs_a_model_assigned_after_construction() -> None:
+    obsvr.init(
+        api_key="test",
+        pii_policy={"rules": {"ssn": "block"}},
+        auto=True,
+    )
+    raw = CountingModel()
+    agent = agents.Agent(
+        name="auto-governed-late-model-agent",
+        instructions="Answer.",
+        model="gpt-4o-mini",
+    )
+    agent.model = raw
+
+    with pytest.raises(Exception, match="obsvr"):
+        asyncio.run(Runner.run(agent, f"ssn {SSN}"))
+    assert raw.calls == []
+
+
 def test_redaction_reaches_every_provider_bound_input_turn() -> None:
     obsvr.init(
         api_key="test", pii_policy={"rules": {"ssn": "redact"}}, auto=False
