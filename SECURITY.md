@@ -48,6 +48,30 @@ The signing algorithm is byte-for-byte identical in both SDKs, pinned by the sha
 - **Optional client-held device signing (Ed25519), for local non-repudiation.** The HMAC seal above proves integrity, not non-repudiation: it is keyed from the API key, so the customer, obsvr, and anyone who has ever seen the API key can all mint a complete valid chain. Set `device_signing_key_file` / `deviceSigningKeyFile` to an operator-generated Ed25519 private key and every signed event ALSO carries a `device_sig` over the **same** preimage the HMAC covers, plus a `device_key_id` (`sha256(public key)[:16]`, derived). Verify it with `obsvr-verify --device-pubkey <pinned key>`, which pins out of band rather than trusting the inline key id: an event signed by an unpinned key is reported **foreign** ("Device key unknown"), never trusted on first use; a missing seal on a chain you pinned keys for is a **break**, because pinning asserts the expectation and a stripped seal must not read as clean; and the tier runs **without** the API key, so device-only verification attests content, order and the decision fields under the public key alone, sharing no secret. This is the seal that catches the attack the HMAC cannot: an API-key holder who re-mints the whole chain forward from genesis produces a chain that passes HMAC verification and fails the device tier, because he lacks the device key. **What this does and does not buy.** It is real non-repudiation against everyone who does not hold the device key — but the key lives on the same machine as the SDK, so with the agent at the host's uid this is tamper-**evident**, not tamper-proof, and a device tier is opt-in precisely because most deployments' threat model is the third party in transit, which the HMAC already covers. **The SDK never generates the key** — a configured key that cannot be read or cannot sign refuses at init, because a verifier or signer that mints key material would report every genuine record as foreign on a fresh machine. Python needs an Ed25519 backend for signing (`pip install "obsvr-sdk[crypto]"`, or PyNaCl); TypeScript uses `node:crypto` and needs nothing, and the Python verifier reports "device keys pinned but no backend" as its own outcome rather than folding it into valid or tampered. **The server countersignature is still the stronger seal where you trust ingest** — this is the option for deployments that want non-repudiation *without* trusting ingest, and the two compose. Signature bytes are pinned cross-language in `conformance/fixtures/signing_vectors.json` (`device_signatures`, `device_chain`).
 - **Events the SDK never saw are not in the record.** Coverage requires the SDK to be in the call path; this is an inherent property of an in-process library (see "Bypass surface").
 
+### Startup auto-governance boundary
+
+Startup auto-governance intercepts construction; it does not discover existing
+objects. `@obsvr/sdk/initialize` must be preloaded before TypeScript application
+imports, and `obsvr-run` initializes Python before executing the target script or
+module. TypeScript substitutes documented ESM exports and chains Node's CommonJS
+module loader for documented provider specifiers. Python rebinds documented
+provider constructor exports. Neither SDK walks the heap.
+
+Therefore a provider instance, constructor, or callable captured before startup
+can bypass governance, as can an unlisted import path, custom transport,
+unsupported method, or hosted tool runner. `OBSVR_REQUIRED_BINDINGS` makes
+startup fail when a declared provider constructor did not bind; TypeScript's
+`autoGovernanceStatus()` reports armed interceptors and observed provider
+bindings. These prove startup attachment, not that every future call used the
+attached boundary.
+
+Explicit wrapping may request `sealRaw: true` in TypeScript or `seal_raw=True`
+in Python. Sealing revokes documented governed methods on the exact raw object
+after the proxy is ready. It is transactional and does not freeze the provider
+SDK, revoke other instances, invalidate an earlier copied callable, or detect a
+call the SDK never observes. Required bindings, raw-handle sealing, framework
+facade binding, and pre-invocation tool gates are complementary controls.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.

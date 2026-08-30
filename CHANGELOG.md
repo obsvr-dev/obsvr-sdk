@@ -17,6 +17,12 @@ Changes land here and are renamed at the next release cut.
 
 ### Added
 
+- Added one-step startup auto-governance through `@obsvr/sdk/initialize` and
+  `obsvr-run`, including documented ESM and CommonJS provider construction,
+  required binding manifests, binding status, and packaged-entrypoint gates.
+- Explicit wrappers can transactionally revoke governed methods on the exact raw
+  client through `sealRaw` / `seal_raw`, reducing accidental raw-handle bypasses
+  without freezing provider SDK internals.
 - Strict profile 2.1 now binds each successfully finalized action to a device-signed terminal execution outcome, persists durable execution journals, and leaves post-start finalization failures unresolved as `invocation_uncertain` rather than authorizing automatic replay.
 - Applications can explicitly submit signed terminal outcomes or recovered terminal journals to hosted strict ingest. Exact duplicates are idempotent, and only a matching rejection with `stored: false` is treated as definitive non-storage.
 - Interrupted `invocation_started` journals can be explicitly finalized as signed `uncertain/process_interrupted` outcomes without guessing whether the remote action succeeded.

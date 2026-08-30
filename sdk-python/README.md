@@ -52,6 +52,21 @@ pip install "obsvr-sdk[crypto-nacl]"      # PyNaCl (alternative)
 
 ## Quick Start
 
+To initialize before application imports, run the application through obsvr:
+
+```bash
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+obsvr-run app.py
+# or: obsvr-run -m package.module
+```
+
+`obsvr-run` also reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`,
+`OBSVR_ENFORCEMENT_MODE`, `OBSVR_FAIL_MODE`, and
+`OBSVR_POLICY_REFRESH_INTERVAL_S`. Set
+`OBSVR_REQUIRED_BINDINGS=openai,anthropic` to fail before the application starts
+unless those constructors were actually bound.
+
 Wrap your existing LLM client. No other code changes.
 
 ```python
@@ -90,6 +105,18 @@ client = obsvr.wrap(GoogleGenAI())        # models.generate_content / aio.models
 Compatibility only means fixes, not features: the legacy adapter is kept working for existing deployments. The two distributions have different method and response shapes and use separate adapters.
 
 Both Gemini clients need an explicit `obsvr.wrap()` — unlike OpenAI and Anthropic, Python auto-registration does not intercept either package. The current adapter wraps `GoogleGenAI` and governs `models.generate_content`, `models.generate_content_stream`, and the corresponding `aio.models` methods. The legacy adapter wraps `GenerativeModel` and remains compatibility-only.
+
+`obsvr-run` is the safest automatic path because it installs constructor
+interception before the target imports. If the application controls import
+order, `obsvr.init(..., auto=True)` provides the same OpenAI and Anthropic
+registration. This rebinds documented module constructor exports; it is not a
+heap scan. Existing instances, constructor references copied before init,
+unlisted import aliases, custom transports, and hosted tool runners remain
+outside the boundary.
+
+Explicit wrapping accepts `seal_raw=True` to revoke documented governed methods
+on the exact raw client after the proxy is ready. This does not freeze provider
+internals, revoke another instance, or invalidate a callable copied earlier.
 
 `wrap()` governs `chat.completions.create` / `.parse`, `responses.create` / `.parse`,
 `messages.create` / `.parse`, their `with_raw_response` and
@@ -517,9 +544,10 @@ The boundaries below are enforcement limits.
 ### Before you install: the five limits of the Python SDK
 
 **Scope: this list is the Python SDK only.** The two SDKs do not have the same
-limitations — the TypeScript SDK has two of its own that do not apply here (it
-is ESM-only, and its zero-code auto-register misses documented import and timing
-shapes), and one below does not apply to it. The combined list for both, with the scope marked on each entry, is in the
+limitations — the TypeScript SDK has an ESM-only public API while its startup
+preload additionally chains documented CommonJS provider construction. Both
+runtimes still have import-order and saved-reference limits, and one limit below
+does not apply to TypeScript. The combined list for both, with the scope marked on each entry, is in the
 [repository README](https://github.com/obsvr-dev/obsvr-sdk#before-you-install-the-eight-limits-worth-knowing).
 
 **A limit measured on one SDK is a hypothesis about the other, not a fact about

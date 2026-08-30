@@ -65,9 +65,9 @@ This is **temporal provenance**: the action, decision, model, policy version, an
 Obsvr has two entry points, and the distinction is part of the security boundary:
 
 - **Explicit:** `obsvr.wrap(client)` governs the client instance you choose. It is dependency-light, works in both languages, and makes the interception point visible in code review.
-- **Automatic:** TypeScript starts with `--import @obsvr/sdk/register`; Python uses `obsvr.init(auto=True)` on supported packages. This reaches clients constructed inside libraries you do not control, but only through the documented package and method shapes.
+- **Automatic:** TypeScript starts with `--import @obsvr/sdk/initialize`; Python starts through `obsvr-run`. These startup entry points initialize obsvr before application imports and intercept future construction through documented provider package and method shapes. `@obsvr/sdk/register` plus an explicit `obsvr.init()` remains available when configuration must stay in code.
 
-TypeScript uses a load-time module hook and construct-trap `Proxy`, so supported exported client classes produce governed instances without mutating the original prototype. Python uses native framework registration where available and transparent object wrappers elsewhere. Explicit wrapping also preserves the underlying real SDK client, keeping APM and OpenTelemetry integrations compatible with the same object.
+TypeScript uses an ESM load hook, a chained CommonJS loader hook, and construct-trap `Proxy` objects. Python rebinds supported provider constructors before the application imports them. Neither runtime scans the heap or discovers clients that already exist. Explicit wrapping preserves the underlying real SDK client, keeping APM and OpenTelemetry integrations compatible with the same object.
 
 ```mermaid
 flowchart LR
@@ -79,7 +79,7 @@ flowchart LR
     decision --> evidence["signed decision event"]
 ```
 
-Coverage is intentionally described per integration rather than SDK-wide. A client imported through an unsupported TypeScript subpath, a CommonJS `require()`, a raw object retained before governance, or a framework callback delivered after execution may sit outside a given boundary. An escaped call records nothing rather than inventing an enforcement result. Use explicit wrapping or a pre-invocation tool gate when coverage must be unambiguous.
+Coverage is intentionally described per integration rather than SDK-wide. A client constructed before the startup preload, imported through an unlisted package path, reached through a saved raw reference, or invoked through a framework callback delivered after execution may sit outside a given boundary. An escaped call records nothing rather than inventing an enforcement result. Use required binding manifests, explicit wrapping, or a pre-invocation tool gate when coverage must be unambiguous.
 
 ## Five-minute quickstart
 
@@ -113,13 +113,15 @@ await client.chat.completions.create({
 });
 ```
 
-**TypeScript needs the module interceptor** for zero-code provider interception:
+For one-step startup governance, provide configuration through the environment and preload `initialize` before application imports:
 
 ```bash
-node --import @obsvr/sdk/register app.js
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+NODE_OPTIONS="--import @obsvr/sdk/initialize" node app.js
 ```
 
-`obsvr.init()` alone does not install TypeScript interception. The module hook covers supported ESM package specifiers; use `obsvr.wrap()` for explicit, auditable coverage.
+This covers documented ESM and CommonJS provider-construction entry points. `obsvr.init()` alone does not install interception. Use `@obsvr/sdk/register` with explicit initialization when configuration stays in code, or `obsvr.wrap()` for an explicit instance boundary.
 
 ### Python
 
@@ -150,7 +152,15 @@ client.chat.completions.create(
 )
 ```
 
-**Auto-governed by `init()` alone** — Python OpenAI and Anthropic clients can be instrumented with `obsvr.init(auto=True)`. Gemini uses an explicit wrapper.
+For initialization before application imports:
+
+```bash
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+obsvr-run app.py
+```
+
+`obsvr-run -m package.module` is also supported. Python OpenAI and Anthropic constructors are auto-governed; Gemini uses an explicit wrapper. Applications that own import order can instead call `obsvr.init(auto=True)` directly.
 
 See the [TypeScript](sdk-typescript/README.md) and [Python](sdk-python/README.md) package guides for every supported method and configuration option.
 
@@ -482,7 +492,7 @@ Provider latency is excluded. Full distributions, payload scaling, stress tiers,
 
 ## Important limitations
 
-1. **TypeScript is ESM-only.** The module interceptor sees supported exact ESM package specifiers, not CommonJS `require()` or arbitrary subpath imports. Use `obsvr.wrap()` when coverage must be explicit.
+1. **Startup interception is not process-wide discovery.** The TypeScript package API is ESM-only, but its startup preload additionally intercepts documented CommonJS provider entry points. Both SDKs govern supported clients constructed after their startup hook runs; pre-existing objects, saved raw references, unlisted package paths, custom transports, and hosted tool execution remain outside that guarantee. Use `OBSVR_REQUIRED_BINDINGS` and explicit wrapping or gates where coverage must be proven.
 2. **Some tracing callbacks still observe rather than govern.** TypeScript LlamaIndex tracing and OpenAI Agents tracing cannot block or rewrite an outbound provider call. Use `obsvrGovernLlamaIndexLLM` / `governModel` / `govern_model` (or their model-provider variants) when those model calls must enforce. LangChain model-start callbacks enforce in both SDKs; Python's LlamaIndex model-start callback enforces too.
 3. **Tool enforcement is binding-specific.** A framework may expose several invocation routes. Use the documented pre-invocation integration, MCP, or a governed tool for destructive capabilities.
 4. **Stream output is not withheld after dispatch.** Pre-call controls run before opening a supported stream, but post-call response scanning is audit-time and tokens reach the caller as they arrive.

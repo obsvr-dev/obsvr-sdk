@@ -25,16 +25,13 @@ cannot consume it**: `require("@obsvr/sdk")` fails, and there is no `require`
 condition to fall back to. Your project needs `"type": "module"`, `.mjs`
 entrypoints, or a bundler that emits ESM.
 
-This is worth checking before you install rather than after, because the failure
-is not only at load time. **Zero-code interception is silently nil under
-`require()`**, and that half would not be fixed by shipping a CommonJS build:
-`module.register()` hooks — what `--import @obsvr/sdk/register` installs — do not
-intercept `require()` at all. Measured, with a control: under `--import` with an
-ESM entrypoint a policy-violating call is refused and one audit event is written;
-with a `require()` entrypoint the same call reaches the provider, no event is
-written, and `interception_active` reads `false`. `obsvr.wrap()` and the named
-compatibility wrappers are unaffected — they govern the client you hand them,
-whatever loaded it.
+This restriction applies to the SDK API: a CommonJS application cannot call
+`require("@obsvr/sdk")`. The startup preload is different. It is loaded by Node
+as ESM, then chains the CommonJS module loader so documented provider
+`require()` entry points construct governed clients. This does not make the SDK
+dual-published, scan existing objects, or cover arbitrary package subpaths.
+`obsvr.wrap()` and the named compatibility wrappers remain the explicit path for
+client instances the application already owns.
 
 **Dual-publishing is deliberate future work, not an oversight**, and the reason
 is specific to what this package is. A dual build invites the dual-package
@@ -91,31 +88,55 @@ const result = await gemini.models.generateContent({
 
 Compatibility only means fixes, not features: the legacy adapter is kept working for existing deployments. The two packages have different method and response shapes and use separate adapters. npm carries no deprecation flag on either package, so check `package.json` to identify the installed line.
 
-### Zero-code global coverage (no monkey patching)
+### One-step startup auto-governance
 
-If you would rather not call `wrap()` on every client, start Node with the obsvr module interceptor:
+The preferred startup path initializes obsvr from environment variables before
+application imports and arms both ESM and CommonJS provider construction:
 
 ```bash
-node --import @obsvr/sdk/register app.js
-# or: NODE_OPTIONS="--import @obsvr/sdk/register" npm start
+OBSVR_API_KEY=... \
+OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
+NODE_OPTIONS="--import @obsvr/sdk/initialize" node app.js
 ```
 
-`new OpenAI()`, `new Anthropic()`, `new GoogleGenAI()` and legacy `getGenerativeModel()` then return governed instances automatically, including ones created inside third-party libraries. obsvr never mutates provider prototypes, classes, or module objects: the interceptor swaps the module's exported class for a construct-trap `Proxy`, and the instance underneath stays a genuine SDK client. APM, tracing, and other instrumentation layered on the same SDKs keep working. Clients constructed before `obsvr.init()` pass through untouched and pick up governance on their first call after init.
+The preload reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`, `OBSVR_PROVIDERS`,
+and JSON `OBSVR_PII_POLICY` in addition to the required API key. Set
+`OBSVR_REQUIRED_BINDINGS=openai,anthropic` to fail startup unless those provider
+constructors were actually intercepted. `autoGovernanceStatus()` reports which
+interceptors are armed and which providers have bound.
+
+For code-owned configuration, preload `@obsvr/sdk/register` and call
+`obsvr.init()` before importing providers. `register` arms interception but does
+not initialize policy by itself.
+
+`new OpenAI()`, `new Anthropic()`, `new GoogleGenAI()` and legacy
+`getGenerativeModel()` then return governed instances automatically through
+supported exports. ESM exports are substituted with construct-trap `Proxy`
+objects. The CommonJS path explicitly chains Node's module loader; it is loader
+monkey-patching, although provider prototypes, classes, and module objects are
+not mutated. The instance underneath remains a genuine SDK client.
 
 Use `providers: ['openai']` in `obsvr.init()` to narrow which providers the interceptor governs; omit it to govern all supported ones.
 
-#### What this does not reach
+#### Exact reach and remaining bypasses
 
-The hook's reach is narrower than *every* client anywhere in the process, and the gaps below were measured against a real provider with a governed control in the same run rather than reasoned about. What the hook governs is each supported root client export of a supported package, imported by its **exact specifier**, from an **ESM** entry point. Two import shapes escape:
+OpenAI construction is intercepted on the package root plus `openai/index`,
+`openai/index.mjs`, `openai/client`, `openai/client.mjs`, `openai/client.js`, and
+`openai/azure`; the applicable subset is covered for both ESM and CommonJS.
+Anthropic and Google use their documented package roots.
 
-| Escapes | Why |
-| --- | --- |
-| `require("openai")` | `module.register()` hooks do not intercept CommonJS. Interception never activates; the call reaches the provider and nothing is recorded. |
-| `openai/index.mjs`, `openai/index`, `openai/client`, `openai/client.mjs`, `openai/client.js`, `openai/azure` | The specifier table is exact-match, so a subpath resolves to the untouched module. |
+This is constructor interception, not discovery. The preload must run before the
+provider import or `require`. A client, constructor, or unbound method saved
+before startup remains a bypass. Arbitrary subpaths, custom transports, hosted
+provider tools, and unlisted methods are not inferred. Those calls emit no false
+`blocked` record. Bind framework-owned model facades and tool gates where their
+documented boundary requires it.
 
-**Neither puts a false record in the audit trail** — an escaped import emits no event rather than a wrong one, so it is reported as a coverage gap. Where the application can import `@obsvr/sdk`, explicit `obsvr.wrap(client)` governs the resulting client instance.
-
-The CommonJS row is structural and cannot be closed by the ESM loader hook; subpath coverage remains an open gap. Widening the specifier table is a change to the interception path across the whole declared version range of each provider package, not a documentation-only change.
+Explicit wrapping can additionally set `sealRaw: true`. After the governed proxy
+is created, documented governed methods on that exact raw object throw if called
+directly. Sealing is transactional and method-scoped; it does not freeze SDK
+internals, revoke another client instance, or eliminate a callable copied before
+sealing.
 
 ## Strict profile 2.1 provider boundary
 
@@ -529,10 +550,10 @@ The combined list for both, with the scope marked on each entry, is in the
    framework behaves the way the test models it.
    [`tests/README.md`](https://github.com/obsvr-dev/obsvr-sdk/blob/main/sdk-typescript/tests/README.md) says which surfaces are which.
 
-2. **This package is ESM-only, and the zero-code path cannot reach `require()`.**
-   A CommonJS service cannot consume it at all, and even where it loads,
-   `--import` interception never sees `require()` — so that coverage is nil
-   rather than partial. See [below](#this-package-is-esm-only).
+2. **This package API is ESM-only.** A CommonJS service cannot
+   `require("@obsvr/sdk")`. The ESM startup preload can still govern documented
+   provider `require()` entry points through its chained CommonJS loader hook.
+   See [below](#this-package-is-esm-only).
 
 3. **Coverage is method-table based, even on named compatibility wrappers.**
    `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` now share
@@ -557,15 +578,12 @@ The combined list for both, with the scope marked on each entry, is in the
    capability behind MCP, a tool guardrail, or a governed tool.
    [Grading](#framework-integrations).
 
-6. **The zero-code auto-register misses two import shapes, each measured rather
-   than reasoned about.** A `require()` entry point (the hook does not
-   intercept CommonJS at all) and a subpath import such as `openai/index.mjs`
-   or `openai/client` (the specifier table is exact-match) bypass interception.
-   Supported root exports, including `OpenAI`, `AzureOpenAI`, and
-   `BedrockOpenAI`, are rebound to governed clients. An escaped import records
-   nothing rather than recording something false, and explicit `obsvr.wrap()`
-   remains available for client instances.
-   [Detail](#zero-code-global-coverage-no-monkey-patching).
+6. **Startup interception is exact and order-dependent.** Supported OpenAI root
+   and documented subpath exports, Anthropic roots, and Google roots construct
+   governed clients after the preload runs. Objects or callables captured
+   earlier, arbitrary subpaths, custom transports, and hosted tool runners remain
+   bypasses. An escaped call records nothing rather than something false.
+   [Detail](#one-step-startup-auto-governance).
 
 7. **Current Gemini coverage is method-bounded.** `@google/genai` 2.x is
    governed on unary and streaming generation plus retained chat sessions,

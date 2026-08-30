@@ -186,7 +186,7 @@ against a real provider. The row stays `declared` because no release below the
 floor was driven — the label is about locating an edge, and that edge has not
 been walked.
 
-**Module format: ESM only.** `@obsvr/sdk` declares `"type": "module"` and every export condition is `import`, so a CommonJS consumer cannot `require()` it at any version. Independently of loading, the zero-code `--import` interception path does not reach `require()` — `module.register()` hooks do not intercept it — so a CJS entrypoint is ungoverned on that path even where the packages above are dual-format. `obsvr.wrap()` and the named compatibility wrappers are unaffected. See the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only) for why dual-publishing is scoped as future work rather than a quick fix.
+**Module format: ESM-only API, ESM and CommonJS provider interception.** `@obsvr/sdk` declares `"type": "module"` and every public API export condition is `import`, so a CommonJS consumer cannot `require()` the SDK itself. The `@obsvr/sdk/initialize` and `@obsvr/sdk/register` preloads are ESM; once loaded, they also chain Node's CommonJS module loader for documented provider entry points. OpenAI coverage includes the root plus `openai/index`, `openai/index.mjs`, `openai/client`, `openai/client.mjs`, `openai/client.js`, and `openai/azure` where the module format applies. This does not cover arbitrary subpaths, imports completed before the preload, saved constructor references, or custom transports. `obsvr.wrap()` and named compatibility wrappers remain the explicit boundary. See the [TypeScript README](sdk-typescript/README.md#this-package-is-esm-only).
 
 ## Ordinary enforcement boundary
 

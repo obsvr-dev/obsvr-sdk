@@ -1,7 +1,9 @@
 """Auto-instrumentation: wire the frameworks that expose a clean GLOBAL
 registration point, so `obsvr.init(auto=True)` governs them without the user
 passing handler objects by hand — the zero-wiring auto-instrumentation UX, but done
-WITHOUT monkey-patching framework internals (a WHY_OBSVR non-goal).
+without scanning the heap or patching framework internals. Provider module
+constructor exports are rebound at registration time; objects or constructor
+references saved earlier are outside that boundary.
 
 Cleanly auto-wired (global, non-mutating registration):
   * Providers (openai / anthropic) — construct interception via obsvr.register.

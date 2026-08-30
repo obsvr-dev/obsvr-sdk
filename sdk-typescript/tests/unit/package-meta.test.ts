@@ -224,20 +224,13 @@ describe("root README: TypeScript auto-governance", () => {
     }
   });
 
-  it("the README sends TypeScript readers to the module interceptor", () => {
-    expect(rootReadme).toContain("TypeScript needs the module interceptor");
-    expect(rootReadme).toContain("--import @obsvr/sdk/register");
+  it("the README sends TypeScript readers to the one-step startup preload", () => {
+    expect(rootReadme).toContain("--import @obsvr/sdk/initialize");
+    expect(rootReadme).toContain("before application imports");
+    expect(rootReadme).toContain("@obsvr/sdk/register");
   });
 
   it("the README does not claim init() alone auto-governs TypeScript", () => {
-    // The exact shape of the old claim: the init()-alone line naming
-    // TypeScript. Python genuinely does auto-govern on that line and is
-    // measured doing so, so the assertion is scoped to that one line rather
-    // than to the phrase.
-    const line = rootReadme
-      .split("\n")
-      .find((l) => l.includes("Auto-governed by `init()` alone"));
-    expect(line).toBeDefined();
-    expect(line).not.toContain("TypeScript");
+    expect(rootReadme).toContain("`obsvr.init()` alone does not install interception");
   });
 });
