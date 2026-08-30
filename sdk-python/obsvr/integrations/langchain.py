@@ -59,6 +59,7 @@ from ..policy import (
 from ..reason_codes import ReasonCode
 from ..span import emit_span
 from ..span_attributes import SPAN_ATTR
+from .tools import _identity_meta
 
 try:  # pragma: no cover - exercised only when langchain-core is installed
     from langchain_core.callbacks import BaseCallbackHandler  # type: ignore
@@ -933,17 +934,16 @@ class ObsvrCallbackHandler(BaseCallbackHandler):
         option_metadata = self._options.get("metadata")
         if isinstance(option_metadata, dict):
             policy_metadata.update(option_metadata)
-        for key in ("user_id", "service_name"):
-            value = self._options.get(key)
-            if value is not None:
-                policy_metadata[key] = value
+        identity_options = dict(self._options)
+        identity_options["metadata"] = policy_metadata
+        identity_meta = _identity_meta(identity_options)
 
         policy = apply_pre_call_policy(
             prompt,
             config,
             provider=provider,
             operation="langchain.llm",
-            metadata=policy_metadata,
+            metadata=identity_meta,
             model=str(model),
             turn_text=user_text or prompt,
         )
