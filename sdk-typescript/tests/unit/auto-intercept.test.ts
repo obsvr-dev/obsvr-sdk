@@ -17,6 +17,7 @@ import {
   interceptMcpNamespace,
   interceptOpenAIAgentClass,
   interceptOpenAIAgentsNamespace,
+  interceptLlamaIndexSettings,
   isInterceptorInstalled,
   markInterceptorInstalled,
   isInterceptionActive,
@@ -234,6 +235,31 @@ describe('auto/interceptProviderClass', () => {
     expect(governed.OpenAI).not.toBe(FakeOpenAI);
     expect(isInterceptionActive()).toBe(true);
     expect(autoGovernanceStatus().boundProviders).toEqual(['openai']);
+  });
+
+  test('LlamaIndex Settings.llm assignment installs a real pre-call gate', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: { rules: { ssn: 'block' } } });
+    const calls: Record<string, unknown>[] = [];
+    const rawLlm = {
+      metadata: { model: 'gpt-4o-mini' },
+      chat: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return { message: { content: 'ok' } };
+      },
+      complete: async (params: Record<string, unknown>) => {
+        calls.push(params);
+        return { text: 'ok' };
+      },
+    };
+    const settings = { llm: null as unknown };
+    const intercepted = interceptLlamaIndexSettings(settings);
+    intercepted.llm = rawLlm;
+
+    await expect(
+      (settings.llm as typeof rawLlm).complete({ prompt: 'SSN 123-45-6789' }),
+    ).rejects.toThrow('Request blocked by policy');
+    expect(calls).toHaveLength(0);
+    expect(autoGovernanceStatus().bindings['llamaindex.models']).toEqual({ state: 'bound' });
   });
 });
 

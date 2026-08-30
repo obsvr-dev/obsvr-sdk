@@ -6,6 +6,7 @@ import {
   interceptProviderNamespace,
   interceptMcpNamespace,
   interceptOpenAIAgentsNamespace,
+  interceptLlamaIndexNamespace,
   markInterceptorInstalled,
   type InterceptedProvider,
 } from './index.js';
@@ -15,7 +16,7 @@ interface ModuleLoader {
 }
 
 interface CjsTarget {
-  provider: InterceptedProvider | 'mcp' | 'openai-agents';
+  provider: InterceptedProvider | 'mcp' | 'openai-agents' | 'llamaindex';
   clientExports: readonly string[];
   constructDefault: boolean;
 }
@@ -71,6 +72,11 @@ const CJS_TARGETS: Readonly<Record<string, CjsTarget>> = {
     clientExports: ['Agent'],
     constructDefault: false,
   },
+  llamaindex: {
+    provider: 'llamaindex',
+    clientExports: ['Settings'],
+    constructDefault: false,
+  },
 };
 
 interface InstalledState {
@@ -124,6 +130,11 @@ export function installCjsHook(): boolean {
     }
     if (target.provider === 'openai-agents') {
       const intercepted = interceptOpenAIAgentsNamespace(loaded);
+      namespaceCache.set(loaded as object, intercepted);
+      return intercepted;
+    }
+    if (target.provider === 'llamaindex') {
+      const intercepted = interceptLlamaIndexNamespace(loaded);
       namespaceCache.set(loaded as object, intercepted);
       return intercepted;
     }
