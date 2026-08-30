@@ -32,6 +32,16 @@ from .policy_lifecycle_v1 import (  # noqa: F401
     policy_candidate_v1_hash,
     replay_policy_candidate_v1,
 )
+from .workload_registry_v1 import (  # noqa: F401
+    WORKLOAD_REGISTRATION_ENVELOPE_V1_SCHEMA,
+    WORKLOAD_REGISTRATION_V1_SCHEMA,
+    WorkloadRegistryV1,
+    WorkloadRegistryV1ValidationError,
+    build_workload_registration_v1,
+    sign_workload_registration_v1,
+    verify_workload_registration_v1,
+    workload_registration_v1_hash,
+)
 from .reason_codes import (  # noqa: F401
     REASON_CODES,
     RULE_TYPE_TO_REASON_CODE,
@@ -285,6 +295,14 @@ __all__ = [
     "decide_policy_promotion_v1",
     "policy_candidate_v1_hash",
     "replay_policy_candidate_v1",
+    "WORKLOAD_REGISTRATION_ENVELOPE_V1_SCHEMA",
+    "WORKLOAD_REGISTRATION_V1_SCHEMA",
+    "WorkloadRegistryV1",
+    "WorkloadRegistryV1ValidationError",
+    "build_workload_registration_v1",
+    "sign_workload_registration_v1",
+    "verify_workload_registration_v1",
+    "workload_registration_v1_hash",
     "get_config",
     "is_initialized",
     "try_get_config",

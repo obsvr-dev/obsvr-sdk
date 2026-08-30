@@ -358,6 +358,17 @@ export {
   replayPolicyCandidateV1,
   decidePolicyPromotionV1,
 } from "./governance/policy-lifecycle-v1.js";
+export {
+  WORKLOAD_REGISTRATION_V1_SCHEMA,
+  WORKLOAD_REGISTRATION_ENVELOPE_V1_SCHEMA,
+  WorkloadRegistryV1ValidationError,
+  WorkloadRegistryV1,
+  buildWorkloadRegistrationV1,
+  workloadRegistrationV1Hash,
+  signWorkloadRegistrationV1,
+  verifyWorkloadRegistrationV1,
+} from "./governance/workload-registry-v1.js";
+export type { WorkloadRegistrationV1Input } from "./governance/workload-registry-v1.js";
 export type {
   PolicyCandidateV1Input,
   PolicyReplayCaseV1,
