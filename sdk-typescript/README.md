@@ -105,13 +105,23 @@ NODE_OPTIONS="--import @obsvr/sdk/initialize" node app.js
 
 The preload reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`, `OBSVR_PROVIDERS`,
 and JSON `OBSVR_PII_POLICY`, `OBSVR_AGENT_POLICY`, and
-`OBSVR_MCP_TOOL_POLICY` in addition to the required API key. Set
-`OBSVR_REQUIRED_BINDINGS` to any required subset of `openai.client`,
-`anthropic.client`, `google.client`, `mcp.client`, `openai_agents.model`, and
-`openai_agents.tools`; startup fails unless those exact boundaries actually
-bind. `autoGovernanceStatus()` reports each automatic boundary as `armed`,
-`bound`, or `not-applicable`; `integrationBindings()` reports every recorded
-symbol bind.
+`OBSVR_MCP_TOOL_POLICY` in addition to the required API key.
+
+Set `OBSVR_REQUIRED_BINDINGS` to the exact boundaries the process requires:
+
+| Key | Successful binding means |
+| --- | --- |
+| `openai.client` | documented future OpenAI construction is intercepted |
+| `anthropic.client` | documented future Anthropic construction is intercepted |
+| `google.client` | documented future current and legacy Gemini construction is intercepted |
+| `mcp.client` | documented future MCP `Client` construction receives the `tools/call` gate |
+| `openai_agents.model` | intercepted Agents receive concrete-model governance |
+| `openai_agents.tools` | intercepted Agents receive local function-tool and handoff gates, including supported later mutations |
+
+Startup fails unless every listed boundary binds. `openai_agents.tools` does not
+include tracing or hosted tools. `autoGovernanceStatus()` reports each automatic
+boundary as `armed`, `bound`, or `not-applicable`; `integrationBindings()`
+reports every recorded symbol bind.
 
 In production, configuring agent or MCP policy without the startup preload logs
 a warning that only explicitly bound surfaces enforce. Use exact required keys

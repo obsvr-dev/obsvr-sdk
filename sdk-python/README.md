@@ -66,12 +66,24 @@ obsvr-run app.py
 
 `obsvr-run` also reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`,
 `OBSVR_ENFORCEMENT_MODE`, `OBSVR_FAIL_MODE`, `OBSVR_AGENT_POLICY`,
-`OBSVR_MCP_TOOL_POLICY`, and `OBSVR_POLICY_REFRESH_INTERVAL_S`. Set
-`OBSVR_REQUIRED_BINDINGS` to exact automatic boundaries such as
-`openai.client`, `anthropic.client`, `mcp.client`, `openai_agents.model`,
-`openai_agents.tools`, `llamaindex.models`, `crewai.tools`, or `autogen.tools`;
-startup fails before the target runs unless those installed boundaries actually
-bind. `auto_governance_status()` reports each boundary as `armed`, `bound`, or
+`OBSVR_MCP_TOOL_POLICY`, and `OBSVR_POLICY_REFRESH_INTERVAL_S`.
+
+Set `OBSVR_REQUIRED_BINDINGS` to the exact boundaries the process requires:
+
+| Key | Successful binding means |
+| --- | --- |
+| `openai.client` | documented future OpenAI construction is intercepted |
+| `anthropic.client` | documented future Anthropic construction is intercepted |
+| `mcp.client` | documented future MCP `ClientSession` construction receives the `tools/call` gate |
+| `openai_agents.model` | intercepted Agents receive concrete-model governance |
+| `openai_agents.tools` | intercepted Agents receive local function-tool and handoff gates, including supported later mutations |
+| `llamaindex.models` | the process-global LlamaIndex model-start gate is installed |
+| `crewai.tools` | the supported CrewAI pre-tool hook is installed |
+| `autogen.tools` | the supported AutoGen/ag2 tool-execution gate is installed |
+
+Startup fails before the target runs unless every listed boundary binds.
+`openai_agents.tools` does not include tracing or hosted tools.
+`auto_governance_status()` reports each boundary as `armed`, `bound`, or
 `not-applicable`.
 
 The same manifest is enforced by direct `obsvr.init(auto=True)`. Production

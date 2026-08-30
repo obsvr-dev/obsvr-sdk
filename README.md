@@ -83,6 +83,24 @@ Coverage is intentionally described per integration rather than SDK-wide. A clie
 
 Production startup is not silent: TypeScript warns when agent or MCP policy is configured without the startup preload, and Python warns when automatic initialization begins after supported packages were already imported. In either runtime, exact `OBSVR_REQUIRED_BINDINGS` entries turn an expected automatic boundary into a startup requirement; Python applies the manifest to direct `init(auto=True)` as well as `obsvr-run`.
 
+Use the smallest manifest that represents the boundaries your application must
+have. These are exact surface keys, not product-wide claims:
+
+| Required key | Runtime | What a successful bind proves |
+| --- | --- | --- |
+| `openai.client` | TypeScript, Python | documented future OpenAI client construction is intercepted |
+| `anthropic.client` | TypeScript, Python | documented future Anthropic client construction is intercepted |
+| `google.client` | TypeScript | documented future current and legacy Gemini construction is intercepted |
+| `mcp.client` | TypeScript, Python | documented future MCP client/session construction receives the `tools/call` gate |
+| `openai_agents.model` | TypeScript, Python | intercepted Agents receive concrete-model pre-call governance |
+| `openai_agents.tools` | TypeScript, Python | intercepted Agents receive local function-tool and handoff gates, including supported later list mutations |
+| `llamaindex.models` | Python | the process-global LlamaIndex model-start gate is installed |
+| `crewai.tools` | Python | the supported CrewAI pre-tool hook is installed |
+| `autogen.tools` | Python | the supported AutoGen/ag2 tool-execution gate is installed |
+
+`openai_agents.model` and `openai_agents.tools` do not claim that Agents tracing,
+hosted tools, or every future Agents SDK surface is governed.
+
 ## Five-minute quickstart
 
 ### TypeScript
