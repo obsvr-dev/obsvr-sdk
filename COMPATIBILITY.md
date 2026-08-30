@@ -13,7 +13,7 @@ Which versions of each package the obsvr SDK works with.
 | `cryptography`            | `>=41.0.0`                            | —                                                    | declared       |
 | `google-cloud-aiplatform` | `>=1.38.0,<2.0.0`                     | —                                                    | declared       |
 | `google-genai`             | `>=2.0.0,<3.0.0`                     | `2.17.0`                                             | declared       |
-| `google-generativeai`      | any version                           | `0.8.6`                                              | declared       |
+| `google-generativeai`      | `>=0.3.0,<1.0.0`                     | `0.3.0`, `0.8.6`                                     | **matrix**     |
 | `haystack-ai`             | `>=2.0.0,<4.0.0`                      | `2.0.0`, `3.0.0`                                     | **matrix**     |
 | `langchain-core`          | `>=1.0.0,<2.0.0`                      | `1.0.0`, `1.5.3`                                     | **matrix**     |
 | `llama-index-core`        | `>=0.14.5,<0.15.0`                    | `0.14.5`, `0.14.23`                                  | **matrix**     |
@@ -24,9 +24,11 @@ Which versions of each package the obsvr SDK works with.
 | `pydantic-ai-slim`        | `>=2.0.0,<3.0.0`                      | `2.0.0`, `2.22.0`                                    | **matrix**     |
 | `PyNaCl`                  | `>=1.0.0`                             | —                                                    | declared       |
 
-`google-generativeai` is the legacy line, end-of-life 2025-08. The maintained
-`google-genai` adapter was package-tested at 2.17.0; its row is still declared
-because releases below that point were not walked to locate a floor.
+`google-generativeai` is the legacy line, end-of-life 2025-08. Its real
+`GenerativeModel` and `ChatSession` boundaries are package-tested at the first
+supported release and the final legacy release. The maintained `google-genai`
+adapter was package-tested at 2.17.0; its row is still declared because
+releases below that point were not walked to locate a floor.
 `cryptography` and `PyNaCl` are the two interchangeable Ed25519 backends behind
 the `crypto` / `crypto-nacl` extras — install one, not both.
 
