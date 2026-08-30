@@ -71,8 +71,10 @@ const REQUIRED_PUBLIC_NAMES = [
   "createStrictEvidenceBundleV21",
   "verifyStrictEvidenceBundleV21",
   "withStrictOtelCorrelationV21",
+  "autoGovernanceStatus",
 ];
 const REQUIRED_SUBPATHS = ["@obsvr/sdk/register", "@obsvr/sdk/mcp", "@obsvr/sdk/proxy"];
+const REQUIRED_RESOLVABLE_SUBPATHS = ["@obsvr/sdk/initialize"];
 
 const failures = [];
 function check(label, ok, detail = "") {
@@ -176,6 +178,19 @@ async function main() {
     }
   }
   check("every documented subpath export resolves", unresolvable.length === 0, `failed=${unresolvable}`);
+  const unresolvedOnly = [];
+  for (const subpath of REQUIRED_RESOLVABLE_SUBPATHS) {
+    try {
+      import.meta.resolve(subpath);
+    } catch (err) {
+      unresolvedOnly.push(`${subpath} (${err && err.code ? err.code : err})`);
+    }
+  }
+  check(
+    "startup-only subpath exports resolve without executing them",
+    unresolvedOnly.length === 0,
+    `failed=${unresolvedOnly}`,
+  );
 
   const { obsvr, obsvrGovernTool, ReasonCode } = sdk;
 
