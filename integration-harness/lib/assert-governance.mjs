@@ -23,11 +23,19 @@
  *                            || u64be(byteLen(response)) || response ).hex
  *     sig_payload  = [ "2", session, seq, ts, content_hash, prev_sig ?? "" ].join("|")
  *
- *   chain_format 3 (what the SDK signs today)
+ *   chain_format 3
  *     decision_hash = SHA256( "obsvr:decision/3" || 0x00
  *                             || for each field of DECISION_FIELD_ORDER:
  *                                  presence_byte || u64be(byteLen(v)) || v ).hex
  *     sig_payload  = [ "3", session, seq, ts, content_hash, decision_hash,
+ *                      prev_sig ?? "" ].join("|")
+ *
+ *   chain_format 4 (what the SDK signs today)
+ *     decision_hash = SHA256( "obsvr:decision/4" || 0x00
+ *                             || the format-3 fields
+ *                             || operation || source || event_type,
+ *                             with the same framed field encoding ).hex
+ *     sig_payload  = [ "4", session, seq, ts, content_hash, decision_hash,
  *                      prev_sig ?? "" ].join("|")
  *
  *   sdk_sig = HMAC_SHA256(signing_key, sig_payload).hex   (64 lowercase hex)
@@ -88,14 +96,16 @@ export function deriveSigningKey(apiKey) {
 }
 
 const CHAIN_FORMAT_LEGACY = 1;
-const CHAIN_FORMAT_CURRENT = 3;
+const CHAIN_FORMAT_DECISION_FIELDS = 3;
+const CHAIN_FORMAT_CURRENT = 4;
 const CONTENT_HASH_DOMAIN_TAG = "obsvr:content/2";
 const DECISION_HASH_DOMAIN_TAG = "obsvr:decision/3";
+const CLASSIFIED_DECISION_HASH_DOMAIN_TAG = "obsvr:decision/4";
 
 /** The decision/attribution fields format 3 signs, in the ONE order the digest
  *  is defined over. Order and membership are part of the signature: changing
  *  either changes every format-3 sig and would require a new format number. */
-export const DECISION_FIELD_ORDER = [
+export const DECISION_FIELD_ORDER_V3 = [
   "action_taken",
   "action_reason",
   "reason_code",
@@ -104,6 +114,13 @@ export const DECISION_FIELD_ORDER = [
   "model",
   "provider",
   "user_id",
+];
+
+export const DECISION_FIELD_ORDER = [
+  ...DECISION_FIELD_ORDER_V3,
+  "operation",
+  "source",
+  "event_type",
 ];
 
 /** u64 big-endian byte-length prefix. Byte counts, not JS string length — the
@@ -134,9 +151,13 @@ function contentHashFor(format, prompt, response) {
 }
 
 /** Digest over the decision/attribution fields an event carries. Format 3+. */
-export function decisionHashOf(ev) {
-  const h = createHash("sha256").update(DECISION_HASH_DOMAIN_TAG).update(Buffer.from([0]));
-  for (const key of DECISION_FIELD_ORDER) {
+export function decisionHashOf(ev, format = CHAIN_FORMAT_CURRENT) {
+  const classified = format >= CHAIN_FORMAT_CURRENT;
+  const h = createHash("sha256")
+    .update(classified ? CLASSIFIED_DECISION_HASH_DOMAIN_TAG : DECISION_HASH_DOMAIN_TAG)
+    .update(Buffer.from([0]));
+  const order = classified ? DECISION_FIELD_ORDER : DECISION_FIELD_ORDER_V3;
+  for (const key of order) {
     const raw = ev?.[key];
     const present = raw !== undefined && raw !== null;
     h.update(Buffer.from([present ? 1 : 0]));
@@ -169,7 +190,7 @@ export function signaturePayload(ev) {
     String(ev.timestamp_sdk),
     contentHashFor(format, ev.prompt, ev.response),
   ];
-  if (format >= CHAIN_FORMAT_CURRENT) fields.push(decisionHashOf(ev));
+  if (format >= CHAIN_FORMAT_DECISION_FIELDS) fields.push(decisionHashOf(ev, format));
   fields.push(ev.prev_sig ?? "");
   if (format !== CHAIN_FORMAT_LEGACY) fields.unshift(String(format));
   return fields.join("|");

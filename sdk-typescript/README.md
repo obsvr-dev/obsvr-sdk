@@ -146,6 +146,24 @@ include tracing or hosted tools. `autoGovernanceStatus()` reports each automatic
 boundary as `armed`, `bound`, or `not-applicable`; `integrationBindings()`
 reports every recorded symbol bind.
 
+The preload also intercepts the root `llamaindex` namespace. A compatible model
+assigned later through `Settings.llm` is replaced by the same enforcing
+`obsvrGovernLlamaIndexLLM` boundary, so a deny stops `chat` / `complete` before
+the underlying model runs. Because application assignment happens after preload
+startup, validate it after the factory runs rather than adding it to the startup
+manifest:
+
+```ts
+assertCoverageRequirements([{
+  integration: 'llamaindex.models',
+  minimum_depth: 'enforce',
+  symbols: ['llamaindex.Settings.llm'],
+}]);
+```
+
+This does not cover a `Settings` reference saved before preload, tracing, or
+LlamaIndex agent tools.
+
 For deployment admission, `signCoverageAttestation()` signs that binding
 snapshot with an operator-held Ed25519 key. Requirements can demand `observe`
 or `enforce` depth for exact integration symbols; ungraded legacy records are
@@ -154,6 +172,11 @@ policy-pack hashes, versions, initialization times, and known exclusions.
 `verifyCoverageAttestation()` rejects altered or noncanonical statements under
 the pinned public key. This proves the process-reported bindings, not calls
 made through a raw alias or outside a documented boundary.
+
+For a caller-owned factory, `assertEnforcementBoundary()` runs one known-deny
+request and requires both a rejection and zero additional calls in the supplied
+transport counter. Use it with `assertCoverageRequirements()` as a deployment
+smoke test. Neither helper discovers other clients in the process.
 
 In production, configuring agent or MCP policy without the startup preload logs
 a warning that only explicitly bound surfaces enforce. Use exact required keys
@@ -418,7 +441,7 @@ Three different things sit outside that table, and only the first is a policy de
 
 **The named compatibility wrappers share that table.** `wrapAzureOpenAI`, `wrapTogether` and `wrapOpenAICompatible` delegate to the same generic governed-path resolver and enforcement pipeline as `obsvr.wrap()`. Their difference is attribution: they supply a destination fallback and per-endpoint source label when the client exposes no readable base URL. `wrapWorkersAI` is separate: it proxies `run` on a Workers AI binding and applies the pre-call policy and outbound redaction directly. The generic table still has documented exclusions below; a named wrapper does not make an unsupported OpenAI surface governed.
 
-**Framework model coverage depends on the interception point.** LangChain awaits its model-start callback, so `ObsvrCallbackHandler` runs the full pre-call policy and a block stops dispatch; because the callback cannot rewrite the provider request, requested redaction fails closed. LlamaIndex event tracing remains observe-only, while `obsvrGovernLlamaIndexLLM` owns `chat` and `complete` and enforces block/redaction before delegation. OpenAI Agents tracing remains observe-only, while `governModel` and `governModelProvider` own the model interface and enforce. Metering for framework events is opt-in.
+**Framework model coverage depends on the interception point.** LangChain awaits its model-start callback, so `ObsvrCallbackHandler` runs the full pre-call policy and a block stops dispatch; because the callback cannot rewrite the provider request, requested redaction fails closed. LlamaIndex event tracing remains observe-only, while `obsvrGovernLlamaIndexLLM` owns `chat` and `complete` and enforces block/redaction before delegation. The startup preload installs that enforcing wrapper when the app assigns a compatible model through the intercepted root `Settings.llm`. OpenAI Agents tracing remains observe-only, while `governModel` and `governModelProvider` own the model interface and enforce. Metering for framework events is opt-in.
 
 **"Metering is opt-in" means the default is OFF, and that is a decision.** ``meterIntegrationEvents`` defaults to **false**, so framework-integration events carry no cost fragment and never increment a token-unit quota; the ``obsvr.wrap()`` client-proxy path is metered either way and the flag does not affect it. The default is off because turning it on is not a neutral correction — a token-unit budget that has never bound on framework traffic **begins binding**, and calls that previously succeeded start being refused once it is reached. For an operator already running a token quota that is an outage rather than a fix, so it has to be a deliberate choice. One flag covers cost and quota together, because metering what a call cost without counting it against the budget it belongs to produces a record that disagrees with itself.
 
@@ -456,7 +479,24 @@ Governance covers all three MCP phases: **discovery** (`listTools()` is scanned 
 
 ## Tamper-Evident Audit Trail
 
-Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers the prompt/response **content** and event **order**, so tampering with captured content — or dropping/reordering events once they are in the chain — breaks it. Sender-visible loss is declared by a signed **gap marker**: queue overflow links a marker into the current session, while ingest rejection, permanent failure, and retry exhaustion start a fresh session whose sequence-1 marker names the reason and count. Both verifiers report those markers. A marker is still in-memory work, so abrupt process death or failure to deliver the marker leaves only local counters and warnings. Since **chain format 3** the preimage also covers the **decision fields** — `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, `model`, `provider`, `user_id` — so a rewritten verdict breaks the chain offline. `tenant_id`, token counts and cost are still outside it; their integrity is sealed at ingest, which verifies the client signature on acceptance and **countersigns the full canonical event** with a server-held key. Chains signed under formats 1 and 2 keep verifying as those formats, without the decision coverage, and the verifier reports which format it checked.
+Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers prompt/response **content**, event **order**, the decision fields, and in **chain format 4** the classification fields `operation`, `source`, and `event_type`. Rewriting a verdict or relabeling an ordinary event as `audit.gap` therefore breaks offline verification. Sender-visible loss is declared by a signed gap marker. Earlier formats remain verifiable at their original strength, which the verifier reports. `tenant_id`, token counts and cost remain outside the client preimage and are sealed by the server countersignature after acceptance.
+
+For crash recovery, configure the optional disk-backed outbox:
+
+```ts
+obsvr.init({
+  apiKey: process.env.OBSVR_API_KEY!,
+  durableDelivery: {
+    directory: '/var/lib/my-service/obsvr-outbox',
+    failureMode: 'error',
+  },
+});
+```
+
+The outbox atomically stores each signed event before enqueue, replays pending
+records after restart, removes them only after acceptance, and moves terminal
+failures to `dead/`. Inspect it with `obsvr.deliveryStatus()`. Use an absolute,
+private directory per process; files may contain governed data.
 
 Verify an exported bundle offline with the shipped `obsvr-verify` CLI — no network, no trust in obsvr's servers:
 
@@ -647,8 +687,9 @@ The combined list for both, with the scope marked on each entry, is in the
 
 4. **Tracing is not always an enforcement point.** LlamaIndex event tracing and
    the OpenAI Agents tracing processor protect the stored copy but cannot stop
-   or rewrite provider dispatch. Use `obsvrGovernLlamaIndexLLM`, `governModel`,
-   or `governModelProvider` for model enforcement. LangChain model-start
+   or rewrite provider dispatch. Use the startup-governed root `Settings.llm`
+   assignment, `obsvrGovernLlamaIndexLLM`, `governModel`, or
+   `governModelProvider` for model enforcement. LangChain model-start
    callbacks do enforce; because they cannot rewrite the provider request, a
    redaction verdict fails closed.
 
@@ -665,7 +706,9 @@ The combined list for both, with the scope marked on each entry, is in the
 6. **Startup interception is exact and order-dependent.** Supported OpenAI root
    and documented subpath exports, Anthropic roots, Google roots, MCP Client
    exports, and the OpenAI Agents Agent export construct governed objects after
-   the preload runs. Intercepted Agents also keep later supported concrete-model
+   the preload runs. A compatible model assigned through the intercepted root
+   LlamaIndex `Settings.llm` is governed; a saved pre-interceptor `Settings`
+   reference is not. Intercepted Agents also keep later supported concrete-model
    assignments and local function-tool/handoff list mutations on their pre-call
    gates. Objects or callables captured earlier, arbitrary subpaths, custom
    transports, unsupported collection replacement shapes, and hosted tool

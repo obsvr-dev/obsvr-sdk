@@ -47,6 +47,7 @@ const PROVIDER_SPECIFIERS: Record<string, string> = {
   '@modelcontextprotocol/sdk/client': 'mcp-client',
   '@modelcontextprotocol/sdk/client/index.js': 'mcp-client',
   '@openai/agents': 'openai-agents',
+  llamaindex: 'llamaindex',
 };
 
 /** Shim id -> canonical provider passed to the runtime interceptor. */
@@ -216,6 +217,15 @@ function buildShim(provider: string, originalUrl: string, runtimeUrl: string): s
       `import { interceptOpenAIAgentClass as $obsvrInterceptAgent } from ${runtime};`,
       `const $obsvrAgent = $obsvrInterceptAgent($obsvrOriginalAgent);`,
       `export { $obsvrAgent as Agent };`,
+    ].join('\n');
+  }
+  if (provider === 'llamaindex') {
+    return [
+      `export * from ${orig};`,
+      `import { Settings as $obsvrOriginalSettings } from ${orig};`,
+      `import { interceptLlamaIndexSettings as $obsvrInterceptSettings } from ${runtime};`,
+      `const $obsvrSettings = $obsvrInterceptSettings($obsvrOriginalSettings);`,
+      `export { $obsvrSettings as Settings };`,
     ].join('\n');
   }
   const names = PROVIDER_CLIENT_EXPORTS[provider];

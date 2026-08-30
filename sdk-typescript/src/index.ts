@@ -43,7 +43,7 @@ export type { AgentRunContext } from "./proxy/agent-run.js";
 import { agentRun as _agentRun } from "./integrations/agent-run.js";
 
 // Import proxy functions
-import { init as _init, wrap, getConfig, isInitialized, flushQueue, getQueueSize, getDroppedCount, _reset } from "./proxy/index.js";
+import { init as _init, wrap, getConfig, isInitialized, flushQueue, getQueueSize, getDroppedCount, getDeliveryStatus, _reset } from "./proxy/index.js";
 import { evaluate as _evaluate, evaluateAction as _evaluateAction } from "./governance/evaluate.js";
 import { verifyAuditChain as _verifyAuditChain } from "./governance/verify-chain.js";
 import { startPolicyPolling } from "./proxy/config.js";
@@ -311,12 +311,20 @@ export {
   COVERAGE_ATTESTATION_ENVELOPE_SCHEMA,
   COVERAGE_ATTESTATION_SCHEMA,
   CoverageAttestationValidationError,
+  CoverageRequirementsError,
+  assertCoverageRequirements,
   buildCoverageAttestationBody,
   canonicalizeCoverageAttestationBody,
   coverageAttestationBodyHash,
+  coverageRequirementFailures,
   signCoverageAttestation,
   verifyCoverageAttestation,
 } from "./governance/coverage-attestation.js";
+export { assertEnforcementBoundary } from "./governance/enforcement-smoke.js";
+export type {
+  EnforcementBoundarySmokeInput,
+  EnforcementBoundarySmokeResult,
+} from "./governance/enforcement-smoke.js";
 export type {
   CoverageAttestationBody,
   CoverageAttestationEnvelope,
@@ -645,6 +653,9 @@ export const obsvr = {
    * Get the number of events dropped due to queue overflow.
    */
   getDroppedCount,
+
+  /** Delivery counters plus durable-outbox replay/dead-letter status. */
+  deliveryStatus: getDeliveryStatus,
 
   /**
    * Evaluate an action against the governance policy engine.

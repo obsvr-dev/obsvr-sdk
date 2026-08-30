@@ -11,6 +11,8 @@ export {
   getDroppedCount,
   getPendingGapCount,
   getSenderStats,
+  getDeliveryStatus,
+  configureDurableDelivery,
   flushQueue,
   setupExitHandlers,
   _resetSender,

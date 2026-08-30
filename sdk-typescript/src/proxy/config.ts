@@ -31,7 +31,10 @@ import { snapshotPolicy, emitPolicyChangedEvent } from "../policy/policy-log.js"
 import { validateRegexPattern } from "../utils/safe-regex.js";
 import { updateApprovals, type ApprovalGrant } from "../policy/approvals.js";
 import { loadDeviceSigner } from "./device-identity.js";
-import { setDeviceSigner } from "./sender/fire-and-forget.js";
+import {
+  configureDurableDelivery,
+  setDeviceSigner,
+} from "./sender/fire-and-forget.js";
 import {
   applyEscrowResponse,
   snapshotConsumption,
@@ -73,6 +76,7 @@ const VALID_ENVIRONMENTS = ["development", "staging", "production"] as const;
 const CONFIG_KEY_MAP: Record<string, string> = {
   apiKey: "api_key",
   ingestUrl: "ingest_url",
+  durableDelivery: "durable_delivery",
   environment: "environment",
   sampleRate: "sample_rate",
   debug: "debug",
@@ -497,6 +501,33 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
   if (sampleRate < 0) sampleRate = 0;
   if (sampleRate > 1) sampleRate = 1;
 
+  const durableDelivery = (() => {
+    const value = config.durable_delivery;
+    if (value === undefined) return undefined;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('obsvr.init(): durableDelivery must be an object');
+    }
+    if (typeof value.directory !== 'string' || value.directory.trim() === '') {
+      throw new Error('obsvr.init(): durableDelivery.directory must be a non-empty string');
+    }
+    const maxBytes = value.maxBytes ?? 64 * 1024 * 1024;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 * 1024) {
+      throw new Error('obsvr.init(): durableDelivery.maxBytes must be an integer >= 1048576');
+    }
+    if (value.fsync !== undefined && typeof value.fsync !== 'boolean') {
+      throw new Error('obsvr.init(): durableDelivery.fsync must be a boolean');
+    }
+    if (value.failureMode !== undefined && value.failureMode !== 'error' && value.failureMode !== 'warn') {
+      throw new Error('obsvr.init(): durableDelivery.failureMode must be "error" or "warn"');
+    }
+    return {
+      directory: value.directory.trim(),
+      maxBytes,
+      fsync: value.fsync ?? true,
+      failureMode: value.failureMode ?? 'error' as const,
+    };
+  })();
+
   const resolved: ResolvedConfig = {
     api_key: config.api_key.trim(),
     environment: config.environment ?? "development",
@@ -510,6 +541,7 @@ function resolveConfig(config: LLMAuditInitConfig): ResolvedConfig {
       }
       return validateIngestUrl(config.ingest_url);
     })(),
+    durable_delivery: durableDelivery,
     sample_rate: sampleRate,
     max_payload_chars: config.max_payload_chars ?? 100000,
     disabled: config.disabled ?? false,
@@ -634,6 +666,10 @@ export function init(config: LLMAuditInitConfig | ObsvrConfig): void {
       ? loadDeviceSigner(resolved.deviceSigningKeyFile)
       : null,
   );
+  // Open and replay the optional durable outbox before this initialization can
+  // emit any governance event. A configured outbox that cannot be trusted is a
+  // startup error rather than a silent downgrade to memory-only delivery.
+  configureDurableDelivery(resolved);
   state.initialized = true;
   // What the caller declared in code, kept apart from what a poll delivers.
   // See LOCALLY-DECLARED RULES on updatePolicyRules.

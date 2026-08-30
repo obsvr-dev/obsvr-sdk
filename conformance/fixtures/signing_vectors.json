@@ -3,7 +3,7 @@
   "api_key": "test-api-key",
   "session_id": "11111111-1111-1111-1111-111111111111",
   "signing_key_hex": "82063a1c5c8964553bf0ff6f9957e7b8063424a0d8aaaa09299a1ffd7ed468fd",
-  "chain_format": 3,
+  "chain_format": 4,
   "content_hash": {
     "description": "The format-2 content-hash preimage: sha256('obsvr:content/2' || 0x00 || u64be(len(prompt)) || prompt || u64be(len(response)) || response), fields as UTF-8 bytes, lengths in bytes. Format 1 was sha256(prompt + response), and a bare concatenation does not remember where the boundary was: the digest pairs below marked equal_under_legacy demonstrate the defect - two different attributions of the same bytes, one digest. The length prefixes make the preimage unambiguous by construction; the leading tag domain-separates this digest from every other sha256 in the SDK. Producers: sdk-typescript/src/proxy/chain-format.ts, sdk-python/obsvr/chain_format.py. Consumers: sdk-typescript/tests/unit/signing-vectors.test.ts, sdk-python/tests/test_signing.py.",
     "domain_tag": "obsvr:content/2",
@@ -70,8 +70,8 @@
           "py": "required"
         },
         "note": "lengths count UTF-8 BYTES (2 each here), not code units - the one place the two runtimes could disagree",
-        "prompt": "é",
-        "response": "ü",
+        "prompt": "\u00e9",
+        "response": "\u00fc",
         "digest": "0a2e9a60e0029b0434e3a0de95e56668e44d9271d48b19067db42852339b6360",
         "legacy_digest": "1109b0980e45bfaf408a02acbf0e5fe377f7aff199548807129e9ed78abc437e"
       }
@@ -101,7 +101,7 @@
     {
       "seq_no": 1,
       "timestamp_sdk": 1700000000000,
-      "chain_format": 3,
+      "chain_format": 4,
       "prompt": "hello",
       "response": "world",
       "action_taken": "allowed",
@@ -111,12 +111,15 @@
       "provider": "openai",
       "user_id": "user-1",
       "prev_sig": "",
-      "sdk_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9"
+      "sdk_sig": "9c39f779d6ecb702de6db7d6a5250f074bfaaabc1a80eb360cdc119160e54bfd",
+      "operation": "chat.completions.create",
+      "source": "obsvr_sdk",
+      "event_type": "llm_call"
     },
     {
       "seq_no": 2,
       "timestamp_sdk": 1700000000001,
-      "chain_format": 3,
+      "chain_format": 4,
       "prompt": "foo",
       "response": "bar",
       "action_taken": "blocked",
@@ -127,8 +130,11 @@
       "model": "gpt-4o-mini",
       "provider": "openai",
       "user_id": "user-1",
-      "prev_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9",
-      "sdk_sig": "7e1cd94d667a82aa3f571010323b44982fbf2c346cdc459728281245fef8749b"
+      "prev_sig": "9c39f779d6ecb702de6db7d6a5250f074bfaaabc1a80eb360cdc119160e54bfd",
+      "sdk_sig": "097e773f7796c74bd9aace2cd39e389fbd3010022ad0b2aef144b56da88a1419",
+      "operation": "chat.completions.create",
+      "source": "obsvr_sdk",
+      "event_type": "llm_call"
     }
   ],
   "legacy_v1_events": {
@@ -196,7 +202,7 @@
         "expect": {
           "valid": true,
           "events_verified": 2,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -219,7 +225,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -248,7 +254,7 @@
           "broken_at": 0,
           "reason": "Signature mismatch at event 0",
           "events_verified": 0,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -271,7 +277,7 @@
           "broken_at": 0,
           "reason": "Signature mismatch at event 0",
           "events_verified": 0,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -292,7 +298,7 @@
           "broken_at": 0,
           "reason": "Signature mismatch at event 0",
           "events_verified": 0,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -315,7 +321,7 @@
           "broken_at": 1,
           "reason": "seq_no gap at event 1: expected 2, got 9",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -337,7 +343,7 @@
           "broken_at": 1,
           "reason": "Missing seq_no at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -360,7 +366,7 @@
           "broken_at": 0,
           "reason": "Invalid initial seq_no: 0",
           "events_verified": 0,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -383,7 +389,7 @@
           "broken_at": 1,
           "reason": "Chain break at event 1: prev_sig does not match prior event's sdk_sig",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -406,7 +412,7 @@
           "broken_at": 1,
           "reason": "Session ID mismatch at event 1: expected 11111111-1111-1111-1111-111111111111, got 22222222-2222-2222-2222-222222222222",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -450,7 +456,7 @@
           "broken_at": 1,
           "reason": "Timestamp decreased at event 1: 1699999999999 < 1700000000000",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -470,7 +476,7 @@
           "broken_at": 1,
           "reason": "seq_no gap at event 1: expected 3, got 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -491,9 +497,9 @@
         "expect": {
           "valid": false,
           "broken_at": 1,
-          "reason": "Chain format mismatch at event 1: expected 3, got 1",
+          "reason": "Chain format mismatch at event 1: expected 4, got 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -628,7 +634,7 @@
         "expect": {
           "valid": true,
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -651,7 +657,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -674,7 +680,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -697,7 +703,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -720,7 +726,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -743,7 +749,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -766,7 +772,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -789,7 +795,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -812,7 +818,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -834,7 +840,7 @@
           "broken_at": 1,
           "reason": "Signature mismatch at event 1",
           "events_verified": 1,
-          "chain_format": 3
+          "chain_format": 4
         }
       },
       {
@@ -901,8 +907,8 @@
     ]
   },
   "decision_hash": {
-    "description": "The format-3 decision preimage: sha256('obsvr:decision/3' || 0x00 || for each field in DECISION_FIELD_ORDER: presence_byte || u64be(len(value)) || value), values as UTF-8 bytes and lengths in bytes. DECISION_FIELD_ORDER is action_taken, action_reason, reason_code, rule_id, policy_version, model, provider, user_id. The presence byte (0x01 present, 0x00 absent) is what keeps an ABSENT field distinct from one present-and-empty: compare all_absent with rule_id_present_but_empty, which would collide without it. Compare blocked_full with action_taken_flipped_to_allowed - that pair is the whole reason format 3 exists. Producers: sdk-typescript/src/proxy/chain-format.ts, sdk-python/obsvr/chain_format.py.",
-    "domain_tag": "obsvr:decision/3",
+    "description": "The format-4 decision preimage seals decision attribution plus operation, source, and event_type so an ordinary record cannot be relabelled as a governance marker. Values are framed with presence and byte-length before hashing.",
+    "domain_tag": "obsvr:decision/4",
     "field_order": [
       "action_taken",
       "action_reason",
@@ -911,7 +917,10 @@
       "policy_version",
       "model",
       "provider",
-      "user_id"
+      "user_id",
+      "operation",
+      "source",
+      "event_type"
     ],
     "cases": [
       {
@@ -921,7 +930,7 @@
           "py": "required"
         },
         "fields": {},
-        "digest": "99444e17e53739cc9ea0e879c74bbd92411194580a57d28873fc2499d0f00634"
+        "digest": "9f45550597c946833cf4815f1b8eb72beccefe2a859913187280c91644b8fff2"
       },
       {
         "id": "rule_id_present_but_empty",
@@ -932,7 +941,7 @@
         "fields": {
           "rule_id": ""
         },
-        "digest": "191e2adff89f62d932bae01d4474e78d5dc78e82b1cee4aef4dc4b7f0a648460"
+        "digest": "9eb52413aaa275bb31795f43c84b198ae8b7a99c963b8b557f6960da939b5b2c"
       },
       {
         "id": "blocked_full",
@@ -950,7 +959,7 @@
           "provider": "openai",
           "user_id": "user-1"
         },
-        "digest": "48bed2908f3050b8317c4634239c88cebacdf8d06992c31ccc9516a03f3f3967"
+        "digest": "5dbada3fd9f0d9d7aa60e168f927b0f3c3f039c75c2acaaf2c8403e29220e575"
       },
       {
         "id": "allowed_full",
@@ -966,7 +975,7 @@
           "provider": "openai",
           "user_id": "user-1"
         },
-        "digest": "64815df44414d5131c9affcc8d69401ed376271e2aef3a020fb42fff4d211332"
+        "digest": "0152797065293fa63399c3d8b8c1daf79ee8f1530271e06244754755d191f36b"
       },
       {
         "id": "action_taken_flipped_to_allowed",
@@ -984,7 +993,7 @@
           "provider": "openai",
           "user_id": "user-1"
         },
-        "digest": "51f7805ec6444b3b8e07a62b8cc91dedb87940bc07f5795b1638b22dc459bade"
+        "digest": "0699717a00d33adfbc9007aaacf640f48560788ee0c3b3b23c45840fbc5224bf"
       },
       {
         "id": "astral_user_id",
@@ -993,9 +1002,9 @@
           "py": "required"
         },
         "fields": {
-          "user_id": "u🚀"
+          "user_id": "u\ud83d\ude80"
         },
-        "digest": "3ced7e4802a8173cad2e27fbe6d2c2b4340a802508eb621f1c5d6dbffab95dc0"
+        "digest": "7f6d99587c8efb61afbe781aabe7618595433c65b4847e996085fadde47ce63e"
       }
     ]
   },
@@ -1010,7 +1019,7 @@
         },
         "raw": 123,
         "canonical": "123",
-        "digest": "bdbc4871ccc24d8c80c5172248cd2bf8c876062581cd139c8d32fbfcdc60ff94"
+        "digest": "9f85823a95292407a4f7e6bd0681c014aa857da119045ec58363b2de97082e82"
       },
       {
         "id": "whole_valued_float_user_id",
@@ -1020,7 +1029,7 @@
         },
         "raw": 1.0,
         "canonical": "1",
-        "digest": "e47d0e59ae4eff103289b28d3cf41175013a37552b3e8f5948969f2172167318"
+        "digest": "c2c600887a7f1a6d74ff342fe6c6b9b722a52a01607b78a5a31f72f63a808bc2"
       },
       {
         "id": "fractional_float_user_id",
@@ -1030,7 +1039,7 @@
         },
         "raw": 1.5,
         "canonical": "1.5",
-        "digest": "dad5a08a51abc42b3943ceeb65be595c0072c77424852fd9d58affc97e1e8247"
+        "digest": "b3482d4e7c0e25d753589188d52e889e4d97029a2ef4e5c24a6861420b61d4e7"
       },
       {
         "id": "boolean_user_id",
@@ -1040,7 +1049,7 @@
         },
         "raw": true,
         "canonical": "true",
-        "digest": "ac880be4cda6c2ccc0faf76026ffe5661d3160eeba47860ce58d1c7e8848e2ee"
+        "digest": "e902d442ddf38d6cda1743bf5053c874a63f6f09de8e09a5495ac4f48834029a"
       },
       {
         "id": "negative_zero_user_id",
@@ -1050,7 +1059,7 @@
         },
         "raw": -0.0,
         "canonical": "0",
-        "digest": "6a2ee46b846afbfd204fea7102b2c3dea48b5a2ce935c273fa9b91961638b5a9"
+        "digest": "a1802f41daa61a5f42ccd775699ed69e445d2a290337a5e7def63b754e0bbd60"
       },
       {
         "id": "exponent_threshold_user_id",
@@ -1060,7 +1069,7 @@
         },
         "raw": 1e+16,
         "canonical": "10000000000000000",
-        "digest": "0d10e249f2993884909ef9d4e8326a29580a81c2287d7d58ee6de6261053a46b"
+        "digest": "9bb35b8ba5ed37c7b05d7a7f5ee7b04e78353bbed9e72eef6ed7c7127ada6661"
       }
     ]
   },
@@ -1082,7 +1091,7 @@
       },
       {
         "name": "format3_linked_multibyte",
-        "signature_payload": "3|sess-fixture|2|1700000000500|café—🔒|dddd|prevsig0123",
+        "signature_payload": "3|sess-fixture|2|1700000000500|caf\u00e9\u2014\ud83d\udd12|dddd|prevsig0123",
         "device_sig": "1d5d731b51af7997705c2ade3e41a346eaaa55d34ac5c2c8bd0fd54e27c7c54bc6d017afd84aae63421a06796e4be22b382973ec29b0ed271b63f27e3b341401"
       }
     ]
@@ -1129,6 +1138,43 @@
         "sdk_session_id": "11111111-1111-1111-1111-111111111111",
         "device_sig": "6c63c3df059224c6acb0fc0d23b01b228b10dc1d8a0585737ccc05daf8c33519aeed1ea47525882b38014c8b7c1a72f20af55484c658970c99e3b0ba280b8008",
         "device_key_id": "21fe31dfa154a261"
+      }
+    ]
+  },
+  "legacy_v3_events": {
+    "description": "The same two events signed under format 3 (content, order, and decision fields, but not operation/source/event_type). Frozen for verification of evidence created before format 4.",
+    "events": [
+      {
+        "seq_no": 1,
+        "timestamp_sdk": 1700000000000,
+        "chain_format": 3,
+        "prompt": "hello",
+        "response": "world",
+        "action_taken": "allowed",
+        "action_reason": "none",
+        "policy_version": "cafebabecafebabe",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "user_id": "user-1",
+        "prev_sig": "",
+        "sdk_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9"
+      },
+      {
+        "seq_no": 2,
+        "timestamp_sdk": 1700000000001,
+        "chain_format": 3,
+        "prompt": "foo",
+        "response": "bar",
+        "action_taken": "blocked",
+        "action_reason": "policy_violation",
+        "reason_code": "obsvr:policy_rule_matched",
+        "rule_id": "rule-1",
+        "policy_version": "cafebabecafebabe",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "user_id": "user-1",
+        "prev_sig": "d4cc5c4d972677e5947590ee3c2b5e84d6af1de75e26ab03032d6155e1b097e9",
+        "sdk_sig": "7e1cd94d667a82aa3f571010323b44982fbf2c346cdc459728281245fef8749b"
       }
     ]
   }

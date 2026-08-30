@@ -34,6 +34,7 @@ import {
   attachToolGate,
   governModel,
 } from '../integrations/openai-agents.js';
+import { obsvrGovernLlamaIndexLLM } from '../integrations/llamaindex-llm.js';
 
 /** Providers the module interceptor knows how to govern. */
 export type InterceptedProvider = 'openai' | 'anthropic' | 'google';
@@ -52,11 +53,11 @@ const AUTO_STARTUP_SURFACES = [
   'mcp.client',
   'openai_agents.tools',
   'openai_agents.model',
+  'llamaindex.models',
 ] as const;
 
 const EXPLICIT_STARTUP_SURFACES = {
   'langchain.models': 'LangChain exposes callbacks per model or invocation, not a process-global pre-call registration point',
-  'llamaindex.models': 'TypeScript LlamaIndex tracing is observe-only',
   'llamaindex.tools': 'TypeScript LlamaIndex agent tools require an explicit pre-invocation wrapper',
 } as const;
 
@@ -373,6 +374,72 @@ export function interceptMcpNamespace<T>(namespace: T): T {
       if (interceptedClient) return interceptedClient;
       interceptedClient = interceptMcpClientClass(Reflect.get(target, prop, receiver));
       return interceptedClient;
+    },
+  }) as T;
+}
+
+const governedLlamaIndexLlms = new WeakSet<object>();
+
+function governLlamaIndexSetting(value: unknown): unknown {
+  if (!value || typeof value !== 'object') return value;
+  if (governedLlamaIndexLlms.has(value)) return value;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.chat !== 'function' || typeof candidate.complete !== 'function') {
+    recordBinding(
+      'llamaindex.models',
+      'llamaindex.Settings.llm',
+      new TypeError('assigned value does not expose chat() and complete()'),
+      { enforcementDepth: 'unknown', initializedAtMs: Date.now() },
+    );
+    return value;
+  }
+  const governed = obsvrGovernLlamaIndexLLM(
+    value as Parameters<typeof obsvrGovernLlamaIndexLLM>[0],
+  );
+  governedLlamaIndexLlms.add(governed);
+  boundStartupSurfaces.add('llamaindex.models');
+  interceptionActive = true;
+  recordBinding('llamaindex.models', 'llamaindex.Settings.llm', undefined, {
+    enforcementDepth: 'enforce',
+    initializedAtMs: Date.now(),
+    exclusions: [
+      'LLMs assigned through saved pre-interceptor Settings references',
+      'agent tools, which require an explicit pre-invocation wrapper',
+      'tracing callbacks, which remain observe-only',
+    ],
+  });
+  return governed;
+}
+
+/**
+ * Govern LLMs assigned through the documented root `Settings.llm` boundary.
+ * The Settings object is proxied, not mutated; the assigned LLM is replaced
+ * with the existing pre-call wrapper before LlamaIndex can use it.
+ */
+export function interceptLlamaIndexSettings<T>(settings: T): T {
+  if (!settings || typeof settings !== 'object') return settings;
+  return new Proxy(settings as object, {
+    get(target, prop, receiver) {
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      const next = prop === 'llm' ? governLlamaIndexSetting(value) : value;
+      return Reflect.set(target, prop, next, receiver);
+    },
+  }) as T;
+}
+
+/** Intercept the root LlamaIndex namespace without mutating its exports. */
+export function interceptLlamaIndexNamespace<T>(namespace: T): T {
+  if (!namespace || (typeof namespace !== 'object' && typeof namespace !== 'function')) {
+    return namespace;
+  }
+  let settingsProxy: unknown;
+  return new Proxy(namespace as object, {
+    get(target, prop, receiver) {
+      if (prop !== 'Settings') return Reflect.get(target, prop, receiver);
+      settingsProxy ??= interceptLlamaIndexSettings(Reflect.get(target, prop, receiver));
+      return settingsProxy;
     },
   }) as T;
 }

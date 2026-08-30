@@ -367,6 +367,12 @@ class TestRegistryGate:
         # Signed coverage statement and verifier. It reports whether required
         # enforcement surfaces are present; it does not evaluate a live call.
         "coverage_attestation.py",
+        # Audit delivery storage and deployment smoke assertion. Neither is a
+        # detector layer: the outbox persists already-decided events, while the
+        # smoke helper verifies that a caller-selected deny path stopped before
+        # transport.
+        "durable_outbox.py",
+        "enforcement_smoke.py",
         # Public callable adapter over the existing tool-policy kernel. The
         # detector dispositions belong to that kernel, not this adapter.
         "govern_fn.py",

@@ -21,6 +21,7 @@ from obsvr import sender
 from obsvr.chain_format import (
     CHAIN_FORMAT_CONTENT_ONLY,
     CHAIN_FORMAT_CURRENT,
+    CHAIN_FORMAT_DECISION_FIELDS,
     CHAIN_FORMAT_LEGACY,
     content_hash,
     decision_fields_of,
@@ -95,12 +96,31 @@ class TestSigningVectors:
                 expected["prompt"],
                 expected["response"],
                 prev,
-                # Format 3 signs the decision fields, and they are carried on
+                # Format 4 signs the decision and classification fields carried on
                 # the vector event itself. Read them the way the SDK does.
                 decision_fields_of(expected),
             )
             assert sig == expected["sdk_sig"], f"seq {expected['seq_no']} mismatch"
             assert expected["prev_sig"] == prev
+            prev = sig
+
+    def test_frozen_format_3_signatures_still_reproduce(self):
+        v = _load_vectors()
+        key = derive_signing_key(v["api_key"])
+        prev = ""
+        for expected in v["legacy_v3_events"]["events"]:
+            sig = _sign(
+                key,
+                CHAIN_FORMAT_DECISION_FIELDS,
+                v["session_id"],
+                expected["seq_no"],
+                expected["timestamp_sdk"],
+                expected["prompt"],
+                expected["response"],
+                prev,
+                decision_fields_of(expected, CHAIN_FORMAT_DECISION_FIELDS),
+            )
+            assert sig == expected["sdk_sig"]
             prev = sig
 
     def test_user_id_coercion_matches_every_pinned_case(self):

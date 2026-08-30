@@ -20,6 +20,7 @@ import { dirname, join } from "node:path";
 import {
   CHAIN_FORMAT_CONTENT_ONLY,
   CHAIN_FORMAT_CURRENT,
+  CHAIN_FORMAT_DECISION_FIELDS,
   CHAIN_FORMAT_LEGACY,
   contentHash,
   decisionFieldsOf,
@@ -54,6 +55,8 @@ const vectors = JSON.parse(
 );
 
 function deriveKey(apiKey: string): Buffer {
+  // Independent protocol-vector verification over a synthetic test API key;
+  // this is not password storage or a password-based KDF.
   return createHmac("sha256", "obsvr-sdk-signing-v1").update(apiKey).digest();
 }
 
@@ -115,7 +118,7 @@ describe("cross-language signing vectors", () => {
     }
   });
 
-  it("produces the same chained format-3 signatures as the shared vectors", () => {
+  it("produces the same chained format-4 signatures as the shared vectors", () => {
     const key = deriveKey(vectors.api_key);
     let prev = "";
     for (const ev of vectors.events) {
@@ -129,12 +132,32 @@ describe("cross-language signing vectors", () => {
         ev.prompt,
         ev.response,
         prev,
-        // Format 3 signs the decision fields, and they are carried on the
+        // Format 4 signs the decision and classification fields carried on the
         // vector event itself. Read them the way the SDK does.
         decisionFieldsOf(ev),
       );
       expect(sig).toBe(ev.sdk_sig);
       expect(ev.prev_sig).toBe(prev);
+      prev = sig;
+    }
+  });
+
+  it("still reproduces the frozen format-3 signatures", () => {
+    const key = deriveKey(vectors.api_key);
+    let prev = "";
+    for (const ev of vectors.legacy_v3_events.events) {
+      const sig = sign(
+        key,
+        CHAIN_FORMAT_DECISION_FIELDS,
+        vectors.session_id,
+        ev.seq_no,
+        ev.timestamp_sdk,
+        ev.prompt,
+        ev.response,
+        prev,
+        decisionFieldsOf(ev, CHAIN_FORMAT_DECISION_FIELDS),
+      );
+      expect(sig).toBe(ev.sdk_sig);
       prev = sig;
     }
   });

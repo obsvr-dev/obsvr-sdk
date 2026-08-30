@@ -81,6 +81,31 @@ console.log("RESULT_JSON:" + JSON.stringify({
 }));
 `;
 
+const LLAMAINDEX_PROBE = `
+import { Settings } from "llamaindex";
+const { obsvr } = await import("${PKG}/dist/index.js");
+const auto = await import("${PKG}/dist/auto/index.js");
+obsvr.init({ apiKey: "k", ingestUrl: "http://127.0.0.1:1", piiPolicy: { rules: { ssn: "block" } }, policyRefreshIntervalMs: 0 });
+let transportCalls = 0;
+Settings.llm = {
+  metadata: { model: "gpt-4o-mini" },
+  chat: async () => { transportCalls++; return { message: { content: "ok" } }; },
+  complete: async () => { transportCalls++; return { text: "ok" }; },
+};
+let blocked = false;
+try {
+  await Settings.llm.complete({ prompt: "SSN 123-45-6789" });
+} catch (error) {
+  blocked = error?.name === "ObsvrPolicyError";
+}
+console.log("RESULT_JSON:" + JSON.stringify({
+  blocked,
+  transportCalls,
+  state: auto.autoGovernanceStatus().bindings["llamaindex.models"]?.state,
+}));
+process.exit(0);
+`;
+
 describe('the register hook actually substitutes a real provider class', () => {
   it('has a built dist to test against', () => {
     // A missing dist would make every assertion below vacuous rather than
@@ -104,6 +129,13 @@ describe('the register hook actually substitutes a real provider class', () => {
     expect(result.interceptionActive).toBe(true);
     expect(result.wrapIsIdentity).toBe(true);
     expect(result.clientUsable).toBe(true);
+  });
+
+  it('governs real LlamaIndex Settings.llm assignments before model transport', () => {
+    const result = runWithHook(LLAMAINDEX_PROBE);
+    expect(result.blocked).toBe(true);
+    expect(result.transportCalls).toBe(0);
+    expect(result.state).toBe('bound');
   });
 
   it('leaves interception INACTIVE without the flag, so the check is meaningful', () => {

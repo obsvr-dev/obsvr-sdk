@@ -201,6 +201,7 @@ that every API in the framework is intercepted.
 | MCP client | Python | future `mcp.ClientSession` / `mcp.client.session.ClientSession` construction | real in-memory client/server test on the installed 1.x line; a denied tool records zero server executions |
 | OpenAI Agents model + tools | TypeScript | `@openai/agents` `Agent` construction; concrete model assignment and local tool/handoff list mutations receive pre-call gates | real-runner startup tests on the declared `>=0.13.0 <1.0.0` line; denied model and late-added tool each record zero downstream executions |
 | OpenAI Agents model + tools | Python | future `agents.Agent` construction; concrete model assignment and local tool/handoff list mutations receive pre-call gates | real-runner startup tests at 0.19.2; denied model and late-added tool each record zero downstream executions |
+| LlamaIndex models | TypeScript | compatible model assignment through the intercepted root `llamaindex` `Settings.llm` object | real-package preload test at `llamaindex` 0.12.1; a denied `chat` call records zero model executions; tracing and agent tools are excluded |
 | LlamaIndex models | Python | process-global `Settings.callback_manager` model-start handler | real callback boundary tests; block stops before model dispatch and redaction fails closed |
 | CrewAI tools | Python | official process-global `before_tool_call` hook | automatic attachment is available only where the executor consult site exists, currently 1.15.3+; earlier supported versions require `govern_tool` |
 | AutoGen/ag2 tools | Python | class-level `ConversableAgent.execute_function` / `a_execute_function` gate | automatic attachment follows the supported 0.x range, live-driven at 0.3.2 and 0.9.9 |
@@ -208,8 +209,9 @@ that every API in the framework is intercepted.
 LangChain remains an explicit callback binding in both SDKs because supported
 versions expose handlers per model or invocation, not a documented
 process-global custom pre-call registration point. LlamaIndex agent tool
-governance, Python Gemini, already-imported aliases, hosted tools, and unlisted
-import paths remain explicit. OpenAI Agents tracing is still observe-only;
+governance, TypeScript LlamaIndex tracing, Python Gemini, already-imported or
+saved `Settings` aliases, hosted tools, and unlisted import paths remain explicit.
+OpenAI Agents tracing is still observe-only;
 automatic Agent interception separately governs concrete model calls and local
 tool execution at their pre-call boundaries.
 
@@ -227,6 +229,13 @@ hash across both implementations.
 | `policy_pack_hashes` | lowercase SHA-256 hashes, sorted and deduplicated |
 | `coverage_complete` / `failures` | derived, not caller-controlled; recomputed by verifiers |
 | signature | Ed25519 over the domain-separated canonical body, verified under an out-of-band pinned public key |
+
+After application factories run, `assertCoverageRequirements` /
+`assert_coverage_requirements` applies the same exact integration, symbol and
+minimum-depth rules without signing an attestation. `assertEnforcementBoundary`
+and the Python sync/async equivalents add a caller-owned deny smoke test whose
+success requires zero additional downstream transport calls. These checks are
+factory-path evidence, not process-wide discovery.
 
 The schema is closed: unknown body fields and noncanonical derived values are
 invalid. Adding fields or changing ordering, depth semantics, or signature

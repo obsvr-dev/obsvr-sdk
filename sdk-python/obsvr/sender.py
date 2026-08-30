@@ -119,6 +119,8 @@ _stats: Dict[str, int] = {
     # those markers have put on the record.
     "gap_markers": 0,
     "gap_events_declared": 0,
+    "durable_write_failures": 0,
+    "durable_deferred": 0,
 }
 _stats_lock = threading.Lock()
 _worker = None
@@ -172,6 +174,53 @@ _gap_marker_ordinal = 0
 # give it), and a gap that is never declared because the process was on its way
 # out is exactly the gap most worth recording.
 _last_config: Optional[ResolvedConfig] = None
+_queued_outbox_ids: set[str] = set()
+# Serializes the filesystem record with its in-memory queue reservation. Without
+# this lock, flush() can discover a just-persisted record before the producer
+# records its id, enqueue it twice, and create duplicate loss declarations.
+_durable_queue_lock = threading.RLock()
+
+
+def configure_durable_delivery(config: ResolvedConfig) -> None:
+    """Configure and replay the optional disk-backed audit outbox."""
+    global _last_config
+    from . import durable_outbox
+
+    with _durable_queue_lock:
+        durable_outbox.configure(getattr(config, "durable_delivery", None))
+        _last_config = config
+        _refill_durable_queue(config)
+    if get_queue_size() > 0:
+        _ensure_worker()
+
+
+def get_delivery_status() -> Dict[str, Any]:
+    """Return memory-delivery counters plus durable outbox state."""
+    from . import durable_outbox
+
+    return {"sender": get_sender_stats(), "durable": durable_outbox.status()}
+
+
+def _refill_durable_queue(config: Optional[ResolvedConfig] = None) -> None:
+    """Load persisted work into the bounded queue without duplicating it."""
+    from . import durable_outbox
+
+    cfg = config or _last_config
+    if cfg is None or not durable_outbox.enabled():
+        return
+    with _durable_queue_lock:
+        replayed = 0
+        for record in durable_outbox.pending_records():
+            record_id = record["id"]
+            if record_id in _queued_outbox_ids:
+                continue
+            try:
+                _queue.put_nowait((cfg, record["event"], 0, record_id))
+            except Full:
+                break
+            _queued_outbox_ids.add(record_id)
+            replayed += 1
+        durable_outbox.mark_replayed(replayed)
 
 
 def _reseed_chain_after_fork() -> None:
@@ -213,12 +262,13 @@ def _reseed_chain_after_fork() -> None:
     """
     global _sdk_session_id, _seq_no, _last_sig
     global _queue, _worker_pending, _worker_front
-    global _sign_lock, _stats_lock, _worker_lock, _worker
+    global _sign_lock, _stats_lock, _worker_lock, _durable_queue_lock, _worker
     global _gap_pending, _gap_marker_ordinal, _dropped
 
     _sign_lock = threading.RLock()
     _stats_lock = threading.Lock()
     _worker_lock = threading.Lock()
+    _durable_queue_lock = threading.RLock()
 
     _sdk_session_id = str(uuid.uuid4())
     _seq_no = 0
@@ -332,7 +382,7 @@ def _sign_event_locked(event: Dict[str, Any], api_key: str) -> None:
         # the field set. Signed LAST in the build, after every layer that can
         # still change a verdict has run - signing an interim decision would
         # seal a value the event does not carry.
-        decision_fields_of(event),
+        decision_fields_of(event, CHAIN_FORMAT_CURRENT),
     )
     event["sdk_sig"] = hmac_mod.new(
         key, sig_payload.encode("utf-8"), hashlib.sha256
@@ -680,6 +730,7 @@ def _worker_loop() -> None:
     # locally instead: at most one byte-split item plus SEND_BATCH_SIZE retries,
     # and always drain it before reading newer queue entries.
     while True:
+        _refill_durable_queue()
         try:
             first = _worker_front.get_nowait()
             _worker_front.task_done()
@@ -693,9 +744,11 @@ def _worker_loop() -> None:
         completed = 1
         try:
             batch_bytes = len(json.dumps(first[1]))
+            first_is_durable = len(first) > 3 and bool(first[3])
             while (
                 len(batch) < SEND_BATCH_SIZE
                 and read_audit_gap_claim(first[1]) is None
+                and not first_is_durable
             ):
                 try:
                     item = _worker_front.get_nowait()
@@ -710,6 +763,10 @@ def _worker_loop() -> None:
                         except Empty:
                             break
                 item_is_gap_marker = read_audit_gap_claim(item[1]) is not None
+                item_is_durable = len(item) > 3 and bool(item[3])
+                if batch and item_is_durable:
+                    _worker_front.put(item)
+                    break
                 if batch and item_is_gap_marker:
                     _worker_front.put(item)
                     break
@@ -753,6 +810,12 @@ def _worker_loop() -> None:
                         rejected,
                         AUDIT_GAP_REASON_INGEST_REJECTED,
                     )
+                _finish_durable_items(
+                    batch,
+                    rejected_reason=(
+                        AUDIT_GAP_REASON_INGEST_REJECTED if rejected else None
+                    ),
+                )
             elif verdict == "rejected":
                 # The server saw the request and refused it outright. Final, so
                 # never retried — and never counted as sent, because nothing was
@@ -766,6 +829,9 @@ def _worker_loop() -> None:
                     len(events),
                     AUDIT_GAP_REASON_INGEST_REJECTED,
                 )
+                _finish_durable_items(
+                    batch, rejected_reason=AUDIT_GAP_REASON_INGEST_REJECTED
+                )
             elif verdict == "permanent":
                 _dropped += len(batch)
                 _bump("dropped_permanent", len(batch))
@@ -778,8 +844,12 @@ def _worker_loop() -> None:
                     len(events),
                     AUDIT_GAP_REASON_PERMANENT_FAILURE,
                 )
+                _finish_durable_items(
+                    batch, rejected_reason=AUDIT_GAP_REASON_PERMANENT_FAILURE
+                )
             else:  # retryable
                 exhausted = []
+                exhausted_items = []
                 for item in batch:
                     cfg, ev = item[0], item[1]
                     retries = item[2] if len(item) > 2 else 0
@@ -788,15 +858,21 @@ def _worker_loop() -> None:
                         # The carry is bounded by this batch and retains the
                         # original Queue unfinished-task obligation until the
                         # event reaches a terminal verdict.
-                        _worker_pending.put((cfg, ev, retries + 1))
+                        outbox_id = item[3] if len(item) > 3 else None
+                        _worker_pending.put((cfg, ev, retries + 1, outbox_id))
                         completed -= 1
                         _bump("retries")
                     else:
                         exhausted.append(ev)
+                        exhausted_items.append(item)
                         _dropped += 1
                         _bump("dropped_retry_exhausted")
                         _warn_events_lost(1, "retry budget exhausted")
                 if exhausted:
+                    _finish_durable_items(
+                        exhausted_items,
+                        rejected_reason=AUDIT_GAP_REASON_RETRY_EXHAUSTED,
+                    )
                     _declare_delivery_gap(
                         config,
                         exhausted,
@@ -808,6 +884,26 @@ def _worker_loop() -> None:
         finally:
             for _ in range(completed):
                 _queue.task_done()
+
+
+def _finish_durable_items(items: list, rejected_reason: Optional[str] = None) -> None:
+    """Acknowledge delivered durable records or move terminal failures aside."""
+    from . import durable_outbox
+
+    with _durable_queue_lock:
+        for item in items:
+            outbox_id = item[3] if len(item) > 3 else None
+            if not outbox_id:
+                continue
+            try:
+                if rejected_reason is None:
+                    durable_outbox.acknowledge(outbox_id)
+                else:
+                    durable_outbox.dead_letter(outbox_id, rejected_reason)
+            finally:
+                # If the filesystem operation fails, make the still-pending
+                # record eligible for a later refill instead of stranding it.
+                _queued_outbox_ids.discard(outbox_id)
 
 
 def _ensure_worker() -> None:
@@ -1077,13 +1173,17 @@ def _declare_delivery_gap(
         _gap_marker_ordinal = 0
         marker = _build_gap_marker(config, dropped, reason)
         sign_event(marker, config.api_key)
-        # This evidence may be armed while the bounded queue is full. Match the
-        # forced overflow-marker rule: exceed the bound by one on a queue that
-        # the current worker is already draining.
-        with _queue.mutex:
-            _queue.queue.append((config, marker, 0))
-            _queue.unfinished_tasks += 1
-            _queue.not_empty.notify()
+        with _durable_queue_lock:
+            outbox_id = _persist_gap_marker(marker)
+            # This evidence may be armed while the bounded queue is full. Match
+            # the forced overflow-marker rule: exceed the bound by one on a
+            # queue that the current worker is already draining.
+            with _queue.mutex:
+                _queue.queue.append((config, marker, 0, outbox_id))
+                _queue.unfinished_tasks += 1
+                _queue.not_empty.notify()
+            if outbox_id:
+                _queued_outbox_ids.add(outbox_id)
         _bump("enqueued")
         _bump("gap_markers")
         _bump("gap_events_declared", dropped)
@@ -1149,6 +1249,21 @@ def _declare_pending_gap(
     return marker
 
 
+def _persist_gap_marker(marker: Dict[str, Any]) -> Optional[str]:
+    """Persist a signed loss declaration when durable delivery is enabled."""
+    from . import durable_outbox
+
+    try:
+        return durable_outbox.persist(marker)
+    except Exception as exc:
+        _bump("durable_write_failures")
+        logging.getLogger("obsvr").warning(
+            "durable persistence failed for an audit gap marker; using memory-only delivery: %s",
+            exc,
+        )
+        return None
+
+
 def _rewind_chain_to(event: Dict[str, Any]) -> None:
     """Undo the chain advance a signed-but-undelivered event caused.
 
@@ -1168,6 +1283,7 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     enqueueing, matching the TS SDK behavior.
     """
     global _dropped, _seq_no, _last_sig, _gap_pending, _last_config
+    from . import durable_outbox
     if config.disabled:
         return
     _stamp_integrity_flags(event)
@@ -1180,7 +1296,8 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
     # roll the chain head back cleanly on Full.
     with _sign_lock:
         _last_config = config
-        if _queue.full():
+        durable = durable_outbox.enabled()
+        if _queue.full() and not durable:
             _dropped += 1
             _bump("dropped_overflow")
             # Counted AND remembered: the counter is process-local and dies
@@ -1196,15 +1313,36 @@ def send_audit_async(config: ResolvedConfig, event: Dict[str, Any]) -> None:
         # Public entry point (re-acquires the reentrant lock) so tests and
         # callers that hook sign_event still see every signed event.
         sign_event(event, config.api_key)
-        try:
-            _queue.put_nowait((config, event, 0))
-            enqueued = True
-        except Full:
-            _seq_no, _last_sig = prev_seq, prev_sig  # roll back: never entered the chain
-            _dropped += 1
-            _bump("dropped_overflow")
-            _gap_pending += 1
-            enqueued = False
+        outbox_id = None
+        with _durable_queue_lock:
+            try:
+                outbox_id = durable_outbox.persist(event)
+            except Exception as exc:
+                _bump("durable_write_failures")
+                if durable_outbox.failure_mode() == "error":
+                    _seq_no, _last_sig = prev_seq, prev_sig
+                    raise RuntimeError(
+                        "obsvr durable audit persistence failed before enqueue"
+                    ) from exc
+                logging.getLogger("obsvr").warning(
+                    "durable audit persistence failed; continuing with memory-only delivery: %s",
+                    exc,
+                )
+            try:
+                _queue.put_nowait((config, event, 0, outbox_id))
+                if outbox_id:
+                    _queued_outbox_ids.add(outbox_id)
+                enqueued = True
+            except Full:
+                if outbox_id:
+                    _bump("durable_deferred")
+                    enqueued = True
+                else:
+                    _seq_no, _last_sig = prev_seq, prev_sig
+                    _dropped += 1
+                    _bump("dropped_overflow")
+                    _gap_pending += 1
+                    enqueued = False
         if enqueued:
             _bump("enqueued")
     # Optional OTel mirror. NOT fire-and-forget: the exporter runs
@@ -1258,7 +1396,13 @@ def flush(timeout: float = SHUTDOWN_FLUSH_TIMEOUT_S) -> None:
         _ensure_worker()
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _queue.unfinished_tasks == 0:
+        _refill_durable_queue()
+        from . import durable_outbox
+
+        if (
+            _queue.unfinished_tasks == 0
+            and durable_outbox.status().get("pending", 0) == 0
+        ):
             return
         time.sleep(0.01)
 
@@ -1267,6 +1411,7 @@ def _reset_sender() -> None:
     """Reset sender state (tests only). The worker thread stays alive."""
     global _dropped, _seq_no, _last_sig, _signing_key, _signing_key_source
     global _gap_pending, _gap_marker_ordinal, _last_config, _device_signer
+    from . import durable_outbox
     # Every carried item still owns an unfinished task on the public queue.
     while True:
         try:
@@ -1291,6 +1436,9 @@ def _reset_sender() -> None:
     _reset_backoff()
     _shutdown.clear()
     _dropped = 0
+    with _durable_queue_lock:
+        _queued_outbox_ids.clear()
+        durable_outbox.reset()
     with _stats_lock:
         for k in _stats:
             _stats[k] = 0

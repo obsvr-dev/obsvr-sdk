@@ -62,6 +62,21 @@ export interface ObsvrConfig {
   /** URL of the ingest service. @default DEFAULT_INGEST_URL */
   ingestUrl?: string;
 
+  /**
+   * Optional disk-backed audit outbox. Each signed event is atomically stored
+   * before enqueue returns, replayed on restart, and removed only after ingest
+   * confirms delivery. Use a directory private to one application deployment.
+   */
+  durableDelivery?: {
+    directory: string;
+    /** Maximum bytes retained across pending and dead-letter records. @default 67108864 */
+    maxBytes?: number;
+    /** fsync event files and directory renames before returning. @default true */
+    fsync?: boolean;
+    /** Throw when durability cannot be established; otherwise warn and use memory delivery. @default "error" */
+    failureMode?: 'error' | 'warn';
+  };
+
   /** Environment identifier. @default "development" */
   environment?: 'development' | 'staging' | 'production';
 
@@ -427,6 +442,14 @@ export interface LLMAuditInitConfig {
    */
   ingest_url?: string;
 
+  /** Disk-backed delivery outbox (snake_case alias). */
+  durable_delivery?: {
+    directory: string;
+    maxBytes?: number;
+    fsync?: boolean;
+    failureMode?: 'error' | 'warn';
+  };
+
   /**
    * Emission rate for ALLOWED-call audit events (0-1). This gates audit
    * EMISSION only, never enforcement: 0 = no allowed-call events are sent, but
@@ -691,6 +714,12 @@ export interface ResolvedConfig {
   api_key: string;
   environment: "development" | "staging" | "production";
   ingest_url: string;
+  durable_delivery?: {
+    directory: string;
+    maxBytes: number;
+    fsync: boolean;
+    failureMode: 'error' | 'warn';
+  };
   sample_rate: number;
   max_payload_chars: number;
   disabled: boolean;
@@ -1116,6 +1145,8 @@ export interface QueueItem {
   event: AuditEvent;
   timestamp: number;
   retries: number;
+  /** Durable outbox record retained until terminal delivery classification. */
+  outboxId?: string;
 }
 
 /**

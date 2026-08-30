@@ -98,7 +98,7 @@ class TestValidChains:
             # Same reasoning: an empty list states "no breaks", where an
             # absent key would only state "no reporting".
             "breaks": [],
-            "chainFormat": 3,
+            "chainFormat": 4,
             # Device-tier facts are always present for the same reason: zero
             # seals and an unchecked tier are statements, not omissions.
             "deviceSignedEvents": 0,
@@ -298,13 +298,15 @@ class TestEveryBreakReported:
         events = [
             {"prompt": "prompt-0", "response": "r0"},
             {"prompt": "prompt-1", "response": "r1"},
-            {"prompt": "obsvr:audit-gap/1 dropped=7 reason=queue_overflow", "response": ""},
+            {
+                "prompt": "obsvr:audit-gap/1 dropped=7 reason=queue_overflow",
+                "response": "",
+                "operation": AUDIT_GAP_OPERATION,
+            },
         ]
         for event in events:
             sender.sign_event(event, api_key)
-        # `operation` is outside the signature preimage, so stamping it after
-        # signing leaves a marker whose own signature verifies.
-        events[2]["operation"] = AUDIT_GAP_OPERATION
+        # Format 4 seals `operation`; a gap marker is classified before signing.
         assert verify_chain(events, api_key).events_declared_lost == 7
 
         events[0]["prompt"] = "tampered"
