@@ -5,16 +5,19 @@ without scanning the heap or patching framework internals. Provider module
 constructor exports are rebound at registration time; objects or constructor
 references saved earlier are outside that boundary.
 
-Cleanly auto-wired (global, non-mutating registration):
+Cleanly auto-wired (global registration or an explicitly supported class gate):
   * Providers (openai / anthropic) — construct interception via obsvr.register.
   * OpenAI Agents SDK — agents.add_trace_processor(ObsvrTracingProcessor()).
   * LlamaIndex — Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler()).
+  * CrewAI — official process-global before_tool_call hook.
+  * AutoGen/ag2 0.x — supported ConversableAgent tool-execution boundary.
 
 Detected but NOT auto-wired (require per-call / per-agent handlers by design —
 obsvr integrates via each framework's official extension point, not by patching
-its internals): LangChain (pass ObsvrCallbackHandler() in callbacks=[...]),
-CrewAI (make_*_callback factories), AutoGen (register_obsvr(agent)). These are
-reported so the developer knows the one line to add.
+its internals): LangChain (pass ObsvrCallbackHandler() in callbacks=[...]).
+CrewAI run/step audit callbacks and AutoGen message policy remain explicit;
+their pre-tool execution gates are installed automatically. These residual
+bindings are reported so the developer knows the one line to add.
 
 Every step is best-effort and isolated: a failure to wire one framework never
 raises and never affects the audit path.
@@ -23,12 +26,13 @@ raises and never affects the audit path.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 logger = logging.getLogger("obsvr.auto")
 
 # Idempotency guard: init() may run more than once in tests / long-lived procs.
 _wired: List[str] = []
+_uninstallers: List[Callable[[], None]] = []
 
 
 def _module_available(name: str) -> bool:
@@ -82,11 +86,39 @@ def _wire_llamaindex() -> bool:
         return False
 
 
+def _wire_crewai_tool_gate() -> bool:
+    """Install CrewAI's process-global pre-tool hook when it is dispatchable."""
+    if not _module_available("crewai"):
+        return False
+    try:
+        from .integrations.crewai import install_tool_gate_hook
+
+        _uninstallers.append(install_tool_gate_hook())
+        return True
+    except Exception as exc:
+        logger.debug("obsvr.auto: CrewAI tool gate skipped: %s", exc)
+        return False
+
+
+def _wire_autogen_tool_gate() -> bool:
+    """Install the supported AutoGen/ag2 class-level execution gate."""
+    if not _module_available("autogen"):
+        return False
+    try:
+        from .integrations.autogen import install_tool_gate
+
+        _uninstallers.append(install_tool_gate())
+        return True
+    except Exception as exc:
+        logger.debug("obsvr.auto: AutoGen tool gate skipped: %s", exc)
+        return False
+
+
 # Frameworks obsvr integrates via per-call/per-agent handlers (no global hook).
 _MANUAL_HINTS = {
     "langchain_core": "LangChain: pass obsvr.integrations.langchain.ObsvrCallbackHandler() in callbacks=[...]",
-    "crewai": "CrewAI: wire obsvr.integrations.crewai.make_crew_callbacks(...) on your Crew",
-    "autogen": "AutoGen: call obsvr.integrations.autogen.register_obsvr(agent)",
+    "crewai": "CrewAI run/step audit: wire obsvr.integrations.crewai.make_crew_callbacks(...) on your Crew; the pre-tool gate is automatic where supported",
+    "autogen": "AutoGen message policy: call obsvr.integrations.autogen.register_obsvr(agent); the tool-execution gate is automatic on supported ag2 0.x",
 }
 
 
@@ -109,6 +141,14 @@ def enable_auto_instrumentation() -> Dict[str, Any]:
         _wired.append("llamaindex")
         report["wired"].append("llamaindex")
 
+    if "crewai_tool_gate" not in _wired and _wire_crewai_tool_gate():
+        _wired.append("crewai_tool_gate")
+        report["wired"].append("crewai:tool-gate")
+
+    if "autogen_tool_gate" not in _wired and _wire_autogen_tool_gate():
+        _wired.append("autogen_tool_gate")
+        report["wired"].append("autogen:tool-gate")
+
     for mod, hint in _MANUAL_HINTS.items():
         if _module_available(mod):
             report["manual"].append(hint)
@@ -122,4 +162,10 @@ def enable_auto_instrumentation() -> Dict[str, Any]:
 
 def _reset_auto() -> None:
     """Test hook: clear the idempotency guard."""
+    while _uninstallers:
+        uninstall = _uninstallers.pop()
+        try:
+            uninstall()
+        except Exception:
+            pass
     _wired.clear()

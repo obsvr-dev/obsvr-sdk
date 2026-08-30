@@ -50,8 +50,45 @@ def test_openai_agents_is_wired_when_available(monkeypatch):
     assert len(calls) == 1
 
 
-def test_manual_frameworks_reported(monkeypatch):
+def test_safe_global_tool_gates_are_wired_once(monkeypatch):
     auto._reset_auto()
-    monkeypatch.setattr(auto, "_module_available", lambda name: name == "crewai")
+    calls = []
+    monkeypatch.setattr(
+        auto,
+        "_module_available",
+        lambda name: name in {"crewai", "autogen"},
+    )
+    monkeypatch.setattr(
+        auto,
+        "_wire_crewai_tool_gate",
+        lambda: calls.append("crewai") or True,
+    )
+    monkeypatch.setattr(
+        auto,
+        "_wire_autogen_tool_gate",
+        lambda: calls.append("autogen") or True,
+    )
     report = auto.enable_auto_instrumentation()
-    assert any("CrewAI" in hint for hint in report["manual"])
+    assert "crewai:tool-gate" in report["wired"]
+    assert "autogen:tool-gate" in report["wired"]
+    assert calls == ["crewai", "autogen"]
+    assert any("CrewAI run/step audit" in hint for hint in report["manual"])
+    assert any("AutoGen message policy" in hint for hint in report["manual"])
+
+    report2 = auto.enable_auto_instrumentation()
+    assert "crewai:tool-gate" not in report2["wired"]
+    assert "autogen:tool-gate" not in report2["wired"]
+    assert calls == ["crewai", "autogen"]
+
+
+def test_reset_uninstalls_global_tool_gates(monkeypatch):
+    auto._reset_auto()
+    removed = []
+    auto._uninstallers.extend(
+        [lambda: removed.append("first"), lambda: removed.append("second")]
+    )
+    auto._wired.extend(["crewai_tool_gate", "autogen_tool_gate"])
+    auto._reset_auto()
+    assert removed == ["second", "first"]
+    assert auto._wired == []
+    assert auto._uninstallers == []

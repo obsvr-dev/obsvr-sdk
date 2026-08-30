@@ -913,6 +913,12 @@ def _reset() -> None:
     # previous test's count.
     from .integrations.autogen import _reset_run_state
     _reset_run_state()
+    # Auto-installed framework gates are process-global. Leaving them active
+    # after a config reset makes the next test/session inherit a control it did
+    # not install, and leaves patched framework classes behind. Undo them with
+    # the rest of the test-only process state.
+    from .auto import _reset_auto
+    _reset_auto()
     _state["initialized"] = False
     _state["config"] = None
     _state["local_policy_rules"] = None
