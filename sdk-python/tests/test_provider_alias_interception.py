@@ -29,7 +29,9 @@ from obsvr.register import install, uninstall
 
 
 @pytest.fixture(autouse=True)
-def _clean_interception():
+def _clean_interception(monkeypatch):
+    # Depend on monkeypatch so uninstall() runs before synthetic provider
+    # modules are restored to their real package objects during teardown.
     uninstall()
     yield
     uninstall()
