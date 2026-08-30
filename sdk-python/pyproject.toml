@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "obsvr-sdk"
 dynamic = ["version"]  # single source: obsvr/_version.py
-description = "Secure and prove AI agents and LLMs — enforce policy in real time, block sensitive data, and reconstruct exactly what governed it"
+description = "Govern supported AI model, agent, and tool boundaries with deterministic pre-call policy and tamper-evident decision records"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
