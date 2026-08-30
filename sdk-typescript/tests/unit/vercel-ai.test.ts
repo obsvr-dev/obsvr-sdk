@@ -206,6 +206,124 @@ describe('obsvrMiddleware', () => {
     expect(transformed.prompt[0].content[0].text).not.toContain(
       'john@example.com',
     );
+    expect(params.prompt).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'mail john@example.com' }] },
+    ]);
+  });
+
+  it('blocks PII in the system prompt before the model body runs', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: { rules: { ssn: 'block' } } });
+    const mw = obsvrMiddleware();
+    let modelCalls = 0;
+    const params = { system: 'SSN 123-45-6789', ...userParams('safe request') };
+
+    await expect(
+      (async () => {
+        const transformed = await mw.transformParams({ params, model: MODEL });
+        return mw.wrapGenerate({
+          doGenerate: async () => {
+            modelCalls += 1;
+            return { text: 'should not run' };
+          },
+          params: transformed,
+          model: MODEL,
+        });
+      })(),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(modelCalls).toBe(0);
+  });
+
+  it('blocks PII in an earlier message before the model body runs', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: { rules: { ssn: 'block' } } });
+    const mw = obsvrMiddleware();
+    let modelCalls = 0;
+    const params = {
+      prompt: [
+        { role: 'user', content: [{ type: 'text', text: 'SSN 123-45-6789' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'noted' }] },
+        { role: 'user', content: [{ type: 'text', text: 'safe request' }] },
+      ],
+    };
+
+    await expect(
+      (async () => {
+        const transformed = await mw.transformParams({ params, model: MODEL });
+        return mw.wrapGenerate({
+          doGenerate: async () => {
+            modelCalls += 1;
+            return { text: 'should not run' };
+          },
+          params: transformed,
+          model: MODEL,
+        });
+      })(),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(modelCalls).toBe(0);
+  });
+
+  it.each([
+    ['V1 result', { type: 'tool-result', result: { value: 'SSN 123-45-6789' } }],
+    [
+      'V2 output',
+      {
+        type: 'tool-result',
+        output: { type: 'json', value: { secret: 'SSN 123-45-6789' } },
+      },
+    ],
+  ])('blocks PII in %s prompt parts', async (_label, part) => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: { rules: { ssn: 'block' } } });
+    const mw = obsvrMiddleware();
+    let modelCalls = 0;
+    const params = { prompt: [{ role: 'tool', content: [part] }] };
+
+    await expect(
+      (async () => {
+        const transformed = await mw.transformParams({ params, model: MODEL });
+        return mw.wrapGenerate({
+          doGenerate: async () => {
+            modelCalls += 1;
+            return { text: 'should not run' };
+          },
+          params: transformed,
+          model: MODEL,
+        });
+      })(),
+    ).rejects.toThrow('[obsvr] Request blocked by policy');
+    expect(modelCalls).toBe(0);
+  });
+
+  it('redacts system, string prompt, and tool output in provider-bound params', async () => {
+    init({ api_key: 'test', sample_rate: 1, pii_policy: { rules: { email: 'redact' } } });
+    const mw = obsvrMiddleware();
+    const stringParams = { system: 'sys@example.com', prompt: 'user@example.com' };
+
+    const transformedString: any = await mw.transformParams({
+      params: stringParams,
+      model: MODEL,
+    });
+    expect(JSON.stringify(transformedString)).not.toMatch(/sys@example|user@example/);
+    expect(transformedString.system).toBe('[REDACTED_EMAIL]');
+    expect(transformedString.prompt).toBe('[REDACTED_EMAIL]');
+
+    const toolParams = {
+      prompt: [
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              output: { type: 'json', value: { email: 'tool@example.com' } },
+            },
+          ],
+        },
+      ],
+    };
+    const transformedTool: any = await mw.transformParams({
+      params: toolParams,
+      model: MODEL,
+    });
+    expect(JSON.stringify(transformedTool)).not.toContain('tool@example.com');
+    expect(JSON.stringify(transformedTool)).toContain('[REDACTED_EMAIL]');
   });
 
   it('wrapStream accumulates text-delta chunks (v1 + v2 shapes)', async () => {
