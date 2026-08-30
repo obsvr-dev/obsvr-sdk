@@ -29,7 +29,11 @@ import {
 
 import { init, _reset } from "../../src/proxy/config";
 import { _resetSender } from "../../src/proxy/sender/fire-and-forget";
-import { attachToolGate } from "../../src/integrations/openai-agents";
+import {
+  attachToolGate,
+  governModel,
+  governModelProvider,
+} from "../../src/integrations/openai-agents";
 
 let sentEvents: any[] = [];
 
@@ -124,6 +128,47 @@ function buildRealAgent(executed: string[], requests: ModelRequest[]): Agent {
   });
 }
 
+function emptyResponse(): ModelResponse {
+  return {
+    usage: new Usage(),
+    output: [
+      {
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text: "done" }],
+      },
+    ],
+  };
+}
+
+function countingModel(
+  requests: ModelRequest[],
+  streamRequests: ModelRequest[] = [],
+): Model {
+  return {
+    async getResponse(request: ModelRequest): Promise<ModelResponse> {
+      requests.push(request);
+      return emptyResponse();
+    },
+    async *getStreamedResponse(request: ModelRequest): AsyncIterable<never> {
+      streamRequests.push(request);
+    },
+  };
+}
+
+function request(input: ModelRequest["input"]): ModelRequest {
+  return {
+    systemInstructions: "Keep the answer concise.",
+    input,
+    modelSettings: {},
+    tools: [],
+    outputType: "text",
+    handoffs: [],
+    tracing: false,
+  };
+}
+
 describe("attachToolGate against the real @openai/agents package", () => {
   it("CONTROL: with no agent policy, the real executor runs the tool body", async () => {
     init({ api_key: "test-key", sample_rate: 1 });
@@ -207,5 +252,86 @@ describe("attachToolGate against the real @openai/agents package", () => {
     // Without this, "send_money did not run" would also be satisfied by a
     // gate that had stopped letting anything through.
     expect(executed).toEqual(["send_money"]);
+  });
+});
+
+describe("model boundary against the real @openai/agents package", () => {
+  const SSN = "123-45-6789";
+
+  it("blocks before the real runner enters a direct Model", async () => {
+    init({ api_key: "test-key", pii_policy: { rules: { ssn: "block" } } });
+    const requests: ModelRequest[] = [];
+    const agent = new Agent({
+      name: "governed-model-agent",
+      instructions: "Answer the user.",
+      model: governModel(countingModel(requests), { model: "gpt-4o-mini" }),
+    });
+
+    await expect(run(agent, `my ssn is ${SSN}`)).rejects.toThrow("obsvr");
+    expect(requests).toHaveLength(0);
+  });
+
+  it("redacts every provider-bound input turn before a direct Model runs", async () => {
+    init({ api_key: "test-key", pii_policy: { rules: { ssn: "redact" } } });
+    const requests: ModelRequest[] = [];
+    const model = governModel(countingModel(requests), { model: "gpt-4o-mini" });
+    const outbound = request([
+      { role: "user", content: [{ type: "input_text", text: `old ${SSN}` }] },
+      { role: "assistant", content: [{ type: "output_text", text: "noted" }], status: "completed" },
+      { role: "user", content: [{ type: "input_text", text: "continue" }] },
+    ] as any);
+    outbound.systemInstructions = `system ${SSN}`;
+    outbound.prompt = {
+      promptId: "pmpt_test",
+      variables: { customer: SSN },
+    };
+
+    await model.getResponse(outbound);
+
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(requests[0])).not.toContain(SSN);
+    expect(JSON.stringify(requests[0])).toContain("[REDACTED_SSN]");
+  });
+
+  it("governs models returned by a ModelProvider", async () => {
+    init({ api_key: "test-key", pii_policy: { rules: { ssn: "block" } } });
+    const requests: ModelRequest[] = [];
+    const provider = governModelProvider({
+      getModel: (_modelName?: string) => countingModel(requests),
+    });
+    const model = await provider.getModel("gpt-4o-mini");
+
+    await expect(model.getResponse(request(`my ssn is ${SSN}`))).rejects.toThrow(
+      "obsvr",
+    );
+    expect(requests).toHaveLength(0);
+  });
+
+  it("fails closed when a redact verdict has no safe structured rewrite", async () => {
+    init({
+      api_key: "test-key",
+      on_pre_call: async () => ({ decision: "redact" as const }),
+    });
+    const requests: ModelRequest[] = [];
+    const model = governModel(countingModel(requests), { model: "gpt-4o-mini" });
+
+    await expect(model.getResponse(request("ordinary text"))).rejects.toThrow("obsvr");
+    expect(requests).toHaveLength(0);
+  });
+
+  it("blocks a streamed request before the Model async iterator starts", async () => {
+    init({ api_key: "test-key", pii_policy: { rules: { ssn: "block" } } });
+    const streamRequests: ModelRequest[] = [];
+    const model = governModel(countingModel([], streamRequests), {
+      model: "gpt-4o-mini",
+    });
+
+    const consume = async () => {
+      for await (const _event of model.getStreamedResponse(request(`ssn ${SSN}`))) {
+        // The block must happen before the wrapped iterator yields or starts.
+      }
+    };
+    await expect(consume()).rejects.toThrow("obsvr");
+    expect(streamRequests).toHaveLength(0);
   });
 });

@@ -68,12 +68,20 @@ surfaces, and this module wires both directions of it:
 Either way the record is ``blocked``/``TOOL_DENIED``, true at the point it is
 written, and the processor's audit rail stays silent for a governed name
 rather than stamping ``not_evaluated`` beside the gate's own verdict.
+
+MODEL POLICY THAT ACTUALLY REFUSES lives at the package's ``Model`` interface,
+not in tracing. Pass a model through :func:`govern_model`, or a model provider
+through :func:`govern_model_provider`, before giving it to the runner. Those
+wrappers evaluate policy before ``get_response`` or ``stream_response`` enters
+the underlying model, and rewrite provider-bound content on a redact verdict.
+If a requested rewrite cannot be guaranteed, the call fails closed.
 """
 
 # Interception: openai-agents TracingProcessor interface (non-mutating).
 # Registered via add_trace_processor() — no SDK internals are mutated.
 
 import json
+import inspect
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -90,11 +98,25 @@ from ..agent_policy import (
 from ..config import try_get_config
 from ..deobfuscate import redact_for_storage
 from ..events import (
+    blocked_call_error,
     emit_event,
+    infer_provider_from_model,
     tool_denied_compliance,
     tool_gate_not_evaluated_compliance,
 )
-from ..policy import apply_observe_policy
+from ..policy import (
+    NLP_ONLY_PII_TYPES,
+    RedactionNotApplied,
+    apply_observe_policy,
+    apply_outbound_redaction,
+    apply_pre_call_policy,
+    assert_redaction_applied,
+    blocked_prompt_for_storage,
+    blocked_user_input_for_storage,
+    outbound_redaction_blocked_compliance,
+    outbound_redactor,
+    redact_arguments,
+)
 from ..token_usage import read_token_usage
 from ..dedupe import claim_emission
 
@@ -467,6 +489,347 @@ def _responses_output_text(output: Any) -> str:
             if isinstance(text, str):
                 parts.append(text)
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Pre-execution model boundary
+# ---------------------------------------------------------------------------
+
+_GOVERNED_MODEL_MARKER = "_obsvr_openai_agents_governed_model"
+_GOVERNED_PROVIDER_MARKER = "_obsvr_openai_agents_governed_provider"
+
+
+def _model_name(model: Any, explicit: Optional[str]) -> str:
+    if explicit:
+        return explicit
+    for attr in ("model", "model_name"):
+        value = getattr(model, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value
+    return "unknown"
+
+
+def _model_request_text(
+    system_instructions: Optional[str], input_value: Any, prompt: Any
+) -> str:
+    parts = []
+    if system_instructions:
+        parts.append(system_instructions)
+    if input_value is not None:
+        parts.append(_as_text(input_value))
+    variables = _field(prompt, "variables")
+    if variables is not None:
+        parts.append(_as_text(variables))
+    return "\n".join(part for part in parts if part)
+
+
+def _identity_metadata(options: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    metadata = dict(options.get("metadata") or {})
+    for key in ("user_id", "service_name", "tenant_id"):
+        if key in options and options[key] is not None:
+            metadata[key] = options[key]
+    return metadata or None
+
+
+def _redact_model_request(
+    config: Any,
+    system_instructions: Optional[str],
+    input_value: Any,
+    prompt: Any,
+    compliance: Dict[str, Any],
+) -> Tuple[Optional[str], Any, Any]:
+    types = list(compliance.get("redacted_types") or [])
+    source = compliance.get("action_source")
+    if not types or "all" in types or source not in ("builtin", "builtin+presidio"):
+        raise RedactionNotApplied(
+            "the redaction verdict has no safely locatable provider-bound span"
+        )
+
+    redact = outbound_redactor(config, types)
+    rewritten_system = (
+        redact(system_instructions) if isinstance(system_instructions, str) else system_instructions
+    )
+    rewritten_input = redact_arguments(input_value, redact)
+    rewritten_prompt = prompt
+    variables = _field(prompt, "variables")
+    if variables is not None:
+        if not isinstance(prompt, dict):
+            raise RedactionNotApplied(
+                "prompt variables are not represented by a rewritable mapping"
+            )
+        rewritten_prompt = dict(prompt)
+        rewritten_prompt["variables"] = redact_arguments(variables, redact)
+
+    before = _model_request_text(system_instructions, input_value, prompt)
+    after = _model_request_text(rewritten_system, rewritten_input, rewritten_prompt)
+    if before == after:
+        raise RedactionNotApplied("the provider-bound request was unchanged")
+    assert_redaction_applied(after, compliance)
+    nlp_types = sorted(set(types) & set(NLP_ONLY_PII_TYPES))
+    if nlp_types:
+        analyzer = getattr(config, "presidio_analyzer_url", None)
+        if not analyzer:
+            raise RedactionNotApplied(
+                "an external-only PII span has no configured verification scanner"
+            )
+        from ..presidio import presidio_scan
+
+        verification = presidio_scan(after, analyzer)
+        if not verification.get("answered"):
+            raise RedactionNotApplied(
+                "the external analyzer did not answer the post-redaction check"
+            )
+        remaining = sorted(
+            set(nlp_types) & set(verification.get("detected_types") or [])
+        )
+        if remaining:
+            raise RedactionNotApplied(
+                "redaction did not remove " + ", ".join(remaining)
+            )
+    return rewritten_system, rewritten_input, rewritten_prompt
+
+
+def _emit_model_block(
+    config: Any,
+    text: str,
+    policy: Dict[str, Any],
+    model_name: str,
+    provider: str,
+    options: Dict[str, Any],
+) -> None:
+    emit_event(
+        config,
+        provider=provider,
+        model=model_name,
+        operation="openai_agents.model.request",
+        source=SOURCE,
+        prompt=blocked_prompt_for_storage(
+            text,
+            policy["compliance"],
+            policy.get("security_normalized"),
+        ),
+        user_input=blocked_user_input_for_storage(text, policy),
+        response="",
+        success=False,
+        compliance=policy["compliance"],
+        metadata={
+            **(options.get("metadata") or {}),
+            **({"canary_leak": policy["canary_telemetry"]} if policy.get("canary_telemetry") else {}),
+            **(policy.get("floor_telemetry") or {}),
+        }
+        or None,
+        options=options or None,
+    )
+
+
+def _govern_model_request(
+    config: Any,
+    model_name: str,
+    options: Dict[str, Any],
+    system_instructions: Optional[str],
+    input_value: Any,
+    prompt: Any,
+) -> Tuple[Optional[str], Any, Any]:
+    if config is None or getattr(config, "disabled", False):
+        return system_instructions, input_value, prompt
+
+    provider = options.get("provider") or infer_provider_from_model(model_name)
+    text = _model_request_text(system_instructions, input_value, prompt)
+    policy = apply_pre_call_policy(
+        text,
+        config,
+        provider=provider,
+        operation="openai_agents.model.request",
+        model=None if model_name == "unknown" else model_name,
+        metadata=_identity_metadata(options),
+    )
+    if policy["decision"] == "block":
+        _emit_model_block(config, text, policy, model_name, provider, options)
+        raise blocked_call_error(policy["compliance"])
+    if policy["decision"] != "redact":
+        return system_instructions, input_value, prompt
+
+    rewritten: list[Any] = []
+
+    def _apply() -> None:
+        rewritten[:] = _redact_model_request(
+            config,
+            system_instructions,
+            input_value,
+            prompt,
+            policy["compliance"],
+        )
+
+    failure = apply_outbound_redaction(_apply)
+    if failure is not None:
+        blocked = dict(policy)
+        blocked["decision"] = "block"
+        blocked["compliance"] = outbound_redaction_blocked_compliance(
+            policy["compliance"], failure
+        )
+        _emit_model_block(config, text, blocked, model_name, provider, options)
+        raise blocked_call_error(blocked["compliance"])
+    return rewritten[0], rewritten[1], rewritten[2]
+
+
+def govern_model(model: Any, *, model_name: Optional[str] = None, **options: Any) -> Any:
+    """Enforce policy at the real OpenAI Agents ``Model`` request methods.
+
+    The returned object subclasses the installed package's official ``Model``
+    ABC, because the runner uses ``isinstance(Model)`` during resolution.
+    """
+    if getattr(model, _GOVERNED_MODEL_MARKER, False):
+        return model
+    try:
+        from agents.models.interface import Model
+    except Exception as exc:
+        raise ImportError("openai-agents is required for govern_model") from exc
+
+    resolved_name = _model_name(model, model_name)
+    boundary_options = dict(options)
+    if model_name is not None:
+        boundary_options["model"] = model_name
+
+    class _GovernedModel(Model):
+        _obsvr_openai_agents_governed_model = True
+
+        def __init__(self, wrapped: Any) -> None:
+            self._wrapped = wrapped
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._wrapped, name)
+
+        async def get_response(
+            self,
+            system_instructions: Optional[str],
+            input: Any,
+            model_settings: Any,
+            tools: List[Any],
+            output_schema: Any,
+            handoffs: List[Any],
+            tracing: Any,
+            *,
+            previous_response_id: Optional[str],
+            conversation_id: Optional[str],
+            prompt: Any,
+        ) -> Any:
+            governed_system, governed_input, governed_prompt = _govern_model_request(
+                try_get_config(),
+                resolved_name,
+                boundary_options,
+                system_instructions,
+                input,
+                prompt,
+            )
+            return await self._wrapped.get_response(
+                governed_system,
+                governed_input,
+                model_settings,
+                tools,
+                output_schema,
+                handoffs,
+                tracing,
+                previous_response_id=previous_response_id,
+                conversation_id=conversation_id,
+                prompt=governed_prompt,
+            )
+
+        def stream_response(
+            self,
+            system_instructions: Optional[str],
+            input: Any,
+            model_settings: Any,
+            tools: List[Any],
+            output_schema: Any,
+            handoffs: List[Any],
+            tracing: Any,
+            *,
+            previous_response_id: Optional[str],
+            conversation_id: Optional[str],
+            prompt: Any,
+        ) -> Any:
+            async def _stream() -> Any:
+                governed_system, governed_input, governed_prompt = _govern_model_request(
+                    try_get_config(),
+                    resolved_name,
+                    boundary_options,
+                    system_instructions,
+                    input,
+                    prompt,
+                )
+                async for event in self._wrapped.stream_response(
+                    governed_system,
+                    governed_input,
+                    model_settings,
+                    tools,
+                    output_schema,
+                    handoffs,
+                    tracing,
+                    previous_response_id=previous_response_id,
+                    conversation_id=conversation_id,
+                    prompt=governed_prompt,
+                ):
+                    yield event
+
+            return _stream()
+
+        def get_retry_advice(self, request: Any) -> Any:
+            method = getattr(self._wrapped, "get_retry_advice", None)
+            return method(request) if callable(method) else None
+
+        async def _cleanup_on_run_end(self, owner: object) -> None:
+            method = getattr(self._wrapped, "_cleanup_on_run_end", None)
+            if callable(method):
+                result = method(owner)
+                if inspect.isawaitable(result):
+                    await result
+
+        async def close(self) -> None:
+            method = getattr(self._wrapped, "close", None)
+            if callable(method):
+                result = method()
+                if inspect.isawaitable(result):
+                    await result
+
+    return _GovernedModel(model)
+
+
+def govern_model_provider(
+    provider: Any, *, model_name: Optional[str] = None, **options: Any
+) -> Any:
+    """Wrap every ``Model`` resolved by an OpenAI Agents provider."""
+    if getattr(provider, _GOVERNED_PROVIDER_MARKER, False):
+        return provider
+    try:
+        from agents.models.interface import ModelProvider
+    except Exception as exc:
+        raise ImportError("openai-agents is required for govern_model_provider") from exc
+
+    class _GovernedProvider(ModelProvider):
+        _obsvr_openai_agents_governed_provider = True
+
+        def __init__(self, wrapped: Any) -> None:
+            self._wrapped = wrapped
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._wrapped, name)
+
+        def get_model(self, requested_name: Optional[str]) -> Any:
+            raw = self._wrapped.get_model(requested_name)
+            return govern_model(
+                raw,
+                model_name=requested_name or model_name,
+                **options,
+            )
+
+        async def aclose(self) -> None:
+            method = getattr(self._wrapped, "aclose", None)
+            if callable(method):
+                result = method()
+                if inspect.isawaitable(result):
+                    await result
+
+    return _GovernedProvider(provider)
 
 
 class ObsvrTracingProcessor:
