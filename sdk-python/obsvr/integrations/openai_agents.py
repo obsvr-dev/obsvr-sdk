@@ -683,7 +683,9 @@ def govern_model(model: Any, *, model_name: Optional[str] = None, **options: Any
     try:
         from agents.models.interface import Model
     except Exception as exc:
+        record_binding("openai_agents", "agents.models.interface.Model", exc)
         raise ImportError("openai-agents is required for govern_model") from exc
+    record_binding("openai_agents", "agents.models.interface.Model")
 
     resolved_name = _model_name(model, model_name)
     boundary_options = dict(options)
@@ -803,7 +805,11 @@ def govern_model_provider(
     try:
         from agents.models.interface import ModelProvider
     except Exception as exc:
+        record_binding(
+            "openai_agents", "agents.models.interface.ModelProvider", exc
+        )
         raise ImportError("openai-agents is required for govern_model_provider") from exc
+    record_binding("openai_agents", "agents.models.interface.ModelProvider")
 
     class _GovernedProvider(ModelProvider):
         _obsvr_openai_agents_governed_provider = True
