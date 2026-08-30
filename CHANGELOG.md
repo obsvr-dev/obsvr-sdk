@@ -15,6 +15,13 @@ Entries link the implementing commit when a stable public hash is available.
 
 ### Added
 
+- Added matching Python and TypeScript operator contracts for policy candidate
+  replay and promotion, signed workload registrations, signed typed templates,
+  and deterministic control-effectiveness reports.
+- Added a bounded evaluator signal interface with explicit determinism,
+  locality, timeout, cache, provenance, and failure disposition. Remote or
+  probabilistic signals cannot authorize actions; OTEL, OPA, and Cedar helpers
+  are projections only.
 - Strict profile 2.1 approval resolution can require separation of duties
   between the pseudonymous approver and the original requester, or both the
   requester and initiating agent. Existing verifiers remain compatible unless

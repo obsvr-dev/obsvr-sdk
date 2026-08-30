@@ -387,6 +387,19 @@ export {
   buildControlAnalyticsReportV1,
 } from "./governance/control-analytics-v1.js";
 export type { ControlAnalyticsEventV1 } from "./governance/control-analytics-v1.js";
+export {
+  SIGNAL_DECLARATION_V1_SCHEMA,
+  SIGNAL_OBSERVATION_V1_SCHEMA,
+  SIGNAL_RESOLUTION_V1_SCHEMA,
+  SignalInterfaceV1ValidationError,
+  buildSignalDeclarationV1,
+  buildSignalObservationV1,
+  resolveSignalV1,
+  signalResolutionToOtelAttributesV1,
+  signalResolutionToOpaInputV1,
+  signalResolutionToCedarContextV1,
+} from "./governance/signal-interface-v1.js";
+export type { SignalDeclarationV1Input, SignalObservationV1Input } from "./governance/signal-interface-v1.js";
 export type {
   PolicyCandidateV1Input,
   PolicyReplayCaseV1,

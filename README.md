@@ -270,6 +270,36 @@ hash in the next `ActionContextV2.current_action.remediation_retry_hash` with
 the parent and new attempt ids; the resulting context hash then travels into
 the strict decision receipt.
 
+### Operate policies across deployments
+
+The SDKs expose matching, content-addressed contracts for the policy lifecycle.
+They are building blocks for a deployment controller; they do not turn the SDK
+into a general CMDB, GRC suite, or remote policy service.
+
+| Contract | What it preserves | Safety boundary |
+| --- | --- | --- |
+| Policy lifecycle v1 | candidate artifact, replay impact, stable explanations, promotion thresholds, rollback target | a failed threshold returns the candidate to shadow; promotion never changes a live pack by itself |
+| Workload registration v1 | workload, environment, deployment, capabilities, approvals, effective pack hashes, coverage-attestation hash | signed runtime metadata only; raw prompts, arguments, and customer data are rejected |
+| Policy template v1 | template, typed parameters, rendered artifact, approval, activation, operator signature | whole-value placeholders only; no code execution or string interpolation |
+| Control analytics v1 | exact event window, outcome counts, shadow divergence, approval indicators, latency, coverage and evidence gaps | reports only supplied events and never infers missing-event completeness |
+
+### Use external evaluators as signals
+
+`resolveSignalV1()` / `resolve_signal_v1()` records whether an evaluator is
+deterministic or probabilistic, local or remote, plus its timeout, cache state,
+failure disposition, provenance, and latency. The result is a fact for the
+local deterministic kernel. It always carries `authoritative_allow: false`.
+
+| Failure disposition | Kernel constraint |
+| --- | --- |
+| `deny` | require `DENY` |
+| `defer` | require `DEFER` |
+| `ignore` | record the failure without creating an allow decision |
+
+OpenTelemetry, OPA, and Cedar helpers project the same bounded resolution for
+correlation or policy input. OpenTelemetry is not signed evidence, and an
+OPA/Cedar verdict still requires enforcement at an obsvr action boundary.
+
 ## Policy engine
 
 Obsvr uses deterministic code in the decision path—never a second LLM. Rules cover keywords, bounded regex, topic allow/deny, model and environment gates, namespace and tenant isolation, destructive operations, source grounding, quotas, action gates, and parsed protocol facets.

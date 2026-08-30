@@ -293,6 +293,20 @@ block has zero calls to the wrapped function, and redaction reaches its actual
 arguments or fails closed. Only the returned wrapper is covered; raw aliases
 remain explicit exclusions.
 
+## Cross-language operator contracts
+
+| Contract | TypeScript | Python | Cross-language invariant |
+| --- | --- | --- | --- |
+| policy lifecycle v1 | `buildPolicyCandidateV1`, `replayPolicyCandidateV1`, `decidePolicyPromotionV1` | `build_policy_candidate_v1`, `replay_policy_candidate_v1`, `decide_policy_promotion_v1` | candidate hash, replay arithmetic, thresholds, rollback, reason codes |
+| workload registry v1 | `signWorkloadRegistrationV1`, `WorkloadRegistryV1` | `sign_workload_registration_v1`, `WorkloadRegistryV1` | canonical registration hash and Ed25519 verification |
+| policy template v1 | `renderPolicyTemplateV1`, `signRenderedPolicyV1` | `render_policy_template_v1`, `sign_rendered_policy_v1` | typed rendering and template, parameter, artifact, approval, activation hashes |
+| control analytics v1 | `buildControlAnalyticsReportV1` | `build_control_analytics_report_v1` | integer basis-point rates, nearest-rank percentiles, report hash |
+| signal interface v1 | `resolveSignalV1` and OTEL/OPA/Cedar projections | `resolve_signal_v1` and matching projections | resolution hash, failure constraint, `authoritative_allow: false` |
+
+The fixtures pin representative hashes in both SDK test suites. These contracts
+accept JSON-safe bounded values; they do not promise byte parity for values
+outside the validated schemas.
+
 ## Strict profile 2.1 direct-provider boundary
 
 Strict mode is opt-in and narrower than the ordinary wrapper. It supports unary calls only. Python async-client methods, streams, raw-response helpers, tool runners, factories, chat managers, and all unlisted callables fail closed with `unsupported_surface`; TypeScript's listed unary methods retain their normal Promise-returning API.

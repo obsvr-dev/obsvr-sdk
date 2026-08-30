@@ -138,6 +138,21 @@ plan, new attempt, and evidence set. These hashes prove linkage and integrity,
 not the truth of the external evidence itself; the policy or approval authority
 must still validate that evidence before allowing execution.
 
+### Operator contracts and external signals
+
+| Surface | Integrity property | Explicit limit |
+| --- | --- | --- |
+| policy lifecycle | replay report is candidate-bound; failed thresholds stay in shadow; non-shadow candidates carry rollback | the SDK returns a promotion document but does not mutate deployment state |
+| workload registry | registration is content-addressed and signed by the supplied operator key | it proves the signed declaration, not undiscovered processes or calls |
+| policy template | typed parameters and rendered artifact are separately hashed with approval and activation references | a template is not a compliance certification |
+| control analytics | report hash commits the stated input count, time window, metrics, and explicit gaps | missing events outside the input cannot be detected or inferred |
+| evaluator signal | provenance, latency, timeout, cache state, and failure disposition enter the resolution | remote and probabilistic signals always carry `authoritative_allow: false` |
+
+Signal exports are deliberately one-way projections. OpenTelemetry attributes
+support correlation only. OPA and Cedar projections supply facts to those
+engines, but neither projection executes an action or replaces obsvr's signed
+decision and outcome evidence.
+
 ## Strict profile 2.1 execution boundary
 
 Strict receipt profile 2.1 is a separate, opt-in execution protocol. Its device-signed decision receipt is not the ordinary HMAC event chain described above. The receipt binds the action, exact canonical JSON argument hash, normalized provider target, intent and requested scopes, identity evidence, effective policy evidence, outcome, and receipt-chain position before a supported provider call can start.
