@@ -7,7 +7,8 @@ references saved earlier are outside that boundary.
 
 Cleanly auto-wired (global registration or an explicitly supported class gate):
   * Providers (openai / anthropic) — construct interception via obsvr.register.
-  * OpenAI Agents SDK — agents.add_trace_processor(ObsvrTracingProcessor()).
+  * OpenAI Agents SDK — trace processor plus future Agent construction with
+    pre-tool input guardrails on function tools present at construction time.
   * LlamaIndex — Settings.callback_manager.add_handler(ObsvrLlamaIndexHandler()).
   * CrewAI — official process-global before_tool_call hook.
   * AutoGen/ag2 0.x — supported ConversableAgent tool-execution boundary.
@@ -26,9 +27,12 @@ raises and never affects the audit path.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List
+import sys
+from typing import Any, Callable, Dict, Generic, List, TypeVar
 
 logger = logging.getLogger("obsvr.auto")
+
+_TContext = TypeVar("_TContext")
 
 # Idempotency guard: init() may run more than once in tests / long-lived procs.
 _wired: List[str] = []
@@ -65,6 +69,87 @@ def _wire_openai_agents() -> bool:
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: openai-agents wiring skipped: %s", exc)
+        return False
+
+
+def _wire_openai_agents_tool_gate() -> bool:
+    """Replace future ``agents.Agent`` construction with a gated subclass."""
+    if not _module_available("agents"):
+        return False
+    try:
+        import agents  # type: ignore
+        from .binding_report import record_binding
+        from .integrations.openai_agents import (
+            attach_tool_gate,
+            make_tool_gate_guardrail,
+        )
+
+        original = getattr(agents, "Agent", None)
+        if not isinstance(original, type):
+            raise ImportError("agents exports no Agent class")
+        if getattr(original, "_obsvr_auto_tool_gate_class", False):
+            return True
+        # Validate both the public guardrail type and the executor consult site
+        # before replacing Agent. An accepted-but-never-consulted gate would be
+        # worse than leaving construction untouched and reporting the bind gap.
+        make_tool_gate_guardrail()
+
+        if getattr(original, "__parameters__", ()):
+            class GovernedAgent(  # type: ignore[misc,valid-type,no-redef]
+                original[_TContext], Generic[_TContext]
+            ):
+                def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    super().__init__(*args, **kwargs)
+                    _uninstallers.append(attach_tool_gate(self))
+        else:
+            class GovernedAgent(original):  # type: ignore[misc,valid-type,no-redef]
+                def __init__(self, *args: Any, **kwargs: Any) -> None:
+                    super().__init__(*args, **kwargs)
+                    _uninstallers.append(attach_tool_gate(self))
+
+        GovernedAgent.__name__ = original.__name__
+        GovernedAgent.__qualname__ = original.__qualname__
+        GovernedAgent.__module__ = original.__module__
+        GovernedAgent._obsvr_auto_tool_gate_class = True
+
+        rebound: List[tuple[Any, str]] = []
+        for module in (agents, sys.modules.get("agents.agent")):
+            if module is None:
+                continue
+            for name, value in list(vars(module).items()):
+                if value is not original:
+                    continue
+                setattr(module, name, GovernedAgent)
+                if getattr(module, name, None) is GovernedAgent:
+                    rebound.append((module, name))
+        if getattr(agents, "Agent", None) is not GovernedAgent:
+            raise RuntimeError("agents.Agent refused constructor substitution")
+
+        removed = False
+
+        def _uninstall() -> None:
+            nonlocal removed
+            if removed:
+                return
+            removed = True
+            for module, name in rebound:
+                try:
+                    if getattr(module, name, None) is GovernedAgent:
+                        setattr(module, name, original)
+                except Exception:
+                    pass
+
+        _uninstallers.append(_uninstall)
+        record_binding("openai_agents", "agents.Agent")
+        return True
+    except Exception as exc:
+        try:
+            from .binding_report import record_binding
+
+            record_binding("openai_agents", "agents.Agent", exc)
+        except Exception:
+            pass
+        logger.debug("obsvr.auto: openai-agents tool gate skipped: %s", exc)
         return False
 
 
@@ -119,6 +204,7 @@ _MANUAL_HINTS = {
     "langchain_core": "LangChain: pass obsvr.integrations.langchain.ObsvrCallbackHandler() in callbacks=[...]",
     "crewai": "CrewAI run/step audit: wire obsvr.integrations.crewai.make_crew_callbacks(...) on your Crew; the pre-tool gate is automatic where supported",
     "autogen": "AutoGen message policy: call obsvr.integrations.autogen.register_obsvr(agent); the tool-execution gate is automatic on supported ag2 0.x",
+    "agents": "OpenAI Agents model policy still requires govern_model()/govern_model_provider(); hosted and dynamically converted MCP tools must be governed at their execution boundary",
 }
 
 
@@ -136,6 +222,13 @@ def enable_auto_instrumentation() -> Dict[str, Any]:
     if "openai_agents" not in _wired and _wire_openai_agents():
         _wired.append("openai_agents")
         report["wired"].append("openai-agents")
+
+    if (
+        "openai_agents_tool_gate" not in _wired
+        and _wire_openai_agents_tool_gate()
+    ):
+        _wired.append("openai_agents_tool_gate")
+        report["wired"].append("openai-agents:tool-gate")
 
     if "llamaindex" not in _wired and _wire_llamaindex():
         _wired.append("llamaindex")

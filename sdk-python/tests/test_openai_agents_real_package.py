@@ -19,10 +19,15 @@ agents = pytest.importorskip("agents")
 
 import obsvr
 from obsvr import sender
-from agents import Agent, Runner, set_tracing_disabled
+from agents import Agent, Runner, function_tool, set_tracing_disabled
 from agents.items import ModelResponse
 from agents.models.interface import Model, ModelProvider
 from agents.usage import Usage
+from openai.types.responses import (
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+    ResponseOutputText,
+)
 from obsvr.integrations.openai_agents import govern_model, govern_model_provider
 
 
@@ -91,6 +96,58 @@ class CountingProvider(ModelProvider):
         return self.model
 
 
+class ToolCallingModel(CountingModel):
+    """Two-turn real-runner model: request one tool, then return a final answer."""
+
+    async def get_response(
+        self,
+        system_instructions: str | None,
+        input: Any,
+        model_settings: Any,
+        tools: list[Any],
+        output_schema: Any,
+        handoffs: list[Any],
+        tracing: Any,
+        *,
+        previous_response_id: str | None,
+        conversation_id: str | None,
+        prompt: Any,
+    ) -> ModelResponse:
+        self.calls.append(
+            {"system_instructions": system_instructions, "input": input, "prompt": prompt}
+        )
+        if len(self.calls) == 1:
+            return ModelResponse(
+                output=[
+                    ResponseFunctionToolCall(
+                        arguments='{"value":"contract-42"}',
+                        call_id="call-1",
+                        name="send_contract",
+                        type="function_call",
+                    )
+                ],
+                usage=Usage(),
+                response_id="response-1",
+            )
+        return ModelResponse(
+            output=[
+                ResponseOutputMessage(
+                    id="message-1",
+                    content=[
+                        ResponseOutputText(
+                            annotations=[], text="done", type="output_text"
+                        )
+                    ],
+                    role="assistant",
+                    status="completed",
+                    type="message",
+                )
+            ],
+            usage=Usage(),
+            response_id="response-2",
+        )
+
+
 def model_args(input_value: Any) -> tuple[Any, ...]:
     return (
         "Keep the answer concise.",
@@ -123,6 +180,36 @@ def test_block_stops_before_real_model_abc_method() -> None:
     with pytest.raises(Exception, match="obsvr"):
         asyncio.run(Runner.run(agent, f"ssn {SSN}"))
     assert raw.calls == []
+
+
+def test_auto_init_gates_future_real_agent_tool_execution() -> None:
+    executions: list[str] = []
+
+    @function_tool
+    def send_contract(value: str) -> str:
+        """Send one contract to its destination."""
+        executions.append(value)
+        return "sent"
+
+    obsvr.init(
+        api_key="test",
+        agent_policy={"denied_tools": ["send_contract"]},
+        auto=True,
+    )
+    model = ToolCallingModel()
+    agent = agents.Agent(
+        name="auto-governed-tool-agent",
+        instructions="Call the requested tool.",
+        model=model,
+        tools=[send_contract],
+    )
+
+    result = asyncio.run(Runner.run(agent, "send contract-42"))
+
+    assert result.final_output == "done"
+    assert executions == [], "a denied auto-gated tool entered its callable"
+    assert len(model.calls) == 2
+    assert "blocked by agent policy" in str(model.calls[1]["input"])
 
 
 def test_redaction_reaches_every_provider_bound_input_turn() -> None:
