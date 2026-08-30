@@ -58,25 +58,27 @@ target script or module. Neither SDK walks the heap.
 
 | Runtime | Automatic startup boundary | Still explicit |
 | --- | --- | --- |
-| TypeScript | documented OpenAI, Anthropic, and Gemini constructors; MCP `Client` on the two documented client exports; OpenAI Agents `Agent` function tools present at construction | LangChain callbacks, LlamaIndex model/tool wrappers, tools added after Agent construction, unlisted MCP/Agents paths |
-| Python | documented OpenAI and Anthropic constructors; supported CrewAI process-global pre-tool hook; AutoGen/ag2 0.x execution gate; future OpenAI Agents `Agent` function tools present at construction | LangChain callbacks, LlamaIndex agent tool gate, MCP sessions, Gemini, already-created framework objects |
+| TypeScript | documented OpenAI, Anthropic, and Gemini constructors; MCP `Client` on the two documented client exports; OpenAI Agents concrete models and local function tools at construction and later supported assignment/list mutation | LangChain callbacks, LlamaIndex model/tool wrappers, hosted tools, unlisted MCP/Agents paths |
+| Python | documented OpenAI and Anthropic constructors; future MCP `ClientSession`; supported CrewAI and AutoGen/ag2 pre-tool gates; Python LlamaIndex model-start handler; OpenAI Agents concrete models and local function tools at construction and later supported assignment/list mutation | LangChain callbacks, LlamaIndex agent tool gate, Gemini, hosted tools, already-created framework objects |
 
 The automatic path uses the same enforcing boundaries as the explicit APIs:
 MCP request governance, framework tool-input guardrails, CrewAI's pre-tool
 sentinel, and AutoGen's execution gate. It does not turn tracing into a veto.
-OpenAI Agents model tracing remains observe-only; its model boundary still
-requires `governModel` / `govern_model` or the provider variants. LangChain
-still requires its callback handler. Hosted provider-side tools expose no local
+OpenAI Agents tracing remains observe-only, but an automatically intercepted
+Agent's concrete model receives the same pre-call wrapper as `governModel` /
+`govern_model`; string aliases rely on the intercepted provider constructor.
+LangChain still requires its callback handler. Hosted provider-side tools expose no local
 callback to attach, and OpenAI Agents MCP tools converted per turn must be
 governed at the MCP boundary.
 
 Therefore an instance, constructor, tool, or callable captured before startup
 can bypass governance, as can an unlisted import path, custom transport,
-unsupported method, tool added after an Agent constructor has returned, or
+unsupported method, mutation that bypasses the intercepted Agent properties, or
 hosted tool runner. `OBSVR_REQUIRED_BINDINGS` makes startup fail when a declared
 automatic integration did not bind; TypeScript's `autoGovernanceStatus()`
-reports armed interceptors and observed direct-provider bindings, while each
-SDK's binding report covers framework and MCP symbols. These prove startup
+reports every automatic surface as `armed`, `bound`, or `not-applicable`, and
+Python exposes `auto_governance_status()` with the same distinction. Each SDK's
+binding report covers framework and MCP symbols. These prove startup
 attachment, not that every future call used the attached boundary.
 
 Explicit wrapping may request `sealRaw: true` in TypeScript or `seal_raw=True`

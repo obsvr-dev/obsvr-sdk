@@ -198,16 +198,20 @@ that every API in the framework is intercepted.
 | Surface | Runtime | Automatic entry point | Version/evidence boundary |
 | --- | --- | --- | --- |
 | MCP client | TypeScript | `@modelcontextprotocol/sdk/client` and `/client/index.js` `Client` construction, ESM and CommonJS | real client/server startup tests on the declared `>=1.26.0 <2.0.0` line; the security floor remains 1.26.0 |
-| OpenAI Agents tools | TypeScript | `@openai/agents` `Agent` construction; function tools present at construction receive input guardrails | real-runner startup test on the declared `>=0.13.0 <1.0.0` line; the listed observed versions remain the range evidence |
-| OpenAI Agents tools | Python | future `agents.Agent` construction; function tools present at construction receive input guardrails | real-runner startup test at 0.19.2; the declared range remains `>=0.19.0,<1.0.0` |
+| MCP client | Python | future `mcp.ClientSession` / `mcp.client.session.ClientSession` construction | real in-memory client/server test on the installed 1.x line; a denied tool records zero server executions |
+| OpenAI Agents model + tools | TypeScript | `@openai/agents` `Agent` construction; concrete model assignment and local tool/handoff list mutations receive pre-call gates | real-runner startup tests on the declared `>=0.13.0 <1.0.0` line; denied model and late-added tool each record zero downstream executions |
+| OpenAI Agents model + tools | Python | future `agents.Agent` construction; concrete model assignment and local tool/handoff list mutations receive pre-call gates | real-runner startup tests at 0.19.2; denied model and late-added tool each record zero downstream executions |
+| LlamaIndex models | Python | process-global `Settings.callback_manager` model-start handler | real callback boundary tests; block stops before model dispatch and redaction fails closed |
 | CrewAI tools | Python | official process-global `before_tool_call` hook | automatic attachment is available only where the executor consult site exists, currently 1.15.3+; earlier supported versions require `govern_tool` |
 | AutoGen/ag2 tools | Python | class-level `ConversableAgent.execute_function` / `a_execute_function` gate | automatic attachment follows the supported 0.x range, live-driven at 0.3.2 and 0.9.9 |
 
-LangChain remains an explicit callback binding in both SDKs. Python MCP,
-LlamaIndex agent tool governance, Python Gemini, already-imported aliases, tools
-added after Agent construction, hosted tools, and unlisted import paths remain
-explicit. OpenAI Agents tracing is still observe-only for model calls; automatic
-tool attachment does not change that model boundary.
+LangChain remains an explicit callback binding in both SDKs because supported
+versions expose handlers per model or invocation, not a documented
+process-global custom pre-call registration point. LlamaIndex agent tool
+governance, Python Gemini, already-imported aliases, hosted tools, and unlisted
+import paths remain explicit. OpenAI Agents tracing is still observe-only;
+automatic Agent interception separately governs concrete model calls and local
+tool execution at their pre-call boundaries.
 
 ## Ordinary enforcement boundary
 

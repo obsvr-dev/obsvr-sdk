@@ -99,17 +99,19 @@ OBSVR_API_KEY=... \
 OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
 OBSVR_AGENT_POLICY='{"deniedTools":["send_contract"]}' \
 OBSVR_MCP_TOOL_POLICY='{"deniedTools":["delete_record"]}' \
-OBSVR_REQUIRED_BINDINGS='openai,mcp,openai_agents' \
+OBSVR_REQUIRED_BINDINGS='openai.client,mcp.client,openai_agents.model,openai_agents.tools' \
 NODE_OPTIONS="--import @obsvr/sdk/initialize" node app.js
 ```
 
 The preload reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`, `OBSVR_PROVIDERS`,
 and JSON `OBSVR_PII_POLICY`, `OBSVR_AGENT_POLICY`, and
 `OBSVR_MCP_TOOL_POLICY` in addition to the required API key. Set
-`OBSVR_REQUIRED_BINDINGS` to any required subset of `openai`, `anthropic`,
-`google`, `mcp`, and `openai_agents`; startup fails unless those package exports
-actually bind. `autoGovernanceStatus()` reports armed interceptors and direct
-provider bindings; `integrationBindings()` reports every recorded binding.
+`OBSVR_REQUIRED_BINDINGS` to any required subset of `openai.client`,
+`anthropic.client`, `google.client`, `mcp.client`, `openai_agents.model`, and
+`openai_agents.tools`; startup fails unless those exact boundaries actually
+bind. `autoGovernanceStatus()` reports each automatic boundary as `armed`,
+`bound`, or `not-applicable`; `integrationBindings()` reports every recorded
+symbol bind.
 
 For code-owned configuration, preload `@obsvr/sdk/register` and call
 `obsvr.init()` before importing providers. `register` arms interception but does
@@ -118,8 +120,10 @@ not initialize policy by itself.
 `new OpenAI()`, `new Anthropic()`, `new GoogleGenAI()`, legacy
 `getGenerativeModel()`, documented MCP `new Client()`, and OpenAI Agents
 `new Agent()` then receive their documented governance boundary automatically.
-For Agents, function tools present when the Agent is constructed receive the
-same input guardrail as `attachToolGate`; for MCP, the Client receives the same
+For Agents, concrete models receive the same pre-call wrapper as `governModel`,
+and local function tools receive the same input guardrail as `attachToolGate`.
+Later concrete model assignment, list replacement, and ordinary tool/handoff
+list mutations refresh those gates. For MCP, the Client receives the same
 request/discovery/response gate as `obsvrGovernMCP`. ESM exports are substituted
 with construct-trap `Proxy` objects. The CommonJS path explicitly chains Node's
 module loader; it is loader monkey-patching, although provider prototypes,
@@ -137,9 +141,8 @@ Anthropic and Google use their documented package roots.
 
 MCP construction is intercepted on `@modelcontextprotocol/sdk/client` and
 `@modelcontextprotocol/sdk/client/index.js`. OpenAI Agents construction is
-intercepted on `@openai/agents`. A function tool added after the intercepted
-Agent constructor returns is not retroactively attached; call
-`attachToolGate(agent)` after adding it. Hosted tools and MCP tools converted by
+intercepted on `@openai/agents`; later supported `model`, `tools`, and `handoffs`
+assignment or list mutation stays governed. Hosted tools and MCP tools converted by
 the Agents runtime per turn do not expose the same local construction boundary;
 govern those at their execution or MCP boundary.
 

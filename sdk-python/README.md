@@ -58,6 +58,8 @@ To initialize before application imports, run the application through obsvr:
 OBSVR_API_KEY=... \
 OBSVR_PII_POLICY='{"rules":{"ssn":"block"}}' \
 OBSVR_AGENT_POLICY='{"denied_tools":["send_contract"]}' \
+OBSVR_MCP_TOOL_POLICY='{"denied_tools":["delete_record"]}' \
+OBSVR_REQUIRED_BINDINGS='openai.client,mcp.client,openai_agents.model,openai_agents.tools' \
 obsvr-run app.py
 # or: obsvr-run -m package.module
 ```
@@ -65,11 +67,12 @@ obsvr-run app.py
 `obsvr-run` also reads `OBSVR_INGEST_URL`, `OBSVR_ENVIRONMENT`,
 `OBSVR_ENFORCEMENT_MODE`, `OBSVR_FAIL_MODE`, `OBSVR_AGENT_POLICY`,
 `OBSVR_MCP_TOOL_POLICY`, and `OBSVR_POLICY_REFRESH_INTERVAL_S`. Set
-`OBSVR_REQUIRED_BINDINGS` to a required subset such as
-`openai,anthropic,crewai,autogen,openai_agents`; startup fails before the target
-runs unless those installed boundaries actually bind. Python MCP remains an
-explicit governed-session boundary, so do not declare `mcp` as an automatic
-binding.
+`OBSVR_REQUIRED_BINDINGS` to exact automatic boundaries such as
+`openai.client`, `anthropic.client`, `mcp.client`, `openai_agents.model`,
+`openai_agents.tools`, `llamaindex.models`, `crewai.tools`, or `autogen.tools`;
+startup fails before the target runs unless those installed boundaries actually
+bind. `auto_governance_status()` reports each boundary as `armed`, `bound`, or
+`not-applicable`.
 
 Wrap your existing LLM client. No other code changes.
 
@@ -114,13 +117,15 @@ Both Gemini clients need an explicit `obsvr.wrap()` — unlike OpenAI and Anthro
 supported process-global interception before the target imports. If the
 application controls import order, `obsvr.init(..., auto=True)` provides the
 same registration. Automatic startup currently covers OpenAI and Anthropic
-client construction, CrewAI's supported process-global pre-tool hook,
-AutoGen/ag2 0.x `ConversableAgent` execution, and future OpenAI Agents `Agent`
-construction with function tools present at construction. This is not a heap
+client construction, future MCP `ClientSession` construction, CrewAI's
+supported process-global pre-tool hook, AutoGen/ag2 0.x `ConversableAgent`
+execution, Python LlamaIndex model-start callbacks, and future OpenAI Agents
+`Agent` construction. Agents concrete model assignments and ordinary
+tool/handoff list mutations stay on their pre-call gates. This is not a heap
 scan. Existing instances, constructor references copied before init, unlisted
-import aliases, custom transports, tools added after Agent construction,
-hosted tools, Python MCP sessions, and LangChain callback configuration remain
-outside that automatic boundary.
+import aliases, custom transports, hosted tools, LlamaIndex agent tools,
+Gemini, and LangChain callback configuration remain outside that automatic
+boundary.
 
 Explicit wrapping accepts `seal_raw=True` to revoke documented governed methods
 on the exact raw client after the proxy is ready. This does not freeze provider
