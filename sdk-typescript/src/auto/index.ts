@@ -43,6 +43,22 @@ export type InterceptorKind = 'esm' | 'cjs';
 /** Hooks installed before application modules load. */
 const installedInterceptors = new Set<InterceptorKind>();
 const boundProviders = new Set<InterceptedProvider>();
+const boundStartupSurfaces = new Set<string>();
+
+const AUTO_STARTUP_SURFACES = [
+  'openai.client',
+  'anthropic.client',
+  'google.client',
+  'mcp.client',
+  'openai_agents.tools',
+  'openai_agents.model',
+] as const;
+
+const EXPLICIT_STARTUP_SURFACES = {
+  'langchain.models': 'LangChain exposes callbacks per model or invocation, not a process-global pre-call registration point',
+  'llamaindex.models': 'TypeScript LlamaIndex tracing is observe-only',
+  'llamaindex.tools': 'TypeScript LlamaIndex agent tools require an explicit pre-invocation wrapper',
+} as const;
 
 /** Set once an installed hook has substituted at least one provider class. */
 let interceptionActive = false;
@@ -60,17 +76,37 @@ export function isInterceptorInstalled(kind?: InterceptorKind): boolean {
 export interface AutoGovernanceStatus {
   interceptors: Record<InterceptorKind, boolean>;
   boundProviders: InterceptedProvider[];
+  bindings: Record<
+    string,
+    { state: 'armed' | 'bound' | 'not-applicable'; detail?: string }
+  >;
   active: boolean;
 }
 
 /** Distinguish startup hooks that are armed from providers actually resolved. */
 export function autoGovernanceStatus(): AutoGovernanceStatus {
+  const armed = installedInterceptors.size > 0;
+  const bindings: AutoGovernanceStatus['bindings'] = {};
+  for (const surface of AUTO_STARTUP_SURFACES) {
+    bindings[surface] = boundStartupSurfaces.has(surface)
+      ? { state: 'bound' }
+      : armed
+        ? { state: 'armed' }
+        : {
+            state: 'not-applicable',
+            detail: 'startup module interception is not installed',
+          };
+  }
+  for (const [surface, detail] of Object.entries(EXPLICIT_STARTUP_SURFACES)) {
+    bindings[surface] = { state: 'not-applicable', detail };
+  }
   return {
     interceptors: {
       esm: installedInterceptors.has('esm'),
       cjs: installedInterceptors.has('cjs'),
     },
     boundProviders: [...boundProviders].sort(),
+    bindings,
     active: interceptionActive,
   };
 }
@@ -85,6 +121,7 @@ export function _resetInterception(): void {
   interceptionActive = false;
   installedInterceptors.clear();
   boundProviders.clear();
+  boundStartupSurfaces.clear();
 }
 
 /**
@@ -193,6 +230,7 @@ export function interceptProviderClass<T>(provider: InterceptedProvider, cls: T)
   if (typeof cls !== 'function') return cls;
   interceptionActive = true;
   boundProviders.add(provider);
+  boundStartupSurfaces.add(`${provider}.client`);
   recordBinding(
     `${provider}.client`,
     `${provider}.${(cls as Function).name || 'client'}`,
@@ -294,6 +332,8 @@ function lazyGovernMcp<T extends object>(instance: T): T {
 /** Replace only construction of the documented MCP Client export. */
 export function interceptMcpClientClass<T>(cls: T): T {
   if (typeof cls !== 'function') return cls;
+  interceptionActive = true;
+  boundStartupSurfaces.add('mcp.client');
   recordBinding('mcp.client', '@modelcontextprotocol/sdk/client.Client');
   return new Proxy(cls as object, {
     construct(target, args, newTarget) {
@@ -331,6 +371,9 @@ export function interceptMcpNamespace<T>(namespace: T): T {
  */
 export function interceptOpenAIAgentClass<T>(cls: T): T {
   if (typeof cls !== 'function') return cls;
+  interceptionActive = true;
+  boundStartupSurfaces.add('openai_agents.tools');
+  boundStartupSurfaces.add('openai_agents.model');
   recordBinding('openai_agents.tools', '@openai/agents.Agent.tools');
   recordBinding('openai_agents.model', '@openai/agents.Agent.model');
 

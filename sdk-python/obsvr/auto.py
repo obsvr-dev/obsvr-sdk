@@ -37,6 +37,31 @@ _TContext = TypeVar("_TContext")
 # Idempotency guard: init() may run more than once in tests / long-lived procs.
 _wired: List[str] = []
 _uninstallers: List[Callable[[], None]] = []
+_auto_enabled = False
+
+_AUTO_SURFACES = {
+    "openai.client": "openai",
+    "anthropic.client": "anthropic",
+    "mcp.client": "mcp",
+    "openai_agents.tools": "agents",
+    "openai_agents.model": "agents",
+    "llamaindex.models": "llama_index",
+    "crewai.tools": "crewai",
+    "autogen.tools": "autogen",
+}
+
+_EXPLICIT_SURFACES = {
+    "langchain.models": (
+        "LangChain exposes callbacks per model or invocation, not a "
+        "process-global pre-call registration point"
+    ),
+    "langchain.tools": (
+        "LangChain tool callbacks remain an explicit pre-call handler binding"
+    ),
+    "llamaindex.tools": (
+        "LlamaIndex agent tools require an explicit pre-invocation wrapper"
+    ),
+}
 
 
 def _module_available(name: str) -> bool:
@@ -52,7 +77,16 @@ def _wire_providers() -> List[str]:
     try:
         from .register import install
 
-        return install()  # governs openai/anthropic client construction
+        installed = install()  # governs openai/anthropic client construction
+        from .binding_report import record_binding
+
+        for provider in ("openai", "anthropic"):
+            if any(label.startswith(provider + ".") for label in installed):
+                record_binding(
+                    f"{provider}.client",
+                    f"{provider}.public_client_constructors",
+                )
+        return installed
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("obsvr.auto: provider interception skipped: %s", exc)
         return []
@@ -259,6 +293,70 @@ def _wire_openai_agents_tool_gate() -> bool:
 def _wire_llamaindex() -> bool:
     if not _module_available("llama_index"):
         return False
+
+
+def _wire_mcp_client_gate() -> bool:
+    """Intercept future construction of the official MCP ClientSession."""
+    if not _module_available("mcp"):
+        return False
+    try:
+        import mcp  # type: ignore
+        import mcp.client.session as session_module  # type: ignore
+        from .binding_report import record_binding
+        from .integrations.mcp import govern_mcp
+
+        original = getattr(mcp, "ClientSession", None)
+        if not isinstance(original, type):
+            raise ImportError("mcp exports no ClientSession class")
+        if getattr(original, "_obsvr_auto_mcp_session_class", False):
+            return True
+
+        class GovernedClientSession(original):  # type: ignore[misc,valid-type]
+            def __new__(_cls, *args: Any, **kwargs: Any) -> Any:  # noqa: N804
+                return govern_mcp(original(*args, **kwargs))
+
+        GovernedClientSession.__name__ = original.__name__
+        GovernedClientSession.__qualname__ = original.__qualname__
+        GovernedClientSession.__module__ = original.__module__
+        GovernedClientSession._obsvr_auto_mcp_session_class = True
+
+        rebound: List[tuple[Any, str]] = []
+        for module in (mcp, session_module):
+            for name, value in list(vars(module).items()):
+                if value is not original:
+                    continue
+                setattr(module, name, GovernedClientSession)
+                if getattr(module, name, None) is GovernedClientSession:
+                    rebound.append((module, name))
+        if getattr(mcp, "ClientSession", None) is not GovernedClientSession:
+            raise RuntimeError("mcp.ClientSession refused constructor substitution")
+
+        removed = False
+
+        def _uninstall() -> None:
+            nonlocal removed
+            if removed:
+                return
+            removed = True
+            for module, name in rebound:
+                try:
+                    if getattr(module, name, None) is GovernedClientSession:
+                        setattr(module, name, original)
+                except Exception:
+                    pass
+
+        _uninstallers.append(_uninstall)
+        record_binding("mcp.client", "mcp.ClientSession")
+        return True
+    except Exception as exc:
+        try:
+            from .binding_report import record_binding
+
+            record_binding("mcp.client", "mcp.ClientSession", exc)
+        except Exception:
+            pass
+        logger.debug("obsvr.auto: MCP ClientSession gate skipped: %s", exc)
+        return False
     try:
         from llama_index.core import Settings  # type: ignore
         from llama_index.core.callbacks import CallbackManager  # type: ignore
@@ -268,6 +366,9 @@ def _wire_llamaindex() -> bool:
         cm = getattr(Settings, "callback_manager", None) or CallbackManager([])
         cm.add_handler(handler)
         Settings.callback_manager = cm
+        from .binding_report import record_binding
+
+        record_binding("llamaindex.models", "llama_index.core.Settings.callback_manager")
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: llamaindex wiring skipped: %s", exc)
@@ -282,6 +383,9 @@ def _wire_crewai_tool_gate() -> bool:
         from .integrations.crewai import install_tool_gate_hook
 
         _uninstallers.append(install_tool_gate_hook())
+        from .binding_report import record_binding
+
+        record_binding("crewai.tools", "crewai.before_tool_call")
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: CrewAI tool gate skipped: %s", exc)
@@ -296,6 +400,9 @@ def _wire_autogen_tool_gate() -> bool:
         from .integrations.autogen import install_tool_gate
 
         _uninstallers.append(install_tool_gate())
+        from .binding_report import record_binding
+
+        record_binding("autogen.tools", "autogen.ConversableAgent.execute_function")
         return True
     except Exception as exc:
         logger.debug("obsvr.auto: AutoGen tool gate skipped: %s", exc)
@@ -314,6 +421,8 @@ _MANUAL_HINTS = {
 def enable_auto_instrumentation() -> Dict[str, Any]:
     """Wire every framework that supports clean global registration. Returns a
     report: {"wired": [...], "manual": [...]}. Idempotent and non-throwing."""
+    global _auto_enabled
+    _auto_enabled = True
     report: Dict[str, Any] = {"wired": [], "manual": []}
 
     if "providers" not in _wired:
@@ -337,6 +446,10 @@ def enable_auto_instrumentation() -> Dict[str, Any]:
         _wired.append("llamaindex")
         report["wired"].append("llamaindex")
 
+    if "mcp_client" not in _wired and _wire_mcp_client_gate():
+        _wired.append("mcp_client")
+        report["wired"].append("mcp:client")
+
     if "crewai_tool_gate" not in _wired and _wire_crewai_tool_gate():
         _wired.append("crewai_tool_gate")
         report["wired"].append("crewai:tool-gate")
@@ -356,8 +469,49 @@ def enable_auto_instrumentation() -> Dict[str, Any]:
     return report
 
 
+def auto_governance_status() -> Dict[str, Any]:
+    """Report every automatic surface as armed, bound, or not-applicable."""
+    from .binding_report import integration_bindings
+
+    recorded = integration_bindings()
+    bindings: Dict[str, Dict[str, str]] = {}
+    for surface, package in _AUTO_SURFACES.items():
+        entries = recorded.get(surface)
+        if entries and all(entry.get("bound") for entry in entries.values()):
+            bindings[surface] = {"state": "bound"}
+            continue
+        if entries:
+            detail = next(
+                (
+                    str(entry.get("error"))
+                    for entry in entries.values()
+                    if not entry.get("bound") and entry.get("error")
+                ),
+                "automatic attachment did not bind",
+            )
+            bindings[surface] = {"state": "not-applicable", "detail": detail}
+            continue
+        if not _module_available(package):
+            bindings[surface] = {
+                "state": "not-applicable",
+                "detail": f"optional package {package} is not installed",
+            }
+            continue
+        if _auto_enabled:
+            bindings[surface] = {
+                "state": "not-applicable",
+                "detail": "automatic attachment ran but this surface did not bind",
+            }
+        else:
+            bindings[surface] = {"state": "armed"}
+    for surface, detail in _EXPLICIT_SURFACES.items():
+        bindings[surface] = {"state": "not-applicable", "detail": detail}
+    return {"enabled": _auto_enabled, "bindings": bindings}
+
+
 def _reset_auto() -> None:
     """Test hook: clear the idempotency guard."""
+    global _auto_enabled
     while _uninstallers:
         uninstall = _uninstallers.pop()
         try:
@@ -365,3 +519,4 @@ def _reset_auto() -> None:
         except Exception:
             pass
     _wired.clear()
+    _auto_enabled = False

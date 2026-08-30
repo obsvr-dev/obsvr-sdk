@@ -154,6 +154,7 @@ from .binding_report import (  # noqa: F401
 )
 
 from ._version import __version__  # noqa: F401  # single source: obsvr/_version.py
+from .auto import auto_governance_status  # noqa: F401
 
 __all__ = [
     "init",
@@ -208,6 +209,7 @@ __all__ = [
     "required_binding_failures",
     "assert_required_bindings",
     "RequiredBindingsError",
+    "auto_governance_status",
     "unbound_symbols",
     "explain",
     "mint_canary",

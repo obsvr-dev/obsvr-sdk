@@ -291,18 +291,33 @@ describe('auto/autoInstrument', () => {
 
   test('status distinguishes armed hooks from bound providers', () => {
     markInterceptorInstalled('cjs');
-    expect(autoGovernanceStatus()).toEqual({
-      interceptors: { esm: false, cjs: true },
-      boundProviders: [],
-      active: false,
-    });
+    const armed = autoGovernanceStatus();
+    expect(armed.interceptors).toEqual({ esm: false, cjs: true });
+    expect(armed.boundProviders).toEqual([]);
+    expect(armed.bindings['openai.client']).toEqual({ state: 'armed' });
+    expect(armed.bindings['mcp.client']).toEqual({ state: 'armed' });
+    expect(armed.bindings['langchain.models'].state).toBe('not-applicable');
+    expect(armed.active).toBe(false);
 
     interceptProviderClass('anthropic', FakeOpenAI);
-    expect(autoGovernanceStatus()).toEqual({
-      interceptors: { esm: false, cjs: true },
-      boundProviders: ['anthropic'],
-      active: true,
-    });
+    const bound = autoGovernanceStatus();
+    expect(bound.interceptors).toEqual({ esm: false, cjs: true });
+    expect(bound.boundProviders).toEqual(['anthropic']);
+    expect(bound.bindings['anthropic.client']).toEqual({ state: 'bound' });
+    expect(bound.bindings['openai.client']).toEqual({ state: 'armed' });
+    expect(bound.active).toBe(true);
+  });
+
+  test('status reports MCP and both Agent boundaries independently', () => {
+    markInterceptorInstalled('esm');
+    interceptMcpClientClass(FakeMcpClient);
+    interceptOpenAIAgentClass(FakeAgent);
+
+    const status = autoGovernanceStatus();
+    expect(status.bindings['mcp.client']).toEqual({ state: 'bound' });
+    expect(status.bindings['openai_agents.tools']).toEqual({ state: 'bound' });
+    expect(status.bindings['openai_agents.model']).toEqual({ state: 'bound' });
+    expect(status.bindings['openai.client']).toEqual({ state: 'armed' });
   });
 });
 

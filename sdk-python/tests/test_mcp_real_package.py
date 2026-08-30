@@ -130,11 +130,32 @@ async def _call(tool_name, arguments, executed):
             return None, exc
 
 
+async def _call_auto(tool_name, arguments, executed):
+    """Use the future-construction ClientSession bound by init(auto=True)."""
+    server = _build_real_server(executed)
+    async with create_connected_server_and_client_session(server) as session:
+        try:
+            return await session.call_tool(tool_name, arguments), None
+        except Exception as exc:  # noqa: BLE001 - the raise IS the observation
+            return None, exc
+
+
 def _run(coro):
     return asyncio.run(coro)
 
 
 class TestMcpGateAgainstRealPackage:
+    def test_auto_init_denies_before_the_real_server_executes(self, monkeypatch):
+        _init(
+            mcp_tool_policy={"denied_tools": ["send_money"]},
+            auto=True,
+        )
+        _captured(monkeypatch)
+        executed = []
+        _result, raised = _run(_call_auto("send_money", {"amount": 100}, executed))
+        assert raised is not None
+        assert executed == []
+
     def test_control_no_policy_the_real_server_executes_the_tool(self, monkeypatch):
         # Without this row, "the tool did not run" below would also be satisfied
         # by a session that never worked at all.
