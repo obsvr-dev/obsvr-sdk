@@ -405,7 +405,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
         } catch {
           principal = undefined;
         }
-        if (principal == null) {
+        if (typeof principal !== "string" || principal.trim().length === 0) {
           emitIntegrationEvent({
             config,
             provider: "unknown",
