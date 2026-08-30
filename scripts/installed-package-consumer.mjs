@@ -72,6 +72,14 @@ const REQUIRED_PUBLIC_NAMES = [
   "verifyStrictEvidenceBundleV21",
   "withStrictOtelCorrelationV21",
   "autoGovernanceStatus",
+  "buildPolicyCandidateV1",
+  "WorkloadRegistryV1",
+  "renderPolicyTemplateV1",
+  "buildControlAnalyticsReportV1",
+  "resolveSignalV1",
+  "signalResolutionToOtelAttributesV1",
+  "signalResolutionToOpaInputV1",
+  "signalResolutionToCedarContextV1",
 ];
 const REQUIRED_SUBPATHS = ["@obsvr/sdk/register", "@obsvr/sdk/mcp", "@obsvr/sdk/proxy"];
 const REQUIRED_RESOLVABLE_SUBPATHS = ["@obsvr/sdk/initialize"];

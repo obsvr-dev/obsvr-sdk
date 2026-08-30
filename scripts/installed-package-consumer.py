@@ -73,6 +73,14 @@ REQUIRED_PUBLIC_NAMES = [
     "create_strict_evidence_bundle_v2_1",
     "verify_strict_evidence_bundle_v2_1",
     "with_strict_otel_correlation_v2_1",
+    "build_policy_candidate_v1",
+    "WorkloadRegistryV1",
+    "render_policy_template_v1",
+    "build_control_analytics_report_v1",
+    "resolve_signal_v1",
+    "signal_resolution_to_otel_attributes_v1",
+    "signal_resolution_to_opa_input_v1",
+    "signal_resolution_to_cedar_context_v1",
 ]
 
 _failures = []
