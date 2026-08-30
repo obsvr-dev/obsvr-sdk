@@ -1,4 +1,12 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { jest } from '@jest/globals';
@@ -116,5 +124,29 @@ describe('durable audit delivery', () => {
   it('refuses a relative outbox directory', () => {
     const cfg = config('relative/outbox');
     expect(() => configureDurableDelivery(cfg)).toThrow(/must be absolute/);
+  });
+
+  it('refuses a symlinked outbox child directory', () => {
+    const redirected = mkdtempSync(join(tmpdir(), 'obsvr-outbox-redirect-'));
+    symlinkSync(redirected, join(directory, 'pending'));
+    try {
+      expect(() => configureDurableDelivery(config(directory))).toThrow(/symbolic link/);
+    } finally {
+      rmSync(redirected, { recursive: true, force: true });
+    }
+  });
+
+  it('restricts existing outbox directories to the current user', () => {
+    mkdirSync(join(directory, 'pending'));
+    mkdirSync(join(directory, 'dead'));
+    for (const path of [directory, join(directory, 'pending'), join(directory, 'dead')]) {
+      chmodSync(path, 0o777);
+    }
+
+    configureDurableDelivery(config(directory));
+
+    for (const path of [directory, join(directory, 'pending'), join(directory, 'dead')]) {
+      expect(statSync(path).mode & 0o777).toBe(0o700);
+    }
   });
 });

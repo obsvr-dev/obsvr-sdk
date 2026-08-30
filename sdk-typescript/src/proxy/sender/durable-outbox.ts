@@ -1,6 +1,7 @@
 /** Atomic disk-backed storage for signed audit events awaiting delivery. */
 
 import {
+  chmodSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -75,9 +76,19 @@ function syncDirectory(path: string): void {
 
 function assertSafeDirectory(path: string): void {
   if (!isAbsolute(path)) throw new Error('durableDelivery.directory must be absolute');
-  if (existsSync(path) && lstatSync(path).isSymbolicLink()) {
-    throw new Error('durableDelivery.directory must not be a symbolic link');
+  if (!existsSync(path)) return;
+  const stat = lstatSync(path);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`durable outbox directory must not be a symbolic link: ${path}`);
   }
+  if (!stat.isDirectory()) {
+    throw new Error(`durable outbox path must be a directory: ${path}`);
+  }
+}
+
+function secureDirectory(path: string): void {
+  assertSafeDirectory(path);
+  chmodSync(path, 0o700);
 }
 
 function files(path: string): string[] {
@@ -107,6 +118,12 @@ export function configureDurableOutbox(
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   mkdirSync(pendingDir(), { recursive: true, mode: 0o700 });
   mkdirSync(deadDir(), { recursive: true, mode: 0o700 });
+  // mkdir's mode is ignored for existing paths. Re-check every directory after
+  // creation so an existing pending/dead symlink cannot redirect evidence and
+  // an overly broad mode cannot expose stored prompts or responses.
+  secureDirectory(directory);
+  secureDirectory(pendingDir());
+  secureDirectory(deadDir());
   status.enabled = true;
   status.directory = directory;
   status.pending = files(pendingDir()).length;
@@ -152,6 +169,10 @@ export function persistDurableEvent(event: AuditEvent): string | undefined {
   try {
     const fd = openSync(temporary, 'wx', 0o600);
     try {
+      // This is the intentional durable audit outbox sink. The path is an
+      // absolute, non-symlink, owner-only directory; the filename is an SDK
+      // generated UUID; and openSync uses exclusive creation with mode 0600.
+      // codeql[js/http-to-file-access]
       writeFileSync(fd, bytes);
       if (config.fsync) fsyncSync(fd);
     } finally {

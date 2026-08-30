@@ -321,6 +321,10 @@ async function sendEvent(
         "Content-Type": "application/json",
         [API_KEY_HEADER]: config.api_key,
       },
+      // Intentional delivery of the signed audit record to the validated,
+      // configured ingest endpoint. Durable records use this same path when
+      // replayed; the backend verifies their signature before acceptance.
+      // codeql[js/file-access-to-http]
       body: JSON.stringify(event),
       signal: controller.signal,
       // Never let a redirect turn an audit POST into a body-less GET. See
@@ -449,6 +453,10 @@ async function sendEventBatch(
         "Content-Type": "application/json",
         [API_KEY_HEADER]: config.api_key,
       },
+      // Intentional batch delivery of signed audit records to the validated,
+      // configured ingest endpoint, including records replayed from the
+      // owner-only durable outbox.
+      // codeql[js/file-access-to-http]
       body: JSON.stringify(events),
       signal: controller.signal,
       // Same reason as the single-event path: a followed redirect re-issues
