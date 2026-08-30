@@ -13,8 +13,16 @@ Entries link the implementing commit when a stable public hash is available.
 
 ## [Unreleased]
 
+Changes land here and are renamed at the next release cut.
+
+## [0.14.0] - 2026-08-31
+
 ### Added
 
+- Added signed deployment coverage attestations and generic function governance
+  for application-owned side effects.
+- Added layered action context plus deterministic remediation plans and linked
+  retries that can be bound into the next governed attempt.
 - Added matching Python and TypeScript operator contracts for policy candidate
   replay and promotion, signed workload registrations, signed typed templates,
   and deterministic control-effectiveness reports.
