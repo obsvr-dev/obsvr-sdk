@@ -43,13 +43,12 @@ import {
   blockedPromptForStorage,
   blockedUserInputForStorage,
   emitIntegrationEvent,
-  extractAllPromptText,
+  assertRedactionApplied,
   extractLastUserText,
   getConfig,
   monitorModeRequiresEvidence,
   redactBuiltinPii,
   redactForStorage,
-  redactRequestMessagesInPlace,
   setupExitHandlers,
   shouldSample,
   type ComplianceInfo,
@@ -134,6 +133,54 @@ function extractResolvedModel(response: unknown): string | undefined {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
 }
 
+function extractCompletePrompt(request: GeminiRequest, target: object): string {
+  const configuredSystem = (target as Record<string, unknown>).systemInstruction;
+  const parts: string[] = [];
+  if (configuredSystem !== undefined) {
+    const systemPrompt = extractPrompt({
+      contents: [],
+      systemInstruction: configuredSystem,
+    } as GeminiRequest);
+    if (systemPrompt) parts.push(systemPrompt);
+  }
+  const requestPrompt = extractPrompt(request);
+  if (requestPrompt) parts.push(requestPrompt);
+  return parts.join("\n");
+}
+
+function redactVertexContent(value: unknown): unknown {
+  if (typeof value === "string") return redactBuiltinPii(value);
+  if (Array.isArray(value)) return value.map(redactVertexContent);
+  if (!value || typeof value !== "object") return value;
+  const item = value as Record<string, unknown>;
+  if (typeof item.text === "string") {
+    return { ...item, text: redactBuiltinPii(item.text) };
+  }
+  if (Array.isArray(item.parts)) {
+    return { ...item, parts: item.parts.map(redactVertexContent) };
+  }
+  return value;
+}
+
+function redactVertexRequest(request: GeminiRequest): GeminiRequest {
+  if (typeof request === "string") return redactBuiltinPii(request);
+  const out: Record<string, unknown> = { ...request };
+  out.contents = redactVertexContent(request.contents);
+  if ("systemInstruction" in request) {
+    out.systemInstruction = redactVertexContent(request.systemInstruction);
+  }
+  if (request.config && typeof request.config === "object") {
+    const config = request.config as Record<string, unknown>;
+    out.config = "systemInstruction" in config
+      ? {
+          ...config,
+          systemInstruction: redactVertexContent(config.systemInstruction),
+        }
+      : config;
+  }
+  return out as unknown as GeminiRequest;
+}
+
 function createAuditedMethod(
   originalMethod: Function,
   target: object,
@@ -160,8 +207,8 @@ function createAuditedMethod(
     const modelHint = modelHintOf(target);
     const model = extractModel(request as GeminiRequest, modelHint);
 
-    const userText = extractLastUserText(request);
-    const policy = await applyPreCallPolicy(userText, {
+    const promptText = extractCompletePrompt(request as GeminiRequest, target);
+    const policy = await applyPreCallPolicy(promptText, {
       config,
       provider: PROVIDER,
       operation,
@@ -179,12 +226,12 @@ function createAuditedMethod(
         operation,
         source: options.source ?? "vertex_ai",
         prompt: blockedPromptForStorage(
-          extractAllPromptText(request),
+          promptText,
           policy.compliance,
           policy.securityNormalized,
         ),
         response: "",
-        userInput: blockedUserInputForStorage(userText, policy),
+        userInput: blockedUserInputForStorage(promptText, policy),
         latencyMs: 0,
         success: false,
         statusCode: 403,
@@ -201,11 +248,11 @@ function createAuditedMethod(
       // Enforcement application: a redaction that cannot be carried out blocks
       // the call rather than forwarding the content it was told to remove.
       const notRedacted = applyOutboundRedaction(() => {
-        if (typeof request === "string") {
-          cleaned_args[0] = redactBuiltinPii(request);
-        } else {
-          redactRequestMessagesInPlace(request);
-        }
+        cleaned_args[0] = redactVertexRequest(request as GeminiRequest);
+        assertRedactionApplied(
+          extractCompletePrompt(cleaned_args[0] as GeminiRequest, target),
+          policy.compliance,
+        );
       });
       if (notRedacted) {
         const blocked = outboundRedactionBlockedCompliance(policy.compliance, notRedacted);
@@ -216,12 +263,12 @@ function createAuditedMethod(
           operation,
           source: options.source ?? "vertex_ai",
           prompt: blockedPromptForStorage(
-            extractAllPromptText(request),
+            promptText,
             blocked,
             policy.securityNormalized,
           ),
           response: "",
-          userInput: blockedUserInputForStorage(userText, policy),
+          userInput: blockedUserInputForStorage(promptText, policy),
           latencyMs: 0,
           success: false,
           statusCode: 403,
@@ -253,6 +300,8 @@ function createAuditedMethod(
     }
 
     const finalRequest = cleaned_args[0];
+    const finalPromptText = extractCompletePrompt(finalRequest as GeminiRequest, target);
+    const finalUserText = extractLastUserText(finalRequest);
     const startTime = performance.now();
     let result: unknown;
     try {
@@ -265,9 +314,9 @@ function createAuditedMethod(
         model,
         operation,
         source: options.source ?? "vertex_ai",
-        prompt: extractPrompt(finalRequest as GeminiRequest),
+        prompt: finalPromptText,
         response: "",
-        userInput: extractLastUserText(finalRequest),
+        userInput: finalUserText,
         latencyMs,
         success: false,
         error,
@@ -285,7 +334,8 @@ function createAuditedMethod(
       if (auditThisCall) {
         observeStreamCompletion(
           result as VertexStreamResult,
-          finalRequest,
+          finalPromptText,
+          finalUserText,
           model,
           config,
           operation,
@@ -314,9 +364,9 @@ function createAuditedMethod(
       provenance_source: resolvedModel ? "provider_response" : undefined,
       operation,
       source: options.source ?? "vertex_ai",
-      prompt: extractPrompt(finalRequest as GeminiRequest),
+      prompt: finalPromptText,
       response: extractResponse(response as GeminiResponse),
-      userInput: extractLastUserText(finalRequest),
+      userInput: finalUserText,
       inputTokens: extractTokenUsage(response as GeminiResponse)?.input_tokens,
       outputTokens: extractTokenUsage(response as GeminiResponse)
         ?.output_tokens,
@@ -338,7 +388,8 @@ function createAuditedMethod(
  */
 function observeStreamCompletion(
   result: VertexStreamResult,
-  request: unknown,
+  promptText: string,
+  userText: string,
   model: string,
   config: ResolvedConfig,
   operation: string,
@@ -362,9 +413,9 @@ function observeStreamCompletion(
         provenance_source: resolvedModel ? "provider_response" : undefined,
         operation,
         source: options.source ?? "vertex_ai",
-        prompt: extractPrompt(request as GeminiRequest),
+        prompt: promptText,
         response: extractResponse(response as GeminiResponse),
-        userInput: extractLastUserText(request),
+        userInput: userText,
         inputTokens: extractTokenUsage(response as GeminiResponse)
           ?.input_tokens,
         outputTokens: extractTokenUsage(response as GeminiResponse)
@@ -386,9 +437,9 @@ function observeStreamCompletion(
         model,
         operation,
         source: options.source ?? "vertex_ai",
-        prompt: extractPrompt(request as GeminiRequest),
+        prompt: promptText,
         response: "",
-        userInput: extractLastUserText(request),
+        userInput: userText,
         latencyMs,
         success: false,
         error,
