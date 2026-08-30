@@ -121,6 +121,32 @@ interception, discover calls through raw aliases, or turn a documented
 exclusion into coverage. Consumers should reject expired attestations and any
 statement with `coverage_complete: false`.
 
+For caller-owned factories, verify the live deployment after construction:
+
+| Check | TypeScript | Python | What it proves |
+| --- | --- | --- | --- |
+| Exact binding/depth | `assertCoverageRequirements(...)` | `assert_coverage_requirements(...)` | the named symbols are currently bound at the required depth |
+| Deny smoke test | `assertEnforcementBoundary(...)` | `assert_enforcement_boundary(...)` / `_async(...)` | the supplied factory path rejects a known deny case with zero downstream calls |
+
+These checks prove only the named binding and factory path. They do not discover
+raw aliases or unrelated clients.
+
+### Durable audit delivery
+
+The default sender is an in-memory bounded queue. Applications that need local
+crash recovery can opt into a disk-backed outbox:
+
+| Runtime | Configuration | Status |
+| --- | --- | --- |
+| TypeScript | `durableDelivery: { directory: "/absolute/private/path" }` | `obsvr.deliveryStatus()` |
+| Python | `durable_delivery={"directory": "/absolute/private/path"}` | `obsvr.get_delivery_status()` |
+
+Each signed event is atomically persisted before enqueue returns, replayed after
+restart, and removed only after ingest accepts it. Permanent refusal or retry
+exhaustion moves the record to `dead/`; it is never relabeled as delivered.
+The directory may contain governed content, so keep it private, encrypted and
+subject to an explicit retention policy. Use a separate directory per process.
+
 ## Five-minute quickstart
 
 ### TypeScript
@@ -395,7 +421,7 @@ A session-taint latch can mark a session after a detected injection or canary le
 
 Destructive capabilities should sit behind MCP, a framework-native pre-invocation guardrail, or `obsvrGovernTool` / `govern_tool`. Tracing callbacks alone cannot stop execution. Configuration and exact boundaries live in the [TypeScript SDK](sdk-typescript/README.md), [Python SDK](sdk-python/README.md), and [`SECURITY.md`](SECURITY.md#enforcement-semantics-what-blocking-means).
 
-Startup auto-governance installs these same enforcing gates where construction or a process-global hook is safely interceptable. It does not upgrade a tracing callback into enforcement: LangChain remains an explicit callback binding, hosted tools stay provider-side, and LlamaIndex agent tools still need an explicit gate. Documented Python MCP sessions are intercepted at future construction, while intercepted OpenAI Agents keep later supported model assignments and local tool/handoff list mutations on their pre-call gates.
+Startup auto-governance installs these same enforcing gates where construction, assignment, or a process-global hook is safely interceptable. TypeScript also governs compatible models assigned through the intercepted root `llamaindex` `Settings.llm` object after preload; tracing and agent tools remain separate. It does not upgrade a tracing callback into enforcement: LangChain remains an explicit callback binding, hosted tools stay provider-side, and LlamaIndex agent tools still need an explicit gate. Documented Python MCP sessions are intercepted at future construction, while intercepted OpenAI Agents keep later supported model assignments and local tool/handoff list mutations on their pre-call gates.
 
 ## Identity, attribution, and budgets
 
@@ -463,7 +489,7 @@ A checkmark means an integration exists; it does not mean every callback can enf
 | MCP client construction | `Client` on documented MCP client exports | future `ClientSession` construction |
 | OpenAI Agents model + function tools | future `Agent` construction and later supported assignments/mutations | future `Agent` construction and later supported assignments/mutations |
 | CrewAI / AutoGen tool execution | no integration | process-global pre-execution gates on supported versions |
-| LlamaIndex model calls | explicit enforcing model wrapper | process-global model-start handler; redaction fails closed |
+| LlamaIndex model calls | intercepted root `Settings.llm` assignment or explicit enforcing model wrapper | process-global model-start handler; redaction fails closed |
 | LangChain | explicit callback binding | explicit callback binding |
 
 ### Does a tool-policy block actually stop the tool?
@@ -506,7 +532,7 @@ flowchart LR
     ds --> cs --> mr
 ```
 
-1. **Client HMAC chain.** Every event carries an SDK session id, monotonic `seq_no`, and `prev_sig`. Chain format 3 signs the captured prompt and response plus decision fields including `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, model, provider, and `user_id`. Editing signed content, rewriting a verdict, or dropping or reordering an interior event breaks verification. `tenant_id`, token counts, cost, and anything that happened before emission remain outside the client preimage.
+1. **Client HMAC chain.** Every event carries an SDK session id, monotonic `seq_no`, and `prev_sig`. Chain format 4 signs the captured prompt and response; decision fields including `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, model, provider, and `user_id`; and classification fields `operation`, `source`, and `event_type`. Editing signed content, rewriting a verdict, reclassifying an ordinary event as a gap marker, or dropping or reordering an interior event breaks verification. `tenant_id`, token counts, cost, and anything that happened before emission remain outside the client preimage. Formats 1–3 remain verifiable at their original strength.
 2. **Optional device signature.** An operator-generated Ed25519 key can sign the same preimage. A verifier with the pinned public key can then check content, order, and decisions without the API key, and detect a chain re-forged by an API-key holder. The SDK never generates or silently trusts this key.
 3. **Server countersignature.** The ingest service signs the full accepted canonical event with a key that never enters the audited runtime, binding the event to its acceptance point.
 4. **Daily public seal.** Accepted events fold into a daily Merkle root, signed with a published Ed25519 key and anchored off-host. Anyone holding the bundle and public key can verify the sealed root without trusting the client HMAC key.
@@ -518,7 +544,7 @@ flowchart LR
 - The **service seal** makes after-the-fact alteration, deletion, reordering, or post-acceptance timestamp modification of sealed accepted events detectable. The off-host anchor proves the sealed root existed no later than the anchor time; it does not establish the true client-side creation time of each event.
 - None of these layers can observe a call that bypassed every SDK interception point. Coverage remains an integration property.
 
-Delivery is bounded. Queue overflow is declared by a signed gap marker in the current chain; ingest rejection, permanent failure, or retry exhaustion starts a fresh session with a reasoned marker because the missing signed event prevents an honest continuation. A marker-bearing chain is valid but incomplete. Abrupt process death—or failure to deliver the marker itself—can leave only local counters and warnings.
+Delivery is bounded. Queue overflow is declared by a signed gap marker in the current chain; ingest rejection, permanent failure, or retry exhaustion starts a fresh session with a reasoned marker because the missing signed event prevents an honest continuation. A marker-bearing chain is valid but incomplete. The optional durable outbox persists signed events before enqueue, replays them after restart, and retains terminal failures in `dead/`. It reduces crash-loss windows but cannot record calls the SDK never intercepted, and loss of the outbox storage remains loss of the local recovery copy.
 
 Verdicts use the fixture-pinned [`action_taken.json`](conformance/fixtures/action_taken.json) registry. `not_evaluated` means no enforcement gate ran; it is neither an allow nor a block.
 
@@ -654,13 +680,13 @@ Provider latency is excluded. Full distributions, payload scaling, stress tiers,
 
 ## Important limitations
 
-1. **Startup interception is not process-wide discovery.** The TypeScript package API is ESM-only, but its startup preload additionally intercepts documented CommonJS entry points. Both SDKs govern supported objects constructed after their startup hook runs; OpenAI Agents also keeps later supported model assignments and tool/handoff list mutations governed. Pre-existing objects, saved raw references, unlisted package paths, custom transports, replaced framework internals outside the intercepted setters, and hosted tool execution remain outside that guarantee. Use exact `OBSVR_REQUIRED_BINDINGS` keys and explicit wrapping or gates where coverage must be proven.
-2. **Some tracing callbacks still observe rather than govern.** TypeScript LlamaIndex tracing and OpenAI Agents tracing cannot block or rewrite an outbound provider call. Use `obsvrGovernLlamaIndexLLM` / `governModel` / `govern_model` (or their model-provider variants) when those model calls must enforce. LangChain model-start callbacks enforce in both SDKs; Python's LlamaIndex model-start callback enforces too.
+1. **Startup interception is not process-wide discovery.** The TypeScript package API is ESM-only, but its startup preload additionally intercepts documented CommonJS entry points. Both SDKs govern supported objects constructed after their startup hook runs; OpenAI Agents also keeps later supported model assignments and tool/handoff list mutations governed. TypeScript governs compatible models assigned through the intercepted root LlamaIndex `Settings.llm`, but a saved pre-interceptor `Settings` reference or replacement outside that setter remains a bypass. Pre-existing objects, saved raw references, unlisted package paths, custom transports, replaced framework internals outside intercepted setters, and hosted tool execution remain outside the guarantee. Use exact startup keys for constructor-bound surfaces, then exact coverage requirements and a zero-transport factory smoke test after application factories run.
+2. **Some tracing callbacks still observe rather than govern.** TypeScript LlamaIndex tracing and OpenAI Agents tracing cannot block or rewrite an outbound provider call. TypeScript LlamaIndex model enforcement uses the intercepted `Settings.llm` assignment or `obsvrGovernLlamaIndexLLM`; agent tools remain explicit. Use `governModel` / `govern_model` (or their model-provider variants) for Agents model enforcement. LangChain model-start callbacks enforce in both SDKs but remain explicitly installed; Python's LlamaIndex model-start callback enforces too.
 3. **Tool enforcement is binding-specific.** Automatic startup attachment uses the same documented pre-invocation gates as explicit integration. It does not make late callbacks blocking or cover hosted tools. A framework may expose several invocation routes; use the documented pre-invocation integration, MCP, or a governed tool for destructive capabilities.
 4. **Stream output is not withheld after dispatch.** Pre-call controls run before opening a supported stream, but post-call response scanning is audit-time and tokens reach the caller as they arrive.
 5. **Fail-open is the default.** Set `failMode: "closed"` when detector or hook failure must refuse the call. Policy floors, canary leaks, and failed redaction remain fail-closed in either mode.
 6. **Budgets are local unless coordinated externally.** In-process request and token budgets are per SDK instance, and token usage is known after the call; fleet-wide hard caps require service coordination or an upstream control.
-7. **Delivery is bounded.** Queue overflow and terminal delivery failures are counted and can produce signed gap markers, but abrupt process death or failure to deliver the marker can leave only local counters and warnings.
+7. **Delivery is bounded.** The in-memory sender can lose its pending suffix on process death. The optional durable outbox replays persisted signed events and dead-letters terminal failures, but its storage can fail or be lost and it does not make unobserved calls complete. Configure `failureMode: "error"` / `failure_mode: "error"`, protect the directory, and monitor delivery status when local durability is required.
 8. **Compatibility evidence varies by surface.** Some integrations run against real upstream packages; others use hand-written fakes that model the expected integration shape. [`COMPATIBILITY.md`](COMPATIBILITY.md) and the [TypeScript](sdk-typescript/tests/README.md) / [Python](sdk-python/tests/README.md) test inventories state the evidence behind each claim.
 
 ## Detailed documentation

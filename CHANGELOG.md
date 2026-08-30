@@ -15,6 +15,23 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+### Added
+
+- Added an opt-in atomic disk outbox in both SDKs. Signed events persist before
+  enqueue, replay after restart, acknowledge only after accepted delivery, and
+  retain terminal failures as dead letters.
+- Added exact runtime coverage assertions and caller-owned deny smoke tests that
+  require zero downstream transport calls on the tested factory path.
+- TypeScript startup interception now governs compatible LlamaIndex models
+  assigned through the root `Settings.llm` object. LlamaIndex tracing and agent
+  tools remain outside that automatic boundary.
+
+### Changed
+
+- New events use chain format 4, which seals `operation`, `source`, and
+  `event_type` in addition to the format-3 decision fields. Verifiers retain
+  backward support for formats 1–3.
+
 ## [0.14.0] - 2026-08-31
 
 ### Added

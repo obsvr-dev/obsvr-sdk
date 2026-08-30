@@ -95,6 +95,30 @@ policy-pack hashes, versions, initialization times, and known exclusions.
 under the pinned public key. This proves the process-reported bindings, not
 calls made through a raw alias or outside a documented boundary.
 
+After an application factory runs, use `assert_coverage_requirements()` to
+require exact symbols and enforcement depth. Pair it with
+`assert_enforcement_boundary()` or `assert_enforcement_boundary_async()` to run
+one known-deny request and require zero additional calls in the supplied
+transport counter. These checks prove the named factory path, not every client
+in the process.
+
+For local crash recovery of ordinary audit events, enable the optional outbox:
+
+```python
+obsvr.init(
+    api_key=os.environ["OBSVR_API_KEY"],
+    durable_delivery={
+        "directory": "/var/lib/my-service/obsvr-outbox",
+        "failure_mode": "error",
+    },
+)
+```
+
+Each signed event is atomically persisted before enqueue, replayed after
+restart, and removed only after ingest acceptance. Permanent failures move to
+`dead/`. Inspect counters with `obsvr.get_delivery_status()`. Use an absolute,
+private directory per process; outbox files may contain governed data.
+
 Govern an application-owned action without adapting it to a framework tool:
 
 ```python
@@ -608,7 +632,12 @@ The **OPA** endpoint is POSTed `{"input": <decision document>}` and its `result`
 
 ## Tamper-Evident Audit Trail
 
-Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature (`prev_sig`). The signing algorithm is byte-for-byte identical to the TypeScript SDK, verified by shared cross-language test vectors, so the ingest service verifies events from both SDKs with the same code and countersigns each accepted event.
+Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature (`prev_sig`). Chain format 4 seals prompt/response content, ordering, decision fields, and the classification fields `operation`, `source`, and `event_type`; an ordinary event cannot be relabeled as an audit-gap marker without breaking verification. Formats 1–3 remain verifiable at their original strength. The signing algorithm is byte-for-byte identical to the TypeScript SDK and pinned by shared cross-language vectors.
+
+The default queue is memory-backed. `durable_delivery` adds atomic local
+persistence, restart replay, accepted-delivery acknowledgement and dead-letter
+retention. It does not discover calls that bypass every obsvr boundary, and loss
+of the outbox volume remains loss of the recovery copy.
 
 Exported bundles verify offline with the `obsvr-verify` CLI shipped by both SDK packages, and merges can be gated on it in CI via the [obsvr Evidence Verification GitHub Action](https://github.com/obsvr-dev/obsvr-sdk/blob/main/action/README.md).
 

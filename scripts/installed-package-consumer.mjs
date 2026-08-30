@@ -72,6 +72,10 @@ const REQUIRED_PUBLIC_NAMES = [
   "verifyStrictEvidenceBundleV21",
   "withStrictOtelCorrelationV21",
   "autoGovernanceStatus",
+  "assertCoverageRequirements",
+  "coverageRequirementFailures",
+  "CoverageRequirementsError",
+  "assertEnforcementBoundary",
   "buildPolicyCandidateV1",
   "WorkloadRegistryV1",
   "renderPolicyTemplateV1",
@@ -176,6 +180,10 @@ async function main() {
   const missing = REQUIRED_PUBLIC_NAMES.filter((n) => sdk[n] === undefined);
   check("every documented public name is importable from @obsvr/sdk", missing.length === 0, `missing=${missing}`);
   if (missing.length) fatal("the installed package no longer exports its documented surface");
+  check(
+    "the documented delivery status API is available",
+    typeof sdk.obsvr?.deliveryStatus === "function",
+  );
 
   const unresolvable = [];
   for (const subpath of REQUIRED_SUBPATHS) {
