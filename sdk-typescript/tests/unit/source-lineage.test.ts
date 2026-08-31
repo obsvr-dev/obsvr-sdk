@@ -36,7 +36,6 @@ const fixture = JSON.parse(
   name: string;
   cases: Array<{ input: Parameters<typeof createSourceLineage>[0]; expected_hash: string }>;
   format_5_signing_case: {
-    signing_key_material: string;
     session_id: string;
     seq_no: number;
     timestamp_sdk: number;
@@ -107,9 +106,10 @@ describe('source lineage conformance', () => {
       testCase.prev_sig,
       testCase.decision,
     );
-    const key = createHmac('sha256', 'obsvr-sdk-signing-v1')
-      .update(testCase.signing_key_material)
-      .digest();
+    const key = Buffer.from(
+      'b807d497f4cd11575c3bda2fe55172bd5d72255deff0554fb76ab94b91204a76',
+      'hex',
+    );
     expect(decisionHash(testCase.decision, CHAIN_FORMAT_CURRENT))
       .toBe(testCase.expected_decision_hash);
     expect(payload).toBe(testCase.expected_payload);
