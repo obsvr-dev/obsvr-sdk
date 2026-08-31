@@ -261,9 +261,9 @@ class TestEveryIntegrationRecordsItsBindFailures:
         try:
             with _blocked("botocore"):
                 importlib.reload(bedrock_module)
+            entry = self._unbound_for("bedrock")["botocore.exceptions"]
         finally:
             importlib.reload(bedrock_module)
-        entry = self._unbound_for("bedrock")["botocore.exceptions"]
         assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
         assert entry["error"]
 
@@ -273,11 +273,11 @@ class TestEveryIntegrationRecordsItsBindFailures:
         try:
             with _blocked("vertexai"):
                 importlib.reload(vertex_module)
+            entry = self._unbound_for("vertex")[
+                "vertexai.generative_models.GenerativeModel"
+            ]
         finally:
             importlib.reload(vertex_module)
-        entry = self._unbound_for("vertex")[
-            "vertexai.generative_models.GenerativeModel"
-        ]
         assert entry["error_type"] in ("ImportError", "ModuleNotFoundError")
         assert entry["error"]
 
