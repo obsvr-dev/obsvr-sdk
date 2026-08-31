@@ -7,8 +7,8 @@
 Obsvr runs inside your application to enforce deterministic policy before supported AI calls execute, then signs the resulting decision record so it can be independently verified later.
 
 ![Status](https://img.shields.io/badge/status-beta-6d4aff)
-[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.15.0)
-[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.15.0/)
+[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.16.0)
+[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.16.0/)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-typescript%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
@@ -27,8 +27,8 @@ Obsvr runs inside your application to enforce deterministic policy before suppor
 
 | Package | Runtime | Version | Source |
 | --- | --- | ---: | --- |
-| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.15.0) | TypeScript / Node.js ≥ 22 | 0.15.0 | [`sdk-typescript/`](sdk-typescript/) |
-| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.15.0/) | Python ≥ 3.10 | 0.15.0 | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.16.0) | TypeScript / Node.js ≥ 22 | 0.16.0 | [`sdk-typescript/`](sdk-typescript/) |
+| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.16.0/) | Python ≥ 3.10 | 0.16.0 | [`sdk-python/`](sdk-python/) |
 
 ## Contents
 
@@ -37,6 +37,7 @@ Obsvr runs inside your application to enforce deterministic policy before suppor
 - [Five-minute quickstart](#five-minute-quickstart)
 - [Policy engine](#policy-engine)
 - [Identity, attribution, and budgets](#identity-attribution-and-budgets)
+- [Source lineage and blast-radius evidence](#source-lineage-and-blast-radius-evidence)
 - [Integration coverage](#integration-coverage)
 - [The evidence model](#the-evidence-model)
 - [AARM compatibility and strict execution receipts](#aarm-compatibility-and-strict-execution-receipts)
@@ -459,6 +460,47 @@ Request quotas, token budgets, and model gates are enforced at issuance and can 
 
 Framework integration events are unmetered by default through `meterIntegrationEvents: false` / `meter_integration_events=False`; the explicit client wrapper remains metered. Enabling framework metering is an enforcement change, not merely extra telemetry: an existing token quota may begin refusing traffic that was previously outside its counter.
 
+## Source lineage and blast-radius evidence
+
+Obsvr can bind an application-supplied document, retrieval result, tool result,
+memory item, or user input to every governed event in one async execution. The
+same envelope can be derived across agent handoffs and marked when a detector
+later identifies prompt injection, canary leakage, or another risk.
+
+| SDK responsibility | Application responsibility |
+| --- | --- |
+| Validate a bounded lineage envelope | Assign stable source IDs at the trust boundary |
+| Propagate it through the current async/task scope | Supply a content hash or immutable version when exact revision identity matters |
+| Preserve direct parent lineage IDs across derivations | Export and re-bind the envelope across queues or processes |
+| Seal the canonical `source_lineage_hash` in chain format 5 | Decide what detector finding or investigation marks a source risky |
+
+```typescript
+const lineage = obsvr.createSourceLineage({
+  sources: [{ source_id: "contract-42", source_kind: "document", source_hash: sha256 }],
+});
+
+await obsvr.withSourceLineage(lineage, async () => {
+  await governedAgent.run(request);
+});
+```
+
+```python
+lineage = obsvr.create_source_lineage({
+    "sources": [{"source_id": "contract-42", "source_kind": "document", "source_hash": sha256}],
+})
+
+with obsvr.source_lineage(lineage):
+    governed_agent.run(request)
+```
+
+This supports retrospective blast-radius queries: if an exact source revision
+is found risky later, the platform can locate earlier signed events carrying
+that source hash and follow their recorded descendants. “Reached” means the
+source is in the event's declared causal scope; it does not prove that the
+source caused the model output or tool action. Obsvr does not scan application
+memory, infer every source automatically, or reconstruct calls that bypassed an
+Obsvr boundary.
+
 ## Integration coverage
 
 Explicit `obsvr.wrap()` is the clearest coverage boundary. Automatic and framework integrations vary by language and upstream API shape.
@@ -532,7 +574,7 @@ flowchart LR
     ds --> cs --> mr
 ```
 
-1. **Client HMAC chain.** Every event carries an SDK session id, monotonic `seq_no`, and `prev_sig`. Chain format 4 signs the captured prompt and response; decision fields including `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, model, provider, and `user_id`; and classification fields `operation`, `source`, and `event_type`. Editing signed content, rewriting a verdict, reclassifying an ordinary event as a gap marker, or dropping or reordering an interior event breaks verification. `tenant_id`, token counts, cost, and anything that happened before emission remain outside the client preimage. Formats 1–3 remain verifiable at their original strength.
+1. **Client HMAC chain.** Every event carries an SDK session id, monotonic `seq_no`, and `prev_sig`. Chain format 5 signs the captured prompt and response; decision fields including `action_taken`, `action_reason`, `reason_code`, `rule_id`, `policy_version`, model, provider, and `user_id`; classification fields `operation`, `source`, and `event_type`; and the canonical `source_lineage_hash` when lineage is present. Editing signed content, rewriting a verdict, changing a carried lineage envelope without changing its signed hash, reclassifying an ordinary event as a gap marker, or dropping or reordering an interior event breaks verification. `tenant_id`, token counts, cost, unrelated metadata, and anything that happened before emission remain outside the client preimage. Formats 1–4 remain verifiable at their original strength.
 2. **Optional device signature.** An operator-generated Ed25519 key can sign the same preimage. A verifier with the pinned public key can then check content, order, and decisions without the API key, and detect a chain re-forged by an API-key holder. The SDK never generates or silently trusts this key.
 3. **Server countersignature.** The ingest service signs the full accepted canonical event with a key that never enters the audited runtime, binding the event to its acceptance point.
 4. **Daily public seal.** Accepted events fold into a daily Merkle root, signed with a published Ed25519 key and anchored off-host. Anyone holding the bundle and public key can verify the sealed root without trusting the client HMAC key.
@@ -653,6 +695,7 @@ Keyless mode checks structure and order only. It reads no content, decision, or 
 TypeScript and Python implement one fixture-pinned contract in [`conformance/fixtures/`](conformance/fixtures/). Cryptographic and canonicalization fixtures require byte-identical output; intended capability differences are catalogued rather than normalized away.
 
 - [`signing_vectors.json`](conformance/fixtures/signing_vectors.json) pins the HMAC chain so either SDK can be verified by the same ingest implementation.
+- [`source_lineage.json`](conformance/fixtures/source_lineage.json) pins source-envelope canonicalization, Unicode ordering, and the chain-format-5 lineage-bound signature.
 - [`eval_semantics.json`](conformance/fixtures/eval_semantics.json) and [`rules_hash.json`](conformance/fixtures/rules_hash.json) pin rule evaluation and `policy_version` derivation.
 - [`reason_codes.json`](conformance/fixtures/reason_codes.json) and [`action_taken.json`](conformance/fixtures/action_taken.json) form closed decision registries. Both suites fail if a runtime emits a value outside them.
 - [`normalization.json`](conformance/fixtures/normalization.json) pins the Unicode fold across Node and Python.
@@ -688,6 +731,7 @@ Provider latency is excluded. Full distributions, payload scaling, stress tiers,
 6. **Budgets are local unless coordinated externally.** In-process request and token budgets are per SDK instance, and token usage is known after the call; fleet-wide hard caps require service coordination or an upstream control.
 7. **Delivery is bounded.** The in-memory sender can lose its pending suffix on process death. The optional durable outbox replays persisted signed events and dead-letters terminal failures, but its storage can fail or be lost and it does not make unobserved calls complete. Configure `failureMode: "error"` / `failure_mode: "error"`, protect the directory, and monitor delivery status when local durability is required.
 8. **Compatibility evidence varies by surface.** Some integrations run against real upstream packages; others use hand-written fakes that model the expected integration shape. [`COMPATIBILITY.md`](COMPATIBILITY.md) and the [TypeScript](sdk-typescript/tests/README.md) / [Python](sdk-python/tests/README.md) test inventories state the evidence behind each claim.
+9. **Source lineage is explicit evidence, not automatic dataflow discovery.** The SDK propagates validated caller-supplied source identities only inside its current async/task context. Queue and process hops require explicit export and re-binding; source IDs without a content hash or immutable version do not identify an exact revision.
 
 ## Detailed documentation
 
