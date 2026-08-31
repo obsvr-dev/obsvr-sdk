@@ -30,12 +30,20 @@
  *     sig_payload  = [ "3", session, seq, ts, content_hash, decision_hash,
  *                      prev_sig ?? "" ].join("|")
  *
- *   chain_format 4 (what the SDK signs today)
+ *   chain_format 4
  *     decision_hash = SHA256( "obsvr:decision/4" || 0x00
  *                             || the format-3 fields
  *                             || operation || source || event_type,
  *                             with the same framed field encoding ).hex
  *     sig_payload  = [ "4", session, seq, ts, content_hash, decision_hash,
+ *                      prev_sig ?? "" ].join("|")
+ *
+ *   chain_format 5 (what the SDK signs today)
+ *     decision_hash = SHA256( "obsvr:decision/5" || 0x00
+ *                             || the format-4 fields
+ *                             || source_lineage_hash,
+ *                             with the same framed field encoding ).hex
+ *     sig_payload  = [ "5", session, seq, ts, content_hash, decision_hash,
  *                      prev_sig ?? "" ].join("|")
  *
  *   sdk_sig = HMAC_SHA256(signing_key, sig_payload).hex   (64 lowercase hex)
@@ -97,10 +105,12 @@ export function deriveSigningKey(apiKey) {
 
 const CHAIN_FORMAT_LEGACY = 1;
 const CHAIN_FORMAT_DECISION_FIELDS = 3;
-const CHAIN_FORMAT_CURRENT = 4;
+const CHAIN_FORMAT_CLASSIFIED = 4;
+const CHAIN_FORMAT_CURRENT = 5;
 const CONTENT_HASH_DOMAIN_TAG = "obsvr:content/2";
 const DECISION_HASH_DOMAIN_TAG = "obsvr:decision/3";
 const CLASSIFIED_DECISION_HASH_DOMAIN_TAG = "obsvr:decision/4";
+const LINEAGE_DECISION_HASH_DOMAIN_TAG = "obsvr:decision/5";
 
 /** The decision/attribution fields format 3 signs, in the ONE order the digest
  *  is defined over. Order and membership are part of the signature: changing
@@ -121,6 +131,11 @@ export const DECISION_FIELD_ORDER = [
   "operation",
   "source",
   "event_type",
+];
+
+export const DECISION_FIELD_ORDER_V5 = [
+  ...DECISION_FIELD_ORDER,
+  "source_lineage_hash",
 ];
 
 /** u64 big-endian byte-length prefix. Byte counts, not JS string length — the
@@ -152,11 +167,22 @@ function contentHashFor(format, prompt, response) {
 
 /** Digest over the decision/attribution fields an event carries. Format 3+. */
 export function decisionHashOf(ev, format = CHAIN_FORMAT_CURRENT) {
-  const classified = format >= CHAIN_FORMAT_CURRENT;
+  const lineageBound = format >= CHAIN_FORMAT_CURRENT;
+  const classified = format >= CHAIN_FORMAT_CLASSIFIED;
   const h = createHash("sha256")
-    .update(classified ? CLASSIFIED_DECISION_HASH_DOMAIN_TAG : DECISION_HASH_DOMAIN_TAG)
+    .update(
+      lineageBound
+        ? LINEAGE_DECISION_HASH_DOMAIN_TAG
+        : classified
+          ? CLASSIFIED_DECISION_HASH_DOMAIN_TAG
+          : DECISION_HASH_DOMAIN_TAG,
+    )
     .update(Buffer.from([0]));
-  const order = classified ? DECISION_FIELD_ORDER : DECISION_FIELD_ORDER_V3;
+  const order = lineageBound
+    ? DECISION_FIELD_ORDER_V5
+    : classified
+      ? DECISION_FIELD_ORDER
+      : DECISION_FIELD_ORDER_V3;
   for (const key of order) {
     const raw = ev?.[key];
     const present = raw !== undefined && raw !== null;
