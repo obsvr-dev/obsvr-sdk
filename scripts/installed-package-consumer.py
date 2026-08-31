@@ -87,6 +87,13 @@ REQUIRED_PUBLIC_NAMES = [
     "signal_resolution_to_otel_attributes_v1",
     "signal_resolution_to_opa_input_v1",
     "signal_resolution_to_cedar_context_v1",
+    "create_source_lineage",
+    "current_source_lineage",
+    "derive_source_lineage",
+    "mark_current_lineage_tainted",
+    "source_lineage",
+    "source_lineage_hash",
+    "validate_source_lineage",
 ]
 
 _failures = []
@@ -267,12 +274,26 @@ def main():
 
     # 6b) THE REFUSAL.
     denied = govern_tool(MarkerTool(DENIED_TOOL, denied_marker))
+    lineage = obsvr.create_source_lineage({
+        "lineage_id": "installed-lineage",
+        "sources": [{
+            "source_id": "installed-document",
+            "source_kind": "document",
+            "source_hash": "a" * 64,
+        }],
+    })
     raised = None
     returned = None
-    try:
-        returned = denied._run(note="should never happen")
-    except BaseException as exc:  # noqa: BLE001 - the type is the assertion
-        raised = exc
+    with obsvr.source_lineage(lineage):
+        check(
+            "the installed context exposes the validated source lineage",
+            obsvr.current_source_lineage()["lineage_hash"] == lineage["lineage_hash"],
+        )
+        try:
+            returned = denied._run(note="should never happen")
+        except BaseException as exc:  # noqa: BLE001 - the type is the assertion
+            raised = exc
+    check("the installed source-lineage context does not leak", obsvr.current_source_lineage() is None)
 
     check(
         "a denied governed tool refuses instead of returning",
@@ -322,6 +343,15 @@ def main():
             and record.get("action_taken") == "blocked",
             f"tool_name={(record.get('metadata') or {}).get('tool_name')!r} "
             f"reason_code={record.get('reason_code')!r} action_taken={record.get('action_taken')!r}",
+        )
+        check(
+            "the record carries and signs the exact source-lineage envelope",
+            record.get("chain_format") == 5
+            and record.get("source_lineage_hash") == lineage["lineage_hash"]
+            and (record.get("metadata") or {}).get("obsvr_source_lineage", {}).get("lineage_hash")
+            == lineage["lineage_hash"],
+            f"chain_format={record.get('chain_format')!r} "
+            f"source_lineage_hash={record.get('source_lineage_hash')!r}",
         )
 
     if _failures:

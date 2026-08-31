@@ -20,6 +20,7 @@ from pathlib import Path
 from obsvr import sender
 from obsvr.chain_format import (
     CHAIN_FORMAT_CONTENT_ONLY,
+    CHAIN_FORMAT_CLASSIFIED,
     CHAIN_FORMAT_CURRENT,
     CHAIN_FORMAT_DECISION_FIELDS,
     CHAIN_FORMAT_LEGACY,
@@ -86,10 +87,10 @@ class TestSigningVectors:
         key = derive_signing_key(v["api_key"])
         prev = ""
         for expected in v["events"]:
-            assert expected["chain_format"] == CHAIN_FORMAT_CURRENT
+            assert expected["chain_format"] == CHAIN_FORMAT_CLASSIFIED
             sig = _sign(
                 key,
-                CHAIN_FORMAT_CURRENT,
+                CHAIN_FORMAT_CLASSIFIED,
                 v["session_id"],
                 expected["seq_no"],
                 expected["timestamp_sdk"],
@@ -98,7 +99,7 @@ class TestSigningVectors:
                 prev,
                 # Format 4 signs the decision and classification fields carried on
                 # the vector event itself. Read them the way the SDK does.
-                decision_fields_of(expected),
+                decision_fields_of(expected, CHAIN_FORMAT_CLASSIFIED),
             )
             assert sig == expected["sdk_sig"], f"seq {expected['seq_no']} mismatch"
             assert expected["prev_sig"] == prev
@@ -136,7 +137,7 @@ class TestSigningVectors:
         for case in v["user_id_coercion"]["cases"]:
             assert _principal_string(case["raw"]) == case["canonical"], case["id"]
             assert (
-                decision_hash({"user_id": case["canonical"]}) == case["digest"]
+                decision_hash({"user_id": case["canonical"]}, CHAIN_FORMAT_CLASSIFIED) == case["digest"]
             ), case["id"]
 
     def test_frozen_format_1_signatures_still_reproduce(self):
@@ -173,6 +174,17 @@ class TestSignerBehavior:
         assert e1["chain_format"] == CHAIN_FORMAT_CURRENT
         assert "prev_sig" not in e1  # first event has no predecessor
         assert len(e1["sdk_sig"]) == 64
+
+    def test_bare_caller_supplied_lineage_hash_is_not_signed(self):
+        sender._reset_sender()
+        event = {
+            "prompt": "a",
+            "response": "b",
+            "source_lineage_hash": "f" * 64,
+        }
+        sign_event(event, "k")
+        assert "source_lineage_hash" not in event
+        assert event["chain_format"] == CHAIN_FORMAT_CURRENT
 
     def test_sequence_increments_and_chains(self):
         sender._reset_sender()

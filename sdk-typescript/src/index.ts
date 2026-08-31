@@ -42,6 +42,37 @@ export { currentAgentRun, currentAgentRunId, generateRunId } from "./proxy/agent
 export type { AgentRunContext } from "./proxy/agent-run.js";
 import { agentRun as _agentRun } from "./integrations/agent-run.js";
 
+// Explicit source ancestry for blast-radius and historical reconstruction.
+// The source is bound once at the trust boundary and follows governed events
+// through the async execution scope.
+export {
+  SOURCE_LINEAGE_HASH_DOMAIN,
+  SOURCE_LINEAGE_METADATA_KEY,
+  SOURCE_LINEAGE_SCHEMA_V1,
+  createSourceLineage,
+  currentSourceLineage,
+  deriveSourceLineage,
+  markCurrentLineageTainted,
+  sourceLineageHash,
+  validateSourceLineage,
+  withSourceLineage,
+} from "./proxy/source-lineage.js";
+export type {
+  CreateSourceLineageV1,
+  LineageDerivation,
+  LineageTaintV1,
+  SourceKind,
+  SourceLineageEnvelopeV1,
+  SourceReferenceV1,
+} from "./proxy/source-lineage.js";
+import {
+  createSourceLineage as _createSourceLineage,
+  currentSourceLineage as _currentSourceLineage,
+  deriveSourceLineage as _deriveSourceLineage,
+  markCurrentLineageTainted as _markCurrentLineageTainted,
+  withSourceLineage as _withSourceLineage,
+} from "./proxy/source-lineage.js";
+
 // Import proxy functions
 import { init as _init, wrap, getConfig, isInitialized, flushQueue, getQueueSize, getDroppedCount, getDeliveryStatus, _reset } from "./proxy/index.js";
 import { evaluate as _evaluate, evaluateAction as _evaluateAction } from "./governance/evaluate.js";
@@ -623,6 +654,21 @@ export const obsvr = {
    * ```
    */
   agentRun: _agentRun,
+
+  /** Bind an explicit document/retrieval ancestry envelope to this async scope. */
+  withSourceLineage: _withSourceLineage,
+
+  /** Build and validate a canonical source-lineage envelope. */
+  createSourceLineage: _createSourceLineage,
+
+  /** Create a child lineage that preserves the active ancestry and taints. */
+  deriveSourceLineage: _deriveSourceLineage,
+
+  /** Read a defensive copy of the active source-lineage envelope. */
+  currentSourceLineage: _currentSourceLineage,
+
+  /** Attach a detector finding to the active source-lineage envelope. */
+  markCurrentLineageTainted: _markCurrentLineageTainted,
 
   /**
    * Check if the SDK has been initialized

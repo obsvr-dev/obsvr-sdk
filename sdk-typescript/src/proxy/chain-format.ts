@@ -75,7 +75,7 @@
  * did not need fixing, and `obsvr:content/2` names the content-preimage
  * version rather than the chain format.
  *
- * Formats 1 through 3 stay implemented here forever: chains signed before each
+ * Formats 1 through 5 stay implemented here forever: chains signed before each
  * change are existing evidence and must keep verifying — explicitly, as the
  * format they were signed under, never silently under a newer rule.
  *
@@ -99,15 +99,19 @@ export const CHAIN_FORMAT_CONTENT_ONLY = 2;
 /** Content, order, and the original decision fields. */
 export const CHAIN_FORMAT_DECISION_FIELDS = 3;
 /** Decision fields plus event classification (`operation`, `source`, `event_type`). */
-export const CHAIN_FORMAT_CURRENT = 4;
+export const CHAIN_FORMAT_CLASSIFIED = 4;
+/** Classification plus the canonical source-lineage envelope hash. */
+export const CHAIN_FORMAT_CURRENT = 5;
 /** Every format this build can verify, oldest first. */
-export const CHAIN_FORMATS_SUPPORTED = [1, 2, 3, 4] as const;
+export const CHAIN_FORMATS_SUPPORTED = [1, 2, 3, 4, 5] as const;
 /** Domain tag leading every format-2 content preimage. */
 export const CONTENT_HASH_DOMAIN_TAG = "obsvr:content/2";
 /** Domain tag leading every format-3 decision preimage. */
 export const DECISION_HASH_DOMAIN_TAG = "obsvr:decision/3";
 /** Domain tag for the format-4 classification-aware decision digest. */
 export const CLASSIFIED_DECISION_HASH_DOMAIN_TAG = "obsvr:decision/4";
+/** Domain tag for the format-5 source-lineage-aware decision digest. */
+export const LINEAGE_DECISION_HASH_DOMAIN_TAG = "obsvr:decision/5";
 
 /**
  * The decision/attribution fields format 3 signs, in the ONE order the digest
@@ -137,9 +141,15 @@ export const DECISION_FIELD_ORDER = [
   "event_type",
 ] as const;
 
+/** Format 5 seals the canonical lineage hash into the SDK signature. */
+export const DECISION_FIELD_ORDER_V5 = [
+  ...DECISION_FIELD_ORDER,
+  "source_lineage_hash",
+] as const;
+
 /** The decision fields, as read off an event. Absent and empty are distinct. */
 export type DecisionFields = {
-  [K in (typeof DECISION_FIELD_ORDER)[number]]?: string | null;
+  [K in (typeof DECISION_FIELD_ORDER_V5)[number]]?: string | null;
 };
 
 /** u64 big-endian length prefix. Bytes, not code units — the two runtimes
@@ -187,8 +197,10 @@ export function decisionFieldsOf(
 ): DecisionFields {
   const out: DecisionFields = {};
   const order = format >= CHAIN_FORMAT_CURRENT
-    ? DECISION_FIELD_ORDER
-    : DECISION_FIELD_ORDER_V3;
+    ? DECISION_FIELD_ORDER_V5
+    : format >= CHAIN_FORMAT_CLASSIFIED
+      ? DECISION_FIELD_ORDER
+      : DECISION_FIELD_ORDER_V3;
   for (const key of order) {
     const value = event[key];
     out[key] = value === undefined || value === null ? undefined : String(value);
@@ -209,13 +221,17 @@ export function decisionHash(
   format: number = CHAIN_FORMAT_CURRENT,
 ): string {
   const order = format >= CHAIN_FORMAT_CURRENT
-    ? DECISION_FIELD_ORDER
-    : DECISION_FIELD_ORDER_V3;
+    ? DECISION_FIELD_ORDER_V5
+    : format >= CHAIN_FORMAT_CLASSIFIED
+      ? DECISION_FIELD_ORDER
+      : DECISION_FIELD_ORDER_V3;
   const h = createHash("sha256")
     .update(
       format >= CHAIN_FORMAT_CURRENT
-        ? CLASSIFIED_DECISION_HASH_DOMAIN_TAG
-        : DECISION_HASH_DOMAIN_TAG,
+        ? LINEAGE_DECISION_HASH_DOMAIN_TAG
+        : format >= CHAIN_FORMAT_CLASSIFIED
+          ? CLASSIFIED_DECISION_HASH_DOMAIN_TAG
+          : DECISION_HASH_DOMAIN_TAG,
     )
     .update(Buffer.from([0]));
   for (const key of order) {

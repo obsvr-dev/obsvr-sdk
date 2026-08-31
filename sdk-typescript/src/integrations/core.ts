@@ -18,6 +18,10 @@ import {
 } from "../proxy/extractors/telemetry.js";
 import { spanEnvelopeFor, withSpanMetadata } from "../proxy/span.js";
 import { withRunMetadata } from "../proxy/agent-run.js";
+import {
+  markCurrentLineageTainted,
+  withSourceLineageMetadata,
+} from "../proxy/source-lineage.js";
 import { getCurrentSubject, hasMeaningfulPrincipal } from "../proxy/subject.js";
 import { createPolicyError, resolveReasonCode, type ObsvrPolicyError } from "../policy/policy-error.js";
 import { ReasonCode } from "../governance/reason-codes.js";
@@ -791,6 +795,11 @@ export async function applyPreCallPolicy(
     if (canaryRegistrySize() > 0 && actionTaken !== "blocked") {
       const leak = scanForCanary(promptText);
       if (leak.leaked) {
+        markCurrentLineageTainted({
+          kind: "canary_leak",
+          reason: "canary_leak",
+          detector: "obsvr-canary",
+        });
         actionTaken = "blocked";
         actionReason = "policy_violation";
         actionSource = "builtin";
@@ -827,8 +836,13 @@ export async function applyPreCallPolicy(
       }
 
       // SET is independent of PII resolution and affects later turns only.
-      if (taintCfg && allTypes.includes("prompt_injection")) {
-        markTainted(taintKey, "prompt_injection", Date.now());
+      if (allTypes.includes("prompt_injection")) {
+        markCurrentLineageTainted({
+          kind: "prompt_injection",
+          reason: "prompt_injection",
+          detector: "obsvr-builtin-injection",
+        });
+        if (taintCfg) markTainted(taintKey, "prompt_injection", Date.now());
       }
 
       if (config.pii_policy && allTypes.length > 0) {
@@ -2114,7 +2128,7 @@ export function buildIntegrationEvent(
     // carry the run's agent_run_id, so they group into one run. A caller that
     // set agent_run_id itself (LangChain, OpenAI-Agents) always wins; outside a
     // run scope the metadata is byte-identical to before.
-    metadata: withRunMetadata(
+    metadata: withSourceLineageMetadata(withRunMetadata(
       withSpanMetadata(
         withTelemetryMetadata(
           // ingest coerces provider "mcp" → "unknown"; stamp the identity
@@ -2132,7 +2146,7 @@ export function buildIntegrationEvent(
             : undefined,
         ),
       ),
-    ),
+    )),
 
     // Compliance fields
     event_type: compliance.event_type,

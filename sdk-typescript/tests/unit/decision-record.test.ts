@@ -254,16 +254,16 @@ describe("what the chain preimage covers, from both directions", () => {
     // test used to make only the first claim while the second was silently
     // also true.
     const key = createHmac("sha256", "obsvr-sdk-signing-v1").update("test-api-key").digest();
-    const sign = (ev: Record<string, unknown>): string => {
+    const sign = (ev: Record<string, unknown>, format = CHAIN_FORMAT_CURRENT): string => {
       const payload = signaturePayload(
-        CHAIN_FORMAT_CURRENT,
+        format,
         String(ev.sdk_session_id),
         ev.seq_no as number,
         ev.timestamp_sdk as number,
         String(ev.prompt ?? ""),
         String(ev.response ?? ""),
         null,
-        decisionFieldsOf(ev),
+        decisionFieldsOf(ev, format),
       );
       return createHmac("sha256", key).update(payload).digest("hex");
     };
@@ -299,6 +299,6 @@ describe("what the chain preimage covers, from both directions", () => {
       readFileSync(findFixture("conformance/fixtures/signing_vectors.json"), "utf-8"),
     );
     const vectorEvent = { ...vectors.events[0], sdk_session_id: vectors.session_id };
-    expect(sign(vectorEvent)).toBe(vectorEvent.sdk_sig);
+    expect(sign(vectorEvent, vectors.chain_format)).toBe(vectorEvent.sdk_sig);
   });
 });

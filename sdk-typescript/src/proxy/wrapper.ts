@@ -107,6 +107,10 @@ import {
 import { spanEnvelopeFor, withSpanMetadata } from "./span.js";
 import { withRunMetadata } from "./agent-run.js";
 import {
+  markCurrentLineageTainted,
+  withSourceLineageMetadata,
+} from "./source-lineage.js";
+import {
   extractPrompt as extractAnthropicPrompt,
   extractResponse as extractAnthropicResponse,
   extractModel as extractAnthropicModel,
@@ -1262,12 +1266,12 @@ function buildAuditEvent(
     // withRunMetadata stamps agent_run_id when this call runs inside an
     // `agentRun(...)` scope, so raw proxied provider calls join the run too.
     metadata: withProviderAttribution(
-      withRunMetadata(
+      withSourceLineageMetadata(withRunMetadata(
         withSpanMetadata(
           withTelemetryMetadata(auditFields.metadata, callTelemetry),
           spanEnv,
         ),
-      ) as Record<string, unknown> | undefined,
+      )) as Record<string, unknown> | undefined,
       ctx,
     ),
 
@@ -2050,6 +2054,11 @@ export async function _buildDirectCallPreCallPlan(
       if (canaryRegistrySize() > 0 && actionTaken !== "blocked") {
         const leak = scanForCanary(lastUserText());
         if (leak.leaked) {
+          markCurrentLineageTainted({
+            kind: "canary_leak",
+            reason: "canary_leak",
+            detector: "obsvr-canary",
+          });
           actionTaken = "blocked";
           actionReason = "policy_violation";
           actionSource = "builtin";
@@ -2100,8 +2109,13 @@ export async function _buildDirectCallPreCallPlan(
         // A detected prompt-injection taints the session even when no PII
         // policy exists. The current turn retains its prior behavior; only
         // subsequent egress is escalated by the latch above.
-        if (taintCfg && allTypes.includes("prompt_injection")) {
-          markTainted(taintKey, "prompt_injection", Date.now());
+        if (allTypes.includes("prompt_injection")) {
+          markCurrentLineageTainted({
+            kind: "prompt_injection",
+            reason: "prompt_injection",
+            detector: "obsvr-builtin-injection",
+          });
+          if (taintCfg) markTainted(taintKey, "prompt_injection", Date.now());
         }
 
         if (config.pii_policy && allTypes.length > 0) {

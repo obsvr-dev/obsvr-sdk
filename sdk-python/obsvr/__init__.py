@@ -98,6 +98,18 @@ from .span import current_span_id, span, with_span  # noqa: F401
 # of threading user_id through every call. Twin of the TypeScript
 # `useSubject()` (`import { useSubject } from "@obsvr/sdk"`).
 from .subject import get_current_subject, parse_subject, use_subject  # noqa: F401
+from .source_lineage import (  # noqa: F401
+    SOURCE_LINEAGE_HASH_DOMAIN,
+    SOURCE_LINEAGE_METADATA_KEY,
+    SOURCE_LINEAGE_SCHEMA_V1,
+    create_source_lineage,
+    current_source_lineage,
+    derive_source_lineage,
+    mark_current_lineage_tainted,
+    source_lineage,
+    source_lineage_hash,
+    validate_source_lineage,
+)
 from .audit_gap import parse_audit_gap_prompt  # noqa: F401
 from .verify_chain import ChainVerificationResult, verify_chain  # noqa: F401
 # Layered call cost: a caller estimate, an operator-declared override, and a

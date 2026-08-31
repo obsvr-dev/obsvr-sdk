@@ -24,6 +24,7 @@ import type { AuditEvent } from "./types.js";
 import { getConfig, isInitialized } from "./config.js";
 import { sendAuditAsync, shouldEmitAllowedEvent } from "./sender/index.js";
 import { withRunMetadata } from "./agent-run.js";
+import { withSourceLineageMetadata } from "./source-lineage.js";
 import { derivePolicyVersion } from "../policy/rules.js";
 
 /**
@@ -197,7 +198,7 @@ function emitSpanEvent(
   // events, and the Python builder (which stamps in build_audit_event). Without
   // this, TS spans were orphaned from runs while identical Python spans grouped.
   // agent-run.ts is a pure leaf, so this import cannot create a cycle.
-  const metadata = withRunMetadata(spanMeta) ?? spanMeta;
+  const metadata = withSourceLineageMetadata(withRunMetadata(spanMeta)) ?? spanMeta;
 
   const event: AuditEvent = {
     request_id: spanId,

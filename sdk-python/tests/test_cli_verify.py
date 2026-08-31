@@ -78,16 +78,18 @@ def test_valid_chain_with_api_key_exits_0(tmp_path, capsys):
 
 
 def test_success_banner_states_the_preimage_boundary(tmp_path, capsys):
-    """The banner must say what the format-3 preimage covers (content, order,
-    the eight decision/attribution fields) and what it does not (tenant_id and
-    the other fields sealed only by the server countersignature)."""
+    """The banner distinguishes fields added by formats 3, 4, and 5 from
+    fields sealed only by the server countersignature."""
     assert _run([_write(tmp_path, "v.json", _chain()), "--api-key", API_KEY]) == 0
     out = capsys.readouterr().out
     assert "does NOT cover the decision" not in out
-    for covered in ("action_taken", "rule_id", "policy_version", "user_id"):
+    for covered in (
+        "action_taken", "rule_id", "policy_version", "user_id",
+        "operation", "event_type", "source_lineage_hash",
+    ):
         assert covered in out
     assert "does NOT cover tenant_id" in out
-    for uncovered in ("token", "metadata", "operation", "content_provenance"):
+    for uncovered in ("token", "cost", "arbitrary metadata"):
         assert uncovered in out
 
 
