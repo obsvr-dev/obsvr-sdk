@@ -287,6 +287,9 @@ class TestRegistryGate:
         "events.py",
         "failure_dispositions.py",
         "instance_guard.py",
+        # Explicit ancestry/context carrier. It validates and hashes caller-
+        # supplied source identity but does not make an allow/block decision.
+        "source_lineage.py",
         # Post-call metering: arithmetic over counts the event already carries,
         # producing a record field and a quota increment. Decides nothing — a
         # cost never blocks a call on its own; the quota RULE does, and that is

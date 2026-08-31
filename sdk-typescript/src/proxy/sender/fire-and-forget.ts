@@ -8,6 +8,10 @@
  */
 
 import { randomUUID, createHmac } from "node:crypto";
+import {
+  SOURCE_LINEAGE_METADATA_KEY,
+  sourceLineageHashFromMetadata,
+} from "../source-lineage.js";
 import type { AuditEvent, QueueItem, BackoffState, ResolvedConfig } from "../types.js";
 import { debugLog } from "../../utils/logger.js";
 import { mirrorToOtel } from "../otel-mirror.js";
@@ -785,6 +789,7 @@ const RESERVED_META_KEYS = [
   "obsvr_telemetry",
   "obsvr_external_backend",
   "obsvr_tool_content_hash",
+  SOURCE_LINEAGE_METADATA_KEY,
   CONTENT_PROVENANCE_METADATA_KEY,
   AUDIT_GAP_METADATA_KEY,
 ];
@@ -1011,6 +1016,14 @@ function signAndEnqueue(
   const previousSig = lastSig;
   // Reconcile the event's wire shape with the ingest schema before signing.
   normalizeWireShape(event);
+  const lineageHash = sourceLineageHashFromMetadata(event.metadata);
+  if (lineageHash !== undefined) {
+    event.source_lineage_hash = lineageHash;
+  } else {
+    // The signed claim is derived from the validated metadata envelope. A
+    // caller-supplied top-level hash without that envelope is not evidence.
+    delete event.source_lineage_hash;
+  }
 
   // ── Phase 1: Stamp sequence / session fields ──────────────────────────────
   event.sdk_session_id = sdkSessionId;

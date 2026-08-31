@@ -1258,6 +1258,12 @@ def apply_pre_call_policy(
             from .canary import scan_for_canary, canary_leak_telemetry
             leak = scan_for_canary(turn)
             if leak["leaked"]:
+                from .source_lineage import mark_current_lineage_tainted
+                mark_current_lineage_tainted(
+                    kind="canary_leak",
+                    reason="canary_leak",
+                    detector="obsvr-canary",
+                )
                 action_taken = "blocked"
                 action_reason = "policy_violation"
                 action_source = "builtin"
@@ -1298,8 +1304,15 @@ def apply_pre_call_policy(
             # SET is independent of PII resolution and affects later turns
             # only. With pii_policy configured this reuses the exact same scan,
             # so there is no duplicate work or telemetry.
-            if taint_cfg and "prompt_injection" in detected_types:
-                mark_tainted(taint_key, "prompt_injection", time.monotonic())
+            if "prompt_injection" in detected_types:
+                from .source_lineage import mark_current_lineage_tainted
+                mark_current_lineage_tainted(
+                    kind="prompt_injection",
+                    reason="prompt_injection",
+                    detector="obsvr-builtin-injection",
+                )
+                if taint_cfg:
+                    mark_tainted(taint_key, "prompt_injection", time.monotonic())
 
             if config.pii_policy is not None and detected_types:
                 action_reason = "pii_detected"

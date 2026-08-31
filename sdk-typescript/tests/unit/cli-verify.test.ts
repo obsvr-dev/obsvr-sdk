@@ -151,18 +151,20 @@ describe("the keyless tier is an unauthenticated consistency check", () => {
 });
 
 describe("the success banner states the preimage boundary", () => {
-  // The banner must say what the format-3 preimage covers (content, order,
-  // the eight decision/attribution fields) and what it does not (tenant_id
-  // and the other fields sealed only by the server countersignature).
+  // The banner must distinguish the fields added by formats 3, 4, and 5 from
+  // fields sealed only by the server countersignature.
   test("names what IS covered and what is NOT", () => {
     const r = run([write(chain()), "--api-key", API_KEY]);
     expect(r.status).toBe(0);
     expect(r.stdout).not.toContain("does NOT cover the decision");
-    for (const covered of ["action_taken", "rule_id", "policy_version", "user_id"]) {
+    for (const covered of [
+      "action_taken", "rule_id", "policy_version", "user_id",
+      "operation", "event_type", "source_lineage_hash",
+    ]) {
       expect(r.stdout).toContain(covered);
     }
     expect(r.stdout).toContain("does NOT cover tenant_id");
-    for (const uncovered of ["token", "metadata", "operation", "content_provenance"]) {
+    for (const uncovered of ["token", "cost", "arbitrary metadata"]) {
       expect(r.stdout).toContain(uncovered);
     }
   });

@@ -1,0 +1,102 @@
+{
+  "name": "source_lineage",
+  "schema": "obsvr-source-lineage/1",
+  "claimable": true,
+  "description": "Pins cross-language source-lineage canonicalization and the chain-format-5 signature that binds the envelope hash.",
+  "cases": [
+    {
+      "id": "retrieved_documents_with_taint",
+      "input": {
+        "lineage_id": "lin-001",
+        "derivation": "retrieved",
+        "sources": [
+          {
+            "source_id": "doc-B",
+            "source_kind": "document",
+            "source_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "chunk_id": "2"
+          },
+          {
+            "source_id": "doc-A",
+            "source_kind": "document",
+            "source_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source_version": "v7",
+            "chunk_id": "1",
+            "retrieval_id": "ret-9"
+          }
+        ],
+        "parent_lineage_ids": ["parent-B", "parent-A"],
+        "taints": [
+          {
+            "taint_id": "taint-1",
+            "kind": "prompt_injection",
+            "reason": "retrieved instruction attempted policy override",
+            "detected_at_ms": 1788134400000,
+            "source_id": "doc-A",
+            "detector": "obsvr.prompt_injection"
+          }
+        ]
+      },
+      "expected_hash": "92be28fd6dda2dd207a4180dbd5d0dd03a1f478f9ca27b56cc3977fca380594b"
+    },
+    {
+      "id": "unicode_scalar_order_and_exact_text",
+      "input": {
+        "lineage_id": " lineage-unicode ",
+        "derivation": "merged",
+        "sources": [
+          {
+            "source_id": "𐀀",
+            "source_kind": "document"
+          },
+          {
+            "source_id": "",
+            "source_kind": "document"
+          }
+        ],
+        "parent_lineage_ids": ["𐀀", ""],
+        "taints": [
+          {
+            "taint_id": "𐀀",
+            "kind": "custom",
+            "reason": " second ",
+            "detected_at_ms": 2
+          },
+          {
+            "taint_id": "",
+            "kind": "custom",
+            "reason": " first ",
+            "detected_at_ms": 1
+          }
+        ]
+      },
+      "expected_hash": "f50152a01c60f9c904b07ecf7498a5aaad64c3ee9b8729f1d3c0c78602f38773"
+    }
+  ],
+  "format_5_signing_case": {
+    "api_key": "lineage-test-api-key",
+    "session_id": "lineage-session-001",
+    "seq_no": 7,
+    "timestamp_sdk": 1788134400123,
+    "prompt": "Summarize the contract.",
+    "response": "Summary.",
+    "prev_sig": "1111111111111111111111111111111111111111111111111111111111111111",
+    "decision": {
+      "action_taken": "allowed",
+      "action_reason": "policy passed",
+      "reason_code": "ALLOW",
+      "rule_id": "contract-read",
+      "policy_version": "policy-7",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "user_id": "user-42",
+      "operation": "responses.create",
+      "source": "openai",
+      "event_type": "llm.response",
+      "source_lineage_hash": "92be28fd6dda2dd207a4180dbd5d0dd03a1f478f9ca27b56cc3977fca380594b"
+    },
+    "expected_decision_hash": "40943edb9a649e759def098ddd91ce3d2475aa2d9a4640f32d8c785fc534062f",
+    "expected_payload": "5|lineage-session-001|7|1788134400123|61aecba244d9824ee88902ea052565275f781ef67264da8d16fc2b3690765bf0|40943edb9a649e759def098ddd91ce3d2475aa2d9a4640f32d8c785fc534062f|1111111111111111111111111111111111111111111111111111111111111111",
+    "expected_sdk_sig": "1b60e3be1073ac46d76bd4df3e9cd91d7a3523f492683babba6b3b3f68a39761"
+  }
+}

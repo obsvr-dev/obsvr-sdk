@@ -630,9 +630,38 @@ Semantics (byte-identical to the TypeScript SDK, pinned by shared conformance fi
 
 The **OPA** endpoint is POSTed `{"input": <decision document>}` and its `result` is read as allow (boolean, or `{allow, reasons}`); the **Cedar** endpoint receives the decision document and its `decision` (`Allow`/`Deny`) is read. The decision document carries non-content fields only — operation, provider, model, principal, the local decision so far, the rules hash, and a SHA-256 **digest** of the prompt (never the raw prompt). Zero-config default is no backend.
 
+### Source lineage and retrospective blast radius
+
+```python
+lineage = obsvr.create_source_lineage({
+    "sources": [{
+        "source_id": "contract-42",
+        "source_kind": "document",
+        "source_hash": sha256,
+    }],
+})
+
+with obsvr.source_lineage(lineage):
+    governed_agent.run(request)
+```
+
+| API | Purpose |
+| --- | --- |
+| `create_source_lineage` / `validate_source_lineage` | build or validate the bounded canonical envelope |
+| `derive_source_lineage` | create a child with one direct parent and inherited sources/taints |
+| `mark_current_lineage_tainted` | attach a detector finding to the active scope |
+| `current_source_lineage` | export a defensive copy for an explicit queue/process handoff |
+
+Events in the context carry `metadata.obsvr_source_lineage`; chain format 5
+signs its canonical `source_lineage_hash`. Obsvr does not discover source
+objects or propagate across process boundaries automatically. Use an exact
+content hash or immutable version when later blast-radius queries must
+distinguish document revisions. A retrospective match proves that a source was
+in the event's declared lineage, not that it caused the event's behavior.
+
 ## Tamper-Evident Audit Trail
 
-Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature (`prev_sig`). Chain format 4 seals prompt/response content, ordering, decision fields, and the classification fields `operation`, `source`, and `event_type`; an ordinary event cannot be relabeled as an audit-gap marker without breaking verification. Formats 1–3 remain verifiable at their original strength. The signing algorithm is byte-for-byte identical to the TypeScript SDK and pinned by shared cross-language vectors.
+Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature (`prev_sig`). Chain format 5 seals prompt/response content, ordering, decision fields, classification fields, and the canonical `source_lineage_hash`; an ordinary event cannot be relabeled as an audit-gap marker, and a carried lineage envelope cannot be altered without breaking verification. Formats 1–4 remain verifiable at their original strength. The signing algorithm is byte-for-byte identical to the TypeScript SDK and pinned by shared cross-language vectors.
 
 The default queue is memory-backed. `durable_delivery` adds atomic local
 persistence, restart replay, accepted-delivery acknowledgement and dead-letter

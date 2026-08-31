@@ -14,6 +14,7 @@ from .agent_run import with_run_metadata
 from .config import ResolvedConfig
 from .policy import DEFAULT_COMPLIANCE
 from .reason_codes import ReasonCode
+from .source_lineage import SOURCE_LINEAGE_METADATA_KEY, with_source_lineage_metadata
 
 
 #: The closed set of ``action_taken`` verdicts, sorted.
@@ -94,6 +95,7 @@ _RESERVED_META_KEYS = (
     "obsvr_external_backend",
     "obsvr_integrity_flags",
     "obsvr_tool_content_hash",
+    SOURCE_LINEAGE_METADATA_KEY,
     CONTENT_PROVENANCE_METADATA_KEY,
 )
 
@@ -535,11 +537,11 @@ def build_audit_event(
         # Letting per-request metadata shadow it would drop the destination
         # evidence exactly when a caller attaches metadata of their own.
         "metadata": _with_destination_attribution(
-            with_run_metadata(
+            with_source_lineage_metadata(with_run_metadata(
                 _with_provider_detail(
                     metadata if metadata is not None else opts.get("metadata"), provider
                 )
-            ),
+            )),
             _attribution,
         ),
         # Compliance fields

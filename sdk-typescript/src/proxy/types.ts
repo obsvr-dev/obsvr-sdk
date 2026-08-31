@@ -1022,6 +1022,9 @@ export interface AuditEvent {
 
   // Metadata
   metadata?: Record<string, unknown>;
+  /** Canonical hash of metadata.obsvr_source_lineage. Chain format 5 seals
+   * this value, and ingest rejects any envelope whose own hash differs. */
+  source_lineage_hash?: string;
 
   // Compliance fields - always set by the SDK before sending
   event_type: "llm_call" | "blocked_call" | "policy_flag" | "tool_call" | "hard_delete" | "delegation" | "loop_detected" | "approval_required" | "span";

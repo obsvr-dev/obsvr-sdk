@@ -84,6 +84,13 @@ const REQUIRED_PUBLIC_NAMES = [
   "signalResolutionToOtelAttributesV1",
   "signalResolutionToOpaInputV1",
   "signalResolutionToCedarContextV1",
+  "createSourceLineage",
+  "currentSourceLineage",
+  "deriveSourceLineage",
+  "markCurrentLineageTainted",
+  "sourceLineageHash",
+  "validateSourceLineage",
+  "withSourceLineage",
 ];
 const REQUIRED_SUBPATHS = ["@obsvr/sdk/register", "@obsvr/sdk/mcp", "@obsvr/sdk/proxy"];
 const REQUIRED_RESOLVABLE_SUBPATHS = ["@obsvr/sdk/initialize"];
@@ -262,13 +269,28 @@ async function main() {
 
   // 5b) THE REFUSAL.
   const denied = obsvrGovernTool(markerTool(DENIED_TOOL, deniedMarker));
+  const lineage = sdk.createSourceLineage({
+    lineage_id: "installed-lineage",
+    sources: [{
+      source_id: "installed-document",
+      source_kind: "document",
+      source_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    }],
+  });
   let raised = null;
   let returned;
-  try {
-    returned = await denied.execute("should never happen");
-  } catch (err) {
-    raised = err;
-  }
+  await sdk.withSourceLineage(lineage, async () => {
+    check(
+      "the installed async scope exposes the validated source lineage",
+      sdk.currentSourceLineage()?.lineage_hash === lineage.lineage_hash,
+    );
+    try {
+      returned = await denied.execute("should never happen");
+    } catch (err) {
+      raised = err;
+    }
+  });
+  check("the installed source-lineage scope does not leak", sdk.currentSourceLineage() === undefined);
 
   check("a denied governed tool refuses instead of returning", raised !== null, `returned=${returned}`);
   check(
@@ -307,6 +329,13 @@ async function main() {
         record.reason_code === ReasonCode.TOOL_DENIED &&
         record.action_taken === "blocked",
       `tool_name=${(record.metadata || {}).tool_name} reason_code=${record.reason_code} action_taken=${record.action_taken}`,
+    );
+    check(
+      "the record carries and signs the exact source-lineage envelope",
+      record.chain_format === 5 &&
+        record.source_lineage_hash === lineage.lineage_hash &&
+        (record.metadata || {}).obsvr_source_lineage?.lineage_hash === lineage.lineage_hash,
+      `chain_format=${record.chain_format} source_lineage_hash=${record.source_lineage_hash}`,
     );
   }
 

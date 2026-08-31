@@ -302,6 +302,26 @@ block has zero calls to the wrapped function, and redaction reaches its actual
 arguments or fails closed. Only the returned wrapper is covered; raw aliases
 remain explicit exclusions.
 
+## Source-lineage compatibility contract
+
+Source lineage is provider- and framework-neutral. It is attached by the core
+event builders, so every governed surface that emits through those builders can
+carry the same envelope.
+
+| Contract | TypeScript | Python | Shared invariant |
+| --- | --- | --- | --- |
+| Ambient scope | `withSourceLineage()` via `AsyncLocalStorage` | `source_lineage()` via `contextvars` | no scope leakage across ordinary concurrent async tasks |
+| Envelope | `createSourceLineage()` | `create_source_lineage()` | bounded schema, exact text, Unicode scalar ordering, canonical SHA-256 |
+| Derivation | `deriveSourceLineage()` | `derive_source_lineage()` | direct parent ID plus inherited source revisions and taints |
+| Detection marker | `markCurrentLineageTainted()` | `mark_current_lineage_tainted()` | stable deduplication for the same kind/reason/effective source |
+| Signed record | chain format 5 | chain format 5 | identical decision hash, payload, and HMAC signature |
+
+The shared [`source_lineage.json`](conformance/fixtures/source_lineage.json)
+fixture pins non-BMP ordering and exact signing bytes. Process or queue hops are
+not ambient-context compatible: export the envelope, transmit it in the
+application's trusted message schema, and validate/re-bind it in the worker.
+The SDK does not infer source IDs from prompts or provider payloads.
+
 ## Cross-language operator contracts
 
 | Contract | TypeScript | Python | Cross-language invariant |

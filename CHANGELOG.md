@@ -15,6 +15,25 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+## [0.16.0] - 2026-08-31
+
+### Added
+
+- Added matching TypeScript and Python source-lineage scopes for explicit
+  document, retrieval, tool-result, memory, and user-input ancestry. Direct
+  parents, exact source revisions, and bounded detector taints propagate across
+  governed async execution and explicit handoffs.
+- Added shared canonicalization and format-5 signing vectors, including
+  non-BMP Unicode ordering and installed-artifact coverage.
+
+### Changed
+
+- New events use chain format 5. It adds the canonical
+  `source_lineage_hash` to the signed decision digest while retaining verifier
+  support for formats 1–4.
+- Built-in prompt-injection and canary-leak findings mark an active source
+  lineage without claiming automatic source discovery or semantic causation.
+
 ## [0.15.0] - 2026-08-31
 
 ### Added

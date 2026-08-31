@@ -27,13 +27,11 @@
  *    WITH --api-key (both seals checked) or ALONE.
  *  - WITH --api-key: HMAC re-verification (verifyAuditChain) — every signature
  *    is recomputed over the content + chain preimage, so any content tamper or
- *    reorder breaks. Under chain format 3, the current signing format, the
- *    preimage also covers the decision/attribution fields (action_taken,
- *    action_reason, reason_code, rule_id, policy_version, model, provider,
- *    user_id); chains signed under formats 1 and 2 bind content and order only.
- *    The client signature does NOT cover tenant_id, token counts, metadata,
- *    operation, or content_provenance; those are sealed by the server
- *    countersignature at ingest, not by this offline check.
+ *    reorder breaks. Format 3 and later cover decision fields; format 4 adds
+ *    operation/source/event_type, and format 5 adds source_lineage_hash.
+ *    Formats 1 and 2 bind content and order only. The client signature does
+ *    NOT cover tenant_id, token counts, cost, or arbitrary metadata; those are
+ *    sealed by the server countersignature at ingest.
  *
  * Either tier also reports GAP MARKERS: events the SDK signed to record that
  * its bounded queue dropped events it never got to chain. A chain carrying
@@ -384,20 +382,20 @@ if (apiKey || deviceKeys.length > 0) {
   if (apiKey) {
     console.log(
       `✓ CONTENT + CHAIN verification passed: ${verified} signature(s) recomputed and chain-linked across ${sessions.size} session(s).\n` +
-        `  This attests prompt/response CONTENT integrity, event ORDER, and — under\n` +
-        `  chain format 3, the current signing format — the decision/attribution\n` +
-        `  fields: action_taken, action_reason, reason_code, rule_id, policy_version,\n` +
-        `  model, provider, user_id. Chains signed under formats 1 and 2 bind content\n` +
-        `  and order only. The client signature does NOT cover tenant_id, token\n` +
-        `  counts, metadata, operation, or content_provenance — those are sealed by\n` +
-        `  the server countersignature at ingest.`,
+        `  This attests prompt/response CONTENT integrity and event ORDER. Format 3\n` +
+        `  and later bind action_taken, action_reason, reason_code, rule_id,\n` +
+        `  policy_version, model, provider, and user_id. Format 4 adds operation, source, and\n` +
+        `  event_type; format 5 adds source_lineage_hash. Formats 1 and 2 bind\n` +
+        `  content and order only. The client signature does NOT cover tenant_id,\n` +
+        `  token counts, cost, or arbitrary metadata; the server countersignature\n` +
+        `  seals the complete accepted event at ingest.`,
     );
   } else {
     console.log(
       `✓ CONTENT + DEVICE verification passed: ${verified} device signature(s) recomputed and chain-linked across ${sessions.size} session(s).\n` +
         `  Each event's Ed25519 device seal was verified under the pinned public\n` +
-        `  key(s) over the same payload the HMAC covers — content, order, and (under\n` +
-        `  chain format 3) the decision/attribution fields — so this run needed no\n` +
+        `  key(s) over the same payload the HMAC covers — content, order, and the\n` +
+        `  fields supported by each event's chain format — so this run needed no\n` +
         `  API key and shared no secret. It does NOT check the HMAC chain: run with\n` +
         `  --api-key as well to attest both seals.`,
     );

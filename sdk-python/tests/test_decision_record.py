@@ -211,16 +211,16 @@ def test_decision_record_fields_are_outside_the_preimage_but_the_verdict_is_insi
         b"obsvr-sdk-signing-v1", b"test-api-key", hashlib.sha256
     ).digest()
 
-    def sign(event):
+    def sign(event, fmt=CHAIN_FORMAT_CURRENT):
         payload = signature_payload(
-            CHAIN_FORMAT_CURRENT,
+            fmt,
             event["sdk_session_id"],
             event["seq_no"],
             event["timestamp_sdk"],
             event.get("prompt") or "",
             event.get("response") or "",
             None,
-            decision_fields_of(event),
+            decision_fields_of(event, fmt),
         )
         return hmac_mod.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -259,4 +259,4 @@ def test_decision_record_fields_are_outside_the_preimage_but_the_verdict_is_insi
     )
     vector_event = dict(vectors["events"][0])
     vector_event["sdk_session_id"] = vectors["session_id"]
-    assert sign(vector_event) == vector_event["sdk_sig"]
+    assert sign(vector_event, vectors["chain_format"]) == vector_event["sdk_sig"]

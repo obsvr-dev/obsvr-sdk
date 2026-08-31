@@ -19,6 +19,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   CHAIN_FORMAT_CONTENT_ONLY,
+  CHAIN_FORMAT_CLASSIFIED,
   CHAIN_FORMAT_CURRENT,
   CHAIN_FORMAT_DECISION_FIELDS,
   CHAIN_FORMAT_LEGACY,
@@ -122,10 +123,10 @@ describe("cross-language signing vectors", () => {
     const key = deriveKey(vectors.api_key);
     let prev = "";
     for (const ev of vectors.events) {
-      expect(ev.chain_format).toBe(CHAIN_FORMAT_CURRENT);
+      expect(ev.chain_format).toBe(CHAIN_FORMAT_CLASSIFIED);
       const sig = sign(
         key,
-        CHAIN_FORMAT_CURRENT,
+        CHAIN_FORMAT_CLASSIFIED,
         vectors.session_id,
         ev.seq_no,
         ev.timestamp_sdk,
@@ -134,7 +135,7 @@ describe("cross-language signing vectors", () => {
         prev,
         // Format 4 signs the decision and classification fields carried on the
         // vector event itself. Read them the way the SDK does.
-        decisionFieldsOf(ev),
+        decisionFieldsOf(ev, CHAIN_FORMAT_CLASSIFIED),
       );
       expect(sig).toBe(ev.sdk_sig);
       expect(ev.prev_sig).toBe(prev);
@@ -188,7 +189,7 @@ describe("cross-language signing vectors", () => {
 
   it("matches every pinned decision-hash case", () => {
     for (const c of vectors.decision_hash.cases) {
-      expect(decisionHash(c.fields)).toBe(c.digest);
+      expect(decisionHash(c.fields, CHAIN_FORMAT_CLASSIFIED)).toBe(c.digest);
     }
   });
 
@@ -202,7 +203,7 @@ describe("cross-language signing vectors", () => {
     for (const c of vectors.user_id_coercion.cases) {
       const { audit_fields } = filterArgs([{ model: "m", user_id: c.raw }]);
       expect(audit_fields.user_id).toBe(c.canonical);
-      expect(decisionHash({ user_id: c.canonical })).toBe(c.digest);
+      expect(decisionHash({ user_id: c.canonical }, CHAIN_FORMAT_CLASSIFIED)).toBe(c.digest);
     }
   });
 

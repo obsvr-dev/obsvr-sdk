@@ -73,7 +73,7 @@ The content hash is UNCHANGED between formats 2 and 3: the content framing did
 not need fixing, and ``obsvr:content/2`` names the content-preimage version
 rather than the chain format.
 
-Formats 1 through 3 stay implemented here forever: chains signed before each change
+Formats 1 through 5 stay implemented here forever: chains signed before each change
 are existing evidence and must keep verifying - explicitly, as the format they
 were signed under, never silently under a newer rule.
 
@@ -93,14 +93,17 @@ from typing import Any, Dict, Optional
 __all__ = [
     "CHAIN_FORMAT_LEGACY",
     "CHAIN_FORMAT_CONTENT_ONLY",
+    "CHAIN_FORMAT_CLASSIFIED",
     "CHAIN_FORMAT_CURRENT",
     "CHAIN_FORMAT_DECISION_FIELDS",
     "CHAIN_FORMATS_SUPPORTED",
     "CONTENT_HASH_DOMAIN_TAG",
     "DECISION_HASH_DOMAIN_TAG",
     "CLASSIFIED_DECISION_HASH_DOMAIN_TAG",
+    "LINEAGE_DECISION_HASH_DOMAIN_TAG",
     "DECISION_FIELD_ORDER_V3",
     "DECISION_FIELD_ORDER",
+    "DECISION_FIELD_ORDER_V5",
     "content_hash",
     "decision_hash",
     "decision_fields_of",
@@ -114,15 +117,19 @@ CHAIN_FORMAT_CONTENT_ONLY = 2
 #: Content, order, and the original decision fields.
 CHAIN_FORMAT_DECISION_FIELDS = 3
 #: Decision fields plus operation/source/event_type classification.
-CHAIN_FORMAT_CURRENT = 4
+CHAIN_FORMAT_CLASSIFIED = 4
+#: Classification plus the canonical source-lineage envelope hash.
+CHAIN_FORMAT_CURRENT = 5
 #: Every format this build can verify, oldest first.
-CHAIN_FORMATS_SUPPORTED = (1, 2, 3, 4)
+CHAIN_FORMATS_SUPPORTED = (1, 2, 3, 4, 5)
 #: Domain tag leading every format-2 content preimage.
 CONTENT_HASH_DOMAIN_TAG = b"obsvr:content/2"
 #: Domain tag leading every format-3 decision preimage.
 DECISION_HASH_DOMAIN_TAG = b"obsvr:decision/3"
 #: Domain tag for the format-4 classification-aware decision digest.
 CLASSIFIED_DECISION_HASH_DOMAIN_TAG = b"obsvr:decision/4"
+#: Domain tag for the format-5 source-lineage-aware decision digest.
+LINEAGE_DECISION_HASH_DOMAIN_TAG = b"obsvr:decision/5"
 
 #: The decision/attribution fields format 3 signs, in the ONE order the digest
 #: is defined over. Both languages iterate this list; changing the order or the
@@ -145,6 +152,9 @@ DECISION_FIELD_ORDER = DECISION_FIELD_ORDER_V3 + (
     "source",
     "event_type",
 )
+
+#: Format 5 seals the canonical lineage hash into the SDK signature.
+DECISION_FIELD_ORDER_V5 = DECISION_FIELD_ORDER + ("source_lineage_hash",)
 
 
 def content_hash(fmt: int, prompt: str, response: str) -> str:
@@ -183,7 +193,13 @@ def decision_fields_of(
     is why this is not two functions.
     """
     out: Dict[str, Any] = {}
-    order = DECISION_FIELD_ORDER if fmt >= CHAIN_FORMAT_CURRENT else DECISION_FIELD_ORDER_V3
+    order = (
+        DECISION_FIELD_ORDER_V5
+        if fmt >= CHAIN_FORMAT_CURRENT
+        else DECISION_FIELD_ORDER
+        if fmt >= CHAIN_FORMAT_CLASSIFIED
+        else DECISION_FIELD_ORDER_V3
+    )
     for key in order:
         value = event.get(key)
         out[key] = None if value is None else str(value)
@@ -203,10 +219,18 @@ def decision_hash(
     """
     src = fields or {}
     h = hashlib.sha256()
-    order = DECISION_FIELD_ORDER if fmt >= CHAIN_FORMAT_CURRENT else DECISION_FIELD_ORDER_V3
-    h.update(
-        CLASSIFIED_DECISION_HASH_DOMAIN_TAG
+    order = (
+        DECISION_FIELD_ORDER_V5
         if fmt >= CHAIN_FORMAT_CURRENT
+        else DECISION_FIELD_ORDER
+        if fmt >= CHAIN_FORMAT_CLASSIFIED
+        else DECISION_FIELD_ORDER_V3
+    )
+    h.update(
+        LINEAGE_DECISION_HASH_DOMAIN_TAG
+        if fmt >= CHAIN_FORMAT_CURRENT
+        else CLASSIFIED_DECISION_HASH_DOMAIN_TAG
+        if fmt >= CHAIN_FORMAT_CLASSIFIED
         else DECISION_HASH_DOMAIN_TAG
     )
     h.update(b"\x00")

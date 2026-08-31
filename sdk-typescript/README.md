@@ -477,9 +477,37 @@ instances whose binding must be visible in application code.
 
 Governance covers all three MCP phases: **discovery** (`listTools()` is scanned for tool poisoning), **request** (tool arguments are policy- and PII-checked before the call runs), and **response** (the tool RESULT is scanned before it reaches the caller). Tool results are the exfiltration/poisoning channel, so a result carrying PII, secrets, or an injection payload is **blocked**, **sanitized** (offending spans redacted), or **logged** per policy — a blocked result is withheld from the caller entirely. Pass caller identity via the options argument (`obsvrGovernMCP(Client, getConfig(), { user_id })`) so user/service/tenant-scoped quota rules meter the right bucket and the decision is attributed to the principal in the audit trail.
 
+### Source lineage and retrospective blast radius
+
+```typescript
+const lineage = obsvr.createSourceLineage({
+  sources: [{
+    source_id: 'contract-42',
+    source_kind: 'document',
+    source_hash: sha256,
+  }],
+});
+
+await obsvr.withSourceLineage(lineage, () => governedAgent.run(request));
+```
+
+| API | Purpose |
+| --- | --- |
+| `createSourceLineage` / `validateSourceLineage` | build or validate the bounded canonical envelope |
+| `deriveSourceLineage` | create a child with one direct parent and inherited sources/taints |
+| `markCurrentLineageTainted` | attach a detector finding to the active scope |
+| `currentSourceLineage` | export a defensive copy for an explicit queue/process handoff |
+
+Events in the scope carry `metadata.obsvr_source_lineage`; chain format 5 signs
+its canonical `source_lineage_hash`. Obsvr does not discover source objects or
+propagate across process boundaries automatically. Use an exact content hash
+or immutable version when later blast-radius queries must distinguish document
+revisions. A retrospective match proves that a source was in the event's
+declared lineage, not that it caused the event's behavior.
+
 ## Tamper-Evident Audit Trail
 
-Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers prompt/response **content**, event **order**, the decision fields, and in **chain format 4** the classification fields `operation`, `source`, and `event_type`. Rewriting a verdict or relabeling an ordinary event as `audit.gap` therefore breaks offline verification. Sender-visible loss is declared by a signed gap marker. Earlier formats remain verifiable at their original strength, which the verifier reports. `tenant_id`, token counts and cost remain outside the client preimage and are sealed by the server countersignature after acceptance.
+Every event is stamped with a session ID, a monotonic sequence number, and an HMAC-SHA256 signature chained to the previous event's signature. The client signature covers prompt/response **content**, event **order**, decision fields, classification fields, and in **chain format 5** the canonical `source_lineage_hash`. Rewriting a verdict, relabeling an ordinary event as `audit.gap`, or changing a carried lineage envelope without updating the signed hash breaks offline verification. Sender-visible loss is declared by a signed gap marker. Earlier formats remain verifiable at their original strength, which the verifier reports. `tenant_id`, token counts, cost, and unrelated metadata remain outside the client preimage and are sealed by the server countersignature after acceptance.
 
 For crash recovery, configure the optional disk-backed outbox:
 

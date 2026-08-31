@@ -350,6 +350,15 @@ def _sign_event_locked(event: Dict[str, Any], api_key: str) -> None:
     # Local import: remote.py imports this module for delivery counters,
     # so a module-level import here would be a cycle.
     from .remote import SDK_VERSION
+    from .source_lineage import source_lineage_hash_from_metadata
+
+    lineage_hash = source_lineage_hash_from_metadata(event.get("metadata"))
+    if lineage_hash is not None:
+        event["source_lineage_hash"] = lineage_hash
+    else:
+        # The signed claim is derived from the validated metadata envelope. A
+        # caller-supplied top-level hash without that envelope is not evidence.
+        event.pop("source_lineage_hash", None)
 
     _seq_no += 1
     event["sdk_session_id"] = _sdk_session_id
