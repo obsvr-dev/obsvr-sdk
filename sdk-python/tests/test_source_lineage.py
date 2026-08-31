@@ -91,7 +91,9 @@ def test_frozen_format_5_lineage_bound_signature():
     assert decision_hash(case["decision"], CHAIN_FORMAT_CURRENT) == case["expected_decision_hash"]
     assert payload == case["expected_payload"]
     signature = hmac.new(
-        derive_signing_key(case["api_key"]), payload.encode("utf-8"), hashlib.sha256
+        derive_signing_key(case["signing_key_material"]),
+        payload.encode("utf-8"),
+        hashlib.sha256,
     ).hexdigest()
     assert signature == case["expected_sdk_sig"]
 
