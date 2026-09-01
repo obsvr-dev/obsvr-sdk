@@ -132,6 +132,14 @@ For caller-owned factories, verify the live deployment after construction:
 These checks prove only the named binding and factory path. They do not discover
 raw aliases or unrelated clients.
 
+Publish signed deployment evidence explicitly after the application factory
+and smoke test succeed. `publishDeploymentProofs(...)` /
+`publish_deployment_proofs(...)` sends the coverage attestation first and sends
+the optional workload registration only after the server accepts that exact
+coverage hash. It uses a bounded, redirect-refusing, DNS-pinned transport and
+labels the server result as `pinned` or `self_presented`; it never
+uploads silently from `init()`.
+
 ### Durable audit delivery
 
 The default sender is an in-memory bounded queue. Applications that need local
@@ -263,11 +271,48 @@ def send_contract(contract_id):
 | allow | the original callable runs |
 | block | the callable is not entered |
 | redact | the callable receives rewritten arguments; an unprovable rewrite fails closed |
+| steer | the callable is not entered; the typed policy error carries bounded `MODIFY` guidance for a new attempt |
 
 TypeScript returns an async function because the shared policy pipeline may
 wait for approval or an external backend. Python preserves the original sync
 or async shape. A retained reference to the raw function remains a bypass and
 is listed in the `govern_fn` coverage binding.
+
+### Bounded control expressions
+
+Use a `control` rule when policy depends on structured call context rather than
+text matching. The expression schema is identical in TypeScript and Python:
+
+| Node | Meaning |
+| --- | --- |
+| `predicate` | Compare one `input.*` or `context.*` path with a closed operator |
+| `all` / `any` | Require every or at least one bounded child expression |
+| `not` | Negate one child expression |
+
+```json
+{
+  "id": "external-write-owner",
+  "name": "External writes require Legal",
+  "enabled": true,
+  "type": "control",
+  "action": "steer",
+  "conditions": {
+    "expression": {
+      "predicate": {
+        "path": "context.metadata.owner",
+        "operator": "not_equals",
+        "value": "legal"
+      }
+    },
+    "steering_context": "Route to Legal and retry with owner=legal."
+  }
+}
+```
+
+`steer` is not an advisory log. On an enforcing boundary it is a block with
+zero downstream calls. The caught `ObsvrPolicyError` exposes
+`steering: { outcome: "MODIFY", guidance }`; the application decides whether
+to start a separately governed retry.
 
 For strict decisions, `ActionContextV2` keeps context in bounded, closed
 layers rather than accepting one arbitrary payload:
@@ -307,6 +352,7 @@ into a general CMDB, GRC suite, or remote policy service.
 | --- | --- | --- |
 | Policy lifecycle v1 | candidate artifact, replay impact, stable explanations, promotion thresholds, rollback target | a failed threshold returns the candidate to shadow; promotion never changes a live pack by itself |
 | Workload registration v1 | workload, environment, deployment, capabilities, approvals, effective pack hashes, coverage-attestation hash | signed runtime metadata only; raw prompts, arguments, and customer data are rejected |
+| Deployment proof publication | accepted coverage, then an optional workload bound to that exact hash | explicit network action; a rejected or uncertain coverage result prevents the workload request |
 | Policy template v1 | template, typed parameters, rendered artifact, approval, activation, operator signature | whole-value placeholders only; no code execution or string interpolation |
 | Control analytics v1 | exact event window, outcome counts, shadow divergence, approval indicators, latency, coverage and evidence gaps | reports only supplied events and never infers missing-event completeness |
 

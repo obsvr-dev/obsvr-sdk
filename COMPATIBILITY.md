@@ -241,6 +241,16 @@ The schema is closed: unknown body fields and noncanonical derived values are
 invalid. Adding fields or changing ordering, depth semantics, or signature
 bytes requires a new schema version and new shared fixtures.
 
+The deployment publication clients are also paired. TypeScript
+`publishDeploymentProofs` and Python `publish_deployment_proofs` POST the same
+canonical envelopes to `/coverage/attestations` and then, only after an exact
+accepted coverage response, `/workloads/registrations`. Both send
+`X-API-Key`, the canonical raw Ed25519 public key in
+`X-Obsvr-Device-Public-Key`, and the body hash as `Idempotency-Key`. Redirects,
+oversized or malformed responses, transport failures, and success responses
+whose identifiers do not match the submitted envelope are never reported as
+accepted.
+
 ### Layered action-context contract
 
 `obsvr-action-context-v2` accepts optional `principal`, `execution`, and
@@ -301,6 +311,20 @@ The application-callable row reuses the ordinary tool-policy kernel. Policy
 block has zero calls to the wrapped function, and redaction reaches its actual
 arguments or fails closed. Only the returned wrapper is covered; raw aliases
 remain explicit exclusions.
+
+### Control-expression v2 compatibility contract
+
+| Property | Contract |
+| --- | --- |
+| Paths | 2–10 safe segments rooted at `input` or `context` |
+| Composition | exactly one of `predicate`, `all`, `any`, or `not` per node |
+| Bounds | depth 12, 128 nodes, 64 children/set items |
+| Operators | `exists`, equality, containment/set membership, numeric comparisons, guarded `matches` |
+| Steering | `action: steer` resolves to a blocking decision plus `MODIFY` guidance |
+
+Both SDKs validate before evaluation and reject unknown fields, non-finite
+numbers, unbounded strings, empty sets, and unsafe regex patterns. Changing
+operator names or evaluation semantics requires a new expression schema.
 
 ## Source-lineage compatibility contract
 
