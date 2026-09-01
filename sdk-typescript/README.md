@@ -193,10 +193,11 @@ const result = await publishDeploymentProofs(coverage, workload, {
 });
 ```
 
-Coverage is sent first. If it is rejected or uncertain, the workload is marked
-`not_attempted`; no second request is made. The helper refuses redirects, pins
-DNS for each bounded request, and validates that accepted response identifiers
-match the signed envelopes. It never runs automatically from `init()`.
+- Coverage is sent first.
+- Rejected or uncertain coverage marks workload `not_attempted`.
+- Redirects are refused and DNS is pinned per bounded request.
+- Accepted response identifiers must match the signed envelopes.
+- Publication never runs automatically from `init()`.
 
 In production, configuring agent or MCP policy without the startup preload logs
 a warning that only explicitly bound surfaces enforce. Use exact required keys

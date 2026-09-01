@@ -163,14 +163,13 @@ inside the signed body, but the verifier intentionally returns their exact
 values rather than consulting wall-clock time; the deployment controller owns
 its clock and expiry policy.
 
-`publishDeploymentProofs` / `publish_deployment_proofs` is an explicit control
-plane operation, not an `init()` side effect. It verifies each envelope locally,
-pins the resolved ingest address for the request, refuses redirects, bounds
-request/response sizes and time, and sends coverage before workload. A workload
-is not attempted unless the server accepted the exact referenced coverage hash.
-Server trust remains explicit: `pinned` means the project registry
-matched the signer; `self_presented` proves only that the presented key signed
-the document.
+Deployment-proof publication is explicit:
+
+- `init()` never uploads it;
+- coverage is verified and accepted before workload registration;
+- requests pin DNS, refuse redirects, and bound time and payload sizes;
+- `pinned` means the project registry matched the signer;
+- `self_presented` proves only that the presented key signed the document.
 
 `governFn` / `govern_fn` / `@govern` is an enforcing callable boundary backed
 by the existing tool-policy kernel. A deny has zero calls to the wrapped
@@ -178,12 +177,13 @@ function, and a redact verdict changes the arguments that function receives or
 fails closed. It does not revoke any other reference to the original callable;
 coverage reports therefore record retained raw aliases as an exclusion.
 
-`control` expressions are a deterministic local policy language, not an
-evaluator plugin. They can read only bounded `input.*` and `context.*` paths,
-use a closed operator set, and are rejected on ambiguous shape or unsafe regex.
-`steer` is enforced as a refusal before side effects. Its guidance is data for
-a caller-owned new attempt; the SDK never silently mutates and retries the
-original action.
+`control` expressions are deterministic local policy:
+
+- inputs are limited to bounded `input.*` and `context.*` paths;
+- operators are closed and unsafe regex is rejected;
+- `steer` refuses before side effects;
+- guidance belongs to a caller-owned new attempt;
+- the SDK never silently mutates and retries the original action.
 
 Optional `ActionContextV2` layers are closed and bounded. They carry only
 identity, execution, and governance facts needed for deterministic policy and

@@ -7,8 +7,8 @@
 Obsvr runs inside your application to enforce deterministic policy before supported AI calls execute, then signs the resulting decision record so it can be independently verified later.
 
 ![Status](https://img.shields.io/badge/status-beta-6d4aff)
-[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.16.0)
-[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.16.0/)
+[![npm](https://img.shields.io/npm/v/%40obsvr%2Fsdk?label=npm&color=cb3837)](https://www.npmjs.com/package/@obsvr/sdk/v/0.17.0)
+[![PyPI](https://img.shields.io/pypi/v/obsvr-sdk?color=3776ab&label=pypi&cacheSeconds=300)](https://pypi.org/project/obsvr-sdk/0.17.0/)
 ![License](https://img.shields.io/badge/license-Apache%202.0-3b82f6)
 ![Node](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-typescript%2Fpackage.json&query=%24.engines.node&label=node&color=10b981)
 ![Python](https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fobsvr-dev%2Fobsvr-sdk%2Fmain%2Fsdk-python%2Fpyproject.toml&query=%24.project.requires-python&label=python&color=3776ab)
@@ -27,8 +27,8 @@ Obsvr runs inside your application to enforce deterministic policy before suppor
 
 | Package | Runtime | Version | Source |
 | --- | --- | ---: | --- |
-| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.16.0) | TypeScript / Node.js ≥ 22 | 0.16.0 | [`sdk-typescript/`](sdk-typescript/) |
-| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.16.0/) | Python ≥ 3.10 | 0.16.0 | [`sdk-python/`](sdk-python/) |
+| [`@obsvr/sdk`](https://www.npmjs.com/package/@obsvr/sdk/v/0.17.0) | TypeScript / Node.js ≥ 22 | 0.17.0 | [`sdk-typescript/`](sdk-typescript/) |
+| [`obsvr-sdk`](https://pypi.org/project/obsvr-sdk/0.17.0/) | Python ≥ 3.10 | 0.17.0 | [`sdk-python/`](sdk-python/) |
 
 ## Contents
 
@@ -132,13 +132,14 @@ For caller-owned factories, verify the live deployment after construction:
 These checks prove only the named binding and factory path. They do not discover
 raw aliases or unrelated clients.
 
-Publish signed deployment evidence explicitly after the application factory
-and smoke test succeed. `publishDeploymentProofs(...)` /
-`publish_deployment_proofs(...)` sends the coverage attestation first and sends
-the optional workload registration only after the server accepts that exact
-coverage hash. It uses a bounded, redirect-refusing, DNS-pinned transport and
-labels the server result as `pinned` or `self_presented`; it never
-uploads silently from `init()`.
+Publish signed deployment evidence after the application factory and smoke test
+succeed:
+
+- coverage is sent before the optional workload registration;
+- a rejected or uncertain coverage result stops the workload request;
+- transport is bounded, redirect-refusing, and DNS-pinned;
+- results distinguish `pinned` from `self_presented` trust;
+- `init()` never uploads deployment proofs automatically.
 
 ### Durable audit delivery
 

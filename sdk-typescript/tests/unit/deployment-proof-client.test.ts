@@ -18,7 +18,7 @@ function proofs() {
   const now = 1_788_131_200_000;
   const coverage = signCoverageAttestation({
     attestation_id: 'att-1', workload_id: 'contract-ai', environment: 'production',
-    sdk_language: 'typescript', sdk_version: '0.16.0', generated_at_ms: now,
+    sdk_language: 'typescript', sdk_version: '0.17.0', generated_at_ms: now,
     valid_until_ms: now + 60_000, required: [], policy_pack_hashes: ['a'.repeat(64)],
   }, signer, {});
   const workload = signWorkloadRegistrationV1({

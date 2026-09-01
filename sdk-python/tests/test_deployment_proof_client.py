@@ -22,7 +22,7 @@ def _proofs(tmp_path):
             "workload_id": "contract-ai",
             "environment": "production",
             "sdk_language": "python",
-            "sdk_version": "0.16.0",
+            "sdk_version": "0.17.0",
             "generated_at_ms": now,
             "valid_until_ms": now + 60_000,
             "required": [],

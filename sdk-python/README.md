@@ -114,10 +114,11 @@ result = obsvr.publish_deployment_proofs(
 )
 ```
 
-Coverage is sent first. If it is rejected or uncertain, the workload is marked
-`not_attempted`; no second request is made. The helper refuses redirects, pins
-DNS for each bounded request, and validates that accepted response identifiers
-match the signed envelopes. It never runs automatically from `init()`.
+- Coverage is sent first.
+- Rejected or uncertain coverage marks workload `not_attempted`.
+- Redirects are refused and DNS is pinned per bounded request.
+- Accepted response identifiers must match the signed envelopes.
+- Publication never runs automatically from `init()`.
 
 For local crash recovery of ordinary audit events, enable the optional outbox:
 

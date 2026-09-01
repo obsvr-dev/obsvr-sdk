@@ -241,15 +241,13 @@ The schema is closed: unknown body fields and noncanonical derived values are
 invalid. Adding fields or changing ordering, depth semantics, or signature
 bytes requires a new schema version and new shared fixtures.
 
-The deployment publication clients are also paired. TypeScript
-`publishDeploymentProofs` and Python `publish_deployment_proofs` POST the same
-canonical envelopes to `/coverage/attestations` and then, only after an exact
-accepted coverage response, `/workloads/registrations`. Both send
-`X-API-Key`, the canonical raw Ed25519 public key in
-`X-Obsvr-Device-Public-Key`, and the body hash as `Idempotency-Key`. Redirects,
-oversized or malformed responses, transport failures, and success responses
-whose identifiers do not match the submitted envelope are never reported as
-accepted.
+Deployment publication is paired across both SDKs:
+
+| Property | Contract |
+| --- | --- |
+| Order | accepted `/coverage/attestations` before `/workloads/registrations` |
+| Identity | `X-API-Key`, raw Ed25519 public key, and body-hash idempotency key |
+| Failure | redirects, malformed responses, transport errors, or identifier mismatch never read as accepted |
 
 ### Layered action-context contract
 

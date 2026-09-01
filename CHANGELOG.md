@@ -15,6 +15,13 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+## [0.17.0] - 2026-09-01
+
+### Breaking
+
+- **BREAKING:** Public rule, action, and reason-code unions now include
+  `control`, `steer`, and `STEER_REQUIRED`. Update exhaustive switches.
+
 ### Added
 
 - Added bounded control expressions in both SDKs. `all`, `any`, `not`, and
