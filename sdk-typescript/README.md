@@ -95,6 +95,11 @@ function is entered; redaction changes the arguments it receives or fails
 closed. The returned wrapper is the boundary. A retained raw function alias is
 not governed and is reported as a coverage exclusion.
 
+A `control` policy rule can match bounded structured `input.*` / `context.*`
+paths with deterministic predicates. `action: 'steer'` still refuses before
+the function or transport runs; catch `ObsvrPolicyError` and read its
+`steering` field to start a separate, governed retry with the supplied guidance.
+
 `buildActionContextV2()` provides the bounded context for strict application
 actions. Optional principal, execution, and governance layers carry stable
 facts and hashes only; unknown fields and raw target storage are rejected.
@@ -177,6 +182,22 @@ For a caller-owned factory, `assertEnforcementBoundary()` runs one known-deny
 request and requires both a rejection and zero additional calls in the supplied
 transport counter. Use it with `assertCoverageRequirements()` as a deployment
 smoke test. Neither helper discovers other clients in the process.
+
+After those checks, explicitly publish the signed deployment evidence:
+
+```ts
+const result = await publishDeploymentProofs(coverage, workload, {
+  ingest_url: process.env.OBSVR_INGEST_URL!,
+  api_key: process.env.OBSVR_API_KEY!,
+  signer,
+});
+```
+
+- Coverage is sent first.
+- Rejected or uncertain coverage marks workload `not_attempted`.
+- Redirects are refused and DNS is pinned per bounded request.
+- Accepted response identifiers must match the signed envelopes.
+- Publication never runs automatically from `init()`.
 
 In production, configuring agent or MCP policy without the startup preload logs
 a warning that only explicitly bound surfaces enforce. Use exact required keys

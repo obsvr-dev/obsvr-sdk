@@ -42,6 +42,12 @@ from .workload_registry_v1 import (  # noqa: F401
     verify_workload_registration_v1,
     workload_registration_v1_hash,
 )
+from .deployment_proof_client import (  # noqa: F401
+    DeploymentProofPublishError,
+    publish_coverage_attestation,
+    publish_deployment_proofs,
+    publish_workload_registration,
+)
 from .policy_template_v1 import (  # noqa: F401
     POLICY_TEMPLATE_V1_SCHEMA,
     RENDERED_POLICY_ENVELOPE_V1_SCHEMA,
@@ -131,6 +137,15 @@ from .errors import ObsvrPolicyError, ObsvrUnknownPolicyError  # noqa: F401
 # SDKs must not diverge on the entry point for the same primitive.
 from .integrations.tools import govern_tool, govern_tools  # noqa: F401
 from .govern_fn import govern, govern_fn  # noqa: F401
+from .control_expression_v2 import (  # noqa: F401
+    CONTROL_EXPRESSION_MAX_DEPTH,
+    CONTROL_EXPRESSION_MAX_NODES,
+    CONTROL_EXPRESSION_MAX_SET_ITEMS,
+    CONTROL_EXPRESSION_V2_SCHEMA,
+    ControlExpressionValidationError,
+    evaluate_control_expression_v2,
+    validate_control_expression_v2,
+)
 from .action_context_v2 import (  # noqa: F401
     ACTION_CONTEXT_V2_SCHEMA,
     ActionContextV2ValidationError,
@@ -333,6 +348,10 @@ __all__ = [
     "coverage_requirement_failures",
     "sign_coverage_attestation",
     "verify_coverage_attestation",
+    "DeploymentProofPublishError",
+    "publish_coverage_attestation",
+    "publish_deployment_proofs",
+    "publish_workload_registration",
     "assert_enforcement_boundary",
     "assert_enforcement_boundary_async",
     "unbound_symbols",

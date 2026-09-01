@@ -69,6 +69,9 @@ export interface PolicyErrorInput {
   rule_id?: string;
   /** Set when the deciding layer already resolved a reason code. */
   reason_code?: string;
+  steering?: { outcome: 'MODIFY'; guidance: string };
+  /** Existing surface-specific wording retained for backward compatibility. */
+  message?: string;
 }
 
 /**
@@ -84,8 +87,10 @@ export class ObsvrPolicyError extends Error {
   readonly rule_id?: string;
   /** Decision metadata mirroring the emitted event. */
   readonly decision: ObsvrPolicyDecision;
+  /** Present when policy refused the call with a deterministic retry instruction. */
+  readonly steering?: { outcome: 'MODIFY'; guidance: string };
 
-  constructor(message: string, reasonCode: string, decision: ObsvrPolicyDecision, ruleId?: string) {
+  constructor(message: string, reasonCode: string, decision: ObsvrPolicyDecision, ruleId?: string, steering?: { outcome: 'MODIFY'; guidance: string }) {
     super(message);
     // Set explicitly rather than via constructor.name: minifiers rename
     // classes, and `name` is what most logging pipelines print.
@@ -93,6 +98,7 @@ export class ObsvrPolicyError extends Error {
     this.reason_code = reasonCode;
     this.decision = decision;
     if (ruleId !== undefined) this.rule_id = ruleId;
+    if (steering !== undefined) this.steering = Object.freeze({ ...steering });
     // Restore the prototype chain so `instanceof` works when this file is
     // transpiled to a target that breaks subclassing of built-ins.
     Object.setPrototypeOf(this, new.target.prototype);
@@ -105,6 +111,7 @@ export class ObsvrPolicyError extends Error {
       reason_code: this.reason_code,
       ...(this.rule_id !== undefined ? { rule_id: this.rule_id } : {}),
       decision: this.decision,
+      ...(this.steering !== undefined ? { steering: this.steering } : {}),
       message: this.message,
     };
   }
@@ -119,8 +126,8 @@ export class ObsvrPolicyError extends Error {
 export class ObsvrUnknownPolicyError extends ObsvrPolicyError {
   readonly type: string = "obsvr_unknown_policy_error";
 
-  constructor(message: string, reasonCode: string, decision: ObsvrPolicyDecision, ruleId?: string) {
-    super(message, reasonCode, decision, ruleId);
+  constructor(message: string, reasonCode: string, decision: ObsvrPolicyDecision, ruleId?: string, steering?: { outcome: 'MODIFY'; guidance: string }) {
+    super(message, reasonCode, decision, ruleId, steering);
     this.name = "ObsvrUnknownPolicyError";
   }
 }
@@ -173,11 +180,11 @@ export function createPolicyError(input: PolicyErrorInput): ObsvrPolicyError {
     ...(input.policy_version !== undefined ? { policy_version: input.policy_version } : {}),
     ...(input.policy_reason !== undefined ? { policy_reason: input.policy_reason } : {}),
   };
-  const message = policyBlockMessage(input.action_reason);
+  const message = input.message ?? policyBlockMessage(input.action_reason);
   const reasonCode = resolveReasonCode(input);
   const known = KNOWN_REASONS.has(input.action_reason ?? "");
 
   return known
-    ? new ObsvrPolicyError(message, reasonCode, decision, input.rule_id)
-    : new ObsvrUnknownPolicyError(message, reasonCode, decision, input.rule_id);
+    ? new ObsvrPolicyError(message, reasonCode, decision, input.rule_id, input.steering)
+    : new ObsvrUnknownPolicyError(message, reasonCode, decision, input.rule_id, input.steering);
 }

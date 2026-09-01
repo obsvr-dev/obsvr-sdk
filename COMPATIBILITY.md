@@ -241,6 +241,14 @@ The schema is closed: unknown body fields and noncanonical derived values are
 invalid. Adding fields or changing ordering, depth semantics, or signature
 bytes requires a new schema version and new shared fixtures.
 
+Deployment publication is paired across both SDKs:
+
+| Property | Contract |
+| --- | --- |
+| Order | accepted `/coverage/attestations` before `/workloads/registrations` |
+| Identity | `X-API-Key`, raw Ed25519 public key, and body-hash idempotency key |
+| Failure | redirects, malformed responses, transport errors, or identifier mismatch never read as accepted |
+
 ### Layered action-context contract
 
 `obsvr-action-context-v2` accepts optional `principal`, `execution`, and
@@ -301,6 +309,20 @@ The application-callable row reuses the ordinary tool-policy kernel. Policy
 block has zero calls to the wrapped function, and redaction reaches its actual
 arguments or fails closed. Only the returned wrapper is covered; raw aliases
 remain explicit exclusions.
+
+### Control-expression v2 compatibility contract
+
+| Property | Contract |
+| --- | --- |
+| Paths | 2–10 safe segments rooted at `input` or `context` |
+| Composition | exactly one of `predicate`, `all`, `any`, or `not` per node |
+| Bounds | depth 12, 128 nodes, 64 children/set items |
+| Operators | `exists`, equality, containment/set membership, numeric comparisons, guarded `matches` |
+| Steering | `action: steer` resolves to a blocking decision plus `MODIFY` guidance |
+
+Both SDKs validate before evaluation and reject unknown fields, non-finite
+numbers, unbounded strings, empty sets, and unsafe regex patterns. Changing
+operator names or evaluation semantics requires a new expression schema.
 
 ## Source-lineage compatibility contract
 

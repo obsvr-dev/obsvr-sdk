@@ -102,6 +102,24 @@ one known-deny request and require zero additional calls in the supplied
 transport counter. These checks prove the named factory path, not every client
 in the process.
 
+After those checks, explicitly publish the signed deployment evidence:
+
+```python
+result = obsvr.publish_deployment_proofs(
+    coverage,
+    workload,
+    ingest_url=os.environ["OBSVR_INGEST_URL"],
+    api_key=os.environ["OBSVR_API_KEY"],
+    signer=signer,
+)
+```
+
+- Coverage is sent first.
+- Rejected or uncertain coverage marks workload `not_attempted`.
+- Redirects are refused and DNS is pinned per bounded request.
+- Accepted response identifiers must match the signed envelopes.
+- Publication never runs automatically from `init()`.
+
 For local crash recovery of ordinary audit events, enable the optional outbox:
 
 ```python
@@ -132,6 +150,11 @@ the original sync or async shape. Block occurs before the function is entered;
 redaction changes the arguments it receives or fails closed. The returned
 wrapper is the boundary. A retained raw function alias is not governed and is
 reported as a coverage exclusion.
+
+A `control` policy rule can match bounded structured `input.*` / `context.*`
+paths with deterministic predicates. `action="steer"` still refuses before
+the function or transport runs; catch `ObsvrPolicyError` and read its
+`steering` field to start a separate, governed retry with the supplied guidance.
 
 `build_action_context_v2()` provides the bounded context for strict
 application actions. Optional principal, execution, and governance layers

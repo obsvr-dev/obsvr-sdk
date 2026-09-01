@@ -51,6 +51,39 @@ def test_govern_fn_applies_redaction_to_the_received_arguments():
     assert result == received[0]
 
 
+def test_govern_fn_steers_before_entering_the_application_function():
+    obsvr.init(
+        api_key="test",
+        sample_rate=1,
+        policy_rules=[{
+            "id": "control:external-write",
+            "name": "External writes require review",
+            "enabled": True,
+            "type": "control",
+            "action": "steer",
+            "conditions": {
+                "expression": {"predicate": {
+                    "path": "context.metadata.obsvr_action.name",
+                    "operator": "equals",
+                    "value": "contract.send",
+                }},
+                "steering_context": "Route the contract to Legal, then retry.",
+            },
+        }],
+    )
+    calls = []
+    governed = obsvr.govern_fn(lambda: calls.append("sent"), name="contract.send")
+
+    with pytest.raises(ObsvrPolicyError) as caught:
+        governed()
+    assert caught.value.steering == {
+        "outcome": "MODIFY",
+        "guidance": "Route the contract to Legal, then retry.",
+    }
+    assert caught.value.to_dict()["steering"] == caught.value.steering
+    assert calls == []
+
+
 def test_async_function_and_honest_coverage_binding():
     obsvr.init(api_key="test", sample_rate=1)
 

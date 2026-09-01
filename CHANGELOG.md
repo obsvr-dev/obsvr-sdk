@@ -15,6 +15,30 @@ Entries link the implementing commit when a stable public hash is available.
 
 Changes land here and are renamed at the next release cut.
 
+## [0.17.0] - 2026-09-01
+
+### Breaking
+
+- **BREAKING:** Public rule, action, and reason-code unions now include
+  `control`, `steer`, and `STEER_REQUIRED`. Update exhaustive switches.
+
+### Added
+
+- Added bounded control expressions in both SDKs. `all`, `any`, `not`, and
+  typed predicates evaluate only declared `input.*` and `context.*` paths with
+  closed operators, depth/node limits, and guarded regular expressions.
+- Added `steer` as an enforcing policy outcome. It blocks before provider,
+  tool, or governed-function execution and returns deterministic `MODIFY`
+  guidance on the typed policy error for a caller-owned retry.
+- Added matching deployment-proof clients that explicitly publish signed
+  coverage before an optional exact-hash workload registration through bounded,
+  redirect-refusing, DNS-pinned transports.
+
+### Changed
+
+- TypeScript tool and application-callable policy refusals now consistently
+  throw `ObsvrPolicyError` while retaining their existing messages.
+
 ## [0.16.0] - 2026-08-31
 
 ### Added

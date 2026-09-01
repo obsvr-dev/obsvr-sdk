@@ -193,6 +193,7 @@ type ComplianceCtx = {
   engineVersion?: string;
   /** Inbound external policy backend provenance (ADR-4); additive. */
   externalBackend?: ExternalBackendRecord;
+  steering?: { outcome: 'MODIFY'; guidance: string };
 };
 
 /** Default compliance context - used for all pre-compliance code paths */
@@ -1961,6 +1962,7 @@ export async function _buildDirectCallPreCallPlan(
     // The approval claim a live grant satisfied during rule evaluation, if any.
     // Re-checked below, after every layer that can delay the call.
     let approvalClaim: PolicyDecisionResult["approval_granted"];
+    let steering: PolicyDecisionResult["steering"];
     // --- guarded detector section ------------------------------------
     // A detector defect resolves here instead of escaping into the
     // caller's own provider call. A closed resolution drives the
@@ -2366,6 +2368,7 @@ export async function _buildDirectCallPreCallPlan(
           resolution: config.ruleResolution,
         });
         approvalClaim = result.approval_granted;
+        steering = result.steering;
         ruleId = result.rule_id;
         policyReason = result.reason;
         // The engine's own fine-grained code survives to the event and the
@@ -2385,6 +2388,15 @@ export async function _buildDirectCallPreCallPlan(
             obsvr_telemetry: {
               ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
               quota_unmetered: result.quota_unmetered,
+            },
+          };
+        }
+        if (result.steering) {
+          audit_fields.metadata = {
+            ...((audit_fields.metadata as Record<string, unknown>) ?? {}),
+            obsvr_telemetry: {
+              ...(((audit_fields.metadata as Record<string, unknown>)?.obsvr_telemetry as Record<string, unknown>) ?? {}),
+              steering: result.steering,
             },
           };
         }
@@ -2907,6 +2919,7 @@ export async function _buildDirectCallPreCallPlan(
       decisionInputHash: computeDecisionInputHash(decisionInput),
       engineVersion: engineVersionFor(config.ruleResolution),
       externalBackend,
+      steering,
     };
 
     // Enforce-mode sampling only thins ordinary allowed calls. Monitor mode is
@@ -3036,6 +3049,7 @@ export async function _buildDirectCallPreCallPlan(
           policy_reason: policyReason,
           rule_id: ruleId,
           reason_code: resolvedReasonCode,
+          steering,
         }),
       };
     }

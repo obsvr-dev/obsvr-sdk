@@ -623,6 +623,13 @@ def build_audit_event(
         _tel["quota_unmetered"] = _quota_unmetered
         _md["obsvr_telemetry"] = _tel
         _event["metadata"] = _md
+    _steering = comp.get("steering")
+    if _steering is not None:
+        _md = dict(_event.get("metadata") or {})
+        _tel = dict(_md.get("obsvr_telemetry") or {})
+        _tel["steering"] = _steering
+        _md["obsvr_telemetry"] = _tel
+        _event["metadata"] = _md
     # Same route again, and the sharpest of the three: an event whose subject no
     # gate evaluated still carries action_taken "allowed", which asserts a
     # decision rather than reporting the absence of one. (TS parity:

@@ -177,6 +177,8 @@ export interface ComplianceInfo {
    * an enforcement layer that did not run has to say so on the record.
    */
   quota_unmetered?: QuotaUnmetered;
+  /** Corrective instruction for a steer refusal. The side effect did not run. */
+  steering?: { outcome: 'MODIFY'; guidance: string };
   /**
    * A surface where NO policy decision was made about this event's subject.
    *
@@ -985,6 +987,7 @@ export async function applyPreCallPolicy(
     // The approval claim a live grant satisfied, re-checked at the end of the
     // pipeline (below) after every layer that can delay the call.
     let approvalClaim: PolicyDecisionResult["approval_granted"];
+    let steering: PolicyDecisionResult["steering"];
     if (config.policyRules && config.policyRules.length > 0 && actionTaken !== "blocked") {
       // Same context the floor above was handed, and the same one the proxy
       // wrapper and the Python shared pre-call build: model and environment are
@@ -1002,6 +1005,7 @@ export async function applyPreCallPolicy(
       }, { failMode: config.failMode, resolution: config.ruleResolution });
       quotaUnmetered = rulesResult.quota_unmetered;
       approvalClaim = rulesResult.approval_granted;
+      steering = rulesResult.steering;
       // Saved so the blocking approval wait below can lift the block without
       // inventing a state: on approval the pipeline resumes exactly where it
       // stood before this rule fired.
@@ -1343,6 +1347,7 @@ export async function applyPreCallPolicy(
       policy_reason: resolvedPolicyReason,
       decision_input_hash: computeDecisionInputHash(decisionInput),
       engine_version: engineVersionFor(config.ruleResolution),
+      ...(steering !== undefined ? { steering } : {}),
       external_backend: externalBackend,
       ...(quotaUnmetered !== undefined ? { quota_unmetered: quotaUnmetered } : {}),
       ...(monitorShadow ? { shadow_outcome: monitorShadow } : {}),
@@ -2224,6 +2229,14 @@ export function buildIntegrationEvent(
     };
     event.metadata = metadata;
   }
+  if (compliance.steering) {
+    const metadata = (event.metadata ?? {}) as Record<string, unknown>;
+    metadata.obsvr_telemetry = {
+      ...((metadata.obsvr_telemetry as Record<string, unknown>) ?? {}),
+      steering: compliance.steering,
+    };
+    event.metadata = metadata;
+  }
 
   // Same route again, and the sharpest of the three: an event whose subject no
   // gate evaluated still carries action_taken "allowed", which asserts a
@@ -2340,7 +2353,7 @@ export function emitIntegrationEvent(
  * one construction choke point so every surface throws the same typed error
  * with the same classification; the message is unchanged.
  */
-export function blockedCallError(compliance: ComplianceInfo): ObsvrPolicyError {
+export function blockedCallError(compliance: ComplianceInfo, message?: string): ObsvrPolicyError {
   return createPolicyError({
     action_taken: compliance.action_taken,
     action_reason: compliance.action_reason,
@@ -2349,6 +2362,8 @@ export function blockedCallError(compliance: ComplianceInfo): ObsvrPolicyError {
     policy_reason: compliance.policy_reason,
     rule_id: compliance.rule_id,
     reason_code: compliance.reason_code,
+    steering: compliance.steering,
+    ...(message !== undefined ? { message } : {}),
   });
 }
 

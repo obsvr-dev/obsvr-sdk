@@ -163,11 +163,27 @@ inside the signed body, but the verifier intentionally returns their exact
 values rather than consulting wall-clock time; the deployment controller owns
 its clock and expiry policy.
 
+Deployment-proof publication is explicit:
+
+- `init()` never uploads it;
+- coverage is verified and accepted before workload registration;
+- requests pin DNS, refuse redirects, and bound time and payload sizes;
+- `pinned` means the project registry matched the signer;
+- `self_presented` proves only that the presented key signed the document.
+
 `governFn` / `govern_fn` / `@govern` is an enforcing callable boundary backed
 by the existing tool-policy kernel. A deny has zero calls to the wrapped
 function, and a redact verdict changes the arguments that function receives or
 fails closed. It does not revoke any other reference to the original callable;
 coverage reports therefore record retained raw aliases as an exclusion.
+
+`control` expressions are deterministic local policy:
+
+- inputs are limited to bounded `input.*` and `context.*` paths;
+- operators are closed and unsafe regex is rejected;
+- `steer` refuses before side effects;
+- guidance belongs to a caller-owned new attempt;
+- the SDK never silently mutates and retries the original action.
 
 Optional `ActionContextV2` layers are closed and bounded. They carry only
 identity, execution, and governance facts needed for deterministic policy and
@@ -189,7 +205,7 @@ must still validate that evidence before allowing execution.
 | Surface | Integrity property | Explicit limit |
 | --- | --- | --- |
 | policy lifecycle | replay report is candidate-bound; failed thresholds stay in shadow; non-shadow candidates carry rollback | the SDK returns a promotion document but does not mutate deployment state |
-| workload registry | registration is content-addressed and signed by the supplied operator key | it proves the signed declaration, not undiscovered processes or calls |
+| workload registry | registration is content-addressed, signed, and server-accepted only against the exact prior coverage hash | it proves the signed declaration and server admission, not undiscovered processes or calls |
 | policy template | typed parameters and rendered artifact are separately hashed with approval and activation references | a template is not a compliance certification |
 | control analytics | report hash commits the stated input count, time window, metrics, and explicit gaps | missing events outside the input cannot be detected or inferred |
 | evaluator signal | provenance, latency, timeout, cache state, and failure disposition enter the resolution | remote and probabilistic signals always carry `authoritative_allow: false` |

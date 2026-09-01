@@ -71,6 +71,7 @@ class ObsvrPolicyError(RuntimeError):
         reason_code: str,
         decision: Dict[str, Any],
         rule_id: Optional[str] = None,
+        steering: Optional[Dict[str, Any]] = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -80,6 +81,7 @@ class ObsvrPolicyError(RuntimeError):
         self.rule_id = rule_id
         #: Decision metadata mirroring the emitted event.
         self.decision = decision
+        self.steering = dict(steering) if steering is not None else None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialized shape asserted for cross-language parity."""
@@ -87,6 +89,8 @@ class ObsvrPolicyError(RuntimeError):
         if self.rule_id is not None:
             out["rule_id"] = self.rule_id
         out["decision"] = self.decision
+        if self.steering is not None:
+            out["steering"] = self.steering
         out["message"] = self.message
         return out
 
@@ -158,4 +162,4 @@ def create_policy_error(compliance: Optional[Dict[str, Any]] = None, **overrides
     code = _resolve_reason_code(action_reason, action_source, data.get("reason_code"))
     cls = ObsvrPolicyError if action_reason in _KNOWN_REASONS else ObsvrUnknownPolicyError
 
-    return cls(message, code, decision, data.get("rule_id"))
+    return cls(message, code, decision, data.get("rule_id"), data.get("steering"))

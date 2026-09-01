@@ -1,0 +1,82 @@
+{
+  "schema": "obsvr-control-expression-v2",
+  "cases": [
+    {
+      "name": "nested production decision matches",
+      "expression": {
+        "all": [
+          { "predicate": { "path": "context.environment", "operator": "equals", "value": "production" } },
+          {
+            "any": [
+              { "predicate": { "path": "context.metadata.role", "operator": "not_equals", "value": "admin" } },
+              { "predicate": { "path": "context.amount", "operator": "greater_than", "value": 1000 } }
+            ]
+          }
+        ]
+      },
+      "input": {
+        "input": { "text": "wire funds", "target": "prompt" },
+        "context": { "environment": "production", "amount": 10, "metadata": { "role": "member" } }
+      },
+      "matches": true
+    },
+    {
+      "name": "root mismatch fails the conjunction",
+      "expression": {
+        "all": [
+          { "predicate": { "path": "context.environment", "operator": "equals", "value": "production" } },
+          { "predicate": { "path": "context.amount", "operator": "greater_than_or_equal", "value": 1000 } }
+        ]
+      },
+      "input": {
+        "input": { "text": "wire funds", "target": "prompt" },
+        "context": { "environment": "staging", "amount": 5000 }
+      },
+      "matches": false
+    },
+    {
+      "name": "input path and guarded regex match",
+      "expression": {
+        "predicate": { "path": "input.text", "operator": "matches", "value": "^send [a-z]+$" }
+      },
+      "input": {
+        "input": { "text": "send contract", "target": "prompt" },
+        "context": {}
+      },
+      "matches": true
+    },
+    {
+      "name": "json numeric values compare independent of decimal spelling",
+      "expression": {
+        "predicate": { "path": "context.amount", "operator": "equals", "value": 1.0 }
+      },
+      "input": {
+        "input": { "text": "approve", "target": "prompt" },
+        "context": { "amount": 1 }
+      },
+      "matches": true
+    },
+    {
+      "name": "boolean does not compare equal to numeric one",
+      "expression": {
+        "predicate": { "path": "context.approved", "operator": "in", "value": [1] }
+      },
+      "input": {
+        "input": { "text": "approve", "target": "prompt" },
+        "context": { "approved": true }
+      },
+      "matches": false
+    },
+    {
+      "name": "ascii underscore path segments are portable",
+      "expression": {
+        "predicate": { "path": "context.__internal", "operator": "equals", "value": "approved" }
+      },
+      "input": {
+        "input": { "text": "approve", "target": "prompt" },
+        "context": { "__internal": "approved" }
+      },
+      "matches": true
+    }
+  ]
+}

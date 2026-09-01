@@ -12,6 +12,7 @@ import { safeRegexTest } from '../utils/safe-regex.js';
 import { normalizeForMatching } from './normalize.js';
 import { ReasonCode, ruleTypeToReasonCode } from '../governance/reason-codes.js';
 import { extractSqlFacets, readFacet } from './protocol-facets.js';
+import { evaluateControlExpressionV2, type ControlExpressionV2 } from '../governance/control-expression-v2.js';
 
 export interface PolicyRule {
   id: string;
@@ -24,7 +25,7 @@ export interface PolicyRule {
    * or approvals (EV-20/21). Default: "enforce".
    */
   mode?: 'enforce' | 'shadow';
-  action: 'block' | 'redact' | 'flag';
+  action: 'block' | 'redact' | 'flag' | 'steer';
   type:
     | 'keyword'
     | 'regex'
@@ -50,7 +51,8 @@ export interface PolicyRule {
      * line break that defeats a regex, and does not fire on prose that merely
      * mentions the word. Fully deterministic (policy/protocol-facets.ts).
      */
-    | 'protocol_facet';
+    | 'protocol_facet'
+    | 'control';
   conditions: {
     keywords?: string[];
     pattern?: string;
@@ -112,6 +114,10 @@ export interface PolicyRule {
      * unparseable rule below, not by pretending an empty list is a violation.
      */
     facet_not_in?: string[];
+    /** control: bounded deterministic boolean expression over input/context. */
+    expression?: ControlExpressionV2;
+    /** steer: corrective guidance returned on the typed refusal. */
+    steering_context?: string;
   };
   applies_to?: 'prompt' | 'response' | 'both';
 }
@@ -397,6 +403,20 @@ function ruleOutcome(
       matched = evaluateModelGate(rule, context);
     } else if (rule.type === 'protocol_facet') {
       matched = evaluateProtocolFacet(rule, text);
+    } else if (rule.type === 'control' && rule.conditions.expression) {
+      matched = evaluateControlExpressionV2(rule.conditions.expression, {
+        input: { text, target },
+        context: {
+          action_name: context?.actionName,
+          amount: context?.amount,
+          caller_namespace: context?.callerNamespace,
+          target_namespace: context?.targetNamespace,
+          environment: context?.currentEnvironment,
+          model: context?.model,
+          provider: context?.provider,
+          metadata: context?.metadata ?? {},
+        },
+      });
     } else if (rule.type === 'quota') {
       if (!rule.conditions.quota_limit || !rule.conditions.quota_window_ms || !rule.conditions.quota_scope) return undefined;
       // Phase-aware consumption: a rule in scope for both phases meters and
@@ -491,10 +511,13 @@ function ruleOutcome(
       }
       if (!result.allowed) {
         return {
-          decision: rule.action === 'flag' ? 'allow' : rule.action,
+          decision: rule.action === 'flag' ? 'allow' : rule.action === 'steer' ? 'block' : rule.action,
           rule_id: rule.id,
           reason_code: ReasonCode.QUOTA_EXCEEDED,
           reason: `Quota exceeded: ${result.remaining} remaining of ${rule.conditions.quota_limit} per ${rule.conditions.quota_window_ms}ms window`,
+          ...(rule.action === 'steer'
+            ? { steering: { outcome: 'MODIFY' as const, guidance: rule.conditions.steering_context ?? rule.name } }
+            : {}),
         };
       }
       return undefined;
@@ -506,7 +529,7 @@ function ruleOutcome(
       return { decision: 'allow', rule_id: rule.id, reason_code: ReasonCode.PERMITTED, reason: rule.name };
     }
 
-    if (rule.action === 'block') {
+    if (rule.action === 'block' || rule.action === 'steer') {
       // Human-in-the-loop: a require_approval rule passes when an unexpired
       // grant covers it (optionally pinned to this end user); otherwise it
       // blocks and asks the caller to file an approval request.
@@ -550,7 +573,15 @@ function ruleOutcome(
           ...(actionHash !== undefined ? { action_hash: actionHash } : {}),
         };
       }
-      return { decision: 'block', rule_id: rule.id, reason_code: ruleTypeToReasonCode(rule.type), reason: rule.name };
+      return {
+        decision: 'block',
+        rule_id: rule.id,
+        reason_code: ruleTypeToReasonCode(rule.type),
+        reason: rule.name,
+        ...(rule.action === 'steer'
+          ? { steering: { outcome: 'MODIFY' as const, guidance: rule.conditions.steering_context ?? rule.name } }
+          : {}),
+      };
     }
 
     if (rule.action === 'redact') {
