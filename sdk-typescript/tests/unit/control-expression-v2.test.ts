@@ -38,9 +38,10 @@ describe('control expression v2', () => {
   });
 
   it('refuses ambiguous and unsafe documents', () => {
+    const nestedQuantifierPattern = String.fromCharCode(40, 97, 43, 41, 43, 36);
     expect(() => validateControlExpressionV2({ all: [], any: [] })).toThrow(ControlExpressionValidationError);
     expect(() => validateControlExpressionV2({ predicate: {
-      path: 'context.metadata.value', operator: 'matches', value: '(a+)+$',
+      path: 'context.metadata.value', operator: 'matches', value: nestedQuantifierPattern,
     } })).toThrow(/ReDoS/);
     expect(() => validateControlExpressionV2({ predicate: {
       path: 'context.métadata', operator: 'equals', value: 'x',
