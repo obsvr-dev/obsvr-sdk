@@ -43,12 +43,12 @@ class PolicyRule:
 #: an operator declares in ``init()`` and the set a ``/policies`` poll delivers
 #: — have to mean the same thing by "a rule". Re-exported by remote.py under
 #: its historical private names.
-VALID_RULE_ACTIONS = {"block", "redact", "flag"}
+VALID_RULE_ACTIONS = {"block", "redact", "flag", "steer"}
 VALID_RULE_TYPES = {
     "keyword", "regex", "topic_deny", "topic_allow", "pii", "action_gate",
     "namespace_isolation", "cross_tenant_block", "destructive_op_gate",
     "source_grounding", "environment_gate", "quota", "model_gate",
-    "protocol_facet",
+    "protocol_facet", "control",
 }
 
 #: Rule-id namespaces the SDK mints for its OWN verdicts - ``sdk:`` for the
@@ -113,6 +113,19 @@ def invalid_rule_reason(raw: Any) -> Optional[str]:
         ok, why = validate_regex_pattern(pattern)
         if not ok:
             return f"conditions.pattern was refused by the ReDoS guard ({why})"
+    if raw["type"] == "control":
+        from .control_expression_v2 import (
+            ControlExpressionValidationError,
+            validate_control_expression_v2,
+        )
+        try:
+            validate_control_expression_v2(raw["conditions"].get("expression"))
+        except ControlExpressionValidationError as exc:
+            return f"conditions.expression is invalid ({exc})"
+    if raw["action"] == "steer":
+        guidance = raw["conditions"].get("steering_context")
+        if not isinstance(guidance, str) or not guidance.strip() or len(guidance) > 4096:
+            return "a steer rule needs conditions.steering_context as a non-empty string of at most 4096 characters"
     return None
 
 
@@ -360,6 +373,25 @@ def _rule_outcome(
         matched = _evaluate_model_gate(rule, context)
     elif rule.type == "protocol_facet":
         matched = _evaluate_protocol_facet(rule, text)
+    elif rule.type == "control" and rule.conditions.get("expression") is not None:
+        from .control_expression_v2 import evaluate_control_expression_v2
+        ctx = context or {}
+        matched = evaluate_control_expression_v2(
+            rule.conditions["expression"],
+            {
+                "input": {"text": text, "target": target},
+                "context": {
+                    "action_name": ctx.get("action_name") or ctx.get("actionName"),
+                    "amount": ctx.get("amount"),
+                    "caller_namespace": ctx.get("caller_namespace") or ctx.get("callerNamespace"),
+                    "target_namespace": ctx.get("target_namespace") or ctx.get("targetNamespace"),
+                    "environment": ctx.get("current_environment") or ctx.get("currentEnvironment"),
+                    "model": ctx.get("model"),
+                    "provider": ctx.get("provider"),
+                    "metadata": ctx.get("metadata") or {},
+                },
+            },
+        )
 
     elif rule.type == "quota":
         limit = rule.conditions.get("quota_limit")
@@ -449,8 +481,8 @@ def _rule_outcome(
                 }
             return None
         if not quota["allowed"]:
-            decision = "allow" if rule.action == "flag" else rule.action
-            return {
+            decision = "allow" if rule.action == "flag" else "block" if rule.action == "steer" else rule.action
+            outcome = {
                 "decision": decision,
                 "rule_id": rule.id,
                 "reason_code": ReasonCode.QUOTA_EXCEEDED.value,
@@ -459,6 +491,12 @@ def _rule_outcome(
                     f"{limit} per {window_ms}ms window"
                 ),
             }
+            if rule.action == "steer":
+                outcome["steering"] = {
+                    "outcome": "MODIFY",
+                    "guidance": rule.conditions.get("steering_context") or rule.name,
+                }
+            return outcome
         return None
 
     if not matched:
@@ -472,7 +510,7 @@ def _rule_outcome(
             "reason": rule.name,
         }
 
-    if rule.action == "block":
+    if rule.action in ("block", "steer"):
         # Human-in-the-loop: a require_approval rule passes when an
         # unexpired grant covers it; otherwise it blocks and marks the
         # result so the caller files an approval request.
@@ -524,12 +562,18 @@ def _rule_outcome(
             if action_hash is not None:
                 result["action_hash"] = action_hash
             return result
-        return {
+        result = {
             "decision": "block",
             "rule_id": rule.id,
             "reason_code": rule_type_to_reason_code(rule.type),
             "reason": rule.name,
         }
+        if rule.action == "steer":
+            result["steering"] = {
+                "outcome": "MODIFY",
+                "guidance": rule.conditions.get("steering_context") or rule.name,
+            }
+        return result
 
     if rule.action == "redact":
         return {

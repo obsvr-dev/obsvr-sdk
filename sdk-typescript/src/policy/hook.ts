@@ -67,6 +67,8 @@ export interface PolicyDecisionResult {
    * unenforced quota rule is never indistinguishable from one that passed.
    */
   quota_unmetered?: QuotaUnmetered;
+  /** Corrective instruction on a steer refusal. The call is still blocked. */
+  steering?: { outcome: 'MODIFY'; guidance: string };
 }
 
 /**

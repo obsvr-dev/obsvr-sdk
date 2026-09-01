@@ -137,6 +137,21 @@ export { verifyAuditChain } from "./governance/verify-chain.js";
 export { governFn } from "./governance/govern-fn.js";
 export type { GovernedFunction, GovernFnOptions } from "./governance/govern-fn.js";
 export {
+  CONTROL_EXPRESSION_V2_SCHEMA,
+  CONTROL_EXPRESSION_MAX_DEPTH,
+  CONTROL_EXPRESSION_MAX_NODES,
+  CONTROL_EXPRESSION_MAX_SET_ITEMS,
+  ControlExpressionValidationError,
+  validateControlExpressionV2,
+  evaluateControlExpressionV2,
+} from "./governance/control-expression-v2.js";
+export type {
+  ControlScalar,
+  ControlPredicateV2,
+  ControlExpressionV2,
+  ControlExpressionInputV2,
+} from "./governance/control-expression-v2.js";
+export {
   ACTION_CONTEXT_V2_SCHEMA,
   ACTION_TARGET_HASH_DOMAIN,
   buildActionContextV2,
@@ -408,6 +423,19 @@ export {
   verifyWorkloadRegistrationV1,
 } from "./governance/workload-registry-v1.js";
 export type { WorkloadRegistrationV1Input } from "./governance/workload-registry-v1.js";
+export {
+  DeploymentProofPublishError,
+  publishCoverageAttestation,
+  publishDeploymentProofs,
+  publishWorkloadRegistration,
+} from "./governance/deployment-proof-client.js";
+export type {
+  DeploymentProofPinnedTransport,
+  DeploymentProofPublishOptions,
+  DeploymentProofPublishResult,
+  DeploymentProofPublishSequence,
+  WorkloadRegistrationV1Envelope,
+} from "./governance/deployment-proof-client.js";
 export {
   POLICY_TEMPLATE_V1_SCHEMA,
   RENDERED_POLICY_V1_SCHEMA,

@@ -382,6 +382,11 @@ class TestRegistryGate:
         # Closed remediation/retry document canonicalizer. It validates and
         # hashes evidence references but never decides whether an action runs.
         "remediation_v1.py",
+        # Pure, bounded policy-expression parser/evaluator. It performs no I/O
+        # and owns no independent failure disposition: malformed expressions
+        # are rejected while policy is loaded, and live evaluation is guarded
+        # by the rules engine whose disposition is declared separately.
+        "control_expression_v2.py",
         # Deployment/operator contracts. These validate, hash, sign, summarize,
         # or project already supplied records. They are not invoked as detector
         # layers on a governed call; signal failure disposition is data carried
@@ -391,6 +396,12 @@ class TestRegistryGate:
         "policy_template_v1.py",
         "control_analytics_v1.py",
         "signal_interface_v1.py",
+        # Explicit control-plane publisher. It locally verifies already-signed
+        # coverage/workload envelopes and delivers them in dependency order,
+        # but it is never invoked as a detector on a governed call. Delivery
+        # failures are returned as typed publication results rather than
+        # choosing whether an application side effect may run.
+        "deployment_proof_client.py",
         "verify_chain.py",
         "wrap.py",
     }

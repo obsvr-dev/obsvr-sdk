@@ -45,6 +45,7 @@ import {
   redactBuiltinPii,
   assertRedactionApplied,
   outboundRedactionBlockedCompliance,
+  blockedCallError,
   type IntegrationOptions,
   type ComplianceInfo,
 } from "./core.js";
@@ -346,7 +347,10 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             compliance: { ...BLOCKED_COMPLIANCE, reason_code: ReasonCode.TOOL_DENIED },
             options,
           });
-          throw new Error(`[obsvr] Tool blocked by agent policy: ${toolName}`);
+          throw blockedCallError(
+            { ...BLOCKED_COMPLIANCE, reason_code: ReasonCode.TOOL_DENIED },
+            `[obsvr] Tool blocked by agent policy: ${toolName}`,
+          );
         }
       }
 
@@ -429,9 +433,13 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             },
             options,
           });
-          throw new Error(
-            `[obsvr] Tool blocked: no caller principal supplied (requirePrincipal): ${toolName}`,
-          );
+          throw blockedCallError({
+            ...BLOCKED_COMPLIANCE,
+            reason_code: ReasonCode.PRINCIPAL_REQUIRED,
+            rule_id: "sdk:principal_required",
+            policy_reason:
+              "requirePrincipal is set and the call carries no user_id on the enforcing channel",
+          }, `[obsvr] Tool blocked: no caller principal supplied (requirePrincipal): ${toolName}`);
         }
       }
 
@@ -523,7 +531,12 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
           },
           options,
         });
-        throw new Error(toolBlock.message);
+        throw blockedCallError({
+          ...BLOCKED_COMPLIANCE,
+          rule_id: toolBlock.rule_id,
+          policy_reason: toolBlock.policy_reason,
+          ...(toolBlock.reason_code !== undefined ? { reason_code: toolBlock.reason_code } : {}),
+        }, toolBlock.message);
       }
 
       // 1.8) The shared pre-call pipeline: the PII policy, the customer rule
@@ -618,7 +631,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
             compliance: policyResult.compliance,
             options,
           });
-          throw new Error(
+          throw blockedCallError(policyResult.compliance,
             `[obsvr] Tool blocked by policy: ${toolName}` +
               (policyResult.compliance.policy_reason
                 ? ` (${policyResult.compliance.policy_reason})`
@@ -672,7 +685,7 @@ export function obsvrGovernTool<T>(tool: T, options: GovernToolOptions = {}): T 
           });
           // Same refusal shape the block branch above uses, so a caller
           // catching one catches the other.
-          throw new Error(
+          throw blockedCallError(blockedCompliance,
             `[obsvr] Tool blocked by policy: ${toolName} ` +
               `(the redaction could not be applied to the arguments)`,
           );

@@ -120,6 +120,7 @@ RULE_TYPE_TO_REASON_CODE: Dict[str, str] = {
     "quota": ReasonCode.QUOTA_EXCEEDED.value,
     "model_gate": ReasonCode.MODEL_GATE_BLOCKED.value,
     "protocol_facet": ReasonCode.PROTOCOL_FACET_MATCHED.value,
+    "control": ReasonCode.POLICY_VIOLATION.value,
 }
 
 

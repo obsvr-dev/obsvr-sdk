@@ -108,6 +108,7 @@ export const RULE_TYPE_TO_REASON_CODE: Readonly<Record<string, ReasonCode>> = Ob
   quota: ReasonCode.QUOTA_EXCEEDED,
   model_gate: ReasonCode.MODEL_GATE_BLOCKED,
   protocol_facet: ReasonCode.PROTOCOL_FACET_MATCHED,
+  control: ReasonCode.POLICY_VIOLATION,
 });
 
 /** Map a legacy PolicyRule type to a ReasonCode */

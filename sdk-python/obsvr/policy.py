@@ -1474,6 +1474,7 @@ def apply_pre_call_policy(
         # The approval claim a live grant satisfied, re-checked at the end of
         # the pipeline after every layer that can delay the call.
         approval_claim: Optional[Dict[str, Any]] = None
+        steering: Optional[Dict[str, Any]] = None
         if getattr(config, 'policy_rules', None) and action_taken != "blocked":
             from .rules import evaluate_policy_rules
             rules_result = evaluate_policy_rules(
@@ -1502,6 +1503,7 @@ def apply_pre_call_policy(
             # counted and found under limit. Parity with TS.
             quota_unmetered = rules_result.get("quota_unmetered")
             approval_claim = rules_result.get("approval_granted")
+            steering = rules_result.get("steering")
             if rules_decision == "block" and action_taken != "blocked":
                 # Saved so the blocking approval wait below can lift the block
                 # without inventing a state: on approval the pipeline resumes
@@ -1930,6 +1932,7 @@ def apply_pre_call_policy(
         # Additive decision-record fields (never part of the chain preimage)
         "decision_input_hash": compute_decision_input_hash(decision_doc),
         "engine_version": engine_ver,
+        **({"steering": steering} if steering is not None else {}),
         # External policy backend provenance (ADR-4, additive)
         "external_backend": external_backend_record,
     }

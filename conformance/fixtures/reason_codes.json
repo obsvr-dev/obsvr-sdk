@@ -54,6 +54,7 @@
     "environment_gate": "ENVIRONMENT_BLOCKED",
     "quota": "QUOTA_EXCEEDED",
     "model_gate": "MODEL_GATE_BLOCKED",
-    "protocol_facet": "PROTOCOL_FACET_MATCHED"
+    "protocol_facet": "PROTOCOL_FACET_MATCHED",
+    "control": "POLICY_VIOLATION"
   }
 }

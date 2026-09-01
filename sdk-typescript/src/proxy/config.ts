@@ -29,6 +29,7 @@ import type { PolicyRule } from "../policy/rules.js";
 import { derivePolicyVersion, ensureRuleResolution } from "../policy/rules.js";
 import { snapshotPolicy, emitPolicyChangedEvent } from "../policy/policy-log.js";
 import { validateRegexPattern } from "../utils/safe-regex.js";
+import { validateControlExpressionV2 } from "../governance/control-expression-v2.js";
 import { updateApprovals, type ApprovalGrant } from "../policy/approvals.js";
 import { loadDeviceSigner } from "./device-identity.js";
 import {
@@ -871,7 +872,7 @@ export function updatePolicyRules(rules: PolicyRule[]): void {
   snapshotPolicy(effective, undefined, state.config.ruleResolution);
 }
 
-const VALID_RULE_ACTIONS = new Set(["block", "redact", "flag"]);
+const VALID_RULE_ACTIONS = new Set(["block", "redact", "flag", "steer"]);
 // "pii" is intentionally valid (authored + hashed into policy_version) though it
 // has no rules-engine branch — PII is enforced by the builtin scanner (policy/hook.ts).
 // It is also referenced by the shared cross-language conformance fixtures; removing
@@ -883,7 +884,7 @@ export const VALID_RULE_TYPES = new Set([
   "keyword", "regex", "topic_deny", "topic_allow", "pii",
   "action_gate", "namespace_isolation", "cross_tenant_block",
   "destructive_op_gate", "source_grounding", "environment_gate",
-  "quota", "model_gate", "protocol_facet",
+  "quota", "model_gate", "protocol_facet", "control",
 ]);
 
 /**
@@ -971,6 +972,19 @@ export function invalidPolicyRuleReason(rule: unknown): string | undefined {
     const verdict = validateRegexPattern(pattern);
     if (!verdict.ok) {
       return `conditions.pattern was refused by the ReDoS guard (${verdict.reason})`;
+    }
+  }
+  if (r.type === "control") {
+    try {
+      validateControlExpressionV2((r.conditions as Record<string, unknown>).expression);
+    } catch (error) {
+      return `conditions.expression is invalid (${error instanceof Error ? error.message : String(error)})`;
+    }
+  }
+  if (r.action === "steer") {
+    const guidance = (r.conditions as Record<string, unknown>).steering_context;
+    if (typeof guidance !== "string" || guidance.trim() === "" || guidance.length > 4096) {
+      return "a steer rule needs conditions.steering_context as a non-empty string of at most 4096 characters";
     }
   }
   return undefined;

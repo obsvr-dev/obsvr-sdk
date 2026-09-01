@@ -2,6 +2,7 @@ import { integrationBindings, _resetBindings } from '../../src/binding-report.js
 import { governFn } from '../../src/governance/govern-fn.js';
 import { init, _reset } from '../../src/proxy/config.js';
 import { _resetSender } from '../../src/proxy/sender/fire-and-forget.js';
+import { ObsvrPolicyError } from '../../src/policy/policy-error.js';
 
 beforeEach(() => {
   _reset();
@@ -33,6 +34,41 @@ describe('governFn', () => {
     const result = await store('SSN 078-05-1120');
     expect(received).not.toContain('078-05-1120');
     expect(result).toBe(received);
+  });
+
+  test('steers with corrective context before entering the application function', async () => {
+    init({
+      api_key: 'test',
+      sample_rate: 1,
+      policy_rules: [{
+        id: 'control:external-write',
+        name: 'External writes require review',
+        enabled: true,
+        type: 'control',
+        action: 'steer',
+        conditions: {
+          expression: {
+            predicate: {
+              path: 'context.metadata.obsvr_action.name',
+              operator: 'equals',
+              value: 'contract.send',
+            },
+          },
+          steering_context: 'Route the contract to Legal, then retry.',
+        },
+      }],
+    });
+    let calls = 0;
+    const send = governFn(() => { calls += 1; return 'sent'; }, { name: 'contract.send' });
+
+    const error = await send().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ObsvrPolicyError);
+    expect((error as ObsvrPolicyError).steering).toEqual({
+      outcome: 'MODIFY',
+      guidance: 'Route the contract to Legal, then retry.',
+    });
+    expect((error as ObsvrPolicyError).toJSON().steering).toEqual((error as ObsvrPolicyError).steering);
+    expect(calls).toBe(0);
   });
 
   test('supports async functions and records an honest coverage binding', async () => {
