@@ -148,13 +148,13 @@
     "access": "public"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.122.0",
+    "@anthropic-ai/sdk": "^0.123.0",
     "@google-cloud/vertexai": "^1.12.0",
     "@google/genai": "^2.16.0",
     "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^1.2.9",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@openai/agents": "^0.13.4",
+    "@openai/agents": "^0.17.0",
     "@opentelemetry/api": "^1.9.1",
     "@types/jest": "^29.5.12",
     "@types/node": "^22",
